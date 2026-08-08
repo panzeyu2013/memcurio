@@ -24,41 +24,58 @@ export interface Entry {
 
 const SEP = /^§ ([0-9a-f]{8}) \| ([A-Z_]+) \| (\S+) \| (\S+)(?: \| ([01]))?$/;
 
+function isKnownKind(kind: string): boolean {
+  return (KINDS as readonly string[]).includes(kind);
+}
+
+function isKnownStatus(status: string): boolean {
+  return (STATUSES as readonly string[]).includes(status);
+}
+
 export function renderEntry(e: Entry): string {
   const pinned = e.pinned ? " | 1" : "";
   const meta = `§ ${e.entryId} | ${e.kind} | ${e.createdAt} | ${e.status}${pinned}`;
   return `${meta}\n\n${e.content.trim()}\n`;
 }
 
-export function parseFile(text: string, ns: string): Entry[] {
+export function parseFile(text: string, ns: string, expectedKind?: Kind): Entry[] {
   const entries: Entry[] = [];
   const lines = text.split("\n");
+  const isHeader = (idx: number): boolean => {
+    if (idx > 0 && lines[idx - 1].trim() !== "") {
+      return false;
+    }
+    const m = SEP.exec(lines[idx]);
+    return !!m && isKnownKind(m[2]) && isKnownStatus(m[4]);
+  };
   let i = 0;
   while (i < lines.length) {
-    const m = SEP.exec(lines[i]);
-    if (m) {
-      const [, entryId, kind, createdAt, status, pinned] = m;
-      const body: string[] = [];
-      i += 1;
-      while (i < lines.length && !SEP.test(lines[i])) {
-        body.push(lines[i]);
+    if (isHeader(i)) {
+      const m = SEP.exec(lines[i]);
+      if (m) {
+        const [, entryId, kind, createdAt, status, pinned] = m;
+        const body: string[] = [];
         i += 1;
+        while (i < lines.length && !isHeader(i)) {
+          body.push(lines[i]);
+          i += 1;
+        }
+        entries.push({
+          entryId,
+          ns,
+          kind: (expectedKind ?? kind) as Kind,
+          content: body.join("\n").trim(),
+          createdAt,
+          status: status as Status,
+          pinned: pinned === "1",
+          lastUsedAt: null,
+          useCount: 0,
+          valueScore: 1,
+        });
+        continue;
       }
-      entries.push({
-        entryId,
-        ns,
-        kind: kind as Kind,
-        content: body.join("\n").trim(),
-        createdAt,
-        status: status as Status,
-        pinned: pinned === "1",
-        lastUsedAt: null,
-        useCount: 0,
-        valueScore: 1,
-      });
-    } else {
-      i += 1;
     }
+    i += 1;
   }
   return entries;
 }
@@ -91,8 +108,12 @@ export function updateKind(nsDir_: string, kind: Kind, mutate: (entries: Entry[]
     } catch {
       text = "";
     }
-    const next = mutate(parseFile(text, ns));
-    atomicWrite(path, next.map((e) => renderEntry(e).trim()).join("\n\n"));
+    const next = mutate(parseFile(text, ns, kind));
+    const rendered = next.length ? next.map((e) => renderEntry(e).trim()).join("\n\n") + "\n" : "";
+    if (rendered === text) {
+      return;
+    }
+    atomicWrite(path, rendered);
   });
 }
 

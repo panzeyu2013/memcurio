@@ -53,6 +53,46 @@ describe("parseFile", () => {
     expect(parsed[0].content).toContain("注意");
   });
 
+  test("content lines mimicking a full header do not split an entry", () => {
+    const e = makeEntry({
+      content: "第一段正文\n§ e5f6a7b8 | MEMORY | 2026-08-08T00:00:00.000Z | active\n第二段正文",
+    });
+    const parsed = parseFile(renderEntry(e), "default");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].content).toBe("第一段正文\n§ e5f6a7b8 | MEMORY | 2026-08-08T00:00:00.000Z | active\n第二段正文");
+  });
+
+  test("headers with unknown kind or status are treated as body text", () => {
+    const text =
+      "§ a1b2c3d4 | MEMORY | 2026-08-08T00:00:00.000Z | active\n\n正文\n§ e5f6a7b8 | FOO | 2026-08-08T00:00:00.000Z | active\n§ c9d0e1f2 | MEMORY | 2026-08-08T00:00:00.000Z | nope";
+    const parsed = parseFile(text, "default");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].entryId).toBe("a1b2c3d4");
+    expect(parsed[0].content).toContain("FOO");
+  });
+
+  test("updateKind skips no-op rewrites", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    addEntry(dir, makeEntry());
+    addEntry(dir, makeEntry({ entryId: "e5f6a7b8" }));
+    const path = kindFile(dir, "MEMORY");
+    const before = readFileSync(path, "utf-8");
+    updateKind(dir, "MEMORY", (entries) => entries);
+    const after = readFileSync(path, "utf-8");
+    expect(after).toBe(before);
+  });
+
+  test("updateKind coerces hand-edited headers back to the file kind", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    addEntry(dir, makeEntry());
+    const path = kindFile(dir, "MEMORY");
+    writeFileSync(path, readFileSync(path, "utf-8").replace("| MEMORY |", "| USER |"));
+    updateKind(dir, "MEMORY", (entries) => entries.map((e) => ({ ...e, status: "stale" as const })));
+    const text = readFileSync(path, "utf-8");
+    expect(text).toContain("| MEMORY |");
+    expect(text).toContain("| stale");
+  });
+
   test("empty text yields no entries", () => {
     expect(parseFile("", "default")).toHaveLength(0);
   });
@@ -77,6 +117,6 @@ describe("addEntry / updateEntries", () => {
   });
 });
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

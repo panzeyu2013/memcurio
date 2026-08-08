@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Index } from "../src/core/db.js";
+import { openDb } from "../src/core/sqlite.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,6 +67,85 @@ describe("Index", () => {
     expect(e?.useCount).toBe(2);
     expect(e?.lastUsedAt).toBeTruthy();
     idx.close();
+  });
+
+  test("touch score: first touch raises to 1.05, caps at 2.0", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry());
+    idx.touch(["a1b2c3d4"]);
+    let e = idx.get("a1b2c3d4");
+    expect(e?.useCount).toBe(1);
+    expect(e?.valueScore).toBeCloseTo(1.05, 5);
+    for (let i = 0; i < 20; i++) {
+      idx.touch(["a1b2c3d4"]);
+    }
+    e = idx.get("a1b2c3d4");
+    expect(e?.useCount).toBe(21);
+    expect(e?.valueScore).toBe(2);
+    idx.close();
+  });
+
+  test("contradiction reason is stored and duplicate pairs are ignored", async () => {
+    const idx = await Index.create(dbPath);
+    idx.recordContradiction("a1b2c3d4", "e5f6a7b8", "互相矛盾的事实");
+    idx.recordContradiction("a1b2c3d4", "e5f6a7b8", "重复记录");
+    const rows = idx.openContradictions();
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].reason)).toBe("互相矛盾的事实");
+    idx.close();
+  });
+
+  test("withTransaction rolls back work on failure and rejects nesting", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry());
+    expect(() =>
+      idx.withTransaction(() => {
+        idx.add(makeEntry({ entryId: "e5f6a7b8" }));
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(idx.get("e5f6a7b8")).toBeUndefined();
+    expect(idx.get("a1b2c3d4")).toBeDefined();
+    expect(() =>
+      idx.withTransaction(() => {
+        idx.withTransaction(() => {});
+      }),
+    ).toThrow(/nested/);
+    idx.close();
+  });
+
+  test("migrates v2 schema to v3 (contradictions.reason)", async () => {
+    const driver = await openDb(dbPath);
+    driver.exec(`
+      CREATE TABLE entries(entry_id TEXT PRIMARY KEY, ns TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, use_count INTEGER NOT NULL DEFAULT 0, value_score REAL NOT NULL DEFAULT 1.0, status TEXT NOT NULL DEFAULT 'active', pinned INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE sessions(session_id TEXT PRIMARY KEY, host TEXT NOT NULL, workdir TEXT, started_at TEXT NOT NULL, ended_at TEXT, summary TEXT);
+      CREATE TABLE contradictions(entry_a TEXT, entry_b TEXT, detected_at TEXT, resolved INTEGER DEFAULT 0);
+      CREATE TABLE audit(ts TEXT, action TEXT, ns TEXT, detail TEXT);
+      CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+    `);
+    driver.close();
+    const idx = await Index.create(dbPath);
+    const cols = idx.driver.all<{ name: string }>("PRAGMA table_info(contradictions)");
+    expect(cols.some((c) => c.name === "reason")).toBe(true);
+    const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+    expect(v?.value).toBe("3");
+    idx.close();
+  });
+
+  test("fts backfill repairs a silently empty fts table", async () => {
+    const idx = await Index.create(dbPath);
+    if (idx.backend !== "trigram") {
+      idx.close();
+      return;
+    }
+    idx.add(makeEntry());
+    idx.driver.run("DELETE FROM fts");
+    idx.close();
+    const idx2 = await Index.create(dbPath);
+    const row = idx2.driver.get<{ c: number }>("SELECT count(*) AS c FROM fts");
+    expect(row?.c).toBe(1);
+    idx2.close();
   });
 
   test("counts groups by ns and status", async () => {

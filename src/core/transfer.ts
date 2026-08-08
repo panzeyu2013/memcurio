@@ -70,6 +70,21 @@ export function parseExport(text: string): Entry[] {
     if (!["active", "stale", "archived", "deleted"].includes(status)) {
       throw new Error(`invalid export line ${lineNo}: status ${JSON.stringify(status)}`);
     }
+    if (r.pinned !== undefined && typeof r.pinned !== "boolean") {
+      throw new Error(`invalid export line ${lineNo}: pinned must be a boolean`);
+    }
+    if (r.useCount !== undefined && (!Number.isInteger(r.useCount) || r.useCount < 0)) {
+      throw new Error(`invalid export line ${lineNo}: useCount must be a non-negative integer`);
+    }
+    if (
+      r.valueScore !== undefined &&
+      (typeof r.valueScore !== "number" || !Number.isFinite(r.valueScore) || r.valueScore < 0 || r.valueScore > 2)
+    ) {
+      throw new Error(`invalid export line ${lineNo}: valueScore must be a number in [0, 2]`);
+    }
+    if (r.lastUsedAt !== undefined && r.lastUsedAt !== null && typeof r.lastUsedAt !== "string") {
+      throw new Error(`invalid export line ${lineNo}: lastUsedAt must be a string or null`);
+    }
     out.push({
       entryId: r.entryId,
       ns: assertValidNs(r.ns ?? "default"),
@@ -107,7 +122,7 @@ export function planImport(parsed: Entry[], idx: Index, nsOverride?: string): Im
     contentByNs.get(e.ns)!.add(e.content);
   }
   for (const e of parsed) {
-    const ns = nsOverride ?? e.ns;
+    const ns = nsOverride ? assertValidNs(nsOverride) : e.ns;
     const existing = idx.get(e.entryId);
     if (existing) {
       if (existing.content === e.content) {

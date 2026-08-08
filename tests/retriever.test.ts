@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Index } from "../src/core/db.js";
 import type { Entry } from "../src/core/mdStore.js";
-import { getRetriever } from "../src/core/retriever.js";
+import { buildFtsQuery, getRetriever } from "../src/core/retriever.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,5 +108,36 @@ describe("retriever", () => {
     const r = getRetriever(idx);
     expect(r.search({ query: "", topK: 10 })).toHaveLength(0);
     idx.close();
+  });
+});
+
+describe("buildFtsQuery", () => {
+  test("stopword-prefixed windows are dropped but others survive", () => {
+    const q = buildFtsQuery("我们应该怎么做记忆检索");
+    expect(q).toContain('"们应该怎"');
+    expect(q).toContain('"记忆检索"');
+    expect(q).not.toContain('"我们应"');
+    expect(q).not.toContain('"应该怎"');
+  });
+
+  test("caps terms at 12", () => {
+    const words = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未".repeat(3);
+    const q = buildFtsQuery(words);
+    expect(q.split(" OR ")).toHaveLength(12);
+  });
+
+  test("strips punctuation and quotes from terms", () => {
+    const q = buildFtsQuery('say "hi" twice');
+    expect(q).toBe('"say" OR "twice"');
+  });
+
+  test("3-char CJK word is kept as a term", () => {
+    const q = buildFtsQuery("ABC 数据库");
+    expect(q).toContain("数据库");
+  });
+
+  test("short or empty query yields empty fts string", () => {
+    expect(buildFtsQuery("ab")).toBe("");
+    expect(buildFtsQuery("")).toBe("");
   });
 });

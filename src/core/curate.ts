@@ -124,12 +124,14 @@ export interface CuratePlan {
   contradictions: Array<{ a: Entry; b: Entry; reason: string }>;
   umbrellas: Array<{ group: Entry[]; content: string }>;
   unparsable: number;
+  checksExhausted: boolean;
 }
 
 export interface CurateOptions {
   ns?: string;
   minUseForReeval?: number;
   minOverlap?: number;
+  maxChecks?: number;
 }
 
 export function bigramOverlap(a: string, b: string): number {
@@ -160,9 +162,25 @@ export async function buildCuratePlan(
   opts: CurateOptions = {},
 ): Promise<CuratePlan> {
   const entries = idx.list({ ns: opts.ns }).filter((e) => e.status === "active");
-  const plan: CuratePlan = { reevaluations: [], contradictions: [], umbrellas: [], unparsable: 0 };
+  const plan: CuratePlan = {
+    reevaluations: [],
+    contradictions: [],
+    umbrellas: [],
+    unparsable: 0,
+    checksExhausted: false,
+  };
   const minUse = opts.minUseForReeval ?? 5;
   const minOverlap = opts.minOverlap ?? 0.5;
+  const maxChecks = opts.maxChecks ?? 100;
+  let checks = 0;
+  const nextCheck = (): boolean => {
+    checks += 1;
+    if (checks > maxChecks) {
+      plan.checksExhausted = true;
+      return false;
+    }
+    return true;
+  };
 
   for (const e of entries) {
     if (e.useCount >= minUse) {
@@ -182,11 +200,17 @@ export async function buildCuratePlan(
       }
       const overlap = bigramOverlap(a.content, b.content);
       if (overlap >= 0.85) {
+        if (!nextCheck()) {
+          continue;
+        }
         const content = await provider.suggestUmbrella([a, b]);
         if (content) {
           plan.umbrellas.push({ group: [a, b], content });
         }
       } else if (overlap >= minOverlap) {
+        if (!nextCheck()) {
+          continue;
+        }
         const verdict = await provider.checkContradiction(a, b);
         if (verdict.reason === "__unparsable__") {
           plan.unparsable += 1;
@@ -268,6 +292,9 @@ export function formatCuratePlan(plan: CuratePlan): string[] {
   }
   if (plan.unparsable > 0) {
     lines.push(`unparsable ${plan.unparsable} pairs (LLM 输出无法解析，需人工复核)`);
+  }
+  if (plan.checksExhausted) {
+    lines.push("checks exhausted: LLM 调用预算已用尽，其余组合未评估（可增大 --max-checks）");
   }
   return lines;
 }

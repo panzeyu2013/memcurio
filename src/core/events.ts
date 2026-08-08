@@ -46,5 +46,11 @@ export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
 }
 
 export function parseEnvelope(json: string): EventEnvelope {
-  return makeEnvelope(JSON.parse(json) as Partial<EventEnvelope>);
+  let input: Partial<EventEnvelope>;
+  try {
+    input = JSON.parse(json) as Partial<EventEnvelope>;
+  } catch (err) {
+    throw new Error(`invalid envelope JSON: ${String(err)}`);
+  }
+  return makeEnvelope(input);
 }

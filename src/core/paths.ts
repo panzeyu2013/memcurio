@@ -7,8 +7,15 @@ export function rootDir(): string {
 }
 
 export function ensureLayout(root: string): void {
-  mkdirSync(join(root, "memory"), { recursive: true });
-  mkdirSync(join(root, "state"), { recursive: true });
+  for (const sub of ["memory", "state"]) {
+    const d = join(root, sub);
+    mkdirSync(d, { recursive: true });
+    try {
+      chmodSync(d, 0o700);
+    } catch {
+      void 0;
+    }
+  }
   try {
     chmodSync(root, 0o700);
   } catch {
@@ -29,6 +36,11 @@ export function nsDir(root: string, ns: string): string {
   assertValidNs(ns);
   const d = join(root, "memory", ns);
   mkdirSync(d, { recursive: true });
+  try {
+    chmodSync(d, 0o700);
+  } catch {
+    void 0;
+  }
   return d;
 }
 

@@ -41,6 +41,15 @@ describe("serialize / parse", () => {
   test("rejects invalid lines", () => {
     expect(() => parseExport('{"foo": 1}\n')).toThrow();
   });
+
+  test("rejects bad field types", () => {
+    const base = '{"entryId":"a1b2c3d4","ns":"default","kind":"MEMORY","content":"x","createdAt":"2026-01-01T00:00:00.000Z","status":"active"';
+    expect(() => parseExport(`${base},"pinned":"yes"}\n`)).toThrow(/pinned/);
+    expect(() => parseExport(`${base},"useCount":-5}\n`)).toThrow(/useCount/);
+    expect(() => parseExport(`${base},"useCount":1.5}\n`)).toThrow(/useCount/);
+    expect(() => parseExport(`${base},"valueScore":99}\n`)).toThrow(/valueScore/);
+    expect(() => parseExport(`${base},"lastUsedAt":123}\n`)).toThrow(/lastUsedAt/);
+  });
 });
 
 describe("planImport", () => {

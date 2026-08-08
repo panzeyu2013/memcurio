@@ -30,6 +30,7 @@ const STOPWORDS = new Set([
   "如何", "怎么", "什么", "为什么", "请问", "一下", "这个", "那个", "我们", "你们", "他们",
   "是否", "需要", "可以", "进行", "关于", "或者", "以及", "不是", "没有", "应该", "能够",
 ]);
+const STOPWORD_LIST = [...STOPWORDS];
 
 const CJK = /[\u3400-\u9fff]/;
 
@@ -39,6 +40,10 @@ function cjkWindows(word: string): string[] {
     windows.push(word.slice(i, i + 4));
   }
   return windows;
+}
+
+function stopwordDominated(window: string): boolean {
+  return STOPWORD_LIST.some((s) => window === s || window.startsWith(s));
 }
 
 export function buildFtsQuery(query: string): string {
@@ -54,7 +59,7 @@ export function buildFtsQuery(query: string): string {
         terms.add(w);
       }
       for (const window of cjkWindows(w)) {
-        if (![...STOPWORDS].some((s) => window.includes(s))) {
+        if (!stopwordDominated(window)) {
           terms.add(window);
         }
       }
@@ -72,7 +77,10 @@ export function buildFtsQuery(query: string): string {
 export class TrigramRetriever implements Retriever {
   readonly name = "trigram";
 
-  constructor(private readonly index: Index) {}
+  constructor(
+    private readonly index: Index,
+    private readonly onError?: (err: unknown) => void,
+  ) {}
 
   search({ query, topK, ns, kinds }: SearchParams): Hit[] {
     const q = query.trim();
@@ -106,7 +114,8 @@ export class TrigramRetriever implements Retriever {
           score: -(Number(r.score) || 0),
           reason: "fts-trigram",
         }));
-    } catch {
+    } catch (err) {
+      this.onError?.(err);
       return new LikeRetriever(this.index).search({ query: q, topK, ns, kinds });
     }
   }
@@ -151,6 +160,6 @@ export class LikeRetriever implements Retriever {
   }
 }
 
-export function getRetriever(index: Index): Retriever {
-  return index.backend === "trigram" ? new TrigramRetriever(index) : new LikeRetriever(index);
+export function getRetriever(index: Index, onError?: (err: unknown) => void): Retriever {
+  return index.backend === "trigram" ? new TrigramRetriever(index, onError) : new LikeRetriever(index);
 }

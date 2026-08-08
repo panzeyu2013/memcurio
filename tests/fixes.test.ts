@@ -263,8 +263,8 @@ describe("F6 锁残留恢复", () => {
       withFileLock(lockPath, () => {
         void 0;
       }),
-    ).toThrow(/lock timeout/);
-  }, 15_000);
+    ).toThrow(/re-entrant file lock/);
+  });
 });
 
 describe("A6 archived 排除（静态注入）", () => {

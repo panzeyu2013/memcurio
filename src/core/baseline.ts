@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { loadConfig } from "./config.js";
 import { fitLines, renderBudgetNotice } from "./budget.js";
@@ -8,7 +9,7 @@ import type { Entry } from "./mdStore.js";
 import { indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "./paths.js";
 import { sanitizeForInjection } from "./sanitize.js";
 import { selectStatic } from "./select.js";
-import { atomicWrite } from "./transaction.js";
+import { atomicWrite, withFileLock } from "./transaction.js";
 
 const START_MARKER = "<!-- memcore:start -->";
 const END_MARKER = "<!-- memcore:end -->";
@@ -84,18 +85,26 @@ export function renderBaselineSection(ns: string, topEntries: Entry[], maxTokens
 
 export function updateAgentsMd(workdir: string, section: string): void {
   const path = join(workdir, "AGENTS.md");
-  const existing = existsSync(path) ? readFileSync(path, "utf-8") : "";
-  const start = existing.indexOf(START_MARKER);
-  const end = existing.indexOf(END_MARKER);
-  let next: string;
-  if (start >= 0 && end >= 0) {
-    next = existing.slice(0, start) + section + existing.slice(end + END_MARKER.length).replace(/^\n/, "");
-  } else if (start >= 0 || end >= 0) {
-    throw new Error("AGENTS.md contains unmatched memcore marker");
-  } else {
-    next = existing.trimEnd() ? existing.trimEnd() + "\n\n" + section : section;
-  }
-  atomicWrite(path, next);
+  const lockPath = join(
+    rootDir(),
+    "state",
+    "locks",
+    `${createHash("sha1").update(resolve(path)).digest("hex")}.lock`,
+  );
+  withFileLock(lockPath, () => {
+    const existing = existsSync(path) ? readFileSync(path, "utf-8") : "";
+    const start = existing.indexOf(START_MARKER);
+    const end = existing.indexOf(END_MARKER);
+    let next: string;
+    if (start >= 0 && end >= 0) {
+      next = existing.slice(0, start) + section + existing.slice(end + END_MARKER.length).replace(/^\n/, "");
+    } else if (start >= 0 || end >= 0) {
+      throw new Error("AGENTS.md contains unmatched memcore marker");
+    } else {
+      next = existing.trimEnd() ? existing.trimEnd() + "\n\n" + section : section;
+    }
+    atomicWrite(path, next);
+  });
 }
 
 export async function generateIndex(): Promise<string> {

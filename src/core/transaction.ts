@@ -1,13 +1,22 @@
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+
+export const LOCK_TIMEOUT_MS = 5_000;
+export const STALE_LOCK_MS = 60_000;
 
 export function atomicWrite(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}.md`);
+  let mode = 0o600;
+  try {
+    mode = statSync(path).mode & 0o777;
+  } catch {
+    void 0;
+  }
   let fd: number | null = null;
   try {
-    fd = openSync(tmp, "wx", 0o600);
+    fd = openSync(tmp, "wx", mode);
     writeFileSync(fd, content);
     fsyncSync(fd);
     closeSync(fd);
@@ -41,28 +50,18 @@ export function withFileLock<T>(lockPath: string, fn: () => T): T {
   const start = Date.now();
   const holder = `${process.pid}|${Date.now()}`;
   for (;;) {
-    let fd: number | null = null;
     try {
-      fd = openSync(lockPath, "wx");
-      writeFileSync(fd, holder);
+      writeFileSync(lockPath, holder, { flag: "wx" });
       try {
         return fn();
       } finally {
-        closeSync(fd);
         unlinkSync(lockPath);
       }
     } catch (err) {
-      if (fd !== null) {
-        try {
-          closeSync(fd);
-        } catch {
-          void 0;
-        }
-      }
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         throw err;
       }
-      if (Date.now() - start > 5000) {
+      if (Date.now() - start > LOCK_TIMEOUT_MS) {
         throw new Error(`file lock timeout: ${lockPath}`);
       }
       if (isStaleLock(lockPath)) {
@@ -73,34 +72,57 @@ export function withFileLock<T>(lockPath: string, fn: () => T): T {
         }
         continue;
       }
+      if (lockHeldByUs(lockPath)) {
+        throw new Error(`re-entrant file lock: ${lockPath}`);
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
 }
 
-function isStaleLock(lockPath: string): boolean {
+function lockHeldByUs(lockPath: string): boolean {
   try {
-    const [pidStr, tsStr] = readFileSync(lockPath, "utf-8").trim().split("|");
-    const pid = Number(pidStr);
-    const ts = Number(tsStr);
-    if (!Number.isFinite(pid) || !Number.isFinite(ts)) {
-      return true;
-    }
-    if (pid === process.pid) {
-      return false;
-    }
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
-    if (Date.now() - ts > 60_000) {
-      return true;
-    }
+    const [pidStr] = readFileSync(lockPath, "utf-8").trim().split("|");
+    return pidStr === String(process.pid);
+  } catch {
     return false;
+  }
+}
+
+export function isStaleLock(lockPath: string): boolean {
+  let raw: string;
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(lockPath).mtimeMs;
+    raw = readFileSync(lockPath, "utf-8").trim();
   } catch {
     return true;
   }
+  const parts = raw.split("|");
+  const pidStr = parts[0] ?? "";
+  if (!pidStr) {
+    return Date.now() - mtimeMs > STALE_LOCK_MS;
+  }
+  const pid = Number(pidStr);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return Date.now() - mtimeMs > STALE_LOCK_MS;
+  }
+  if (pid === process.pid) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+  const ts = Number(parts[1]);
+  if (!Number.isFinite(ts)) {
+    return false;
+  }
+  return Date.now() - ts > STALE_LOCK_MS;
 }
 
 export function truncateLog(logPath: string): void {
@@ -136,7 +158,7 @@ export class Transaction {
 
   private append(record: TxnRecord): void {
     mkdirSync(dirname(this.logPath), { recursive: true });
-    appendFileSync(this.logPath, JSON.stringify(record) + "\n", "utf-8");
+    appendFileSync(this.logPath, JSON.stringify(record) + "\n", { encoding: "utf-8", mode: 0o600 });
   }
 
   run(action: string, ns: string, detail: string, work: () => void): void {
@@ -160,19 +182,34 @@ export class Transaction {
   }
 
   private readAll(): TxnRecord[] {
+    const records: TxnRecord[] = [];
+    let names: string[] = [];
     try {
-      return readFileSync(this.logPath, "utf-8")
-        .split("\n")
-        .filter((l) => l.trim())
-        .map((l, i) => {
-          try {
-            return JSON.parse(l) as TxnRecord;
-          } catch {
-            return { op: "BEGIN", txn: `unparsable-line-${i}`, ts: "" };
-          }
-        });
+      const base = basename(this.logPath);
+      names = readdirSync(dirname(this.logPath))
+        .filter((n) => n === base || n.startsWith(`${base}.`))
+        .sort();
     } catch {
-      return [];
+      names = [];
     }
+    for (const name of names) {
+      try {
+        const text = readFileSync(join(dirname(this.logPath), name), "utf-8");
+        text
+          .split("\n")
+          .filter((l) => l.trim())
+          .map((l, i) => {
+            try {
+              return JSON.parse(l) as TxnRecord;
+            } catch {
+              return { op: "BEGIN", txn: `unparsable-line-${i}`, ts: "" } as TxnRecord;
+            }
+          })
+          .forEach((r) => records.push(r));
+      } catch {
+        void 0;
+      }
+    }
+    return records;
   }
 }

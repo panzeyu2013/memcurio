@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS contradictions(
   entry_a TEXT,
   entry_b TEXT,
   detected_at TEXT,
-  resolved INTEGER DEFAULT 0
+  resolved INTEGER DEFAULT 0,
+  reason TEXT
 );
 CREATE TABLE IF NOT EXISTS audit(
   ts TEXT,
@@ -40,6 +41,10 @@ CREATE TABLE IF NOT EXISTS meta(
   value TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_entries_value ON entries(value_score DESC, last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entries_ns_status ON entries(ns, status);
+CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entries_rank ON entries((CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b);
 `;
 
 const FTS_TRIGRAM = `
@@ -105,9 +110,18 @@ export class Index {
     let backend: "trigram" | "like" = "trigram";
     try {
       driver.exec(FTS_TRIGRAM);
-      driver.get("SELECT count(*) AS c FROM fts");
     } catch {
       backend = "like";
+    }
+    if (backend === "trigram") {
+      try {
+        driver.run(
+          "INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries WHERE NOT EXISTS (SELECT 1 FROM fts f WHERE f.entry_id = entries.entry_id)",
+        );
+        driver.get("SELECT count(*) AS c FROM fts");
+      } catch {
+        backend = "like";
+      }
     }
     driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_backend', ?)", [backend]);
     return new Index(driver, path, backend);
@@ -125,7 +139,11 @@ export class Index {
       work();
       this.driver.exec("COMMIT");
     } catch (err) {
-      this.driver.exec("ROLLBACK");
+      try {
+        this.driver.exec("ROLLBACK");
+      } catch {
+        void 0;
+      }
       throw err;
     } finally {
       this.inTxn = false;
@@ -200,16 +218,16 @@ export class Index {
   }
 
   touch(entryIds: string[]): void {
-    if (!entryIds.length) {
+    const ids = [...new Set(entryIds)].filter(Boolean);
+    if (!ids.length) {
       return;
     }
     const ts = new Date().toISOString();
-    for (const id of entryIds) {
-      this.driver.run(
-        "UPDATE entries SET use_count = use_count + 1, last_used_at = ?, value_score = 1 + 0.05 * min(use_count + 1, 20) WHERE entry_id = ?",
-        [ts, id],
-      );
-    }
+    const placeholders = ids.map(() => "?").join(",");
+    this.driver.run(
+      `UPDATE entries SET value_score = 1 + 0.05 * min(use_count + 1, 20), use_count = use_count + 1, last_used_at = ? WHERE entry_id IN (${placeholders})`,
+      [ts, ...ids],
+    );
   }
 
   counts(): Record<string, Record<string, number>> {
@@ -262,14 +280,14 @@ export class Index {
 
   recordContradiction(entryA: string, entryB: string, reason: string): void {
     this.driver.run(
-      "INSERT INTO contradictions(entry_a, entry_b, detected_at, resolved) VALUES (?,?,?,0)",
-      [entryA, entryB, new Date().toISOString()],
+      "INSERT OR IGNORE INTO contradictions(entry_a, entry_b, detected_at, resolved, reason) VALUES (?,?,?,0,?)",
+      [entryA, entryB, new Date().toISOString(), reason],
     );
   }
 
   openContradictions(): SqlRow[] {
     return this.driver.all<SqlRow>(
-      "SELECT entry_a, entry_b, detected_at FROM contradictions WHERE resolved = 0 ORDER BY rowid DESC LIMIT 100",
+      "SELECT entry_a, entry_b, detected_at, reason FROM contradictions WHERE resolved = 0 ORDER BY rowid DESC LIMIT 100",
     );
   }
 
@@ -316,6 +334,17 @@ function migrate(driver: DbDriver): void {
       driver.run("ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     }
     current = 2;
+  }
+  if (current < 3) {
+    const cols = driver.all<{ name: string }>("PRAGMA table_info(contradictions)");
+    if (!cols.some((c) => c.name === "reason")) {
+      driver.run("ALTER TABLE contradictions ADD COLUMN reason TEXT");
+    }
+    driver.run(
+      "DELETE FROM contradictions WHERE rowid NOT IN (SELECT MAX(rowid) FROM contradictions GROUP BY entry_a, entry_b)",
+    );
+    driver.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b)");
+    current = 3;
   }
   if (current !== Number(version ?? 1)) {
     driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", [String(current)]);

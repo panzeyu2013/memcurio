@@ -67,11 +67,18 @@ class FakeProvider implements CurateProvider {
 
 let dir: string;
 let prevRoot: string | undefined;
+const LLM_ENV = ["MEMCORE_LLM_API_KEY", "MEMCORE_LLM_BASE_URL", "MEMCORE_LLM_MODEL"] as const;
+let savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cur-"));
   prevRoot = process.env.MEMCORE_ROOT;
   process.env.MEMCORE_ROOT = dir;
+  savedEnv = {};
+  for (const k of LLM_ENV) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
@@ -79,6 +86,13 @@ afterEach(() => {
     delete process.env.MEMCORE_ROOT;
   } else {
     process.env.MEMCORE_ROOT = prevRoot;
+  }
+  for (const k of LLM_ENV) {
+    if (savedEnv[k] === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = savedEnv[k];
+    }
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -131,6 +145,28 @@ describe("buildCuratePlan", () => {
     expect(plan.contradictions[0].reason).toBe("存储后端冲突");
     idx.close();
   });
+
+  test("maxChecks caps LLM pair evaluations", async () => {
+    const idx = await Index.create(indexDb(dir));
+    for (let i = 0; i < 10; i++) {
+      idx.add(makeEntry({ entryId: `e${String(i).padStart(8, "0")}`, content: `项目使用 SQLite FTS5 trigram 做检索（变体${i}）` }));
+    }
+    let calls = 0;
+    const provider = new FakeProvider({
+      checkContradiction: async () => {
+        calls += 1;
+        return { contradictory: false, reason: "" };
+      },
+      suggestUmbrella: async () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const plan = await buildCuratePlan(idx, provider, { maxChecks: 5 });
+    expect(plan.checksExhausted).toBe(true);
+    expect(calls).toBeLessThanOrEqual(5);
+    idx.close();
+  });
 });
 
 describe("applyCuratePlan", () => {
@@ -146,6 +182,7 @@ describe("applyCuratePlan", () => {
       reevaluations: [{ entry: e1, score: 0.5 }],
       contradictions: [{ a: e1, b: e2, reason: "x" }],
       umbrellas: [{ group: [e1, e2], content: "伞条目：项目使用 SQLite FTS5 trigram 做检索及补充" }],
+      checksExhausted: false,
     };
     await applyCuratePlan(idx, dir, plan);
     expect(idx.get("a1b2c3d4")?.valueScore).toBe(0.5);
@@ -189,6 +226,17 @@ describe("HttpProvider", () => {
     const v = await provider.checkContradiction(makeEntry(), makeEntry());
     expect(v.contradictory).toBe(false);
     expect(v.reason).toBe("一致");
+  });
+
+  test("checkContradiction marks unparseable LLM output", async () => {
+    globalThis.fetch = (async () => okResponse("看起来差不多，无法判断")) as typeof fetch;
+    const provider = new HttpProvider({ baseUrl: "x", apiKey: "k", model: "m" });
+    const v = await provider.checkContradiction(makeEntry(), makeEntry());
+    expect(v.reason).toBe("__unparsable__");
+  });
+
+  test("parseJsonFromText throws on output without JSON", () => {
+    expect(() => parseJsonFromText("no json here")).toThrow(/no JSON object/);
   });
 });
 

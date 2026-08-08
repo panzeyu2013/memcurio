@@ -4,20 +4,21 @@ export interface SanitizeResult {
 }
 
 const SECRET_PATTERNS: RegExp[] = [
-  /\b(?:sk|pk|api[_-]?key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[A-Za-z0-9_\-./]{12,}["']?/gi,
-  /\bsk-[A-Za-z0-9_\-]{16,}\b/g,
-  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bAIza[0-9A-Za-z_\-]{30,}\b/g,
-  /\b(?:Bearer|bearer)\s+[A-Za-z0-9._\-]{20,}\b/g,
-  /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/g,
+  /(?<![A-Za-z0-9])(?:sk|pk|api[_-]?key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{12,}["']?/giu,
+  /sk-[\p{L}\p{N}_\-]{16,}/gu,
+  /(?:sk|rk)_(?:live|test)_[\p{L}\p{N}]{16,}/gu,
+  /AKIA[0-9A-Z]{16}\b/g,
+  /gh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  /github_pat_[A-Za-z0-9_]{20,}\b/g,
+  /AIza[0-9A-Za-z_\-]{30,}\b/g,
+  /(?<![A-Za-z0-9])(?:Bearer|bearer|BEARER)\s+[\p{L}\p{N}._\-]{20,}/gu,
+  /(?<![A-Za-z0-9])-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/g,
+  /(?<![A-Za-z0-9])(?:api[_-]?key|apikey|secret|token|password|passwd|bearer)\s+["']?[\p{L}\p{N}_\-./]{16,}["']?/giu,
 ];
 
 export function redactSecrets(text: string): SanitizeResult {
   let redacted = false;
-  let out = text;
+  let out = normalizeText(text);
   for (const pattern of SECRET_PATTERNS) {
     const next = out.replace(pattern, (m) => {
       redacted = true;
@@ -29,7 +30,7 @@ export function redactSecrets(text: string): SanitizeResult {
 }
 
 export function normalizeText(text: string): string {
-  return text.replace(/[\u200b-\u200d\u2060\ufeff]/g, "");
+  return text.replace(/[\u200b-\u200f\u2060-\u206f\ufeff]/g, "");
 }
 
 const INJECTION_PATTERNS: RegExp[] = [
