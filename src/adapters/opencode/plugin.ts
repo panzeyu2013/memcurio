@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
 
 import { MemcoreAdapter } from "../shared/engine.js";
+import type { ReflectChat } from "../../core/reflect.js";
+import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 const REPLACE_COMPACTION = process.env.MEMCORE_REPLACE_COMPACTION === "1";
 
 function properties(event: { properties?: unknown }): Record<string, unknown> {
@@ -53,6 +55,42 @@ function summaryFromMessages(messages: SessionMessage[]): string | undefined {
   return text ? text.slice(0, 2000) : undefined;
 }
 
+interface SessionClient {
+  create(options: { query: { directory: string }; body: { title?: string } }): Promise<{ data: { id: string } }>;
+  prompt(options: { path: { id: string }; body: { parts: Array<{ type: "text"; text: string }> } }): Promise<unknown>;
+  messages(options: { path: { id: string } }): Promise<{ data?: SessionMessage[] }>;
+  delete(options: { path: { id: string } }): Promise<unknown>;
+}
+
+function harnessReflect(client: { session: SessionClient }, directory: string): ReflectChat {
+  return async ({ summary, strategy }) => {
+    try {
+      if (!summary) {
+        return null;
+      }
+      const created = await client.session.create({ query: { directory }, body: { title: "memcore-reflection" } });
+      const id = created.data.id;
+      try {
+        await client.session.prompt({
+          path: { id },
+          body: { parts: [{ type: "text", text: reflectionUserPrompt(summary, strategy) }] },
+        });
+        const res = await client.session.messages({ path: { id } });
+        const raw = summaryFromMessages(res.data ?? []);
+        if (!raw) {
+          return null;
+        }
+        return parseReflectionResponse(raw);
+      } finally {
+        void client.session.delete({ path: { id } }).catch(() => {});
+      }
+    } catch (err) {
+      console.error(`memcore harness reflection failed: ${String(err)}`);
+      return null;
+    }
+  };
+}
+
 export const MemcorePlugin: Plugin = async ({ directory, client }) => {
   const adapter = new MemcoreAdapter({
     log: (level, message, extra) => {
@@ -60,6 +98,7 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
         .log({ body: { service: "memcore", level, message, extra } })
         .catch(() => {});
     },
+    reflect: harnessReflect(client as unknown as { session: SessionClient }, directory),
   });
   const report = (err: unknown): void => {
     void client.app

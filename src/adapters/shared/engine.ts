@@ -9,6 +9,7 @@ import { addEntry, parseFile, updateKind } from "../../core/mdStore.js";
 import type { Entry } from "../../core/mdStore.js";
 import { ensureLayout, indexDb, memoryRoot, namespaceFor, nsDir, rootDir as coreRoot, txnLog } from "../../core/paths.js";
 import { appendReflection, formatReflection, reflectOnCompaction } from "../../core/reflect.js";
+import type { ReflectChat } from "../../core/reflect.js";
 import { getRetriever } from "../../core/retriever.js";
 import { sanitizeForInjection } from "../../core/sanitize.js";
 import { selectStatic } from "../../core/select.js";
@@ -37,16 +38,19 @@ export type AdapterLog = (
 export interface AdapterOptions {
   log?: AdapterLog;
   autoWriteIntervalMs?: number;
+  reflect?: ReflectChat;
 }
 
 export class MemcoreAdapter {
   private readonly sessions = new Map<string, SessionState>();
   private readonly log: AdapterLog;
   private readonly autoWriteIntervalMs: number;
+  private readonly reflect: ReflectChat | undefined;
 
   constructor(private readonly opts: AdapterOptions = {}) {
     this.log = opts.log ?? (() => {});
     this.autoWriteIntervalMs = opts.autoWriteIntervalMs ?? 60_000;
+    this.reflect = opts.reflect;
   }
 
   state(sessionId: string): SessionState | undefined {
@@ -166,6 +170,7 @@ export class MemcoreAdapter {
       const reflection = await reflectOnCompaction({
         summary: summary?.slice(0, 2000),
         strategy: prev?.content,
+        chat: this.reflect,
       });
       const section = formatReflection(reflection, new Date().toISOString());
       const txn = new Transaction(txnLog(root));

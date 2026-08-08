@@ -286,4 +286,28 @@ describe("reflectOnCompaction fallback", () => {
     expect(r.prompt.length).toBeGreaterThan(0);
     expect(r.memory).toContain("SESSION.md");
   });
+
+  test("custom chat is preferred over the fallback", async () => {
+    const r = await reflectOnCompaction({
+      summary: "s",
+      chat: async () => ({ prompt: "chat prompt", memory: "chat memory" }),
+    });
+    expect(r.prompt).toBe("chat prompt");
+    expect(r.memory).toBe("chat memory");
+  });
+
+  test("custom chat returning null falls back to the rule-based reflection", async () => {
+    const r = await reflectOnCompaction({ summary: "s", chat: async () => null });
+    expect(r.memory).toContain("Compaction summary captured");
+  });
+
+  test("custom chat throwing falls back to the rule-based reflection", async () => {
+    const r = await reflectOnCompaction({
+      summary: "s",
+      chat: async () => {
+        throw new Error("model unavailable");
+      },
+    });
+    expect(r.memory).toContain("Compaction summary captured");
+  });
 });

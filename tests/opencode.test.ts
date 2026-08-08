@@ -99,4 +99,61 @@ describe("MemcorePlugin event handling", () => {
     });
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  test("compaction reflection uses the harness model via a temp session", async () => {
+    const prompts: string[] = [];
+    let deleted: string[] = [];
+    const fakeClient = {
+      app: { log: async () => ({}) },
+      session: {
+        messages: async ({ path }: { path: { id: string } }) => {
+          if (path.id === "temp1") {
+            return {
+              data: [
+                {
+                  info: {},
+                  parts: [
+                    {
+                      type: "text",
+                      text: '{"prompt": "harness model prompt reflection", "memory": "harness model memory reflection"}',
+                    },
+                  ],
+                },
+              ],
+            };
+          }
+          return {
+            data: [{ info: {}, parts: [{ type: "text", text: "compacted summary: keep FTS5 trigram" }] }],
+          };
+        },
+        create: async () => ({ data: { id: "temp1" } }),
+        prompt: async ({ body }: { body: { parts: Array<{ text: string }> } }) => {
+          prompts.push(body.parts[0].text);
+          return {};
+        },
+        delete: async ({ path }: { path: { id: string } }) => {
+          deleted.push(path.id);
+          return {};
+        },
+      },
+    };
+    const plugin = await MemcorePlugin({
+      directory: "/tmp/MyProject",
+      client: fakeClient as unknown as never,
+    });
+    await plugin.event!({
+      event: { type: "session.created", properties: { info: { id: "s1", directory: "/tmp/MyProject" } } },
+    });
+    await plugin.event!({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
+    const idx = await Index.create(indexDb(dir));
+    const entry = idx.list({ ns: "MyProject", kind: "COMPACT", allStatus: true })[0];
+    expect(entry).toBeDefined();
+    expect(entry.content).toContain("harness model prompt reflection");
+    expect(entry.content).toContain("harness model memory reflection");
+    idx.close();
+    expect(prompts.length).toBe(1);
+    expect(prompts[0]).toContain("compacted summary");
+    expect(prompts[0]).toContain("Current strategy");
+    expect(deleted).toEqual(["temp1"]);
+  });
 });

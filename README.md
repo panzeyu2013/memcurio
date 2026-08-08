@@ -61,7 +61,7 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 212 用例
+bun test          # 216 用例
 bunx tsc --noEmit # 类型检查
 bun run bundle:plugin
 ```

@@ -111,7 +111,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          212 用例（21 文件）
+tests/                          216 用例（21 文件）
 ```
 
 ## 4. 存储布局
