@@ -53,9 +53,11 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 190 用例
+bun test          # 197 用例
 bunx tsc --noEmit # 类型检查
 bun run bundle:plugin
 ```
+
+CLI 用户文案支持 i18n：默认中文，`MEMCORE_LANG=en`（或 `LANG=en*`）切换英文；注入 AI 上下文的记忆内容统一为英文。
 
 设计原则：接口通用、差异关进实现——引擎认识零种语言、零个 harness；检索后端（trigram/like/embedding）可插拔；语言与 harness 都是被隔离的实现细节。

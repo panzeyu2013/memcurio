@@ -22,37 +22,7 @@ import { Transaction, truncateLog } from "../core/transaction.js";
 import { generateCodexPlugin } from "../adapters/codex/generate.js";
 import { defaultSocketPath, runCodexDaemon } from "../adapters/codex/daemon.js";
 import { runServer } from "../mcp/index.js";
-
-const USAGE = `memcore — 跨 harness 记忆与上下文管理系统
-
-用法: memcore <command> [args]
-
-命令:
-  init               初始化 ~/.memcore 布局
-  status             显示引擎状态（命名空间/后端/审计/pending）
-  remember <内容>    写入一条记忆 [--ns X] [--kind MEMORY|USER]
-  list               列出记忆 [--ns X] [--kind K] [--all]
-  search <query>     检索记忆 [--ns X] [--kind K] [--top-k N]
-  forget <id>        删除一条记忆（id 从 memcore list 获取）
-  pin <id>           固定条目免于剪枝 [--unset]
-  revive <id>        将 stale/archived 条目恢复为 active
-  prune              价值感知剪枝（干跑报告；--execute 生效）[--ns X]
-  curate             LLM 策展干跑（矛盾/伞合并/重评；--execute 生效）[--ns X] [--min-use N] [--max-checks N]
-  export             导出 JSONL [--ns X] [--kind K] [--output FILE]
-  import <file>      导入 JSONL [--ns X]
-  merge <src> <dst>  命名空间合并（干跑；--execute 生效）
-  baseline [dir]     注入 AGENTS.md 记忆区块 [--top-k N]
-  index              重新生成全局 INDEX.md
-  reindex            从 Markdown 真源重建影子索引（保留使用统计）
-  repair             检测/修复事务异常（--execute 触发重建）
-  doctor             自检环境与数据健康
-  audit              审计记录 [--limit N]
-  event              投递统一事件（--json '{...}'）
-  mcp                启动 MCP server（stdio）
-  codex-daemon       启动 codex 适配器 daemon
-  codex-plugin [dir] 生成 codex 插件包（默认 ~/.memcore/codex-plugin）
-  help [cmd]         命令帮助
-`;
+import { t } from "./i18n.js";
 
 function fail(msg: string): number {
   console.error(`error: ${msg}`);
@@ -117,7 +87,7 @@ async function cmdRemember(rest: string[]): Promise<number> {
   });
   const content = positionals[0];
   if (!content) {
-    return fail("remember: missing content (memcore remember \"内容\")");
+    return fail(t("remember.missing"));
   }
   const root = rootDir();
   ensureLayout(root);
@@ -134,7 +104,7 @@ async function cmdRemember(rest: string[]): Promise<number> {
     return fail(`remember: invalid kind '${kind}' (${KINDS.join("|")})`);
   }
   if (!explicitNs && ns !== namespaceFor(process.cwd())) {
-    console.error(`note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${namespaceFor(process.cwd())}'，如需注入请加 --ns ${namespaceFor(process.cwd())} 或设置 config.namespace.default`);
+    console.error(t("remember.nsNote", ns, namespaceFor(process.cwd())));
   }
   const redacted = redactSecrets(content);
   const flags = sanitizeForInjection(redacted.text);
@@ -197,7 +167,7 @@ async function cmdSearch(rest: string[]): Promise<number> {
   });
   const query = positionals[0];
   if (!query) {
-    return fail("search: missing query (memcore search \"关键词\")");
+    return fail(t("search.missing"));
   }
   const kind = values.kind ? ((values.kind as string).toUpperCase() as Kind) : undefined;
   const topK = Math.max(1, Number(values["top-k"] ?? 10) || 10);
@@ -219,7 +189,7 @@ async function cmdSearch(rest: string[]): Promise<number> {
     idx.touch(safeHits.map((h) => h.entryId));
     idx.audit("search", values.ns as string | undefined ?? "-", `${JSON.stringify(redactSecrets(query).text)} -> ${safeHits.length} hits${hits.length !== safeHits.length ? ` (${hits.length - safeHits.length} filtered)` : ""}`);
     if (!safeHits.length) {
-      console.error(`note: 无结果。可检查 --ns 是否匹配（当前: ${values.ns ?? "全部"}）、更换关键词，或用 memcore list 确认记忆存在。`);
+      console.error(t("search.note", values.ns ?? "all"));
     }
     return 0;
   });
@@ -229,7 +199,7 @@ async function cmdForget(rest: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: rest, allowPositionals: true });
   const entryId = positionals[0];
   if (!entryId) {
-    return fail("forget: missing entry_id (从 memcore list 获取)");
+    return fail(t("forget.missing"));
   }
   const root = rootDir();
   return withIndex(async (idx) => {
@@ -271,16 +241,16 @@ async function cmdRepair(rest: string[]): Promise<number> {
   const root = rootDir();
   const pending = new Transaction(txnLog(root)).pending();
   if (!pending.length) {
-    console.log("no pending transactions (事务日志健康)");
+    console.log(t("repair.none"));
     return 0;
   }
-  console.log(`${pending.length} 个未完成事务：`);
+  console.log(t("repair.pendingHeader", String(pending.length)));
   for (const p of pending) {
     console.log(`  ${p.txn} ${p.action ?? "?"} ns=${p.ns ?? "-"} ${p.detail ?? ""}`);
   }
-  console.log("md 真源为最终真相，索引可重建。");
+  console.log(t("repair.truth"));
   if (!values.execute) {
-    console.log("修复方式：--execute 将从 Markdown 真源重建影子索引（保留使用统计），并清理事务日志。");
+    console.log(t("repair.fix"));
     return 0;
   }
   return withIndex(async (idx) => {
@@ -323,7 +293,7 @@ async function cmdEvent(rest: string[]): Promise<number> {
       env = parseEnvelope(values.json);
     } else {
       if (process.stdin.isTTY) {
-        return fail("event: stdin 为终端，请用 --json '{...}' 提供信封");
+        return fail(t("event.tty"));
       }
       env = makeEnvelope(JSON.parse(readFileSync(0, "utf-8")));
     }
@@ -585,14 +555,14 @@ async function cmdCurate(rest: string[]): Promise<number> {
       `curate plan (provider=${provider.name}): ${plan.reevaluations.length} reevaluations, ${plan.contradictions.length} contradictions, ${plan.umbrellas.length} umbrellas${plan.unparsable ? `, ${plan.unparsable} unparsable` : ""} (dry-run).`,
     ];
     if (provider.name === "noop") {
-      lines.push("未配置 MEMCORE_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。");
+      lines.push(t("curate.noKeyNote"));
     }
     console.log(lines.join("\n"));
     if (!values.execute) {
       return 0;
     }
     if (provider.name === "noop") {
-      return fail("curate --execute 需要 LLM provider：设置 MEMCORE_LLM_API_KEY（可选 MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL）");
+      return fail(t("curate.needProvider"));
     }
     await applyCuratePlan(idx, root, plan);
     console.log(`curate applied: ${plan.reevaluations.length} scores, ${plan.contradictions.length} contradictions, ${plan.umbrellas.length} umbrellas`);
@@ -620,8 +590,8 @@ async function cmdCodexPlugin(rest: string[]): Promise<number> {
   console.log(`  daemon  : ${generated.daemonPath}`);
   console.log(`  hook    : ${generated.hookPath}`);
   console.log(`  plugin  : ${generated.pluginJsonPath}`);
-  console.log(`  snippet : ${generated.snippetPath}（config.toml 合并备选）`);
-  console.log(`提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcore/，或将 snippet 合并进 ~/.codex/config.toml`);
+  console.log(`  snippet : ${generated.snippetPath}${t("codexPlugin.snippet")}`);
+  console.log(t("codexPlugin.hint"));
   return 0;
 }
 
@@ -664,10 +634,10 @@ async function cmdDoctor(): Promise<number> {
       ok = false;
     }
   };
-  check("布局", existsSync(join(root, "memory")) && existsSync(join(root, "state")), root);
+  check(t("doctor.layout"), existsSync(join(root, "memory")) && existsSync(join(root, "state")), root);
   try {
     loadConfig(root);
-    check("config", true, "可解析");
+    check("config", true, t("doctor.parsable"));
   } catch (err) {
     check("config", false, String(err));
   }
@@ -675,55 +645,55 @@ async function cmdDoctor(): Promise<number> {
     const idx = await Index.create(indexDb(root));
     const counts = idx.counts();
     const total = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
-    check("索引", true, `backend=${idx.backend}, entries=${total}`);
+    check(t("doctor.index"), true, `backend=${idx.backend}, entries=${total}`);
     const pending = new Transaction(txnLog(root)).pending();
-    check("事务", pending.length === 0, pending.length ? `${pending.length} pending (memcore repair)` : "无异常");
+    check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcore repair)` : t("doctor.noPending"));
     idx.close();
   } catch (err) {
-    check("索引", false, String(err));
+    check(t("doctor.index"), false, String(err));
   }
   const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
   const pluginDir = join(root, "codex-plugin");
-  console.log(`${existsSync(socketPath) ? "·" : "·"} codex daemon${existsSync(socketPath) ? "" : "（未运行，仅 codex 用户需要）"}: ${socketPath}`);
-  console.log(`· codex 插件包${existsSync(join(pluginDir, "plugin.json")) ? "" : "（未生成，仅 codex 用户需要）"}: ${pluginDir}`);
-  console.log(ok ? "\ndoctor: 全部正常" : "\ndoctor: 发现问题，见上方 ✗ 项");
+  console.log(`· codex daemon${existsSync(socketPath) ? "" : t("doctor.daemonIdle")}: ${socketPath}`);
+  console.log(`${t("doctor.pluginLabel")}${existsSync(join(pluginDir, "plugin.json")) ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);
+  console.log(ok ? t("doctor.ok") : t("doctor.bad"));
   return ok ? 0 : 1;
 }
 
-const COMMAND_HELP: Record<string, string> = {
-  init: "memcore init\n  初始化 ~/.memcore 布局（可用 MEMCORE_ROOT 覆盖路径）",
-  status: "memcore status\n  显示引擎状态（命名空间/后端/审计/pending）",
-  remember: 'memcore remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）',
-  list: "memcore list [--ns X] [--kind K] [--all]\n  列出记忆（--all 含已归档）",
-  search: 'memcore search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）',
-  forget: "memcore forget <id>\n  删除一条记忆（id 从 memcore list 获取）",
-  pin: "memcore pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
-  revive: "memcore revive <id>\n  将 stale/archived 条目恢复为 active",
-  prune: "memcore prune [--ns X] [--execute]\n  价值感知剪枝（干跑报告；--execute 生效）",
-  curate: "memcore curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM 策展（需 MEMCORE_LLM_API_KEY；矛盾/伞合并/重评）",
-  export: "memcore export [--ns X] [--kind K] [--output FILE]\n  导出 JSONL（默认输出到 stdout）",
-  import: "memcore import <file.jsonl> [--ns X]\n  导入 JSONL（--ns 覆盖全部条目命名空间）",
-  merge: "memcore merge <src-ns> <dst-ns> [--execute]\n  命名空间合并（干跑；--execute 生效）",
-  baseline: "memcore baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
-  index: "memcore index\n  重新生成全局 INDEX.md",
-  reindex: "memcore reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
-  repair: "memcore repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
-  doctor: "memcore doctor\n  自检环境与数据健康",
-  audit: "memcore audit [--limit N]\n  审计记录",
-  event: "memcore event --json '{...}' 或从 stdin 读取\n  投递统一事件（session_start/session_end 等）",
-  mcp: "memcore mcp\n  启动 MCP server（stdio）",
-  "codex-daemon": "memcore codex-daemon\n  启动 codex 适配器 daemon",
-  "codex-plugin": "memcore codex-plugin [dir]\n  生成 codex 插件包（默认 ~/.memcore/codex-plugin）",
-  help: "memcore help [cmd]\n  命令帮助",
-};
+const HELP_CMDS = new Set([
+  "init",
+  "status",
+  "remember",
+  "list",
+  "search",
+  "forget",
+  "pin",
+  "revive",
+  "prune",
+  "curate",
+  "export",
+  "import",
+  "merge",
+  "baseline",
+  "index",
+  "reindex",
+  "repair",
+  "doctor",
+  "audit",
+  "event",
+  "mcp",
+  "codex-daemon",
+  "codex-plugin",
+  "help",
+]);
 
 async function cmdHelp(rest: string[]): Promise<number> {
   const cmd = rest[0];
-  if (cmd && COMMAND_HELP[cmd]) {
-    console.log(COMMAND_HELP[cmd]);
+  if (cmd && HELP_CMDS.has(cmd)) {
+    console.log(t(`help.${cmd}`));
     return 0;
   }
-  console.log(USAGE);
+  console.log(t("usage.main"));
   return 0;
 }
 
@@ -783,7 +753,7 @@ export async function main(argv: string[]): Promise<number> {
       case "doctor":
         return await cmdDoctor();
       default:
-        console.error(`error: unknown command: ${cmd}\n运行 memcore help 查看全部命令`);
+        console.error(`error: unknown command: ${cmd}\n${t("unknownCommand")}`);
         return 2;
     }
   } catch (err) {

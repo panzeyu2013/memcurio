@@ -103,7 +103,12 @@ if (resp === null) {
 
 if (resp === null) {
   log(`hook failed: no daemon response (bun=${bunBin}, daemon=${daemonPath})`);
-  process.stderr.write("memcore: codex daemon 不可用，请检查 bun 是否在 PATH 或手动运行 memcore codex-daemon\n");
+  const isZh = /^zh/i.test(process.env.MEMCORE_LANG ?? process.env.LANG ?? "");
+  process.stderr.write(
+    isZh
+      ? "memcore: codex daemon 不可用，请检查 bun 是否在 PATH 或手动运行 memcore codex-daemon\n"
+      : "memcore: codex daemon unavailable; check that bun is on PATH or run `memcore codex-daemon` manually\n",
+  );
   process.exit(1);
 }
 process.stdout.write(resp);

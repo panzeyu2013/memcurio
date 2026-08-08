@@ -17,11 +17,18 @@ import { join } from "node:path";
 
 let dir: string;
 let prevRoot: string | undefined;
+const LANG_VARS = ["MEMCORE_LANG", "LANG"] as const;
+let savedLang: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fix-"));
   prevRoot = process.env.MEMCORE_ROOT;
   process.env.MEMCORE_ROOT = dir;
+  savedLang = {};
+  for (const k of LANG_VARS) {
+    savedLang[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
@@ -29,6 +36,13 @@ afterEach(() => {
     delete process.env.MEMCORE_ROOT;
   } else {
     process.env.MEMCORE_ROOT = prevRoot;
+  }
+  for (const k of LANG_VARS) {
+    if (savedLang[k] === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = savedLang[k];
+    }
   }
   rmSync(dir, { recursive: true, force: true });
 });
