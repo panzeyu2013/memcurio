@@ -93,7 +93,7 @@ describe("baseline injection", () => {
     expect(code).toBe(0);
     expect(out).toContain("AGENTS.md");
     const agents = readFileSync(join(workdir, "AGENTS.md"), "utf-8");
-    expect(agents).toContain("暂无记忆");
+    expect(agents).toContain("No memories in this namespace yet");
     expect(agents).toContain("MEMORY.md");
     expect(existsSync(join(memoryRoot(dir), namespaceFor(workdir)))).toBe(true);
   });

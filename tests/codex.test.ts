@@ -188,7 +188,7 @@ describe("codex daemon socket", () => {
     });
     const parsed = JSON.parse(resp) as { continue: boolean; hookSpecificOutput?: { additionalContext?: string | null } };
     expect(parsed.continue).toBe(true);
-    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcore 记忆上下文");
+    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcore memory context");
     await stopDaemon(daemon, socketPath);
   });
 

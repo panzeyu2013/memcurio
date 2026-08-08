@@ -29,5 +29,5 @@ export function fitLines(lines: string[], budgetTokens: number): FitResult {
 }
 
 export function renderBudgetNotice(truncated: number): string {
-  return truncated > 0 ? `（另有 ${truncated} 条未注入，超出 token 预算）` : "";
+  return truncated > 0 ? `(${truncated} more not injected: over token budget)` : "";
 }

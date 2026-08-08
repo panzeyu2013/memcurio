@@ -13,7 +13,7 @@ describe("estimateTokens", () => {
 describe("renderBudgetNotice", () => {
   test("mentions truncated count only when > 0", () => {
     expect(renderBudgetNotice(0)).toBe("");
-    expect(renderBudgetNotice(3)).toContain("3 条");
+    expect(renderBudgetNotice(3)).toContain("3 more");
   });
 });
 

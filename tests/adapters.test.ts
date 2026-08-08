@@ -69,8 +69,8 @@ describe("MemcoreAdapter", () => {
     const mdPath = join(nsDir(dir, "MyProject"), "SESSION.md");
     expect(existsSync(mdPath)).toBe(true);
     const md = readFileSync(mdPath, "utf-8");
-    expect(md).toContain("会话复盘 s1");
-    expect(md).toContain("消息: 2 parts");
+    expect(md).toContain("Session review s1");
+    expect(md).toContain("messages: 2 parts");
     expect(state.writtenCount).toBe(1);
 
     await adapter.sessionIdle("s1");
@@ -133,7 +133,7 @@ describe("MemcoreAdapter", () => {
     idx.add(entry);
     idx.close();
     const ctx = await adapter.buildCompactionContext("s1", "/tmp/MyProject");
-    expect(ctx).toContain("memcore 记忆上下文");
+    expect(ctx).toContain("memcore memory context");
     expect(ctx).toContain("MyProject");
     expect(ctx).toContain("跨会话记忆系统剪枝策略");
     expect(ctx).toContain("INDEX.md");

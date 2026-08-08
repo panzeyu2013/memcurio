@@ -179,13 +179,13 @@ export class MemcoreAdapter {
       .join(", ");
     const files = [...s.touchedFiles].slice(0, 10).join(", ");
     const content = [
-      `# 会话复盘 ${s.sessionId}（${s.ns}）`,
+      `# Session review ${s.sessionId} (${s.ns})`,
       `- host: ${s.host}`,
       `- workdir: ${s.workdir}`,
-      `- 起止: ${s.startedAt} ~ ${now.toISOString()}`,
-      `- 消息: ${s.seenParts.size} parts`,
-      `- 工具: ${tools || "无"}`,
-      `- 涉及文件: ${files || "无"}`,
+      `- timeframe: ${s.startedAt} ~ ${now.toISOString()}`,
+      `- messages: ${s.seenParts.size} parts`,
+      `- tools: ${tools || "none"}`,
+      `- files: ${files || "none"}`,
     ].join("\n");
     const entryId = createHash("sha1")
       .update(`session|${s.sessionId}|${s.writtenCount}|${now.toISOString()}`)
@@ -228,7 +228,7 @@ export class MemcoreAdapter {
     return [
       staticCtx,
       "",
-      `会话复盘: ${join(nsDir(root, ns), "SESSION.md")}，全局索引: ${join(memoryRoot(root), "INDEX.md")}`,
+      `Session review: ${join(nsDir(root, ns), "SESSION.md")}, global index: ${join(memoryRoot(root), "INDEX.md")}`,
     ].join("\n");
   }
 
@@ -250,8 +250,8 @@ export class MemcoreAdapter {
       const lines = safe.map((e) => this.#entryLine(e));
       const fitted = fitLines(lines, budgetTokens ?? this.#injectionBudget());
       return [
-        `## memcore 记忆上下文（命名空间 ${ns}）`,
-        "跨会话记忆 top-N（按价值分）：",
+        `## memcore memory context (namespace ${ns})`,
+        "Cross-session memory top-N (by value score):",
         ...fitted.lines,
         renderBudgetNotice(fitted.truncated),
       ]
@@ -275,7 +275,7 @@ export class MemcoreAdapter {
       for (const h of hits) {
         const verdict = sanitizeForInjection(h.content);
         if (verdict.safe) {
-          safeHits.push({ entryId: h.entryId, line: `- [${h.entryId}] ${h.content.replaceAll("\n", " ").slice(0, 120)}（${h.kind.toLowerCase()}, score=${h.score.toFixed(2)}）` });
+          safeHits.push({ entryId: h.entryId, line: `- [${h.entryId}] ${h.content.replaceAll("\n", " ").slice(0, 120)} (${h.kind.toLowerCase()}, score=${h.score.toFixed(2)})` });
         } else {
           idx.audit("warn.promptware", ns, `blocked from dynamic injection: ${h.entryId} (${verdict.flags[0]})`);
         }
@@ -284,7 +284,7 @@ export class MemcoreAdapter {
       const fitted = fitLines(safeHits.map((h) => h.line), budget);
       idx.touch(safeHits.slice(0, fitted.lines.length).map((h) => h.entryId));
       return [
-        `## memcore 相关记忆（按当前提问检索，命名空间 ${ns}）`,
+        `## memcore related memories (retrieved for the current question, namespace ${ns})`,
         ...fitted.lines,
         renderBudgetNotice(fitted.truncated),
       ]
@@ -296,7 +296,7 @@ export class MemcoreAdapter {
   }
 
   #entryLine(e: Entry): string {
-    return `- [${e.entryId}] ${e.content.replaceAll("\n", " ").slice(0, 120)}（${e.kind.toLowerCase()}, use=${e.useCount}）`;
+    return `- [${e.entryId}] ${e.content.replaceAll("\n", " ").slice(0, 120)} (${e.kind.toLowerCase()}, use=${e.useCount})`;
   }
 
   #staticTopN(): number {
