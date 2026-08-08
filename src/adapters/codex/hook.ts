@@ -76,6 +76,9 @@ async function tryRequest(): Promise<string | null> {
       }
       return null;
     } catch {
+      if (attempt < 2) {
+        continue;
+      }
       return null;
     }
   }

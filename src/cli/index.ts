@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +37,7 @@ const USAGE = `memcore — 跨 harness 记忆与上下文管理系统
   pin <id>           固定条目免于剪枝 [--unset]
   revive <id>        将 stale/archived 条目恢复为 active
   prune              价值感知剪枝（干跑报告；--execute 生效）[--ns X]
-  curate             LLM 策展干跑（矛盾/伞合并/重评；--execute 生效）[--ns X] [--min-use N]
+  curate             LLM 策展干跑（矛盾/伞合并/重评；--execute 生效）[--ns X] [--min-use N] [--max-checks N]
   export             导出 JSONL [--ns X] [--kind K] [--output FILE]
   import <file>      导入 JSONL [--ns X]
   merge <src> <dst>  命名空间合并（干跑；--execute 生效）
@@ -72,10 +73,11 @@ async function cmdInit(): Promise<number> {
   ensureLayout(root);
   loadConfig(root);
   const idx = await Index.create(indexDb(root));
+  const backend = idx.backend;
   idx.audit("init", "-", "memcore initialized");
   idx.close();
   console.log(`initialized ${root}`);
-  console.log(`index backend: ${idx.backend}`);
+  console.log(`index backend: ${backend}`);
   return 0;
 }
 
@@ -200,7 +202,9 @@ async function cmdSearch(rest: string[]): Promise<number> {
   const kind = values.kind ? ((values.kind as string).toUpperCase() as Kind) : undefined;
   const topK = Math.max(1, Number(values["top-k"] ?? 10) || 10);
   return withIndex(async (idx) => {
-    const retriever = getRetriever(idx);
+    const retriever = getRetriever(idx, (err) =>
+      console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
+    );
     const hits = retriever.search({
       query,
       topK,
@@ -315,7 +319,14 @@ async function cmdEvent(rest: string[]): Promise<number> {
   });
   let env;
   try {
-    env = values.json ? parseEnvelope(values.json) : makeEnvelope(JSON.parse(readFileSync(0, "utf-8")));
+    if (values.json) {
+      env = parseEnvelope(values.json);
+    } else {
+      if (process.stdin.isTTY) {
+        return fail("event: stdin 为终端，请用 --json '{...}' 提供信封");
+      }
+      env = makeEnvelope(JSON.parse(readFileSync(0, "utf-8")));
+    }
   } catch (err) {
     return fail(`event: invalid envelope: ${String(err)}`);
   }
@@ -552,7 +563,12 @@ async function cmdCurate(rest: string[]): Promise<number> {
   const { values } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { execute: { type: "boolean" }, ns: { type: "string" }, "min-use": { type: "string" } },
+    options: {
+      execute: { type: "boolean" },
+      ns: { type: "string" },
+      "min-use": { type: "string" },
+      "max-checks": { type: "string" },
+    },
   });
   const root = rootDir();
   const provider = resolveCurateProvider();
@@ -560,6 +576,7 @@ async function cmdCurate(rest: string[]): Promise<number> {
     const plan = await buildCuratePlan(idx, provider, {
       ns: values.ns as string | undefined,
       minUseForReeval: values["min-use"] ? Math.max(1, Number(values["min-use"]) || 5) : undefined,
+      maxChecks: values["max-checks"] ? Math.max(1, Number(values["max-checks"]) || 100) : undefined,
     });
     for (const line of formatCuratePlan(plan)) {
       console.log(line);
@@ -588,7 +605,8 @@ async function cmdCodexDaemon(): Promise<number> {
   ensureLayout(root);
   const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
   console.log(`memcore codex daemon listening on ${socketPath}`);
-  await runCodexDaemon({ socketPath });
+  const daemon = await runCodexDaemon({ socketPath, root });
+  await daemon.closed;
   return 0;
 }
 
@@ -672,7 +690,39 @@ async function cmdDoctor(): Promise<number> {
   return ok ? 0 : 1;
 }
 
+const COMMAND_HELP: Record<string, string> = {
+  init: "memcore init\n  初始化 ~/.memcore 布局（可用 MEMCORE_ROOT 覆盖路径）",
+  status: "memcore status\n  显示引擎状态（命名空间/后端/审计/pending）",
+  remember: 'memcore remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）',
+  list: "memcore list [--ns X] [--kind K] [--all]\n  列出记忆（--all 含已归档）",
+  search: 'memcore search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）',
+  forget: "memcore forget <id>\n  删除一条记忆（id 从 memcore list 获取）",
+  pin: "memcore pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
+  revive: "memcore revive <id>\n  将 stale/archived 条目恢复为 active",
+  prune: "memcore prune [--ns X] [--execute]\n  价值感知剪枝（干跑报告；--execute 生效）",
+  curate: "memcore curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM 策展（需 MEMCORE_LLM_API_KEY；矛盾/伞合并/重评）",
+  export: "memcore export [--ns X] [--kind K] [--output FILE]\n  导出 JSONL（默认输出到 stdout）",
+  import: "memcore import <file.jsonl> [--ns X]\n  导入 JSONL（--ns 覆盖全部条目命名空间）",
+  merge: "memcore merge <src-ns> <dst-ns> [--execute]\n  命名空间合并（干跑；--execute 生效）",
+  baseline: "memcore baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
+  index: "memcore index\n  重新生成全局 INDEX.md",
+  reindex: "memcore reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
+  repair: "memcore repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
+  doctor: "memcore doctor\n  自检环境与数据健康",
+  audit: "memcore audit [--limit N]\n  审计记录",
+  event: "memcore event --json '{...}' 或从 stdin 读取\n  投递统一事件（session_start/session_end 等）",
+  mcp: "memcore mcp\n  启动 MCP server（stdio）",
+  "codex-daemon": "memcore codex-daemon\n  启动 codex 适配器 daemon",
+  "codex-plugin": "memcore codex-plugin [dir]\n  生成 codex 插件包（默认 ~/.memcore/codex-plugin）",
+  help: "memcore help [cmd]\n  命令帮助",
+};
+
 async function cmdHelp(rest: string[]): Promise<number> {
+  const cmd = rest[0];
+  if (cmd && COMMAND_HELP[cmd]) {
+    console.log(COMMAND_HELP[cmd]);
+    return 0;
+  }
   console.log(USAGE);
   return 0;
 }
@@ -737,8 +787,12 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
-    return 1;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`error: ${msg}`);
+    const isUsage = /unknown option|invalid option|expected a value|missing required|unexpected option|no such option/i.test(
+      msg,
+    );
+    return isUsage ? 2 : 1;
   }
 }
 

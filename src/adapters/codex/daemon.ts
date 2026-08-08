@@ -3,8 +3,7 @@ import type { Socket as SocketType } from "node:net";
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";import { pathToFileURL } from "node:url";
 
 import { MemcoreAdapter } from "../shared/engine.js";
 
@@ -16,6 +15,7 @@ export interface CodexEventInput {
   tool_input?: unknown;
   prompt?: string;
   turn_id?: string;
+  tool_use_id?: string;
 }
 
 export type AdapterLog = (
@@ -23,6 +23,9 @@ export type AdapterLog = (
   message: string,
   extra?: Record<string, unknown>,
 ) => void;
+
+const DEDUPE_WINDOW_MS = 10 * 60_000;
+const IDLE_EXIT_MS = 6 * 60 * 60_000;
 
 function filePathFromToolInput(toolInput: unknown): string | undefined {
   if (toolInput && typeof toolInput === "object") {
@@ -37,10 +40,40 @@ function filePathFromToolInput(toolInput: unknown): string | undefined {
 
 export function createCodexHandler(log?: AdapterLog) {
   const adapter = new MemcoreAdapter({ log });
+  const recent = new Map<string, number>();
+
+  function dedupeKey(input: CodexEventInput): string | null {
+    switch (input.hook_event_name) {
+      case "PostToolUse":
+        return input.tool_use_id ? `PostToolUse:${input.tool_use_id}` : null;
+      case "UserPromptSubmit":
+        return input.turn_id ? `UserPromptSubmit:${input.turn_id}` : null;
+      default:
+        return null;
+    }
+  }
+
+  function isDuplicate(key: string): boolean {
+    const now = Date.now();
+    for (const [k, t] of recent) {
+      if (now - t > DEDUPE_WINDOW_MS) {
+        recent.delete(k);
+      }
+    }
+    if (recent.has(key)) {
+      return true;
+    }
+    recent.set(key, now);
+    return false;
+  }
 
   return async function handleEvent(raw: unknown): Promise<Record<string, unknown>> {
     const input = (raw ?? {}) as CodexEventInput;
     const event = input.hook_event_name ?? "";
+    const key = dedupeKey(input);
+    if (key && isDuplicate(key)) {
+      return { continue: true };
+    }
     const cwd = input.cwd ?? "";
     const sessionId = input.session_id ?? "";
     switch (event) {
@@ -99,36 +132,52 @@ export function tokenPath(root: string): string {
 export function ensureToken(root: string): string {
   const path = tokenPath(root);
   mkdirSync(dirname(path), { recursive: true });
-  try {
-    const existing = readFileSync(path, "utf-8").trim();
-    if (existing) {
-      return existing;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const existing = readFileSync(path, "utf-8").trim();
+      if (existing) {
+        try {
+          chmodSync(path, 0o600);
+        } catch {
+          void 0;
+        }
+        return existing;
+      }
+    } catch {
+      // not created yet
     }
-  } catch {
-    // not created yet
-  }
-  const token = randomBytes(24).toString("hex");
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, "wx", 0o600);
-    writeFileSync(fd, token + "\n");
-  } catch {
-    // another process won the race; read theirs below
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {
-        void 0;
+    const token = randomBytes(24).toString("hex");
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, "wx", 0o600);
+      writeFileSync(fd, token + "\n");
+    } catch {
+      // another process won the race; read theirs below
+    } finally {
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {
+          void 0;
+        }
       }
     }
+    try {
+      const again = readFileSync(path, "utf-8").trim();
+      if (again) {
+        try {
+          chmodSync(path, 0o600);
+        } catch {
+          void 0;
+        }
+        return again;
+      }
+      rmSync(path, { force: true });
+    } catch {
+      // removed by another racer; loop retries
+    }
   }
-  try {
-    chmodSync(path, 0o600);
-  } catch {
-    void 0;
-  }
-  return readFileSync(path, "utf-8").trim();
+  throw new Error("failed to establish codex token");
 }
 
 function isListening(socketPath: string): Promise<boolean> {
@@ -143,20 +192,37 @@ function isListening(socketPath: string): Promise<boolean> {
   });
 }
 
+export interface CodexDaemonHandle {
+  readonly socketPath: string;
+  readonly closed: Promise<void>;
+  close(): Promise<void>;
+}
+
 export async function runCodexDaemon(opts: {
   socketPath: string;
   root?: string;
   log?: AdapterLog;
-}): Promise<void> {
+}): Promise<CodexDaemonHandle> {
   mkdirSync(dirname(opts.socketPath), { recursive: true });
-  const root = opts.root ?? join(opts.socketPath, "..", "..");
+  const root = opts.root ?? (process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore"));
   const token = ensureToken(root);
   const handle = createCodexHandler(opts.log);
+
+  let lastActivity = Date.now();
+  const touch = (): void => {
+    lastActivity = Date.now();
+  };
 
   const server = createServer((socket) => {
     let buf = "";
     let handled = false;
     socket.setTimeout(15_000, () => socket.destroy());
+    socket.on("error", (err) => {
+      if (opts.log) {
+        opts.log("warn", `codex connection error: ${String(err)}`);
+      }
+      socket.destroy();
+    });
     socket.pause();
     socket.on("data", (chunk) => {
       if (handled) {
@@ -168,6 +234,7 @@ export async function runCodexDaemon(opts: {
         return;
       }
       handled = true;
+      touch();
       const line = buf.slice(0, nl).trim();
       respond(line, socket).catch(() => void 0);
     });
@@ -197,23 +264,24 @@ export async function runCodexDaemon(opts: {
     }
   });
 
-  server.on("error", (err) => {
-    console.error(`memcore codex daemon error: ${String(err)}`);
-  });
-
   async function listen(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(opts.socketPath, () => {
-        server.removeListener("error", reject);
-        try {
-          chmodSync(opts.socketPath, 0o600);
-        } catch {
-          void 0;
-        }
-        resolve();
+    const prev = process.umask(0o077);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(opts.socketPath, () => {
+          server.removeListener("error", reject);
+          try {
+            chmodSync(opts.socketPath, 0o600);
+          } catch {
+            void 0;
+          }
+          resolve();
+        });
       });
-    });
+    } finally {
+      process.umask(prev);
+    }
   }
 
   try {
@@ -241,6 +309,10 @@ export async function runCodexDaemon(opts: {
     }
   }
 
+  server.on("error", (err) => {
+    console.error(`memcore codex daemon error: ${String(err)}`);
+  });
+
   const cleanup = (): void => {
     try {
       rmSync(opts.socketPath, { force: true });
@@ -248,15 +320,56 @@ export async function runCodexDaemon(opts: {
       void 0;
     }
   };
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(0);
+
+  let closedResolve!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    closedResolve = resolve;
   });
-  process.on("SIGTERM", () => {
+  let closedCalled = false;
+  const shutdown = (): void => {
+    if (closedCalled) {
+      return;
+    }
+    closedCalled = true;
     cleanup();
+    closedResolve();
+  };
+
+  const onSigint = (): void => {
+    shutdown();
     process.exit(0);
-  });
-  process.on("exit", cleanup);
+  };
+  const onSigterm = (): void => {
+    shutdown();
+    process.exit(0);
+  };
+  const onExit = (): void => {
+    cleanup();
+  };
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  process.on("exit", onExit);
+
+  const activityTimer = setInterval(() => {
+    if (Date.now() - lastActivity > IDLE_EXIT_MS) {
+      shutdown();
+      process.exit(0);
+    }
+  }, 60_000);
+  activityTimer.unref();
+
+  async function close(): Promise<void> {
+    clearInterval(activityTimer);
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("exit", onExit);
+    shutdown();
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
+
+  return { socketPath: opts.socketPath, closed, close };
 }
 
 const isMain = (() => {
@@ -269,5 +382,6 @@ const isMain = (() => {
 if (isMain) {
   const root = process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore");
   const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
-  await runCodexDaemon({ socketPath, root });
+  const daemon = await runCodexDaemon({ socketPath, root });
+  await daemon.closed;
 }

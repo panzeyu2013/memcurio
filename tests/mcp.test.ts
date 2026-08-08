@@ -118,4 +118,25 @@ describe("memcore MCP server", () => {
     await client.close();
     await server.close();
   });
+
+  test("zod validation rejects out-of-range arguments", async () => {
+    const client = new Client({ name: "test", version: "0.0.1" });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const server = createServer();
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+
+    const bad = (await client.callTool({
+      name: "memory_search",
+      arguments: { query: "x", topK: 0 },
+    })) as CallResult;
+    expect(bad.isError).toBe(true);
+    const tooBig = (await client.callTool({
+      name: "memory_search",
+      arguments: { query: "x", topK: 51 },
+    })) as CallResult;
+    expect(tooBig.isError).toBe(true);
+
+    await client.close();
+    await server.close();
+  });
 });

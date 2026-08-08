@@ -47,7 +47,9 @@ export function createServer(): McpServer {
     async (args) => {
       const idx = await openIndex();
       try {
-        const retriever = getRetriever(idx);
+        const retriever = getRetriever(idx, (err) =>
+          console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
+        );
         const hits = retriever.search({
           query: args.query,
           topK: args.topK,
@@ -195,7 +197,12 @@ export function createServer(): McpServer {
 export async function runServer(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  try {
+    await server.connect(transport);
+  } catch (err) {
+    console.error(`memcore mcp server error: ${String(err)}`);
+    process.exitCode = 1;
+  }
 }
 
 const isMain = (() => {

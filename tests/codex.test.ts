@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { createCodexHandler, runCodexDaemon } from "../src/adapters/codex/daemon.js";
+import { createCodexHandler, ensureToken, runCodexDaemon } from "../src/adapters/codex/daemon.js";
+import type { CodexDaemonHandle } from "../src/adapters/codex/daemon.js";
 import { Index } from "../src/core/db.js";
 import { addEntry } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { indexDb, nsDir } from "../src/core/paths.js";
 import { connect, Socket } from "node:net";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -137,6 +139,27 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     idx.close();
   });
 
+  test("duplicate PostToolUse events are delivered once", async () => {
+    const entry = makeEntry({ ns: "MyProject" });
+    await seed([entry]);
+    const handle = createCodexHandler();
+    await handle({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" });
+    const payload = {
+      hook_event_name: "PostToolUse",
+      cwd: "/tmp/MyProject",
+      session_id: "s1",
+      tool_name: "Read",
+      tool_input: { file_path: join(nsDir(dir, "MyProject"), "MEMORY.md") },
+      tool_use_id: "u1",
+      turn_id: "t1",
+    };
+    await handle(payload);
+    await handle(payload);
+    const idx = await Index.create(indexDb(dir));
+    expect(idx.get("a1b2c3d4")?.useCount).toBe(1);
+    idx.close();
+  });
+
   test("unknown event passes through", async () => {
     const handle = createCodexHandler();
     const out = await handle({ hook_event_name: "SubagentStart", cwd: "/x", session_id: "s1", agent_id: "a1", agent_type: "general" });
@@ -211,6 +234,37 @@ describe("codex daemon socket", () => {
     await stopDaemon(daemon, socketPath);
   });
 
+  test("client disconnect mid-request does not crash the daemon", async () => {
+    const socketPath = join(dir, "state", "codex.sock");
+    const daemon = runCodexDaemon({ socketPath });
+    await waitForSocket(socketPath);
+    const token = readFileSync(join(dir, "state", "codex.token"), "utf-8").trim();
+    const sock = connect(socketPath);
+    sock.write(JSON.stringify({ token, input: { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" } }) + "\n");
+    sock.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const alive = await new Promise<boolean>((resolve) => {
+      const probe = new Socket();
+      probe.once("connect", () => {
+        probe.destroy();
+        resolve(true);
+      });
+      probe.once("error", () => resolve(false));
+      probe.connect(socketPath);
+    });
+    expect(alive).toBe(true);
+    await stopDaemon(daemon, socketPath);
+  });
+
+  test("ensureToken repairs an empty token file", () => {
+    const tokenFile = join(dir, "state", "codex.token");
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(tokenFile, "", { mode: 0o600 });
+    const token = ensureToken(dir);
+    expect(token).toBeTruthy();
+    expect(readFileSync(tokenFile, "utf-8").trim()).toBe(token);
+  });
+
   test("second daemon instance refuses to start", async () => {
     const socketPath = join(dir, "state", "codex.sock");
     const daemon = runCodexDaemon({ socketPath });
@@ -238,7 +292,8 @@ function waitForSocket(socketPath: string): Promise<void> {
   });
 }
 
-async function stopDaemon(daemon: Promise<void>, socketPath: string): Promise<void> {
-  await daemon;
-  rmSync(socketPath, { force: true });
+async function stopDaemon(daemon: Promise<CodexDaemonHandle>, socketPath: string): Promise<void> {
+  const handle = await daemon;
+  await handle.close();
+  expect(existsSync(socketPath)).toBe(false);
 }

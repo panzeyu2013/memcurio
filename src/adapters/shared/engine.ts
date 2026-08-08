@@ -267,7 +267,9 @@ export class MemcoreAdapter {
     const ns = namespaceFor(workdir);
     const idx = await Index.create(indexDb(root));
     try {
-      const retriever = getRetriever(idx);
+      const retriever = getRetriever(idx, (err) =>
+        this.log("warn", "fts search failed, falling back to LIKE", { error: String(err) }),
+      );
       const hits = retriever.search({ query, topK: 8, ns, kinds: ["MEMORY", "USER"] });
       const safeHits: Array<{ entryId: string; line: string }> = [];
       for (const h of hits) {

@@ -139,4 +139,19 @@ describe("memcore cli", () => {
     const { code } = await run("bogus");
     expect(code).toBe(2);
   });
+
+  test("unknown option is a usage error (exit 2), runtime errors are exit 1", async () => {
+    const usage = await run("list", "--bogus-flag");
+    expect(usage.code).toBe(2);
+    const runtime = await run("import", join(dir, "missing.jsonl"));
+    expect(runtime.code).toBe(1);
+  });
+
+  test("help [cmd] prints per-command help", async () => {
+    const { code, out } = await run("help", "search");
+    expect(code).toBe(0);
+    expect(out).toContain("memcore search");
+    const unknown = await run("help", "no-such-cmd");
+    expect(unknown.out).toContain("用法: memcore");
+  });
 });
