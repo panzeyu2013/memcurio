@@ -26,6 +26,7 @@ MemcoreAdapter（会话记账 / 注入 / 复盘）
 - daemon 对 `PostToolUse`/`UserPromptSubmit` 按 `tool_use_id`/`turn_id` 去重（10 分钟窗口），hook 重试不会重复记账
 - daemon 无连接 6 小时自动退出（防孤儿残留）；下次 hook 调用自动拉起
 - 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续
+- 压缩反思：PostCompact 后经 `codex exec --json --ephemeral --skip-git-repo-check` 用 codex 自身模型生成反思（无需额外 API key）；输入为会话统计（摘要不可得时），失败依次降级 env LLM / 规则兜底；`MEMCORE_CODEX_REFLECT=0` 关闭，`MEMCORE_CODEX_BIN` 指定 codex 路径
 
 ## 2. 事件映射（协议按 codex 源码 `codex-rs/hooks/schema/generated/*.schema.json` 核实）
 
@@ -35,7 +36,7 @@ MemcoreAdapter（会话记账 / 注入 / 复盘）
 | `UserPromptSubmit` | cwd, session_id, prompt, turn_id | 消息计数；**按 prompt 动态检索注入**（CJK 窗口 OR 查询） | `hookSpecificOutput.additionalContext` |
 | `PostToolUse` | tool_name, tool_input | 工具/文件记账；读记忆 md 文件自动 touch | 无注入 |
 | `PreCompact` | cwd, session_id, transcript_path | 无操作 | ⚠️ 当前协议输出**无注入通道** |
-| `PostCompact` | — | 标记会话已压缩；反思写回 COMPACT 策略（codex 无摘要通道，用规则兜底） | 无 |
+| `PostCompact` | cwd, session_id, transcript_path, trigger | 标记会话已压缩；反思写回 COMPACT 策略（异步，不阻塞 hook）。反思默认经 `codex exec --json --ephemeral` 用 **codex 自身模型**（输出为 JSONL 事件流，源码核实：最终回复为最后一条 `item.completed` 且 `item.type=agent_message`；`turn.failed`/`error`/非零退出即降级） | 无 |
 | `Stop` | cwd, session_id, turn_id | 节流写会话复盘（SESSION.md） | 无 |
 | `SessionEnd` | cwd, session_id | 最终复盘 + 会话关闭 | 无 |
 | `SubagentStart/Stop` | agent_id | 无操作（continue 透传） | 无 |

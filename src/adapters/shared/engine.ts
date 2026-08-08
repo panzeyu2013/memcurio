@@ -159,6 +159,14 @@ export class MemcoreAdapter {
     await this.#reflectOnCompaction(s, summary);
   }
 
+  #sessionSummaryText(s: SessionState): string {
+    const tools = [...s.toolUsage.entries()]
+      .map(([t, n]) => `${t}×${n}`)
+      .join(", ");
+    const files = [...s.touchedFiles].slice(0, 10).join(", ");
+    return `Session ${s.sessionId} (host=${s.host}, ns=${s.ns}, workdir=${s.workdir}): ${s.seenParts.size} messages, tools: ${tools || "none"}, files: ${files || "none"}`;
+  }
+
   async #reflectOnCompaction(s: SessionState, summary?: string): Promise<void> {
     const root = coreRoot();
     const idx = await Index.create(indexDb(root));
@@ -168,7 +176,7 @@ export class MemcoreAdapter {
         .filter((e) => e.status !== "deleted")
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       const reflection = await reflectOnCompaction({
-        summary: summary?.slice(0, 2000),
+        summary: (summary ?? this.#sessionSummaryText(s)).slice(0, 2000),
         strategy: prev?.content,
         chat: this.reflect,
       });

@@ -177,6 +177,23 @@ describe("compaction strategy loop", () => {
     idx.close();
   });
 
+  test("sessionCompacted falls back to session stats as the reflection input", async () => {
+    await capture(["init"]);
+    const adapter = new MemcoreAdapter();
+    await adapter.sessionCreated("s1", "/tmp/MyProject");
+    await adapter.messageSeen("s1", "p1");
+    await adapter.messageSeen("s1", "p2");
+    await adapter.toolExecuted("s1", "Read", { filePath: "/tmp/MyProject/src/a.ts" });
+    await adapter.sessionCompacted("s1");
+    const idx = await Index.create(indexDb(dir));
+    const entry = idx.list({ ns: "MyProject", kind: "COMPACT", allStatus: true })[0];
+    expect(entry.content).toContain("Reflection");
+    expect(entry.content).toContain("2 messages");
+    expect(entry.content).toContain("Read×1");
+    expect(entry.content).toContain("a.ts");
+    idx.close();
+  });
+
   test("LLM reflection is parsed and stored when a provider is configured", async () => {
     await capture(["init"]);
     await capture(["compact", "keep context under 8k tokens", "--ns", "MyProject"]);

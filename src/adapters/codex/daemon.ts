@@ -1,11 +1,15 @@
 import { createServer, Socket } from "node:net";
 import type { Socket as SocketType } from "node:net";
+import { spawn } from "node:child_process";
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { MemcoreAdapter } from "../shared/engine.js";
+import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
+import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
 
 export interface CodexEventInput {
   hook_event_name?: string;
@@ -39,7 +43,10 @@ function filePathFromToolInput(toolInput: unknown): string | undefined {
 }
 
 export function createCodexHandler(log?: AdapterLog) {
-  const adapter = new MemcoreAdapter({ log });
+  const adapter = new MemcoreAdapter({
+    log,
+    reflect: process.env.MEMCORE_CODEX_REFLECT === "0" ? undefined : codexExecReflect({ log }),
+  });
   const recent = new Map<string, number>();
 
   function dedupeKey(input: CodexEventInput): string | null {
@@ -104,7 +111,11 @@ export function createCodexHandler(log?: AdapterLog) {
       case "PreCompact":
         return { continue: true };
       case "PostCompact": {
-        await adapter.sessionCompacted(sessionId);
+        void adapter.sessionCompacted(sessionId).catch((err) => {
+          if (log) {
+            log("error", `sessionCompacted failed: ${String(err)}`);
+          }
+        });
         return { continue: true };
       }
       case "Stop": {
@@ -119,6 +130,106 @@ export function createCodexHandler(log?: AdapterLog) {
         return { continue: true };
     }
   };
+}
+
+export function parseCodexExecOutput(stdout: string): CompactionReflection | null {
+  let finalReply: string | undefined;
+  let failed = false;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    let ev: Record<string, unknown>;
+    try {
+      ev = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (ev.type === "turn.failed" || ev.type === "error") {
+      failed = true;
+      break;
+    }
+    if (ev.type === "item.completed") {
+      const item = ev.item as { type?: unknown; text?: unknown } | undefined;
+      if (item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
+        finalReply = item.text;
+      }
+    }
+  }
+  if (!finalReply && !failed) {
+    try {
+      const whole = JSON.parse(stdout) as { reply?: unknown };
+      if (typeof whole.reply === "string" && whole.reply.trim()) {
+        finalReply = whole.reply;
+      }
+    } catch {
+      void 0;
+    }
+  }
+  if (failed || !finalReply) {
+    return null;
+  }
+  return parseReflectionResponse(finalReply);
+}
+
+export function codexExecReflect(opts: {
+  log?: AdapterLog;
+  timeoutMs?: number;
+  bin?: string;
+} = {}): ReflectChat {
+  const bin = opts.bin ?? process.env.MEMCORE_CODEX_BIN ?? "codex";
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const log = opts.log ?? (() => {});
+  return ({ summary, strategy }) =>
+    new Promise<CompactionReflection | null>((resolve) => {
+      if (!summary) {
+        resolve(null);
+        return;
+      }
+      const args = [
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        reflectionUserPrompt(summary, strategy),
+      ];
+      const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const settle = (r: CompactionReflection | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      };
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        log("warn", "codex exec reflection timed out");
+        settle(null);
+      }, timeoutMs);
+      child.stdout.on("data", (d: Buffer) => {
+        stdout += d.toString();
+      });
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      child.on("error", (err) => {
+        log("warn", `codex exec unavailable: ${String(err)}`);
+        settle(null);
+      });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          log("warn", `codex exec failed (${String(code)}): ${stderr.slice(0, 200)}`);
+          settle(null);
+          return;
+        }
+        settle(parseCodexExecOutput(stdout));
+      });
+    });
 }
 
 export function defaultSocketPath(root: string): string {

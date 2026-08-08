@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { createCodexHandler, ensureToken, runCodexDaemon } from "../src/adapters/codex/daemon.js";
+import { createCodexHandler, ensureToken, parseCodexExecOutput, runCodexDaemon } from "../src/adapters/codex/daemon.js";
 import type { CodexDaemonHandle } from "../src/adapters/codex/daemon.js";
 import { Index } from "../src/core/db.js";
 import { addEntry } from "../src/core/mdStore.js";
@@ -164,6 +164,49 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     const handle = createCodexHandler();
     const out = await handle({ hook_event_name: "SubagentStart", cwd: "/x", session_id: "s1", agent_id: "a1", agent_type: "general" });
     expect(out.continue).toBe(true);
+  });
+});
+
+describe("codex exec reflection output parsing", () => {
+  const agentMessage = (text: string): string =>
+    JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text } });
+
+  test("parses the last agent_message from the JSONL stream", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "item.started", item: { id: "item_1", type: "agent_message" } }),
+      agentMessage('{"prompt": "keep file paths", "memory": "remember the FTS5 decision"}'),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }),
+    ].join("\n");
+    const r = parseCodexExecOutput(stdout);
+    expect(r).toEqual({ prompt: "keep file paths", memory: "remember the FTS5 decision" });
+  });
+
+  test("takes the last agent_message when several are emitted", () => {
+    const stdout = [
+      agentMessage('{"prompt": "first", "memory": "first memory"}'),
+      agentMessage('{"prompt": "second", "memory": "second memory"}'),
+    ].join("\n");
+    const r = parseCodexExecOutput(stdout);
+    expect(r).toEqual({ prompt: "second", memory: "second memory" });
+  });
+
+  test("returns null when the turn failed", () => {
+    const stdout = [
+      agentMessage('{"prompt": "partial", "memory": "partial"}'),
+      JSON.stringify({ type: "turn.failed", error: { message: "model error" } }),
+    ].join("\n");
+    expect(parseCodexExecOutput(stdout)).toBeNull();
+  });
+
+  test("falls back to the legacy single-object reply shape", () => {
+    const r = parseCodexExecOutput(JSON.stringify({ reply: '{"prompt": "legacy", "memory": "legacy memory"}' }));
+    expect(r).toEqual({ prompt: "legacy", memory: "legacy memory" });
+  });
+
+  test("returns null on malformed or empty output", () => {
+    expect(parseCodexExecOutput("not json at all")).toBeNull();
+    expect(parseCodexExecOutput("")).toBeNull();
   });
 });
 
