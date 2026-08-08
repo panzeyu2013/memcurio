@@ -1,0 +1,76 @@
+export interface SanitizeResult {
+  text: string;
+  redacted: boolean;
+}
+
+const SECRET_PATTERNS: RegExp[] = [
+  /\b(?:sk|pk|api[_-]?key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[A-Za-z0-9_\-./]{12,}["']?/gi,
+  /\bsk-[A-Za-z0-9_\-]{16,}\b/g,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+  /\bAIza[0-9A-Za-z_\-]{30,}\b/g,
+  /\b(?:Bearer|bearer)\s+[A-Za-z0-9._\-]{20,}\b/g,
+  /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/g,
+];
+
+export function redactSecrets(text: string): SanitizeResult {
+  let redacted = false;
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) {
+    const next = out.replace(pattern, (m) => {
+      redacted = true;
+      return m.startsWith("-----BEGIN") ? "[REDACTED PRIVATE KEY]" : "[REDACTED]";
+    });
+    out = next;
+  }
+  return { text: out, redacted };
+}
+
+export function normalizeText(text: string): string {
+  return text.replace(/[\u200b-\u200d\u2060\ufeff]/g, "");
+}
+
+const INJECTION_PATTERNS: RegExp[] = [
+  /ignore\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|prompts)/i,
+  /disregard\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|prompts)/i,
+  /do\s*not\s*(?:follow|obey)\s*(?:the\s*)?(?:instructions|rules|system\s*prompt)/i,
+  /forget\s*(?:all\s*)?(?:previous|prior)\s*(?:instructions|prompts|context)/i,
+  /you\s*are\s*now\s*(?:an?\s*)?(?:different|free|unaligned|unfiltered|no\s*longer)/i,
+  /you\s*are\s*(?:not\s*|no\s*longer\s*)?(?:bound|restricted|constrained|obligated)/i,
+  /over(?:ride|write)\s*(?:your\s*|the\s*)?(?:system\s*prompt|instructions|safety)/i,
+  /print\s*(?:all\s*|your\s*)?(?:previous|prior)\s*(?:instructions|prompts|system\s*message)/i,
+  /<system>\s*(?:ignore|override)/i,
+  /\[\s*(?:system|instruction)\s*\]\s*(?:ignore|override)/i,
+  /忽略\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
+  /无视\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
+  /忘记\s*(?:所有|全部)?\s*(?:之前|先前)\s*的?\s*(?:所有|全部)?\s*(?:指令|提示|上下文)/,
+  /不要\s*(?:遵守|遵循)\s*(?:系统)?\s*(?:指令|提示)/,
+  /你\s*(?:现在|已经|已)?\s*(?:不受限制|不再受限制|解除限制|无限制|是自由的|不再受限)/,
+  /不再\s*(?:受|被)?\s*(?:约束|限制|绑定)/,
+  /忽略\s*(?:所有|全部)?\s*(?:之前的)?\s*系统提示/,
+  /透露\s*(?:所有|全部)?\s*(?:秘密|密钥|敏感信息|凭据)/,
+  /告诉我\s*(?:所有|全部)?\s*(?:秘密|密钥|密码)/,
+];
+
+export function scanInjection(text: string): string[] {
+  const normalized = normalizeText(text);
+  const flags: string[] = [];
+  for (const pattern of INJECTION_PATTERNS) {
+    if (pattern.test(normalized)) {
+      flags.push(pattern.source.slice(0, 60));
+    }
+  }
+  return flags;
+}
+
+export interface InjectionVerdict {
+  safe: boolean;
+  flags: string[];
+}
+
+export function sanitizeForInjection(text: string): InjectionVerdict {
+  const flags = scanInjection(text);
+  return { safe: flags.length === 0, flags };
+}
