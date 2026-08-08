@@ -178,7 +178,7 @@
 - **适配器层**：每 harness 一个薄壳，只做"事件翻译 + 注入通道"，声明能力等级
 - **CLI**：手动管理（剪枝报告、导入导出、审计、状态、策展、codex 插件生成）、可独立于任何 harness 使用
 
-> 实现状态：M0–M4 代码全部落地（190 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
+> 实现状态：M0–M4 代码全部落地（197 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
 
 ### 4.2 统一事件模型（引擎的唯一输入）
 
@@ -291,7 +291,7 @@ capabilities {
 - 适配器：TS 单文件打包（`bun build` → 零依赖 bundle）；范式 A（codex）= **1 个常驻 daemon + N 个 hook 薄壳**（unix socket 转发，规避每次工具调用 fork 冷启动）
 - 存储：SQLite + Markdown 真源；**MVP 不上向量库**（LightMem 复现论文的教训）
 - 检索：后端可插拔，默认 **FTS5 trigram**（SQLite 内置、零依赖，按字符 3-gram 建索引，CJK/拉丁/混合文本天然支持，无需语言检测与分词库）；查询 <3 字符用 LIKE 兜底；**CJK 4 字符窗口 OR 查询**解决自然语言提问召回；实测精确度不足再换分词后端，仍不足才加 embedding——全程引擎零改动
-- 测试：bun test（190 用例）；类型检查 tsc --noEmit
+- 测试：bun test（197 用例）；类型检查 tsc --noEmit
 
 > 为何弃 Python 改全 TS（2026-08 决策）：范式 B 适配器（opencode/pi）是进程内 TS，引擎同语言后插件可直接 import 核心（零 IPC）；类型契约（Entry/Hit/Event）一份贯穿所有层，消除跨语言漂移；部署零依赖（bun 内建 SQLite）。
 
@@ -308,7 +308,7 @@ capabilities {
 | 收尾 | 真实 harness 闭环验证（opencode/codex 实机）、LLM 策展实测（API key）、官方 memories 镜像（延后） | ⏳ 待推进 |
 
 ### 5.3 验证方式
-- 单测：存储/剪枝状态机/事务日志/检索（含 CJK）/MCP 协议/适配器事件流/安全/预算/策展——**已实现 190 用例**（bun test）
+- 单测：存储/剪枝状态机/事务日志/检索（含 CJK）/MCP 协议/适配器事件流/安全/预算/策展——**已实现 197 用例**（bun test）
 - 集成：真实 harness 会话烟测（⏳）；AgentMemBench 式的对照（开/关记忆对比纠错率、重复提问率）（⏳）
 - 指标：注入 token 预算达标率、记忆召回命中率、剪枝误杀率（审计可回滚兜底）
 

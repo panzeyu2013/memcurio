@@ -16,6 +16,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "bun run build",
     "prepack": "bun run build",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
