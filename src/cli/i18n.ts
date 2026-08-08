@@ -29,6 +29,7 @@ const zh: Record<string, Entry> = {
   baseline [dir]     注入 AGENTS.md 记忆区块 [--top-k N]
   index              重新生成全局 INDEX.md
   reindex            从 Markdown 真源重建影子索引（保留使用统计）
+  compact <内容>     更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回）[--ns X]
   repair             检测/修复事务异常（--execute 触发重建）
   doctor             自检环境与数据健康
   audit              审计记录 [--limit N]
@@ -55,6 +56,7 @@ const zh: Record<string, Entry> = {
   "help.baseline": "memcore baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
   "help.index": "memcore index\n  重新生成全局 INDEX.md",
   "help.reindex": "memcore reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
+  "help.compact": "memcore compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；覆盖旧策略）",
   "help.repair": "memcore repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
   "help.doctor": "memcore doctor\n  自检环境与数据健康",
   "help.audit": "memcore audit [--limit N]\n  审计记录",
@@ -71,6 +73,8 @@ const zh: Record<string, Entry> = {
   "search.note": (x: string) =>
     `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcore list 确认记忆存在。`,
   "forget.missing": "forget: missing entry_id (从 memcore list 获取)",
+  "compact.missing": 'compact: missing content (memcore compact "策略内容")',
+  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条）`,
   "repair.none": "no pending transactions (事务日志健康)",
   "repair.pendingHeader": (n: string) => `${n} 个未完成事务：`,
   "repair.truth": "md 真源为最终真相，索引可重建。",
@@ -115,6 +119,7 @@ Commands:
   baseline [dir]     Inject the AGENTS.md memory section [--top-k N]
   index              Regenerate the global INDEX.md
   reindex            Rebuild the shadow index from the Markdown source of truth (keeps usage stats)
+  compact <text>     Update the context-compression strategy (force-injected before compaction; reflection written back after) [--ns X]
   repair             Detect/fix transaction anomalies (--execute triggers rebuild)
   doctor             Self-check environment and data health
   audit              Audit records [--limit N]
@@ -141,6 +146,7 @@ Commands:
   "help.baseline": "memcore baseline [dir] [--top-k N]\n  Inject the AGENTS.md memory section (auto-injected on read)",
   "help.index": "memcore index\n  Regenerate the global INDEX.md",
   "help.reindex": "memcore reindex\n  Rebuild the shadow index from the Markdown source of truth (keeps usage stats)",
+  "help.compact": "memcore compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces old strategy in the namespace)",
   "help.repair": "memcore repair [--execute]\n  Detect/fix transaction anomalies (--execute triggers rebuild)",
   "help.doctor": "memcore doctor\n  Self-check environment and data health",
   "help.audit": "memcore audit [--limit N]\n  Audit records",
@@ -157,6 +163,8 @@ Commands:
   "search.note": (x: string) =>
     `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcore list to confirm memories exist.`,
   "forget.missing": "forget: missing entry_id (get it from memcore list)",
+  "compact.missing": 'compact: missing content (memcore compact "strategy")',
+  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries)`,
   "repair.none": "no pending transactions (transaction log healthy)",
   "repair.pendingHeader": (n: string) => `${n} unfinished transactions:`,
   "repair.truth": "Markdown is the source of truth; the index can be rebuilt.",

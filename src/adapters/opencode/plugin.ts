@@ -35,6 +35,24 @@ export function partIdFor(event: { type?: string; properties?: unknown }): strin
   return typeof part?.id === "string" ? part.id : "";
 }
 
+interface SessionMessage {
+  info: { summary?: boolean };
+  parts: Array<{ type?: string; text?: string }>;
+}
+
+function summaryFromMessages(messages: SessionMessage[]): string | undefined {
+  const last = messages.at(-1);
+  if (!last) {
+    return undefined;
+  }
+  const text = last.parts
+    .filter((p) => p.type === "text" && typeof p.text === "string" && p.text)
+    .map((p) => String(p.text))
+    .join("\n")
+    .trim();
+  return text ? text.slice(0, 2000) : undefined;
+}
+
 export const MemcorePlugin: Plugin = async ({ directory, client }) => {
   const adapter = new MemcoreAdapter({
     log: (level, message, extra) => {
@@ -61,7 +79,16 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
         } else if (type === "session.idle") {
           await adapter.sessionIdle(id);
         } else if (type === "session.compacted") {
-          await adapter.sessionCompacted(id);
+          let summary: string | undefined;
+          try {
+            const res = (await client.session.messages({ path: { id } })) as unknown as {
+              data?: SessionMessage[];
+            };
+            summary = summaryFromMessages(res.data ?? []);
+          } catch {
+            summary = undefined;
+          }
+          await adapter.sessionCompacted(id, summary);
         } else if (type === "session.deleted") {
           await adapter.sessionEnded(id);
         } else if (type.startsWith("message.part")) {

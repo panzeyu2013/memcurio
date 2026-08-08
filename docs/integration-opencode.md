@@ -20,8 +20,8 @@
 | `message.part.*` | 统计消息 part（去重） |
 | `tool.execute.after` | 统计工具使用/涉及文件；若读取的是 `~/.memcore/memory/**/*.md` 则对其条目 `touch`（use_count↑、value_score↑）——基线模式的读侧记账闭环 |
 | `session.idle` | 节流写会话复盘（`SESSION.md`：起止时间/消息数/工具/文件） |
-| `session.compacted` | 标记会话已压缩 |
-| `experimental.session.compacting` | 注入"长期记忆上下文"（命名空间 top-N + INDEX.md 指针）；`MEMCORE_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词（保留任务状态/决策/涉及文件） |
+| `session.compacted` | 压缩完成后经 `client.session.messages` 读取压缩摘要 → 反思（LLM 或规则兜底）写回 COMPACT 压缩策略，形成自改进闭环 |
+| `experimental.session.compacting` | 注入"长期记忆上下文" + **COMPACT 压缩策略**（压缩前强制注入）；`MEMCORE_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词（保留任务状态/决策/涉及文件） |
 | `session.ended`（SDK 事件名为 `session.deleted`） | 最终复盘落盘 + 会话结束 |
 
 ## 3. 安装

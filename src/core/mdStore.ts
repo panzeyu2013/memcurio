@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { atomicWrite, withFileLock } from "./transaction.js";
 
-export const KINDS = ["MEMORY", "USER", "SESSION"] as const;
+export const KINDS = ["MEMORY", "USER", "SESSION", "COMPACT"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export const STATUSES = ["active", "stale", "archived", "deleted"] as const;

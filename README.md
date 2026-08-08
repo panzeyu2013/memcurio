@@ -40,6 +40,7 @@ memcore status
 
 ```bash
 memcore prune            # 价值感知剪枝（干跑报告；--execute 生效）
+memcore compact <策略>   # 更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回）
 memcore pin <id>         # 豁免剪枝
 memcore export           # JSONL 备份 / import 恢复 / merge 合并命名空间
 memcore curate           # LLM 策展（需 MEMCORE_LLM_API_KEY；矛盾/伞合并/重评）
@@ -60,7 +61,7 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 197 用例
+bun test          # 212 用例
 bunx tsc --noEmit # 类型检查
 bun run bundle:plugin
 ```

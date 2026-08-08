@@ -35,7 +35,7 @@ MemcoreAdapter（会话记账 / 注入 / 复盘）
 | `UserPromptSubmit` | cwd, session_id, prompt, turn_id | 消息计数；**按 prompt 动态检索注入**（CJK 窗口 OR 查询） | `hookSpecificOutput.additionalContext` |
 | `PostToolUse` | tool_name, tool_input | 工具/文件记账；读记忆 md 文件自动 touch | 无注入 |
 | `PreCompact` | cwd, session_id, transcript_path | 无操作 | ⚠️ 当前协议输出**无注入通道** |
-| `PostCompact` | — | 标记会话已压缩 | 无 |
+| `PostCompact` | — | 标记会话已压缩；反思写回 COMPACT 策略（codex 无摘要通道，用规则兜底） | 无 |
 | `Stop` | cwd, session_id, turn_id | 节流写会话复盘（SESSION.md） | 无 |
 | `SessionEnd` | cwd, session_id | 最终复盘 + 会话关闭 | 无 |
 | `SubagentStart/Stop` | agent_id | 无操作（continue 透传） | 无 |

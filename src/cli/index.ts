@@ -218,6 +218,64 @@ async function cmdForget(rest: string[]): Promise<number> {
   });
 }
 
+async function cmdCompact(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { ns: { type: "string" } },
+  });
+  const content = positionals[0];
+  if (!content) {
+    return fail(t("compact.missing"));
+  }
+  const root = rootDir();
+  ensureLayout(root);
+  const config = loadConfig(root);
+  const explicitNs = values.ns as string | undefined;
+  let ns: string;
+  try {
+    ns = assertValidNs(explicitNs ?? config.namespace.default);
+  } catch (err) {
+    return fail(String((err as Error).message));
+  }
+  const redacted = redactSecrets(content);
+  const flags = sanitizeForInjection(redacted.text);
+  const ts = new Date().toISOString();
+  const entry: Entry = {
+    entryId: makeEntryId(redacted.text, ts),
+    ns,
+    kind: "COMPACT",
+    content: redacted.text,
+    createdAt: ts,
+    status: "active",
+    pinned: false,
+    lastUsedAt: null,
+    useCount: 0,
+    valueScore: 1,
+  };
+  return withIndex(async (idx) => {
+    const old = idx.list({ ns, kind: "COMPACT", allStatus: true });
+    const txn = new Transaction(txnLog(root));
+    txn.run("compact", ns, entry.entryId, () => {
+      for (const e of old) {
+        updateKind(nsDir(root, e.ns), e.kind, (entries) => entries.filter((x) => x.entryId !== e.entryId));
+        idx.delete(e.entryId);
+      }
+      addEntry(nsDir(root, ns), entry);
+      idx.add(entry);
+      idx.audit("compact", ns, `${entry.entryId} replaced ${old.length} old strategy entries`);
+      if (redacted.redacted) {
+        idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
+      }
+      if (!flags.safe) {
+        idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
+      }
+    });
+    console.log(t("compact.written", entry.entryId, ns, String(old.length)));
+    return 0;
+  });
+}
+
 async function cmdReindex(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
@@ -677,6 +735,7 @@ const HELP_CMDS = new Set([
   "baseline",
   "index",
   "reindex",
+  "compact",
   "repair",
   "doctor",
   "audit",
@@ -720,6 +779,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdForget(rest);
       case "reindex":
         return await cmdReindex();
+      case "compact":
+        return await cmdCompact(rest);
       case "repair":
         return await cmdRepair(rest);
       case "audit":

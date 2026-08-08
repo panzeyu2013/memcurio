@@ -5,9 +5,10 @@ import { join, resolve } from "node:path";
 import { fitLines, renderBudgetNotice } from "../../core/budget.js";
 import { loadConfig } from "../../core/config.js";
 import { Index } from "../../core/db.js";
-import { addEntry, parseFile } from "../../core/mdStore.js";
+import { addEntry, parseFile, updateKind } from "../../core/mdStore.js";
 import type { Entry } from "../../core/mdStore.js";
 import { ensureLayout, indexDb, memoryRoot, namespaceFor, nsDir, rootDir as coreRoot, txnLog } from "../../core/paths.js";
+import { appendReflection, formatReflection, reflectOnCompaction } from "../../core/reflect.js";
 import { getRetriever } from "../../core/retriever.js";
 import { sanitizeForInjection } from "../../core/sanitize.js";
 import { selectStatic } from "../../core/select.js";
@@ -145,10 +146,63 @@ export class MemcoreAdapter {
     await this.#writeSessionRecord(s, "idle");
   }
 
-  async sessionCompacted(sessionId: string): Promise<void> {
+  async sessionCompacted(sessionId: string, summary?: string): Promise<void> {
     const s = this.sessions.get(sessionId);
-    if (s) {
-      s.compacted = true;
+    if (!s) {
+      return;
+    }
+    s.compacted = true;
+    await this.#reflectOnCompaction(s, summary);
+  }
+
+  async #reflectOnCompaction(s: SessionState, summary?: string): Promise<void> {
+    const root = coreRoot();
+    const idx = await Index.create(indexDb(root));
+    try {
+      const prev = idx
+        .list({ ns: s.ns, kind: "COMPACT", allStatus: true })
+        .filter((e) => e.status !== "deleted")
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      const reflection = await reflectOnCompaction({
+        summary: summary?.slice(0, 2000),
+        strategy: prev?.content,
+      });
+      const section = formatReflection(reflection, new Date().toISOString());
+      const txn = new Transaction(txnLog(root));
+      txn.run("adapter.compact_reflect", s.ns, prev?.entryId ?? "-", () => {
+        if (prev) {
+          const updated: Entry = { ...prev, content: appendReflection(prev.content, section) };
+          idx.add(updated);
+          updateKind(nsDir(root, s.ns), "COMPACT", (entries) =>
+            entries.map((x) => (x.entryId === prev.entryId ? { ...x, content: updated.content } : x)),
+          );
+        } else {
+          const ts = new Date().toISOString();
+          const entryId = createHash("sha1").update(`compact|${s.ns}|${ts}`).digest("hex").slice(0, 8);
+          const entry: Entry = {
+            entryId,
+            ns: s.ns,
+            kind: "COMPACT",
+            content: appendReflection("", section),
+            createdAt: ts,
+            status: "active",
+            pinned: false,
+            lastUsedAt: null,
+            useCount: 0,
+            valueScore: 1,
+          };
+          addEntry(nsDir(root, s.ns), entry);
+          idx.add(entry);
+        }
+        idx.audit("adapter.compact_reflect", s.ns, prev ? `appended to ${prev.entryId}` : "created");
+      });
+      this.log("info", "compaction reflection stored", {
+        sessionId: s.sessionId,
+        ns: s.ns,
+        summary: summary ? `${summary.length} chars` : "unavailable",
+      });
+    } finally {
+      idx.close();
     }
   }
 
@@ -225,8 +279,11 @@ export class MemcoreAdapter {
     const ns = s?.ns ?? namespaceFor(workdir);
     const budget = this.#injectionBudget();
     const staticCtx = await this.buildStaticContext(workdir, budget);
+    const strategy = await this.#buildStrategySection(ns);
     return [
       staticCtx,
+      "",
+      strategy,
       "",
       `Session review: ${join(nsDir(root, ns), "SESSION.md")}, global index: ${join(memoryRoot(root), "INDEX.md")}`,
     ].join("\n");
@@ -285,6 +342,35 @@ export class MemcoreAdapter {
       idx.touch(safeHits.slice(0, fitted.lines.length).map((h) => h.entryId));
       return [
         `## memcore related memories (retrieved for the current question, namespace ${ns})`,
+        ...fitted.lines,
+        renderBudgetNotice(fitted.truncated),
+      ]
+        .filter((l) => l !== "")
+        .join("\n");
+    } finally {
+      idx.close();
+    }
+  }
+
+  async #buildStrategySection(ns: string, budgetTokens = 400): Promise<string> {
+    const root = coreRoot();
+    const idx = await Index.create(indexDb(root));
+    try {
+      const top = selectStatic(idx, { ns, kinds: ["COMPACT"], topN: 5 });
+      const safe: Entry[] = [];
+      for (const e of top) {
+        const verdict = sanitizeForInjection(e.content);
+        if (verdict.safe) {
+          safe.push(e);
+        } else {
+          idx.audit("warn.promptware", ns, `blocked from strategy injection: ${e.entryId} (${verdict.flags[0]})`);
+        }
+      }
+      const lines = safe.map((e) => `- [${e.entryId}] ${e.content.replaceAll("\n", " ").slice(0, 200)}`);
+      const fitted = fitLines(lines, budgetTokens);
+      return [
+        `## memcore context strategy (namespace ${ns})`,
+        "Apply these rules to manage your context window:",
         ...fitted.lines,
         renderBudgetNotice(fitted.truncated),
       ]

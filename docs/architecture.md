@@ -33,7 +33,7 @@ flowchart TB
   end
 
   MCP["MCP server（stdio）<br/>memory_search / remember / forget / status"]
-  CLI["CLI（24 命令，含 help/doctor/repair）"]
+  CLI["CLI（25 命令，含 help/doctor/repair/compact）"]
 
   OC -->|事件/工具调用| AOC
   CX -->|hooks| ACX
@@ -98,7 +98,7 @@ src/
 │   ├── sanitize.ts     注入扫描（Unicode/中文等价/零宽）+ 密钥脱敏
 │   └── curate.ts       LLM 策展（provider 抽象：矛盾/伞合并/重评 + 超时）
 ├── mcp/index.ts        MCP server（4 工具：检索消毒 + config 默认 ns）
-├── cli/index.ts        CLI 入口（24 命令，含 help/doctor/repair）
+├── cli/index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
 └── adapters/
     ├── shared/engine.ts  MemcoreAdapter（会话记账/注入/复盘/读侧 touch）
     ├── opencode/plugin.ts opencode 插件（打包单文件）
@@ -111,7 +111,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          197 用例（20 文件）
+tests/                          212 用例（21 文件）
 ```
 
 ## 4. 存储布局

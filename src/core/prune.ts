@@ -22,7 +22,7 @@ function daysBetween(now: Date, d: Date): number {
 export function computeTransitions(entries: Entry[], now: Date, cfg: PruneConfig): Transition[] {
   const out: Transition[] = [];
   for (const e of entries) {
-    if (e.pinned || e.status === "deleted" || e.status === "archived") {
+    if (e.pinned || e.kind === "COMPACT" || e.status === "deleted" || e.status === "archived") {
       continue;
     }
     const lastUsed = e.lastUsedAt ? new Date(e.lastUsedAt) : new Date(e.createdAt);
