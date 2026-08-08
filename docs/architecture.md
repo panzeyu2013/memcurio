@@ -28,7 +28,7 @@ flowchart TB
     TX["事务化写入<br/>原子 rename + BEGIN/COMMIT/ROLLBACK"]
     AU["审计 + 会话表"]
     SEC["安全层<br/>注入消毒（promptware）<br/>密钥脱敏 [REDACTED]"]
-    BUD["注入预算<br/>token 估算（chars/3）<br/>裁剪 + 未注入标注"]
+    BUD["注入预算<br/>token 估算（CJK 1/字，其余 0.25/字）<br/>裁剪 + 未注入标注"]
     CUR["LLM 策展<br/>矛盾检测 / 伞合并 / 价值重评<br/>provider 可插拔"]
   end
 
@@ -111,7 +111,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          129 用例（14 文件）
+tests/                          190 用例（19 文件）
 ```
 
 ## 4. 存储布局

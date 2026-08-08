@@ -1,6 +1,6 @@
 # memcore
 
-跨 AI 编码 harness（opencode / codex）的记忆与上下文管理系统。会话内（上下文管理）+ 跨会话（记忆）的全自动闭环，harness 无关、语言无关、零运行时依赖（bun 内建 SQLite）。
+跨 AI 编码 harness（opencode / codex）的记忆与上下文管理系统。会话内（上下文管理）+ 跨会话（记忆）的全自动闭环，harness 无关、语言无关；核心引擎零运行时依赖（bun 内建 SQLite），仅 MCP server 依赖 @modelcontextprotocol/sdk。
 
 ## 快速上手
 
@@ -53,7 +53,7 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 122 用例
+bun test          # 190 用例
 bunx tsc --noEmit # 类型检查
 bun run bundle:plugin
 ```

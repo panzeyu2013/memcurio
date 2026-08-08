@@ -23,6 +23,9 @@ MemcoreAdapter（会话记账 / 注入 / 复盘）
 - hook 首次调用时若 daemon 未启动，自动 `bun daemon.js` 拉起（detached）并重试
 - daemon 监听 `~/.memcore/state/codex.sock`（`MEMCORE_CODEX_SOCKET` 可覆盖），**chmod 600 + 随机 token 握手**（token 存 `state/codex.token`，仅 hook 读取）
 - hook 失败时向 stderr 输出可操作信息并追加 `state/hook.log`
+- daemon 对 `PostToolUse`/`UserPromptSubmit` 按 `tool_use_id`/`turn_id` 去重（10 分钟窗口），hook 重试不会重复记账
+- daemon 无连接 6 小时自动退出（防孤儿残留）；下次 hook 调用自动拉起
+- 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续
 
 ## 2. 事件映射（协议按 codex 源码 `codex-rs/hooks/schema/generated/*.schema.json` 核实）
 
@@ -35,7 +38,7 @@ MemcoreAdapter（会话记账 / 注入 / 复盘）
 | `PostCompact` | — | 标记会话已压缩 | 无 |
 | `Stop` | cwd, session_id, turn_id | 节流写会话复盘（SESSION.md） | 无 |
 | `SessionEnd` | cwd, session_id | 最终复盘 + 会话关闭 | 无 |
-| `SubagentStart/Stop` | agent_id | 透传 | 无 |
+| `SubagentStart/Stop` | agent_id | 无操作（continue 透传） | 无 |
 
 ## 3. 安装
 

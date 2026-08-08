@@ -22,7 +22,7 @@
 | `session.idle` | 节流写会话复盘（`SESSION.md`：起止时间/消息数/工具/文件） |
 | `session.compacted` | 标记会话已压缩 |
 | `experimental.session.compacting` | 注入"长期记忆上下文"（命名空间 top-N + INDEX.md 指针）；`MEMCORE_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词（保留任务状态/决策/涉及文件） |
-| `session.ended`（主动调） | 最终复盘落盘 + 会话结束 |
+| `session.ended`（SDK 事件名为 `session.deleted`） | 最终复盘落盘 + 会话结束 |
 
 ## 3. 安装
 
