@@ -41,16 +41,16 @@ describe("computeTransitions", () => {
     const e = makeEntry();
     const t = computeTransitions([e], NOW, CFG);
     expect(t).toHaveLength(1);
-    expect(t[0].from).toBe("active");
-    expect(t[0].to).toBe("stale");
-    expect(t[0].reason).toContain("idle 219d");
+    expect(t[0]?.from).toBe("active");
+    expect(t[0]?.to).toBe("stale");
+    expect(t[0]?.reason).toContain("idle 219d");
   });
 
   test("stale entry becomes archived after long idle", () => {
     const e = makeEntry({ status: "stale", lastUsedAt: "2025-01-01T00:00:00.000Z" });
     const t = computeTransitions([e], NOW, CFG);
-    expect(t[0].from).toBe("stale");
-    expect(t[0].to).toBe("archived");
+    expect(t[0]?.from).toBe("stale");
+    expect(t[0]?.to).toBe("archived");
   });
 
   test("recently used stale entry stays stale", () => {
@@ -73,12 +73,13 @@ describe("computeTransitions", () => {
     const e = makeEntry({ createdAt: "garbage-date", lastUsedAt: "garbage-date" });
     const t = computeTransitions([e], NOW, CFG);
     expect(t).toHaveLength(1);
-    expect(t[0].from).toBe("active");
-    expect(t[0].to).toBe("stale");
+    expect(t[0]?.from).toBe("active");
+    expect(t[0]?.to).toBe("stale");
   });
 
   test("formatTransition renders report line", () => {
     const t = computeTransitions([makeEntry()], NOW, CFG)[0];
+    if (t === undefined) throw new Error("expected a transition");
     expect(formatTransition(t)).toContain("-> stale");
     expect(formatTransition(t)).toContain("a1b2c3d4");
   });
@@ -86,11 +87,16 @@ describe("computeTransitions", () => {
 
 let dir: string;
 let prevRoot: string | undefined;
+let prevLang: string | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "prune-"));
   prevRoot = process.env.MEMCURIO_ROOT;
   process.env.MEMCURIO_ROOT = dir;
+  // The CLI assertions below expect English output; pin the language so the
+  // suite is green regardless of the runner's LANG/MEMCURIO_LANG.
+  prevLang = process.env.MEMCURIO_LANG;
+  process.env.MEMCURIO_LANG = "en";
 });
 
 afterEach(() => {
@@ -99,12 +105,17 @@ afterEach(() => {
   } else {
     process.env.MEMCURIO_ROOT = prevRoot;
   }
+  if (prevLang === undefined) {
+    delete process.env.MEMCURIO_LANG;
+  } else {
+    process.env.MEMCURIO_LANG = prevLang;
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
   const r = await runCli(...argv);
-  return { code: r.code, out: r.out + "\n" + r.err };
+  return { code: r.code, out: `${r.out}\n${r.err}` };
 }
 
 async function seedOldEntry(entry: Entry): Promise<void> {

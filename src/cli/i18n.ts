@@ -76,6 +76,8 @@ const zh: Record<string, Entry> = {
   "remember.nsNote": (ns: string, cur: string) =>
     `note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${cur}'，如需注入请加 --ns ${cur} 或设置 config.namespace.default`,
   "remember.redacted": "[secrets redacted]",
+  "remember.promptware": (flag: string) =>
+    `warn: 内容疑似注入模式（${flag}），已写入但将被过滤，不会注入到模型上下文`,
   "search.missing": 'search: missing query (memcurio search "关键词")',
   "search.note": (x: string) =>
     `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcurio list 确认记忆存在。`,
@@ -129,6 +131,7 @@ const zh: Record<string, Entry> = {
   "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
   "status.configOk": "ok",
   "status.configMissing": "missing",
+  "status.configBroken": "unparsable",
   "status.namespaces": "namespaces: (none)",
   "status.index": (b: string) => `index     : sqlite + ${b}`,
   "status.audit": (n: string) => `audit     : ${n} records`,
@@ -136,6 +139,8 @@ const zh: Record<string, Entry> = {
   "status.drift": (truth: string, indexed: string) =>
     `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcurio reindex 修复`,
   "init.hint": "note: 未找到记忆库。请先运行 `memcurio init`（或用 MEMCURIO_ROOT 指定位置）。",
+  "corruptIndex.hint":
+    "note: 影子索引损坏（它是可从 Markdown 真源重建的缓存）：删除 index.sqlite 后运行 memcurio reindex",
   "doctor.layout": "布局",
   "doctor.config": "配置",
   "doctor.index": "索引",
@@ -224,6 +229,8 @@ Commands:
   "remember.nsNote": (ns: string, cur: string) =>
     `note: memory saved to namespace '${ns}'; current directory sessions inject from '${cur}' — use --ns ${cur} or set config.namespace.default to inject here`,
   "remember.redacted": "[secrets redacted]",
+  "remember.promptware": (flag: string) =>
+    `warn: content looks like an injection pattern (${flag}); stored but filtered from model context`,
   "search.missing": 'search: missing query (memcurio search "keyword")',
   "search.note": (x: string) =>
     `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcurio list to confirm memories exist.`,
@@ -277,6 +284,7 @@ Commands:
   "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
   "status.configOk": "ok",
   "status.configMissing": "missing",
+  "status.configBroken": "unparsable",
   "status.namespaces": "namespaces: (none)",
   "status.index": (b: string) => `index     : sqlite + ${b}`,
   "status.audit": (n: string) => `audit     : ${n} records`,
@@ -284,6 +292,8 @@ Commands:
   "status.drift": (truth: string, indexed: string) =>
     `note: md truth has ${truth} entries but the index has ${indexed}; run memcurio reindex to repair`,
   "init.hint": "note: no memory store found. Run `memcurio init` first (or point MEMCURIO_ROOT elsewhere).",
+  "corruptIndex.hint":
+    "note: the shadow index is corrupted (it is a cache rebuildable from the Markdown truth): delete index.sqlite then run memcurio reindex",
   "doctor.layout": "layout",
   "doctor.config": "config",
   "doctor.index": "index",

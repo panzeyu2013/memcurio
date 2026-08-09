@@ -10,6 +10,7 @@ import { applyCuratePlan, buildCuratePlan, formatCuratePlan, HttpProvider, NoopP
 import type { CurateProvider } from "../core/curate.js";
 import { Index } from "../core/db.js";
 import { makeEnvelope, parseEnvelope } from "../core/events.js";
+import type { EventEnvelope } from "../core/events.js";
 import { KINDS, newEntry, readAll, updateKindsAtomically } from "../core/mdStore.js";
 import type { Entry, Kind, Status } from "../core/mdStore.js";
 import { assertValidNs, configPath, ensureLayout, indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "../core/paths.js";
@@ -35,6 +36,10 @@ function failUsage(msg: string): number {
   console.error(`error: ${msg}`);
   return 2;
 }
+
+/** Thrown by CLI-level validation so the top-level handler can classify the
+ *  exit code without sniffing error-message strings. */
+export class UsageError extends Error {}
 
 async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   const idx = await Index.create(indexDb(rootDir()));
@@ -65,7 +70,11 @@ function nsArg(raw: string | undefined): string | undefined {
   if (raw === undefined) {
     return undefined;
   }
-  return assertValidNs(raw);
+  try {
+    return assertValidNs(raw);
+  } catch (err) {
+    throw new UsageError((err as Error).message);
+  }
 }
 
 const WRITABLE_KINDS: Kind[] = KINDS.filter((k) => k !== "SESSION" && k !== "COMPACT");
@@ -78,7 +87,7 @@ function kindArg(raw: string | undefined, extra: Kind[] = []): Kind | undefined 
   }
   const kind = raw.toUpperCase() as Kind;
   if (!KINDS.includes(kind) || ![...WRITABLE_KINDS, ...extra].includes(kind)) {
-    throw new Error(`invalid kind '${kind}' (${KINDS.join("|")})`);
+    throw new UsageError(`invalid kind '${kind}' (${KINDS.join("|")})`);
   }
   return kind;
 }
@@ -133,8 +142,17 @@ async function cmdStatus(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
     console.log(t("status.root", root));
+    let configOk = false;
+    if (existsSync(configPath(root))) {
+      try {
+        validateConfig(root);
+        configOk = true;
+      } catch {
+        configOk = false;
+      }
+    }
     console.log(
-      t("status.config", configPath(root), existsSync(configPath(root)) ? t("status.configOk") : t("status.configMissing")),
+      t("status.config", configPath(root), configOk ? t("status.configOk") : existsSync(configPath(root)) ? t("status.configBroken") : t("status.configMissing")),
     );
     const counts = idx.counts();
     const indexedTotal = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
@@ -212,6 +230,9 @@ async function cmdRemember(rest: string[]): Promise<number> {
       );
     });
     console.log(`${entry.entryId} ${ns}/${kind}${redacted.redacted ? ` ${t("remember.redacted")}` : ""}`);
+    if (!flags.safe) {
+      console.error(t("remember.promptware", flags.flags[0] ?? "?"));
+    }
     return 0;
   });
 }
@@ -346,22 +367,31 @@ async function cmdCompact(rest: string[]): Promise<number> {
     const txn = new Transaction(txnLog(root));
     let replaced = 0;
     txn.run("compact", ns, entry.entryId, () => {
-      const oldIds: string[] = [];
+      const archivedIds: string[] = [];
       updateKindsAtomically(
         [{ nsDir: nsDir(root, ns), kind: "COMPACT", mutate: (entries) => {
           // Re-read the truth under the lock (never a pre-lock snapshot): a
           // daemon PostCompact reflection may have been appended meanwhile.
-          // Replace only active/stale strategies; archived history (kept by
-          // the daemon's compaction capping) is preserved.
-          const toRemove = entries.filter((e) => e.status === "active" || e.status === "stale");
-          oldIds.push(...toRemove.map((e) => e.entryId));
-          replaced = toRemove.length;
-          const kept = entries.filter((e) => e.status === "archived");
-          return [...kept, entry];
+          // Archive (never delete) replaced active/stale strategies: the
+          // daemon appends its reflections to the active entry, so deleting
+          // it would destroy that reflection history.
+          const replacedOnes = entries.filter((e) => e.status === "active" || e.status === "stale");
+          replaced = replacedOnes.length;
+          archivedIds.length = 0;
+          for (const r of replacedOnes) {
+            archivedIds.push(r.entryId);
+          }
+          const kept = entries.filter((e) => e.status !== "deleted");
+          return [
+            ...kept.map((e) =>
+              replacedOnes.some((r) => r.entryId === e.entryId) ? { ...e, status: "archived" as Status } : e,
+            ),
+            entry,
+          ];
         } }],
         () => idx.withTransaction(() => {
-          for (const id of oldIds) {
-            idx.delete(id);
+          for (const id of archivedIds) {
+            idx.patch(id, { status: "archived" });
           }
           idx.add(entry);
           idx.audit("compact", ns, `${entry.entryId} replaced ${replaced} old strategy entries`);
@@ -482,7 +512,7 @@ async function cmdEvent(rest: string[]): Promise<number> {
     allowPositionals: true,
     options: { json: { type: "string" } },
   });
-  let env;
+  let env: EventEnvelope;
   try {
     if (values.json) {
       env = parseEnvelope(values.json);
@@ -544,7 +574,10 @@ async function cmdPrune(rest: string[]): Promise<number> {
       const byId = new Map(transitions.map((t) => [t.entryId, t]));
       updateKindsAtomically(
         ids.map((id) => {
-          const t = byId.get(id)!;
+          const t = byId.get(id);
+          if (t === undefined) {
+            throw new Error(`prune: missing transition for entry ${id}`);
+          }
           return {
             nsDir: nsDir(root, t.ns),
             kind: t.kind as Kind,
@@ -724,6 +757,12 @@ async function cmdMerge(rest: string[]): Promise<number> {
   }
   const root = rootDir();
   return withIndex(async (idx) => {
+    // Judge existence by the md truth, not the index: the index can be
+    // legitimately inconsistent (external edits, crashes) and should not
+    // make merge fail or silently no-op.
+    if (!namespaces(root).includes(srcNs)) {
+      return fail(`merge: source namespace ${srcNs} does not exist`);
+    }
     const src = idx.list({ ns: srcNs, allStatus: true });
     const dst = idx.list({ ns: dstNs, allStatus: true });
     const reservedIds = new Set(idx.list({ allStatus: true }).map((e) => e.entryId));
@@ -815,8 +854,10 @@ async function cmdCodexDaemon(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
   const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
-  console.log(t("daemon.listening", socketPath));
+  // Announce only after the pid lock and socket are actually acquired, so a
+  // double-start fails before printing a misleading "listening" line.
   const daemon = await runCodexDaemon({ socketPath, root });
+  console.log(t("daemon.listening", socketPath));
   await daemon.closed;
   return 0;
 }
@@ -882,10 +923,11 @@ async function cmdDoctor(): Promise<number> {
   } catch (err) {
     check(t("doctor.config"), false, String(err));
   }
+  let idx: Index | null = null;
   try {
     // Doctor performs its own read-only mirror comparison below; do not heal
     // the mismatch during open or the diagnostic would become false-green.
-    const idx = await Index.create(indexDb(root), { verifyFts: false });
+    idx = await Index.create(indexDb(root), { verifyFts: false });
     const counts = idx.counts();
     const total = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
     check(t("doctor.index"), true, `backend=${idx.backend}, entries=${total}`);
@@ -920,9 +962,12 @@ async function cmdDoctor(): Promise<number> {
     }
     const pending = new Transaction(txnLog(root)).pending();
     check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcurio repair)` : t("doctor.noPending"));
-    idx.close();
   } catch (err) {
     check(t("doctor.index"), false, String(err));
+  } finally {
+    // Close even when a check above threw, so a failing doctor never leaks
+    // the open database handle.
+    idx?.close();
   }
   const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
   const pluginDir = join(root, "codex-plugin");
@@ -1037,16 +1082,30 @@ export async function main(argv: string[]): Promise<number> {
     if (/unable to open database file/i.test(msg)) {
       console.error(t("init.hint"));
     }
-    const isUsage = /unknown option|invalid option|expected a value|missing required|unexpected option|no such option|argument missing/i.test(
-      msg,
-    );
+    if (/file is not a database|not a database/i.test(msg)) {
+      // The shadow index is a rebuildable cache; a corrupted file can only be
+      // recovered by removing it and rebuilding from the md truth.
+      console.error(t("corruptIndex.hint"));
+    }
+    // Structured classification instead of message sniffing: node:util's
+    // parseArgs reports usage problems via ERR_PARSE_ARGS_* codes, and
+    // CLI-level validation throws UsageError; everything else is runtime.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    const isUsage =
+      err instanceof UsageError ||
+      code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ||
+      code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL" ||
+      code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" ||
+      code === "ERR_PARSE_ARGS_MISSING_REQUIRED_ARGUMENT" ||
+      code === "ERR_PARSE_ARGS_OPTION_TYPE" ||
+      code === "ERR_PARSE_ARGS_MISSING_POSITIONAL";
     return isUsage ? 2 : 1;
   }
 }
 
 const isMain = (() => {
   try {
-    return pathToFileURL(process.argv[1]).href === import.meta.url;
+    return pathToFileURL(process.argv[1] ?? "").href === import.meta.url;
   } catch {
     return false;
   }

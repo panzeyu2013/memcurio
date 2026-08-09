@@ -42,7 +42,7 @@ afterEach(() => {
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
   const r = await runCli(...argv);
-  return { code: r.code, out: r.out + "\n" + r.err };
+  return { code: r.code, out: `${r.out}\n${r.err}` };
 }
 
 describe("memcurio cli", () => {
@@ -98,7 +98,10 @@ describe("memcurio cli", () => {
     const { out: list } = await run("list");
     const id = list.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/)?.[1];
     expect(id).toBeTruthy();
-    const { code } = await run("forget", id!);
+    if (id === undefined) {
+      throw new Error("no entry id in list output");
+    }
+    const { code } = await run("forget", id);
     expect(code).toBe(0);
     const { out: search } = await run("search", "要删除的内容");
     expect(search).not.toContain(id);
@@ -110,7 +113,7 @@ describe("memcurio cli", () => {
     const ns = nsDir(dir, "default");
     writeFileSync(
       join(ns, "MEMORY.md"),
-      readFileSync(join(ns, "MEMORY.md"), "utf-8") + "\n\n§ c0ffee00 | MEMORY | 2026-01-01T00:00:00.000Z | active\n\n手写条目\n",
+      `${readFileSync(join(ns, "MEMORY.md"), "utf-8")}\n\n§ c0ffee00 | MEMORY | 2026-01-01T00:00:00.000Z | active\n\n手写条目\n`,
     );
     const { code } = await run("reindex");
     expect(code).toBe(0);
@@ -168,6 +171,13 @@ describe("memcurio cli", () => {
     await run("init");
     const bad = await run("import", join(dir, "missing.jsonl"), "--ns", "../../escape");
     expect(bad.code).toBe(2);
+  });
+
+  test("an invalid --kind is a usage error (exit 2) on read-only commands too", async () => {
+    await run("init");
+    const bad = await run("search", "x", "--kind", "NOPE");
+    expect(bad.code).toBe(2);
+    expect(bad.out).toContain("invalid kind");
   });
 
   test("--top-k 0 coerces to the default instead of returning nothing", async () => {

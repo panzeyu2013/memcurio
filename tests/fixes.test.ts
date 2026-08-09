@@ -1,3 +1,5 @@
+import { Database } from "bun:sqlite";
+
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -19,6 +21,20 @@ let dir: string;
 let prevRoot: string | undefined;
 const LANG_VARS = ["MEMCURIO_LANG", "LANG"] as const;
 let savedLang: Record<string, string | undefined> = {};
+
+/** Synchronous probe for the FTS5 trigram tokenizer, mirroring the driver
+ *  detection in db.ts: when trigram is unavailable the index falls back to the
+ *  LIKE backend and the FTS-mirror check does not apply. */
+function trigramAvailable(): boolean {
+  try {
+    const db = new Database(":memory:");
+    db.exec("CREATE VIRTUAL TABLE fts USING fts5(content, tokenize='trigram')");
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fix-"));
@@ -122,7 +138,7 @@ describe("A5 ns 白名单", () => {
   test("import 拒绝文件内非法 ns", async () => {
     await runCli("init");
     const bad = join(dir, "bad.jsonl");
-    writeFileSync(bad, JSON.stringify({ entryId: "11111111", content: "x", createdAt: "2026-01-01T00:00:00.000Z", ns: "../../escape" }) + "\n");
+    writeFileSync(bad, `${JSON.stringify({ entryId: "11111111", content: "x", createdAt: "2026-01-01T00:00:00.000Z", ns: "../../escape" })}\n`);
     const { code } = await runCli("import", bad);
     expect(code).toBe(1);
   });
@@ -187,7 +203,9 @@ describe("A2 reindex 保留统计 / repair", () => {
     await runCli("init");
     await runCli("remember", "重要记忆");
     const idx = await Index.create(indexDb(dir));
-    const id = idx.list()[0].entryId;
+    const entry = idx.list()[0];
+    if (entry === undefined) throw new Error("expected an entry");
+    const id = entry.entryId;
     idx.touch([id]);
     idx.close();
     const { code } = await runCli("reindex");
@@ -257,7 +275,7 @@ describe("A2 reindex 保留统计 / repair", () => {
     const logPath = txnLog(dir);
     const txn = new Transaction(logPath);
     const { appendFileSync } = await import("node:fs");
-    appendFileSync(logPath, JSON.stringify({ op: "BEGIN", txn: "orphan1", action: "x", ns: "default", detail: "y", ts: "2026-01-01T00:00:00.000Z" }) + "\n");
+    appendFileSync(logPath, `${JSON.stringify({ op: "BEGIN", txn: "orphan1", action: "x", ns: "default", detail: "y", ts: "2026-01-01T00:00:00.000Z" })}\n`);
     expect(txn.pending().length).toBe(1);
     const { code } = await runCli("repair", "--execute");
     expect(code).toBe(0);
@@ -332,7 +350,7 @@ describe("C2 命名空间分叉", () => {
     await runCli("init");
     writeFileSync(
       join(dir, "config.json"),
-      JSON.stringify({ namespace: { default: "configured-ns" }, budget: { maxInjectTokens: 1500, topKStatic: 10 }, prune: { staleDays: 30, archivedDays: 90, graceDays: 3 } }, null, 2) + "\n",
+      `${JSON.stringify({ namespace: { default: "configured-ns" }, budget: { maxInjectTokens: 1500, topKStatic: 10 }, prune: { staleDays: 30, archivedDays: 90, graceDays: 3 } }, null, 2)}\n`,
     );
     const client = new Client({ name: "t", version: "0.0.1" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -373,15 +391,10 @@ describe("C1 CLI 体验", () => {
     expect(broken.out).not.toContain("全部正常");
   });
 
-  test("doctor reports FTS drift instead of silently repairing it during open", async () => {
+  test.skipIf(!trigramAvailable())("doctor reports FTS drift instead of silently repairing it during open", async () => {
     await runCli("init");
     await runCli("remember", "用于检测 FTS 漂移的内容");
     const idx = await Index.create(indexDb(dir));
-    if (idx.backend !== "trigram") {
-      idx.close();
-      console.warn("SKIP: trigram backend unavailable on this platform, FTS drift case not exercised");
-      return;
-    }
     idx.driver.run("DELETE FROM fts");
     idx.close();
     const result = await runCli("doctor");
@@ -404,7 +417,10 @@ describe("C3 import 内容去重", () => {
     await runCli("export", "--output", backup);
     const listed = (await runCli("list")).out.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/)?.[1];
     expect(listed).toBeTruthy();
-    await runCli("forget", listed!);
+    if (listed === undefined) {
+      throw new Error("no entry id in list output");
+    }
+    await runCli("forget", listed);
     await runCli("import", backup);
     const again = await runCli("import", backup);
     expect(again.out).toContain("0 条");
