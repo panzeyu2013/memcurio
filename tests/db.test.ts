@@ -97,7 +97,7 @@ describe("Index", () => {
     idx.recordContradiction("a1b2c3d4", "e5f6a7b8", "重复记录");
     const rows = idx.openContradictions();
     expect(rows).toHaveLength(1);
-    expect(String(rows[0].reason)).toBe("互相矛盾的事实");
+    expect(String(rows[0]?.reason)).toBe("互相矛盾的事实");
     idx.close();
   });
 
@@ -314,8 +314,8 @@ describe("Index", () => {
     idx.add(makeEntry({ entryId: "e5f6a7b8", status: "stale" }));
     idx.add(makeEntry({ entryId: "c9d0e1f2", ns: "other" }));
     const counts = idx.counts();
-    expect(counts["default"]).toEqual({ active: 1, stale: 1 });
-    expect(counts["other"]).toEqual({ active: 1 });
+    expect(counts.default).toEqual({ active: 1, stale: 1 });
+    expect(counts.other).toEqual({ active: 1 });
     idx.close();
   });
 
@@ -334,7 +334,7 @@ describe("Index", () => {
     idx.audit("search", "default", "q -> 1 hits");
     expect(idx.auditCount()).toBe(2);
     const recent = idx.auditRecent(1);
-    expect(recent[0].action).toBe("search");
+    expect(recent[0]?.action).toBe("search");
     idx.close();
   });
 

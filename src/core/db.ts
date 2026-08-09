@@ -4,6 +4,54 @@ import type { DbDriver, SqlRow } from "./sqlite.js";
 import { openDb } from "./sqlite.js";
 import { HOSTS } from "./events.js";
 
+/** True when SQLite reports a contended write lock (busy_timeout elapsed). */
+function isBusy(err: unknown): boolean {
+  return err instanceof Error && /database is locked|database table is locked|busy/i.test(err.message);
+}
+
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Rebuild the FTS shadow table inside BEGIN IMMEDIATE with busy retries, so
+ *  concurrent opens (daemon + CLI) cannot starve each other on the rebuild. */
+function rebuildFtsWithBusyRetry(driver: DbDriver): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      driver.exec("BEGIN IMMEDIATE");
+    } catch (err) {
+      const wait = busyRetryWaitMs(attempt);
+      if (!isBusy(err) || wait === null) {
+        throw err;
+      }
+      sleep(wait);
+      continue;
+    }
+    try {
+      driver.run("DELETE FROM fts");
+      driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+      driver.exec("COMMIT");
+    } catch (err) {
+      try {
+        driver.exec("ROLLBACK");
+      } catch {
+        void 0;
+      }
+      throw err;
+    }
+    return;
+  }
+}
+
+/** Exponential backoff between busy retries (250/500/1000ms); null means the
+ *  retry budget is exhausted and the busy error should propagate. A lock
+ *  holder suspended by the OS scheduler for seconds needs this slack, while
+ *  the 20s busy_timeout already covers ordinary contention. */
+function busyRetryWaitMs(attempt: number): number | null {
+  const waits = [250, 500, 1000];
+  return attempt < waits.length ? waits[attempt] ?? 1000 : null;
+}
+
 const BASE = `
 CREATE TABLE IF NOT EXISTS entries(
   entry_id TEXT PRIMARY KEY,
@@ -148,15 +196,7 @@ export class Index {
              ) LIMIT 1`,
           );
           if (inconsistent) {
-            driver.exec("BEGIN");
-            try {
-              driver.run("DELETE FROM fts");
-              driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
-              driver.exec("COMMIT");
-            } catch (err) {
-              driver.exec("ROLLBACK");
-              throw err;
-            }
+            rebuildFtsWithBusyRetry(driver);
           }
           driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_verified_version', ?)", [schemaVersion]);
         } catch {
@@ -175,15 +215,7 @@ export class Index {
           const entriesCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM entries")?.c ?? 0;
           const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
           if (entriesCount !== ftsCount) {
-            driver.exec("BEGIN");
-            try {
-              driver.run("DELETE FROM fts");
-              driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
-              driver.exec("COMMIT");
-            } catch (err) {
-              driver.exec("ROLLBACK");
-              throw err;
-            }
+            rebuildFtsWithBusyRetry(driver);
           }
         } catch {
           backend = "like";
@@ -210,24 +242,66 @@ export class Index {
 
   private inTxn = false;
 
+  /** Run work inside a write transaction. BEGIN IMMEDIATE acquires the WAL
+   *  write lock up front (a deferred BEGIN would only upgrade at the first
+   *  write, widening the window where a slow writer stalls peers), and a busy
+   *  writer is retried a few times: under process-scheduling pressure a lock
+   *  holder can be suspended past SQLite's busy_timeout, and the retry absorbs
+   *  that transient instead of failing the whole command. */
   withTransaction(work: () => void): void {
     if (this.inTxn) {
       throw new Error("nested withTransaction is not supported");
     }
     this.inTxn = true;
-    this.driver.exec("BEGIN");
     try {
-      work();
-      this.driver.exec("COMMIT");
-    } catch (err) {
-      try {
-        this.driver.exec("ROLLBACK");
-      } catch {
-        void 0;
-      }
-      throw err;
+      this.execWithBusyRetry(work);
     } finally {
       this.inTxn = false;
+    }
+  }
+
+  /** BEGIN IMMEDIATE + work + COMMIT, retrying the whole transaction while the
+   *  database reports a busy writer (a busy COMMIT under WAL checkpoint
+   *  contention is rolled back and re-run, so the work closure must be
+   *  transaction-idempotent — every caller here only issues SQLite statements).
+   *  Non-busy failures are never retried. */
+  private execWithBusyRetry(work: () => void): void {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.driver.exec("BEGIN IMMEDIATE");
+      } catch (err) {
+        const wait = busyRetryWaitMs(attempt);
+        if (!isBusy(err) || wait === null) {
+          throw err;
+        }
+        sleep(wait);
+        continue;
+      }
+      let busy = false;
+      try {
+        work();
+        this.driver.exec("COMMIT");
+      } catch (err) {
+        try {
+          this.driver.exec("ROLLBACK");
+        } catch {
+          void 0;
+        }
+        if (isBusy(err)) {
+          busy = true;
+        } else {
+          throw err;
+        }
+      }
+      if (busy) {
+        const wait = busyRetryWaitMs(attempt);
+        if (wait === null) {
+          throw new Error("database is locked");
+        }
+        sleep(wait);
+        continue;
+      }
+      return;
     }
   }
 
@@ -319,7 +393,7 @@ export class Index {
     if (!params.allStatus) {
       where.push("status != 'deleted'");
     }
-    const sql = `SELECT ${ENTRY_COLS} FROM entries${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    const sql = `SELECT ${ENTRY_COLS} FROM entries${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`;
     return this.driver.all<EntryRow>(sql, args).map(rowToEntry);
   }
 
@@ -489,14 +563,28 @@ function migrate(driver: DbDriver): void {
   if (current < 2) {
     const cols = driver.all<{ name: string }>("PRAGMA table_info(entries)");
     if (!cols.some((c) => c.name === "pinned")) {
-      driver.run("ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+      // Two processes migrating the same old database concurrently both see
+      // "no pinned column" and race the ALTER; tolerate the loser.
+      try {
+        driver.run("ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+      } catch (err) {
+        if (!(err instanceof Error && /duplicate column/i.test(err.message))) {
+          throw err;
+        }
+      }
     }
     current = 2;
   }
   if (current < 3) {
     const cols = driver.all<{ name: string }>("PRAGMA table_info(contradictions)");
     if (!cols.some((c) => c.name === "reason")) {
-      driver.run("ALTER TABLE contradictions ADD COLUMN reason TEXT");
+      try {
+        driver.run("ALTER TABLE contradictions ADD COLUMN reason TEXT");
+      } catch (err) {
+        if (!(err instanceof Error && /duplicate column/i.test(err.message))) {
+          throw err;
+        }
+      }
     }
     driver.run(
       "DELETE FROM contradictions WHERE rowid NOT IN (SELECT MAX(rowid) FROM contradictions GROUP BY entry_a, entry_b)",
