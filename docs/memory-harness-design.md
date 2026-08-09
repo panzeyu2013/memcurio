@@ -178,7 +178,7 @@
 - **适配器层**：每 harness 一个薄壳，只做"事件翻译 + 注入通道"，声明能力等级
 - **CLI**：手动管理（剪枝报告、导入导出、审计、状态、策展、codex 插件生成）、可独立于任何 harness 使用
 
-> 实现状态：M0–M4 代码全部落地（320 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
+> 实现状态：M0–M4 代码全部落地（350 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
 
 ### 4.2 统一事件模型（引擎的唯一输入）
 
@@ -213,7 +213,7 @@ capabilities {
 
 | 适配器 | observe | inject | @prompt | intervene | replace | 实际形态 |
 |---|---|---|---|---|---|---|
-| opencode 插件 | ✓ | △ | △ | ✓ | ✓ | 压缩代管 + 观测 |
+| opencode 插件 | ✓ | ✓ | ✓ | ✓ | ✓ | 压缩代管 + 观测 |
 | pi 扩展 | — | — | — | — | — | ⚠️ 未实现（1.2 的"共享 80%"为设计预期） |
 | codex 插件 | ✓ | ✓ | ✓ | ✗* | ✗ | 半自动 |
 | claude code | ✓ | ✓ | ✓ | △ | ✗ | 半自动（未实现） |
@@ -221,7 +221,7 @@ capabilities {
 
 > \* 源码核实修正（codex-rs/hooks/schema）：当前协议 PreCompact 输出仅 continue/stopReason/suppressOutput/systemMessage，**无 context 注入字段**，无法向压缩提供素材；SessionStart/UserPromptSubmit/PostToolUse 输出支持 `hookSpecificOutput.additionalContext`，动态注入通道成立。
 >
-> opencode 行说明（实现回写）：当前插件实现压缩干预（compacting 注入/替换）与读侧记账，静态/动态注入主要依赖 AGENTS.md 基线 + MCP memory_search；opencode 插件进程内可加 message.* 动态注入（待真实验证后回填 ✓）。
+> opencode 行说明（实现回写）：当前插件实现压缩干预（compacting 注入/替换）与读侧记账；`inject` / `@prompt` 经 AGENTS.md 基线 + MCP memory_search 达成 ✓（integration-opencode.md）；插件进程内 message.* 动态注入仍待真实验证（未实现）。
 
 引擎根据能力等级调整策略：能 replace 的走"注入 + 压缩代管"，只能注入的走"注入 + 观测"，什么都不行的走"模型驱动"。
 
@@ -272,7 +272,7 @@ capabilities {
 - 压缩干预：opencode 上替换压缩提示词（保留决策/约束/任务状态）；codex 上 pre_compact 提供素材 —— ⚠️ 源码核实：当前 codex 协议 PreCompact 无注入通道，codex 侧压缩干预不可行，改为依赖"压缩后 SessionStart(source=compact) 重新注入记忆"兜底
 - 注入预算：全部注入路径（baseline / 压缩上下文 / codex SessionStart+UserPromptSubmit）按 config.budget.maxInjectTokens 裁剪（estimateTokens=CJK 1/字，其余 0.25/字），超预算标注未注入条数
 - 注入消毒（Hermes 模式）：注入前逐条扫描 promptware 模式，命中条目跳过并审计；写入时密钥脱敏（sk-/AKIA/PEM 等 → [REDACTED]，审计告警）
-- 呈现优先（MemArbiter）：注入内容结构化排序（当前任务 > 约束 > 事实 > 画像）
+- 呈现优先（MemArbiter）：注入内容结构化排序（当前任务 > 约束 > 事实 > 画像）——⏳ **未实现**：当前排序按 value_score（静态）与检索相关度（动态），无 kind 优先级
 
 **功能 C：跨记忆管理**
 - 命名空间：workdir 级隔离（官方是全局单一，这是空白点）；支持共享命名空间（全局偏好）——**已实现**
@@ -295,7 +295,7 @@ capabilities {
 - 适配器：TS 单文件打包（`bun build` → 零依赖 bundle）；范式 A（codex）= **1 个常驻 daemon + N 个 hook 薄壳**（unix socket 转发，规避每次工具调用 fork 冷启动）
 - 存储：SQLite + Markdown 真源；**MVP 不上向量库**（LightMem 复现论文的教训）
 - 检索：后端可插拔，默认 **FTS5 trigram**（SQLite 内置、零依赖，按字符 3-gram 建索引，CJK/拉丁/混合文本天然支持，无需语言检测与分词库）；查询 <3 字符用 LIKE 兜底；**CJK 4 字符窗口 OR 查询**解决自然语言提问召回；实测精确度不足再换分词后端，仍不足才加 embedding——全程引擎零改动
-- 测试：bun test（222 用例）；类型检查 tsc --noEmit
+- 测试：bun test（350 用例）；类型检查 tsc --noEmit
 
 > 为何弃 Python 改全 TS（2026-08 决策）：范式 B 适配器（opencode/pi）是进程内 TS，引擎同语言后插件可直接 import 核心（零 IPC）；类型契约（Entry/Hit/Event）一份贯穿所有层，消除跨语言漂移；部署零依赖（bun 内建 SQLite）。
 
@@ -312,7 +312,7 @@ capabilities {
 | 收尾 | 真实 harness 闭环验证（opencode/codex 实机）、LLM 策展实测（API key）、官方 memories 镜像（延后） | ⏳ 待推进 |
 
 ### 5.3 验证方式
-- 单测：存储/剪枝状态机/事务日志/检索（含 CJK）/MCP 协议/适配器事件流/安全/预算/策展——**已实现 222 用例**（bun test）
+- 单测：存储/剪枝状态机/事务日志/检索（含 CJK）/MCP 协议/适配器事件流/安全/预算/策展——**已实现 350 用例**（bun test）
 - 集成：真实 harness 会话烟测（⏳）；AgentMemBench 式的对照（开/关记忆对比纠错率、重复提问率）（⏳）
 - 指标：注入 token 预算达标率、记忆召回命中率、剪枝误杀率（审计可回滚兜底）
 

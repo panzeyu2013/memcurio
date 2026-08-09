@@ -61,8 +61,9 @@ memcurio audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 全部用例（当前 336，23 个文件）
+bun test          # 全部用例（当前 350，23 个文件）
 bun run typecheck # 类型检查（覆盖 src/tests/scripts）
+bun run lint      # biome lint（零诊断）
 bun run bundle:plugin
 ```
 

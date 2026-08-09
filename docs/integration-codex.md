@@ -21,7 +21,7 @@ MemcurioAdapter（会话记账 / 注入 / 复盘）
 ```
 
 - hook 首次调用时若 daemon 未启动，自动 `bun daemon.js` 拉起（detached）并重试
-- daemon 监听 `~/.memcurio/state/codex.sock`（`MEMCURIO_CODEX_SOCKET` 可覆盖），**chmod 600 + 随机 token 握手**（token 存 `state/codex.token`，仅 hook 读取）
+- daemon 监听 `~/.memcurio/state/codex.sock`（`MEMCURIO_CODEX_SOCKET` 可覆盖），**chmod 600 + 随机 token 握手**（token 存 `state/codex.token`，daemon 首写者胜、hook 每次启动读取）
 - hook 失败时向 stderr 输出可操作信息并追加 `state/hook.log`
 - daemon 对 `PostToolUse`/`UserPromptSubmit` 按 `tool_use_id`/`turn_id` 去重（10 分钟窗口），hook 重试不会重复记账
 - `SessionStart` 去重键含 `source`（startup/resume/compact）：codex 压缩后在同一 session 再次触发 `SessionStart(source=compact)` 时会重新注入静态记忆，不会被 10 分钟窗口吞掉
@@ -39,7 +39,7 @@ MemcurioAdapter（会话记账 / 注入 / 复盘）
 | `UserPromptSubmit` | cwd, session_id, prompt, turn_id | 消息计数；**按 prompt 动态检索注入**（CJK 窗口 OR 查询） | `hookSpecificOutput.additionalContext` |
 | `PostToolUse` | tool_name, tool_input | 工具/文件记账；读记忆 md 文件自动 touch | 无注入 |
 | `PreCompact` | cwd, session_id, transcript_path | 无操作 | ⚠️ 当前协议输出**无注入通道** |
-| `PostCompact` | cwd, session_id, transcript_path, trigger | 标记会话已压缩；反思写回 COMPACT 策略（异步，不阻塞 hook）。反思默认经 `codex exec --json --ephemeral` 用 **codex 自身模型**（输出为 JSONL 事件流，源码核实：最终回复为最后一条 `item.completed` 且 `item.type=agent_message`；`turn.failed`/`error`/非零退出即降级） | 无 |
+| `PostCompact` | cwd, session_id, transcript_path, trigger | 标记会话已压缩；反思写回 COMPACT 策略（**同步等待**：hook 最长等 ~125s，daemon 内整条反射链有 120s 总预算；若 hook 超时其报错但 daemon 仍在后台完成写回，inFlight 去重保证不重复）。反思默认经 `codex exec --json --ephemeral` 用 **codex 自身模型**（输出为 JSONL 事件流，源码核实：最终回复为最后一条**可解析为反思 JSON** 的 `item.completed` 且 `item.type=agent_message`，全不可解析时取第一条；`turn.failed`/`error`/非零退出即降级） | 无 |
 | `Stop` | cwd, session_id, turn_id | 节流写会话复盘（SESSION.md） | 无 |
 | `SessionEnd` | cwd, session_id | 最终复盘 + 会话关闭 | 无 |
 | `SubagentStart/Stop` | agent_id | 无操作（continue 透传） | 无 |

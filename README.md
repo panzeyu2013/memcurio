@@ -1,7 +1,7 @@
 # memcurio
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Bun](https://img.shields.io/badge/bun-%3E%3D1.0.0-black?logo=bun)](https://bun.sh)
+[![Bun](https://img.shields.io/badge/bun-%3E%3D1.1.3-black?logo=bun)](https://bun.sh)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **memcurio** is a harness-agnostic, language-agnostic memory and context management system for AI coding agents. It closes the loop between **within-session context management** and **cross-session memory** — automatically, for any harness (opencode, codex, or anything speaking MCP).
@@ -13,12 +13,12 @@ The core engine has **zero runtime dependencies** (bun's built-in SQLite); only 
 - **Fully automatic closed loop** — memories are written, retrieved, injected, and reflected back without manual prompt engineering.
 - **Harness-agnostic core** — the engine knows zero harnesses and zero languages; harness/language concerns live only in `src/adapters/` and pluggable backends (retriever, LLM provider).
 - **Markdown as source of truth** — `memory/*.md` is human-readable and directly editable; the SQLite shadow index is a rebuildable derived cache (`reindex` / `repair`).
-- **Safe by default** — promptware-injection sanitization, secret redaction, file permissions `0700/0600`, socket auth, and full audit trail on every write.
+- **Safe by default** — promptware-injection sanitization, secret redaction, private file/dir permissions (data dirs `0700`, data files `0600`), socket auth, and full audit trail on every write.
 - **Value-aware lifecycle** — pruning with value scoring and pinning, LLM curation (contradiction detection / umbrella merging / re-evaluation), and injection budgets.
 
 ## Installation
 
-Requires [bun](https://bun.sh) >= 1.0.
+Requires [bun](https://bun.sh) >= 1.1.3.
 
 ```bash
 bun install        # installs deps and builds dist automatically (prepare script)
@@ -66,7 +66,7 @@ memcurio forget <id>        Delete a memory
 memcurio pin <id>           Pin an entry to skip pruning [--unset]
 memcurio revive <id>        Restore a stale/archived entry to active
 memcurio prune              Value-aware pruning (dry-run; --execute applies) [--ns X]
-memcurio curate             LLM curation dry-run (--execute applies) [--ns X]
+memcurio curate             LLM curation dry-run (--execute applies) [--ns X] [--min-use N] [--max-checks N]
 memcurio export             Export JSONL [--ns X] [--kind K] [--output FILE]
 memcurio import <file>      Import JSONL [--ns X]
 memcurio merge <src> <dst>  Merge namespaces (dry-run; --execute applies)
