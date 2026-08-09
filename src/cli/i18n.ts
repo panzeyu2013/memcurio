@@ -1,7 +1,8 @@
 export type Lang = "zh" | "en";
 
 export function currentLang(): Lang {
-  const raw = (process.env.MEMCORE_LANG ?? process.env.LANG ?? "").toLowerCase();
+  // `||` (not `??`) so an empty MEMCORE_LANG falls through to LANG / default.
+  const raw = (process.env.MEMCORE_LANG || process.env.LANG || "").toLowerCase();
   if (!raw) {
     return "zh";
   }
@@ -47,7 +48,7 @@ const zh: Record<string, Entry> = {
   "help.init": "memcore init\n  初始化 ~/.memcore 布局（可用 MEMCORE_ROOT 覆盖路径）",
   "help.status": "memcore status\n  显示引擎状态（命名空间/后端/审计/pending）",
   "help.remember": "memcore remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）",
-  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  列出记忆（--all 含已归档）",
+  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  列出记忆（默认显示 archived；--all 额外含已删除）",
   "help.search": "memcore search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）",
   "help.forget": "memcore forget <id>\n  删除一条记忆（id 从 memcore list 获取）",
   "help.pin": "memcore pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
@@ -60,7 +61,7 @@ const zh: Record<string, Entry> = {
   "help.baseline": "memcore baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
   "help.index": "memcore index\n  重新生成全局 INDEX.md",
   "help.reindex": "memcore reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
-  "help.compact": "memcore compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；覆盖旧策略）",
+  "help.compact": "memcore compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；替换 active/stale 旧策略，保留已归档历史）",
   "help.repair": "memcore repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
   "help.doctor": "memcore doctor\n  自检环境与数据健康",
   "help.audit": "memcore audit [--limit N]\n  审计记录",
@@ -74,16 +75,18 @@ const zh: Record<string, Entry> = {
   "remember.tooLong": (n: string) => `remember: 内容超过 ${n} 字符上限`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${cur}'，如需注入请加 --ns ${cur} 或设置 config.namespace.default`,
+  "remember.redacted": "[secrets redacted]",
   "search.missing": 'search: missing query (memcore search "关键词")',
   "search.note": (x: string) =>
     `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcore list 确认记忆存在。`,
   "search.filtered": (n: string) => `note: ${n} 条命中因注入风险被过滤，未展示`,
+  "search.fallback": (err: string) => `fts 检索失败，回退 LIKE：${err}`,
   "forget.missing": "forget: missing entry_id (从 memcore list 获取)",
   "forget.done": (id: string) => `已删除 ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "策略内容")',
   "compact.tooLong": (n: string) => `compact: 内容超过 ${n} 字符上限`,
-  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条）`,
-  "repair.none": "no pending transactions (事务日志健康)",
+  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条，保留已归档历史）`,
+  "repair.none": "无未完成事务（事务日志健康）",
   "repair.pendingHeader": (n: string) => `${n} 个未完成事务：`,
   "repair.corrupt": (n: string) => `note: ${n} 行事务日志无法解析（torn write），已忽略`,
   "repair.truth": "md 真源为最终真相，索引可重建。",
@@ -92,6 +95,10 @@ const zh: Record<string, Entry> = {
   "event.tty": "event: stdin 为终端，请用 --json '{...}' 提供信封",
   "curate.noKeyNote": "未配置 MEMCORE_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。",
   "curate.needProvider": "curate --execute 需要 LLM provider：设置 MEMCORE_LLM_API_KEY（可选 MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL）",
+  "curate.plan": (p: string, r: string, c: string, u: string) =>
+    `curate plan (provider=${p}): ${r} 条重评，${c} 条矛盾，${u} 条伞合并（干跑）。`,
+  "curate.unparsable": (n: string) => `无法解析 ${n} 对（LLM 输出无法解析，需人工复核）`,
+  "curate.exhausted": (n: string) => `检查预算已用尽：LLM 调用达到上限，其余组合未评估（可增大 --max-checks ${n}）`,
   "curate.applied": (r: string, c: string, u: string) =>
     `curate 已应用：${r} 个分数，${c} 条矛盾，${u} 条伞合并`,
   "codexPlugin.snippet": "（config.toml 合并备选）",
@@ -108,8 +115,14 @@ const zh: Record<string, Entry> = {
   "import.conflict": (id: string, ns: string) => `冲突 ${id} 已存在但内容不同（跳过，ns=${ns}）`,
   "import.conflictFail": (n: string) => `import: ${n} 条冲突条目 ID；未导入任何内容`,
   "merge.done": (n: string, dst: string) => `已合并 ${n} 条到 ${dst}`,
+  "merge.dryRun": (c: string, f: string, d: string) =>
+    `合并计划：${c} 条复制，${f} 条冲突，${d} 条重复（干跑）。加 --execute 生效。`,
   "prune.none": "没有可剪枝的条目",
+  "prune.dryRun": (n: string) => `建议 ${n} 条状态转换（干跑）。加 --execute 生效。`,
   "prune.applied": (n: string) => `已应用 ${n} 条状态转换`,
+  "pin.done": (id: string) => `${id} 已固定`,
+  "unpin.done": (id: string) => `${id} 已取消固定`,
+  "revive.done": (id: string) => `${id} 已恢复`,
   "baseline.done": (w: string, c: string, ns: string) => `baseline 已写入: ${w}/AGENTS.md（注入 ${c} 条，ns=${ns}）`,
   "index.done": (p: string) => `索引已重新生成: ${p}/INDEX.md`,
   "status.root": (r: string) => `root      : ${r}`,
@@ -120,16 +133,31 @@ const zh: Record<string, Entry> = {
   "status.index": (b: string) => `index     : sqlite + ${b}`,
   "status.audit": (n: string) => `audit     : ${n} records`,
   "status.pending": (n: string) => `pending   : ${n} txns`,
+  "status.drift": (truth: string, indexed: string) =>
+    `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcore reindex 修复`,
+  "init.hint": "note: 未找到记忆库。请先运行 `memcore init`（或用 MEMCORE_ROOT 指定位置）。",
   "doctor.layout": "布局",
+  "doctor.config": "配置",
   "doctor.index": "索引",
   "doctor.txn": "事务",
+  "doctor.truthIds": "真源 ID",
+  "doctor.truthIndex": "真源/索引",
+  "doctor.ftsMirror": "FTS 镜像",
   "doctor.parsable": "可解析",
   "doctor.noPending": "无异常",
+  "doctor.aligned": (n: string) => `${n} 条一致`,
+  "doctor.mismatch": (n: string) => `${n} 条不一致或缺失（memcore reindex）`,
+  "doctor.duplicateIds": (n: string) => `${n} 条重复条目 ID`,
+  "doctor.unique": "唯一",
+  "doctor.reindexHint": "（memcore reindex）",
   "doctor.daemonIdle": "（未运行，仅 codex 用户需要）",
   "doctor.pluginMissing": "（未生成，仅 codex 用户需要）",
   "doctor.pluginLabel": "· codex 插件包",
   "doctor.ok": "\ndoctor: 全部正常",
   "doctor.bad": "\ndoctor: 发现问题，见上方 ✗ 项",
+  "note.invalidInt": (name: string, value: string, fallback: string) =>
+    `note: 忽略无效的 --${name} '${value}'（使用 ${fallback}）`,
+  "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} 超出上限 ${max}，已钳制`,
 };
 
 const en: Record<string, Entry> = {
@@ -168,7 +196,7 @@ Commands:
   "help.init": "memcore init\n  Initialize the ~/.memcore layout (override with MEMCORE_ROOT)",
   "help.status": "memcore status\n  Show engine status (namespaces/backend/audit/pending)",
   "help.remember": "memcore remember <text> [--ns X] [--kind MEMORY|USER]\n  Save a memory (secrets redacted on write; injection patterns audited)",
-  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  List memories (--all includes archived)",
+  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  List memories (archived shown by default; --all additionally includes deleted)",
   "help.search": "memcore search <query> [--ns X] [--kind K] [--top-k N]\n  Search memories (trigram/like; hits count as usage)",
   "help.forget": "memcore forget <id>\n  Delete a memory (get id from memcore list)",
   "help.pin": "memcore pin <id> [--unset]\n  Pin an entry to skip pruning / unpin",
@@ -181,7 +209,7 @@ Commands:
   "help.baseline": "memcore baseline [dir] [--top-k N]\n  Inject the AGENTS.md memory section (auto-injected on read)",
   "help.index": "memcore index\n  Regenerate the global INDEX.md",
   "help.reindex": "memcore reindex\n  Rebuild the shadow index from the Markdown source of truth (keeps usage stats)",
-  "help.compact": "memcore compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces old strategy in the namespace)",
+  "help.compact": "memcore compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces active/stale strategies, keeps archived history)",
   "help.repair": "memcore repair [--execute]\n  Detect/fix transaction anomalies (--execute triggers rebuild)",
   "help.doctor": "memcore doctor\n  Self-check environment and data health",
   "help.audit": "memcore audit [--limit N]\n  Audit records",
@@ -195,15 +223,17 @@ Commands:
   "remember.tooLong": (n: string) => `remember: content exceeds ${n} characters`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: memory saved to namespace '${ns}'; current directory sessions inject from '${cur}' — use --ns ${cur} or set config.namespace.default to inject here`,
+  "remember.redacted": "[secrets redacted]",
   "search.missing": 'search: missing query (memcore search "keyword")',
   "search.note": (x: string) =>
     `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcore list to confirm memories exist.`,
   "search.filtered": (n: string) => `note: ${n} hits filtered out by the injection scan, not shown`,
+  "search.fallback": (err: string) => `fts search failed, falling back to LIKE: ${err}`,
   "forget.missing": "forget: missing entry_id (get it from memcore list)",
   "forget.done": (id: string) => `forgot ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "strategy")',
   "compact.tooLong": (n: string) => `compact: content exceeds ${n} characters`,
-  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries)`,
+  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries, kept archived history)`,
   "repair.none": "no pending transactions (transaction log healthy)",
   "repair.pendingHeader": (n: string) => `${n} unfinished transactions:`,
   "repair.corrupt": (n: string) => `note: ${n} transaction log lines are unparsable (torn write), ignored`,
@@ -213,6 +243,10 @@ Commands:
   "event.tty": "event: stdin is a terminal; pass the envelope with --json '{...}'",
   "curate.noKeyNote": "MEMCORE_LLM_API_KEY not set: rule-based scan only, no LLM calls. Set it and run --execute for full curation.",
   "curate.needProvider": "curate --execute requires an LLM provider: set MEMCORE_LLM_API_KEY (optional MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL)",
+  "curate.plan": (p: string, r: string, c: string, u: string) =>
+    `curate plan (provider=${p}): ${r} reevaluations, ${c} contradictions, ${u} umbrellas (dry-run).`,
+  "curate.unparsable": (n: string) => `unparsable ${n} pairs (LLM output unparsable, needs manual review)`,
+  "curate.exhausted": (n: string) => `checks exhausted: LLM call budget used up, remaining pairs unevaluated (raise --max-checks beyond ${n})`,
   "curate.applied": (r: string, c: string, u: string) =>
     `curate applied: ${r} scores, ${c} contradictions, ${u} umbrellas`,
   "codexPlugin.snippet": "(fallback for merging into config.toml)",
@@ -229,8 +263,14 @@ Commands:
   "import.conflict": (id: string, ns: string) => `conflict ${id} exists with different content (skipped, ns=${ns})`,
   "import.conflictFail": (n: string) => `import: ${n} conflicting entry id(s); nothing imported`,
   "merge.done": (n: string, dst: string) => `merged ${n} entries into ${dst}`,
+  "merge.dryRun": (c: string, f: string, d: string) =>
+    `merge plan: ${c} to copy, ${f} conflicts, ${d} dups (dry-run). Re-run with --execute to apply.`,
   "prune.none": "nothing to prune",
+  "prune.dryRun": (n: string) => `${n} transitions proposed (dry-run). Re-run with --execute to apply.`,
   "prune.applied": (n: string) => `applied ${n} transitions`,
+  "pin.done": (id: string) => `${id} pinned`,
+  "unpin.done": (id: string) => `${id} unpinned`,
+  "revive.done": (id: string) => `${id} revived`,
   "baseline.done": (w: string, c: string, ns: string) => `baseline written: ${w}/AGENTS.md (${c} entries injected, ns=${ns})`,
   "index.done": (p: string) => `index regenerated: ${p}/INDEX.md`,
   "status.root": (r: string) => `root      : ${r}`,
@@ -241,16 +281,31 @@ Commands:
   "status.index": (b: string) => `index     : sqlite + ${b}`,
   "status.audit": (n: string) => `audit     : ${n} records`,
   "status.pending": (n: string) => `pending   : ${n} txns`,
+  "status.drift": (truth: string, indexed: string) =>
+    `note: md truth has ${truth} entries but the index has ${indexed}; run memcore reindex to repair`,
+  "init.hint": "note: no memory store found. Run `memcore init` first (or point MEMCORE_ROOT elsewhere).",
   "doctor.layout": "layout",
+  "doctor.config": "config",
   "doctor.index": "index",
   "doctor.txn": "transactions",
+  "doctor.truthIds": "truth ids",
+  "doctor.truthIndex": "truth/index",
+  "doctor.ftsMirror": "fts mirror",
   "doctor.parsable": "parseable",
   "doctor.noPending": "no pending",
+  "doctor.aligned": (n: string) => `${n} aligned`,
+  "doctor.mismatch": (n: string) => `${n} mismatched or missing entries (memcore reindex)`,
+  "doctor.duplicateIds": (n: string) => `${n} duplicate entry id(s)`,
+  "doctor.unique": "unique",
+  "doctor.reindexHint": " (memcore reindex)",
   "doctor.daemonIdle": " (not running; codex users only)",
   "doctor.pluginMissing": " (not generated; codex users only)",
   "doctor.pluginLabel": "· codex plugin package",
   "doctor.ok": "\ndoctor: all checks passed",
   "doctor.bad": "\ndoctor: issues found, see the ✗ items above",
+  "note.invalidInt": (name: string, value: string, fallback: string) =>
+    `note: ignoring invalid --${name} '${value}' (using ${fallback})`,
+  "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} exceeds ${max}; clamped`,
 };
 
 const dicts: Record<Lang, Record<string, Entry>> = { zh, en };
