@@ -1,10 +1,10 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { fitContext, fitLines, renderBudgetNotice } from "../../core/budget.js";
 import { loadConfig } from "../../core/config.js";
 import { Index } from "../../core/db.js";
-import { parseFile, updateKindsAtomically } from "../../core/mdStore.js";
+import { newEntry, parseFile, updateKindsAtomically } from "../../core/mdStore.js";
 import type { Entry, Status } from "../../core/mdStore.js";
 import { ensureLayout, indexDb, memoryRoot, namespaceFor, nsDir, rootDir as coreRoot, txnLog } from "../../core/paths.js";
 import { appendReflection, formatReflection, reflectOnCompaction } from "../../core/reflect.js";
@@ -13,7 +13,6 @@ import { redactSecrets, sanitizeForInjection } from "../../core/sanitize.js";
 import { safeSearch } from "../../core/safeSearch.js";
 import { selectStatic } from "../../core/select.js";
 import { Transaction } from "../../core/transaction.js";
-import { newEntryId } from "../../core/ids.js";
 
 export interface SessionState {
   sessionId: string;
@@ -47,7 +46,7 @@ export class MemcoreAdapter {
   private readonly autoWriteIntervalMs: number;
   private readonly reflect: ReflectChat | undefined;
 
-  constructor(private readonly opts: AdapterOptions = {}) {
+  constructor(opts: AdapterOptions = {}) {
     this.log = opts.log ?? (() => {});
     this.autoWriteIntervalMs = opts.autoWriteIntervalMs ?? 60_000;
     this.reflect = opts.reflect;
@@ -57,7 +56,7 @@ export class MemcoreAdapter {
     return this.sessions.get(sessionId);
   }
 
-  async sessionCreated(sessionId: string, workdir: string, host = "opencode"): Promise<SessionState> {
+  async sessionCreated(sessionId: string, workdir: string, host: string): Promise<SessionState> {
     const root = coreRoot();
     ensureLayout(root);
     const state: SessionState = {
@@ -101,11 +100,11 @@ export class MemcoreAdapter {
     s.toolUsage.set(tool, (s.toolUsage.get(tool) ?? 0) + 1);
     if (details?.filePath) {
       s.touchedFiles.add(details.filePath);
-      await this.#maybeTouchMemoryFile(s, details.filePath);
+      await this.#maybeTouchMemoryFile(details.filePath);
     }
   }
 
-  async #maybeTouchMemoryFile(s: SessionState, filePath: string): Promise<void> {
+  async #maybeTouchMemoryFile(filePath: string): Promise<void> {
     const root = coreRoot();
     const memRoot = memoryRoot(root);
     // Resolve symlinks so a memory file reached through a symlink is still
@@ -124,7 +123,7 @@ export class MemcoreAdapter {
     }
     try {
       const text = readFileSync(resolved, "utf-8");
-      const ns = resolved.split("/").at(-2) ?? s.ns;
+      const ns = basename(dirname(resolved));
       const entries = parseFile(text, ns);
       if (!entries.length) {
         return;
@@ -180,6 +179,9 @@ export class MemcoreAdapter {
     const root = coreRoot();
     const idx = await Index.create(indexDb(root));
     try {
+      // The strategy passed to the LLM may be a pre-lock snapshot (it only
+      // informs the reflection); the entry we append to is re-read under the
+      // file lock below so concurrent reflections never overwrite each other.
       const all = idx
         .list({ ns: s.ns, kind: "COMPACT", allStatus: true })
         .filter((e) => e.status !== "deleted")
@@ -198,62 +200,68 @@ export class MemcoreAdapter {
         new Date().toISOString(),
       );
       const txn = new Transaction(txnLog(root));
-      txn.run("adapter.compact_reflect", s.ns, prev?.entryId ?? "-", () => {
-        let reflected: Entry;
-        if (prev) {
-          reflected = { ...prev, content: appendReflection(prev.content, section) };
-        } else {
-          const ts = new Date().toISOString();
-          const entryId = newEntryId();
-          reflected = {
-            entryId,
-            ns: s.ns,
-            kind: "COMPACT",
-            content: appendReflection("", section),
-            createdAt: ts,
-            status: "active",
-            pinned: false,
-            lastUsedAt: null,
-            useCount: 0,
-            valueScore: 1,
-          };
-        }
-        // COMPACT entries are exempt from auto-pruning, so cap their count:
-        // archive all but the most recent 8.
-        const toArchive = all.slice(8).filter((e) => e.status === "active");
-        const archiveIds = new Set(toArchive.map((e) => e.entryId));
+      let reflected: Entry | undefined;
+      let isNewEntry = false;
+      const archiveIds = new Set<string>();
+      // The entryId is only resolved under the md lock, so the txn record links
+      // to the session and the audit (below) records the exact entryId.
+      txn.run("adapter.compact_reflect", s.ns, `session ${s.sessionId}`, () => {
         updateKindsAtomically(
           [{
             nsDir: nsDir(root, s.ns),
             kind: "COMPACT",
+            // Re-read the truth under the lock: the latest entry may have been
+            // appended by another session since the snapshot above.
             mutate: (entries) => {
+              const current = entries
+                .filter((e) => e.status !== "deleted")
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+              const latest = current[0];
+              isNewEntry = !latest;
+              reflected = latest
+                ? { ...latest, content: appendReflection(latest.content, section) }
+                : newEntry(s.ns, "COMPACT", appendReflection("", section));
+              // COMPACT entries are exempt from auto-pruning, so cap their
+              // count: archive all but the most recent 8.
+              const toArchive = current.slice(8).filter((e) => e.status === "active");
+              archiveIds.clear();
+              for (const e of toArchive) {
+                archiveIds.add(e.entryId);
+              }
               const updated = entries.map((e) => {
-                if (prev && e.entryId === prev.entryId) {
-                  return reflected;
+                if (latest && e.entryId === latest.entryId) {
+                  return reflected!;
                 }
                 return archiveIds.has(e.entryId) ? { ...e, status: "archived" as Status } : e;
               });
-              return prev ? updated : [...updated, reflected];
+              return latest ? updated : [...updated, reflected!];
             },
           }],
           () => idx.withTransaction(() => {
-            idx.add(reflected);
-            for (const e of toArchive) {
-              idx.add({ ...e, status: "archived" });
+            // Patch content/stats separately so a concurrent touch keeps its
+            // use_count/last_used_at (a full snapshot write would regress them).
+            if (isNewEntry) {
+              idx.add(reflected!);
+            } else {
+              idx.patch(reflected!.entryId, { content: reflected!.content });
+            }
+            for (const id of archiveIds) {
+              idx.patch(id, { status: "archived" });
             }
             if (safePrompt.redacted || safeMemory.redacted) {
               idx.audit("warn.redacted", s.ns, `secret redacted in compaction reflection`);
             }
-            if (toArchive.length) {
-              idx.audit("adapter.compact_cap", s.ns, `archived ${toArchive.length} old COMPACT entries`);
+            if (archiveIds.size) {
+              idx.audit("adapter.compact_cap", s.ns, `archived ${archiveIds.size} old COMPACT entries`);
             }
-            idx.audit("adapter.compact_reflect", s.ns, prev ? `appended to ${prev.entryId}` : "created");
+            idx.audit("adapter.compact_reflect", s.ns, `reflection stored (entry ${reflected!.entryId})`);
           }),
         );
       });
       this.log("info", "compaction reflection stored", {
         sessionId: s.sessionId,
         ns: s.ns,
+        entryId: reflected?.entryId,
         summary: summary ? `${summary.length} chars` : "unavailable",
       });
     } finally {
@@ -297,29 +305,17 @@ export class MemcoreAdapter {
       `- files: ${files || "none"}`,
     ].join("\n");
     const redacted = redactSecrets(content);
-    const entryId = newEntryId();
-    const entry: Entry = {
-      entryId,
-      ns: s.ns,
-      kind: "SESSION",
-      content: redacted.text,
-      createdAt: now.toISOString(),
-      status: "active",
-      pinned: false,
-      lastUsedAt: null,
-      useCount: 0,
-      valueScore: 1,
-    };
+    const entry = newEntry(s.ns, "SESSION", redacted.text);
     const idx = await Index.create(indexDb(root));
     try {
       const txn = new Transaction(txnLog(root));
-      txn.run("adapter.session_record", s.ns, entryId, () => {
+      txn.run("adapter.session_record", s.ns, entry.entryId, () => {
         updateKindsAtomically(
           [{ nsDir: nsDir(root, s.ns), kind: "SESSION", mutate: (entries) => [...entries, entry] }],
           () => idx.withTransaction(() => {
             idx.add(entry);
-            idx.audit("adapter.session_record", s.ns, `${entryId} (${reason})`);
-            if (redacted.redacted) idx.audit("warn.redacted", s.ns, `secret redacted in session record ${entryId}`);
+            idx.audit("adapter.session_record", s.ns, `${entry.entryId} (${reason})`);
+            if (redacted.redacted) idx.audit("warn.redacted", s.ns, `secret redacted in session record ${entry.entryId}`);
           }),
         );
       });
@@ -328,7 +324,7 @@ export class MemcoreAdapter {
     }
     s.lastAutoWriteAt = now.getTime();
     s.writtenCount += 1;
-    this.log("info", "session record written", { sessionId: s.sessionId, entryId, reason });
+    this.log("info", "session record written", { sessionId: s.sessionId, entryId: entry.entryId, reason });
   }
 
   async buildCompactionContext(sessionId: string, workdir: string): Promise<string> {

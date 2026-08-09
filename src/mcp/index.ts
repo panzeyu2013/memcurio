@@ -6,13 +6,12 @@ import { z } from "zod";
 
 import { loadConfig } from "../core/config.js";
 import { Index } from "../core/db.js";
-import { KINDS, updateKindsAtomically } from "../core/mdStore.js";
-import type { Entry, Kind } from "../core/mdStore.js";
+import { KINDS, newEntry, updateKindsAtomically } from "../core/mdStore.js";
+import type { Kind } from "../core/mdStore.js";
 import { assertValidNs, indexDb, ensureLayout, namespaces, nsDir, rootDir, txnLog } from "../core/paths.js";
 import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
 import { safeSearch } from "../core/safeSearch.js";
 import { Transaction } from "../core/transaction.js";
-import { newEntryId } from "../core/ids.js";
 import { MAX_MEMORY_CONTENT_CHARS } from "../core/transfer.js";
 
 const VERSION = "0.1.0";
@@ -41,7 +40,7 @@ export function createServer(): McpServer {
       inputSchema: {
         query: z.string().trim().min(1).max(10_000).describe("检索关键词，中文/英文均可"),
         topK: z.number().int().min(1).max(50).default(10).describe("返回条数上限"),
-        ns: z.string().optional().describe("命名空间过滤（默认全部）"),
+        ns: z.string().max(40).optional().describe("命名空间过滤（默认全部）"),
         kind: z.enum(MODEL_KINDS).optional().describe("条目类型：MEMORY=事实/决策/约束，USER=用户偏好"),
       },
     },
@@ -85,7 +84,7 @@ export function createServer(): McpServer {
       inputSchema: {
         content: z.string().trim().min(1).max(MAX_MEMORY_CONTENT_CHARS).describe("记忆内容，自包含、简洁、可作为独立条目"),
         kind: z.enum(MODEL_KINDS).default("MEMORY").describe("MEMORY=事实/决策/约束，USER=用户偏好"),
-        ns: z.string().optional().describe("命名空间（默认取配置 namespace.default，通常等于项目目录名）"),
+        ns: z.string().max(40).optional().describe("命名空间（默认取配置 namespace.default，通常等于项目目录名）"),
       },
     },
     async (args) => {
@@ -96,33 +95,20 @@ export function createServer(): McpServer {
       try {
         const redacted = redactSecrets(args.content);
         const flags = sanitizeForInjection(redacted.text);
-        const ts = new Date().toISOString();
-        const entryId = newEntryId();
-        const entry: Entry = {
-          entryId,
-          ns,
-          kind: args.kind,
-          content: redacted.text,
-          createdAt: ts,
-          status: "active",
-          pinned: false,
-          lastUsedAt: null,
-          useCount: 0,
-          valueScore: 1,
-        };
+        const entry = newEntry(ns, args.kind, redacted.text);
         const txn = new Transaction(txnLog(root));
-        txn.run("mcp.remember", entry.ns, entryId, () => {
+        txn.run("mcp.remember", entry.ns, entry.entryId, () => {
           updateKindsAtomically(
             [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) => [...entries, entry] }],
             () => idx.withTransaction(() => {
               idx.add(entry);
-              idx.audit("mcp.remember", entry.ns, entryId);
-              if (redacted.redacted) idx.audit("warn.redacted", entry.ns, `secret redacted in ${entryId}`);
-              if (!flags.safe) idx.audit("warn.promptware", entry.ns, `injection pattern on write: ${entryId} (${flags.flags[0]})`);
+              idx.audit("mcp.remember", entry.ns, entry.entryId);
+              if (redacted.redacted) idx.audit("warn.redacted", entry.ns, `secret redacted in ${entry.entryId}`);
+              if (!flags.safe) idx.audit("warn.promptware", entry.ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
             }),
           );
         });
-        return text({ entryId, ns: entry.ns, kind: entry.kind, redacted: redacted.redacted });
+        return text({ entryId: entry.entryId, ns: entry.ns, kind: entry.kind, redacted: redacted.redacted });
       } finally {
         idx.close();
       }

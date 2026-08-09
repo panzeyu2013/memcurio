@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const HOOK_EVENTS = [
@@ -10,6 +10,18 @@ const HOOK_EVENTS = [
   "Stop",
   "SessionEnd",
 ] as const;
+
+/** Keep the generated plugin's version in lockstep with the package. */
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(import.meta.dir, "..", "..", "..", "package.json"), "utf-8"),
+    ) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+}
 
 export interface GeneratedPlugin {
   outDir: string;
@@ -54,9 +66,11 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
   const hookPath = join(outDir, "hook.js");
   const mcpPath = join(outDir, "index.js");
   // Embed the absolute bun binary so codex (which may run with a different
-  // PATH, e.g. launched from a GUI) does not need `bun` on its PATH.
+  // PATH, e.g. launched from a GUI) does not need `bun` on its PATH. Quote it:
+  // the command runs through a shell, and a path with spaces (macOS app
+  // bundles) or env-controlled metacharacters would break or hijack the hook.
   const bunBin = process.env.BUN_BIN ?? process.execPath;
-  const hookCommand = `${bunBin} ${shellQuote(hookPath)}`;
+  const hookCommand = `${shellQuote(bunBin)} ${shellQuote(hookPath)}`;
 
   const hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>> = {};
   for (const event of HOOK_EVENTS) {
@@ -65,7 +79,7 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
 
   const plugin = {
     name: "memcore-codex",
-    version: "0.1.0",
+    version: packageVersion(),
     description: "跨 Harness 记忆与上下文管理（codex 适配器）：会话注入 + 记账 + 复盘",
     hooks,
     mcp_servers: {

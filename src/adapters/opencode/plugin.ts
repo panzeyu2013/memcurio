@@ -3,6 +3,8 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { MemcoreAdapter } from "../shared/engine.js";
 import type { ReflectChat } from "../../core/reflect.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
+import { Index } from "../../core/db.js";
+import { indexDb, rootDir } from "../../core/paths.js";
 const REPLACE_COMPACTION = process.env.MEMCORE_REPLACE_COMPACTION === "1";
 
 function properties(event: { properties?: unknown }): Record<string, unknown> {
@@ -43,12 +45,14 @@ export function partIdFor(event: { type?: string; properties?: unknown }): strin
 
 interface SessionMessage {
   info: { summary?: boolean };
-  parts: Array<{ type?: string; text?: string }>;
+  parts: Array<{ type?: string; text?: string; synthetic?: boolean }>;
 }
 
 function textOf(m: SessionMessage): string | undefined {
+  // Skip opencode's synthetic auto-continue boilerplate ("Continue if you
+  // have next steps…") when assembling summaries.
   const text = m.parts
-    .filter((p) => p.type === "text" && typeof p.text === "string" && p.text)
+    .filter((p) => p.type === "text" && !p.synthetic && typeof p.text === "string" && p.text)
     .map((p) => String(p.text))
     .join("\n")
     .trim();
@@ -124,6 +128,18 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
       .log({ body: { service: "memcore", level: "error", message: String(err) } })
       .catch(() => {});
   };
+  // Close this host's session rows left open by a crashed/restarted harness
+  // process (codex's daemon does the same at startup).
+  try {
+    const idx = await Index.create(indexDb(rootDir()));
+    try {
+      idx.closeAllSessions(new Date().toISOString(), "opencode");
+    } finally {
+      idx.close();
+    }
+  } catch {
+    // non-fatal: another process may hold the DB during startup
+  }
   return {
     event: async ({ event }) => {
       const type = event.type;
@@ -133,7 +149,9 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
       }
       try {
         const info = properties(event).info as { title?: unknown } | undefined;
-        if (type === "session.created" && info?.title === "memcore-reflection") {
+        // Prefix match: opencode may rewrite/truncate the title, and an early
+        // event must still be recognized as our internal reflection session.
+        if (type === "session.created" && typeof info?.title === "string" && info.title.startsWith("memcore-reflection")) {
           internalSessions.add(id);
           return;
         }
@@ -144,7 +162,7 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
           return;
         }
         if (type === "session.created") {
-          await adapter.sessionCreated(id, directory);
+          await adapter.sessionCreated(id, directory, "opencode");
         } else if (type === "session.idle") {
           await adapter.sessionIdle(id);
         } else if (type === "session.compacted") {
@@ -159,7 +177,17 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
           }
           const fingerprint = summary ?? "<no-summary>";
           const prior = recentCompactions.get(id);
-          if (prior && prior.summary === fingerprint && Date.now() - prior.ts < 30_000) {
+          // Dedupe a double-fired event by identical summary within the
+          // window, but never on the failed-extraction sentinel: a second,
+          // legitimate compaction whose summary also failed to extract must
+          // still reach the engine (it explicitly supports multi-compact).
+          if (
+            prior &&
+            prior.summary !== "<no-summary>" &&
+            fingerprint !== "<no-summary>" &&
+            prior.summary === fingerprint &&
+            Date.now() - prior.ts < 30_000
+          ) {
             return;
           }
           await adapter.sessionCompacted(id, summary);
@@ -216,3 +244,7 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
     },
   };
 };
+
+// Default export keeps the plugin loadable through the modern loader; the
+// named export exists for legacy loaders that scan function exports.
+export default MemcorePlugin;

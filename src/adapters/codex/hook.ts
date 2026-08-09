@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { connect } from "node:net";
 import { join } from "node:path";
 
+import { redactSecrets } from "../../core/sanitize.js";
+
 const stdin = readFileSync(0, "utf-8").trim();
 if (!stdin) {
   process.exit(0);
@@ -59,7 +61,7 @@ function withToken(input: string): string | null {
   try {
     parsed = JSON.parse(input);
   } catch {
-    log(`non-JSON hook input: ${input.slice(0, 120)}`);
+    log(`non-JSON hook input: ${redactSecrets(input.slice(0, 120)).text}`);
     process.stderr.write("memcore: hook input is not valid JSON; check the codex hook configuration\n");
     process.exit(1);
   }
@@ -103,7 +105,11 @@ async function tryRequest(): Promise<string | null> {
             return null;
           }
         } catch {
-          return trimmed;
+          // A truncated/fragment response from a dying daemon must not be
+          // forwarded to codex's stdout: codex would log a hook-output parse
+          // error. Fail closed and let the retry/spawn path recover.
+          log(`non-JSON daemon response discarded: ${redactSecrets(trimmed.slice(0, 120)).text}`);
+          return null;
         }
         return trimmed;
       }
@@ -121,7 +127,8 @@ async function tryRequest(): Promise<string | null> {
 function spawnDaemon(): void {
   let fd: number | null = null;
   try {
-    fd = openSync(daemonLog, "a");
+    // Match hook.log's 0600: daemon stderr may contain paths/errors.
+    fd = openSync(daemonLog, "a", 0o600);
     appendFileSync(fd, `${new Date().toISOString()} spawning daemon (${bunBin} ${daemonPath})\n`);
   } catch {
     fd = null;

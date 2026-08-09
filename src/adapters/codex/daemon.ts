@@ -5,13 +5,16 @@ import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeF
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import { MemcoreAdapter } from "../shared/engine.js";
+import type { AdapterLog } from "../shared/engine.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
 import { Index } from "../../core/db.js";
 import { indexDb } from "../../core/paths.js";
+import { isStaleLock } from "../../core/transaction.js";
 
 export interface CodexEventInput {
   hook_event_name?: string;
@@ -24,16 +27,16 @@ export interface CodexEventInput {
   tool_use_id?: string;
   transcript_path?: string;
   trigger?: string;
-  compacted_at?: string;
+  /** Present on SessionStart; distinguishes startup/resume from compact. */
+  source?: string;
 }
 
-export type AdapterLog = (
-  level: "debug" | "info" | "warn" | "error",
-  message: string,
-  extra?: Record<string, unknown>,
-) => void;
+export { type AdapterLog };
 
 const DEDUPE_WINDOW_MS = 10 * 60_000;
+// PostCompact processing (reflection) can run up to 120s, so its dedupe window
+// must cover a hook-client retry after that timeout.
+const POST_COMPACT_DEDUPE_MS = 130_000;
 const IDLE_EXIT_MS = 6 * 60 * 60_000;
 
 function filePathFromToolInput(toolInput: unknown): string | undefined {
@@ -63,15 +66,17 @@ export function createCodexHandler(log?: AdapterLog) {
         return input.turn_id ? `UserPromptSubmit:${input.turn_id}` : null;
       // SessionStart is not retried by codex, but the hook client can time out
       // and re-send; without a key the in-memory session stats get reset twice.
+      // The source distinguishes startup/resume from a post-compact re-start:
+      // codex re-fires SessionStart(source=compact) after compaction, and that
+      // MUST re-inject context rather than be swallowed by the dedupe window.
       case "SessionStart":
-        return input.session_id ? `SessionStart:${input.session_id}` : null;
+        return input.session_id ? `SessionStart:${input.session_id}:${input.source ?? ""}` : null;
       case "PostCompact": {
         if (!input.session_id) {
           return null;
         }
         const identity = JSON.stringify([
           input.turn_id ?? "",
-          input.compacted_at ?? "",
           input.transcript_path ?? "",
           input.trigger ?? "",
         ]);
@@ -85,7 +90,7 @@ export function createCodexHandler(log?: AdapterLog) {
   function isDuplicate(key: string): boolean {
     const now = Date.now();
     for (const [k, t] of recent) {
-      const window = k.startsWith("PostCompact:") ? 30_000 : DEDUPE_WINDOW_MS;
+      const window = k.startsWith("PostCompact:") ? POST_COMPACT_DEDUPE_MS : DEDUPE_WINDOW_MS;
       if (now - t > window) {
         recent.delete(k);
       }
@@ -252,6 +257,12 @@ export function codexExecReflect(opts: {
         "--json",
         "--ephemeral",
         "--skip-git-repo-check",
+        // Never let the reflection sub-session fire hooks back at this daemon:
+        // its own SessionStart/UserPromptSubmit/Stop events would create fake
+        // sessions and pollute session accounting (and eat the PostCompact
+        // budget with nested round-trips).
+        "-c",
+        "hooks.disabled=true",
         reflectionUserPrompt(summary, strategy),
       ];
       const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -311,6 +322,10 @@ export function tokenPath(root: string): string {
   return join(root, "state", "codex.token");
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export function ensureToken(root: string): string {
   const path = tokenPath(root);
   mkdirSync(dirname(path), { recursive: true });
@@ -354,7 +369,26 @@ export function ensureToken(root: string): string {
         }
         return again;
       }
-      rmSync(path, { force: true });
+      // An existing-but-empty file is a writer mid-flight, not garbage: give
+      // it up to 500ms to finish before reclaiming (the previous behaviour of
+      // unlink-on-empty could delete a token another process was writing).
+      let empty = true;
+      for (let i = 0; i < 10; i++) {
+        sleepSync(50);
+        const latest = readFileSync(path, "utf-8").trim();
+        if (latest) {
+          empty = false;
+          try {
+            chmodSync(path, 0o600);
+          } catch {
+            void 0;
+          }
+          return latest;
+        }
+      }
+      if (empty) {
+        rmSync(path, { force: true });
+      }
     } catch {
       // removed by another racer; loop retries
     }
@@ -389,6 +423,52 @@ export async function runCodexDaemon(opts: {
   const root = opts.root ?? (process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore"));
   const token = ensureToken(root);
   const handle = createCodexHandler(opts.log);
+  const pidPath = `${opts.socketPath}.pid`;
+
+  // Single-instance guard independent of the socket probe: while the daemon's
+  // event loop is busy (long synchronous SQLite work), isListening() can
+  // falsely report "not listening" and the old code would rmSync a live
+  // daemon's socket. The pid file survives only while the owning daemon is
+  // alive (it is removed on graceful shutdown), so a live pid means another
+  // daemon owns this root — never touch its socket.
+  const acquirePidLock = (): void => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        writeFileSync(pidPath, `${process.pid}|${Date.now()}\n`, { flag: "wx", mode: 0o600 });
+        return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw err;
+        }
+        let pid = 0;
+        try {
+          const [rawPid] = readFileSync(pidPath, "utf-8").trim().split("|");
+          pid = Number(rawPid);
+        } catch {
+          // unreadable/corrupt pid file: treat as stale and reclaim below
+        }
+        // Our own pid in the lock means another daemon instance in THIS
+        // process already holds it (tests/embedded double start).
+        if (pid === process.pid) {
+          throw new Error(`codex daemon already running on ${opts.socketPath}`);
+        }
+        // Same convention as the md-file locks (transaction.ts isStaleLock):
+        // a dead pid is reclaimed immediately, a live pid older than
+        // STALE_LOCK_MS is a crashed holder whose pid got reused by an
+        // unrelated process — without this, a SIGKILLed daemon followed by
+        // pid reuse would block every future daemon start forever.
+        if (!isStaleLock(pidPath)) {
+          throw new Error(`codex daemon already running (pid ${pid}) on ${opts.socketPath}`);
+        }
+        try {
+          rmSync(pidPath, { force: true });
+        } catch {
+          void 0;
+        }
+      }
+    }
+    throw new Error(`failed to acquire daemon pid lock ${pidPath}`);
+  };
 
   let lastActivity = Date.now();
   const touch = (): void => {
@@ -398,6 +478,9 @@ export async function runCodexDaemon(opts: {
   const server = createServer((socket) => {
     let buf = "";
     let handled = false;
+    // Decode incrementally so a JSON line split across TCP segments at a
+    // multi-byte character boundary cannot corrupt the parse.
+    const decoder = new StringDecoder("utf-8");
     // Idle timeout for receiving the request line only; once the line arrives
     // the handler may run long (cold SQLite open, FTS backfill) and must not
     // be killed mid-flight — that is what makes the hook retry and double-fire.
@@ -413,7 +496,7 @@ export async function runCodexDaemon(opts: {
       if (handled) {
         return;
       }
-      buf += chunk.toString("utf-8");
+      buf += decoder.write(chunk);
       const nl = buf.indexOf("\n");
       if (nl < 0) {
         return;
@@ -472,12 +555,39 @@ export async function runCodexDaemon(opts: {
     });
   }
 
+  // Take the pid lock first: a live pid means another daemon owns this root,
+  // and its socket must never be deleted even if a probe fails.
+  acquirePidLock();
+  // A live socket while we hold the pid lock can only mean a legacy
+  // (pid-file-less) daemon: never steal its socket.
+  if (await isListening(opts.socketPath)) {
+    try {
+      rmSync(pidPath, { force: true });
+    } catch {
+      void 0;
+    }
+    throw new Error(`codex daemon already running on ${opts.socketPath}`);
+  }
+  // We own the root now, so any leftover socket is stale.
+  try {
+    rmSync(opts.socketPath, { force: true });
+  } catch {
+    void 0;
+  }
+  // A previous daemon process may have crashed with open session rows; close
+  // only this host's rows so another adapter's live sessions are untouched.
+  // Run BEFORE listen(): the hook client polls right after spawn, and a
+  // SessionStart arriving between bind and a post-bind cleanup would get its
+  // freshly recorded session row closed.
+  await closeStaleSessions(root, "codex");
   try {
     await listen();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
       throw err;
     }
+    // A socket exists but we hold the pid lock: it can only belong to a
+    // legacy (pid-file-less) daemon still running, or be truly stale.
     for (let attempt = 0; attempt < 3; attempt++) {
       if (await isListening(opts.socketPath)) {
         throw new Error(`codex daemon already running on ${opts.socketPath}`);
@@ -502,10 +612,12 @@ export async function runCodexDaemon(opts: {
   });
 
   const cleanup = (): void => {
-    try {
-      rmSync(opts.socketPath, { force: true });
-    } catch {
-      void 0;
+    for (const p of [opts.socketPath, pidPath]) {
+      try {
+        rmSync(p, { force: true });
+      } catch {
+        void 0;
+      }
     }
   };
 
@@ -559,18 +671,14 @@ export async function runCodexDaemon(opts: {
     });
   }
 
-  // A previous daemon process may have crashed with open session rows; close
-  // them so `ended_at IS NULL` never leaks.
-  await closeStaleSessions(root);
-
   return { socketPath: opts.socketPath, closed, close };
 }
 
-async function closeStaleSessions(root: string): Promise<void> {
+async function closeStaleSessions(root: string, host: string): Promise<void> {
   try {
     const idx = await Index.create(indexDb(root));
     try {
-      idx.closeAllSessions(new Date().toISOString());
+      idx.closeAllSessions(new Date().toISOString(), host);
     } finally {
       idx.close();
     }
