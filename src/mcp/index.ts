@@ -29,7 +29,7 @@ function text(content: unknown) {
 }
 
 export function createServer(): McpServer {
-  const server = new McpServer({ name: "memcore", version: VERSION });
+  const server = new McpServer({ name: "memcurio", version: VERSION });
 
   server.registerTool(
     "memory_search",
@@ -182,7 +182,7 @@ export async function runServer(): Promise<void> {
   try {
     await server.connect(transport);
   } catch (err) {
-    console.error(`memcore mcp server error: ${String(err)}`);
+    console.error(`memcurio mcp server error: ${String(err)}`);
     process.exitCode = 1;
   }
 }

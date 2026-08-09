@@ -1,9 +1,27 @@
 {
-  "name": "memcore",
+  "name": "memcurio",
   "version": "0.1.0",
-  "description": "跨 Harness 记忆与上下文管理系统核心引擎（harness 无关、语言无关）",
+  "description": "Harness-agnostic, language-agnostic memory and context management for AI coding agents (opencode / codex)",
   "license": "MIT",
-  "author": "memcore contributors",
+  "author": "memcurio contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panzeyu2013/memcurio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/panzeyu2013/memcurio/issues"
+  },
+  "homepage": "https://github.com/panzeyu2013/memcurio#readme",
+  "keywords": [
+    "memory",
+    "context",
+    "agent",
+    "opencode",
+    "codex",
+    "mcp",
+    "sqlite",
+    "llm"
+  ],
   "engines": {
     "bun": ">=1.0.0"
   },
@@ -15,7 +33,7 @@
   ],
   "type": "module",
   "bin": {
-    "memcore": "dist/cli/index.js"
+    "memcurio": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",

@@ -11,11 +11,11 @@ if (!stdin) {
   process.exit(0);
 }
 
-const root = process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore");
-const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? join(root, "state", "codex.sock");
+const root = process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio");
+const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? join(root, "state", "codex.sock");
 // Default to the sibling bundle (dist layout); fall back to the TypeScript
 // source so `bun src/adapters/codex/hook.ts` works for development too.
-const daemonPath = process.env.MEMCORE_CODEX_DAEMON ?? (existsSync(join(import.meta.dir, "daemon.js"))
+const daemonPath = process.env.MEMCURIO_CODEX_DAEMON ?? (existsSync(join(import.meta.dir, "daemon.js"))
   ? join(import.meta.dir, "daemon.js")
   : join(import.meta.dir, "daemon.ts"));
 const bunBin = process.env.BUN_BIN ?? "bun";
@@ -62,7 +62,7 @@ function withToken(input: string): string | null {
     parsed = JSON.parse(input);
   } catch {
     log(`non-JSON hook input: ${redactSecrets(input.slice(0, 120)).text}`);
-    process.stderr.write("memcore: hook input is not valid JSON; check the codex hook configuration\n");
+    process.stderr.write("memcurio: hook input is not valid JSON; check the codex hook configuration\n");
     process.exit(1);
   }
   try {
@@ -98,7 +98,7 @@ async function tryRequest(): Promise<string | null> {
       if (trimmed) {
         try {
           const parsed = JSON.parse(trimmed) as { systemMessage?: string };
-          if (typeof parsed.systemMessage === "string" && parsed.systemMessage.startsWith("memcore error")) {
+          if (typeof parsed.systemMessage === "string" && parsed.systemMessage.startsWith("memcurio error")) {
             if (attempt < maxAttempts - 1) {
               continue;
             }
@@ -167,11 +167,11 @@ if (resp === null) {
 
 if (resp === null) {
   log(`hook failed: no daemon response (bun=${bunBin}, daemon=${daemonPath})`);
-  const isZh = /^zh/i.test(process.env.MEMCORE_LANG ?? process.env.LANG ?? "");
+  const isZh = /^zh/i.test(process.env.MEMCURIO_LANG ?? process.env.LANG ?? "");
   process.stderr.write(
     isZh
-      ? "memcore: codex daemon 不可用，请检查 bun 是否在 PATH 或手动运行 memcore codex-daemon（详见 ~/.memcore/state/daemon.log）\n"
-      : "memcore: codex daemon unavailable; check that bun is on PATH or run `memcore codex-daemon` manually (see ~/.memcore/state/daemon.log)\n",
+      ? "memcurio: codex daemon 不可用，请检查 bun 是否在 PATH 或手动运行 memcurio codex-daemon（详见 ~/.memcurio/state/daemon.log）\n"
+      : "memcurio: codex daemon unavailable; check that bun is on PATH or run `memcurio codex-daemon` manually (see ~/.memcurio/state/daemon.log)\n",
   );
   process.exit(1);
 }

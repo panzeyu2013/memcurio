@@ -1,4 +1,4 @@
-# Memcore 架构现状图
+# Memcurio 架构现状图
 
 > 2026-08-09 快照：M0–M4 代码完成（真实 harness 验证待启用），LLM 策展骨架就绪。
 > 设计文档见 [design.md](./memory-harness-design.md)。
@@ -106,7 +106,7 @@ src/
 │   ├── index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
 │   └── i18n.ts         zh/en 词典（103 键对称）
 └── adapters/
-    ├── shared/engine.ts  MemcoreAdapter（会话记账/注入/复盘/读侧 touch）
+    ├── shared/engine.ts  MemcurioAdapter（会话记账/注入/复盘/读侧 touch）
     ├── opencode/plugin.ts opencode 插件（打包单文件）
     └── codex/
         ├── daemon.ts    unix socket daemon（token 首写者胜 + pid 单实例锁 + chmod600）
@@ -123,7 +123,7 @@ tests/                          320 用例（22 文件）
 ## 4. 存储布局
 
 ```
-~/.memcore/
+~/.memcurio/
 ├── memory/
 │   ├── <namespace>/
 │   │   ├── MEMORY.md      # 事实/决策/约束（§ id | kind | created | status | pinned）
@@ -139,10 +139,10 @@ tests/                          320 用例（22 文件）
 │   ├── codex.token        # socket 鉴权 token（0600）
 │   ├── daemon.log         # daemon stderr（hook 自拉起时重定向，0600）
 │   └── hook.log           # hook 诊断日志
-└── codex-plugin/          # memcore codex-plugin 默认输出
+└── codex-plugin/          # memcurio codex-plugin 默认输出
 ```
 
-> 一致性边界：单文件写是原子的（tmp+fsync+rename）；跨文件批量写（import/merge/prune/curate）在全部文件锁内完成并有同步失败回滚，但若进程在批量写中途被强杀（SIGKILL/断电），部分 md 已更新而索引未更新属预期内边界——事务日志会留下 BEGIN 记录，`memcore repair --execute` 从 md 真源重建索引即可收敛；md 真源自身不会损坏。
+> 一致性边界：单文件写是原子的（tmp+fsync+rename）；跨文件批量写（import/merge/prune/curate）在全部文件锁内完成并有同步失败回滚，但若进程在批量写中途被强杀（SIGKILL/断电），部分 md 已更新而索引未更新属预期内边界——事务日志会留下 BEGIN 记录，`memcurio repair --execute` 从 md 真源重建索引即可收敛；md 真源自身不会损坏。
 
 ## 5. 里程碑状态
 

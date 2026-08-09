@@ -62,7 +62,7 @@ export function appendReflection(strategy: string, section: string): string {
 }
 
 async function httpReflect(opts: { summary?: string; strategy?: string }): Promise<CompactionReflection | null> {
-  if (!process.env.MEMCORE_LLM_API_KEY || !opts.summary) {
+  if (!process.env.MEMCURIO_LLM_API_KEY || !opts.summary) {
     return null;
   }
   const raw = await llmChat(
@@ -87,7 +87,7 @@ export async function reflectOnCompaction(opts: {
         return r;
       }
     } catch (err) {
-      console.warn(`[memcore] harness reflection failed, falling back: ${String(err)}`);
+      console.warn(`[memcurio] harness reflection failed, falling back: ${String(err)}`);
     }
   }
   try {
@@ -96,7 +96,7 @@ export async function reflectOnCompaction(opts: {
       return r;
     }
   } catch (err) {
-    console.warn(`[memcore] http reflection failed, using fallback: ${String(err)}`);
+    console.warn(`[memcurio] http reflection failed, using fallback: ${String(err)}`);
   }
   return fallback(opts.summary);
 }

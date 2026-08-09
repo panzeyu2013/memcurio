@@ -4,8 +4,8 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:f
 import { createHash } from "node:crypto";
 
 export function rootDir(): string {
-  const env = process.env.MEMCORE_ROOT;
-  return env && env.trim() ? env.trim() : join(homedir(), ".memcore");
+  const env = process.env.MEMCURIO_ROOT;
+  return env && env.trim() ? env.trim() : join(homedir(), ".memcurio");
 }
 
 export function ensureLayout(root: string): void {

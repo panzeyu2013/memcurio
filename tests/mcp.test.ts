@@ -15,15 +15,15 @@ let prevRoot: string | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "mcp-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
 });
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -46,7 +46,7 @@ async function readAudit(): Promise<Array<{ action: string; detail: string }>> {
   }
 }
 
-describe("memcore MCP server", () => {
+describe("memcurio MCP server", () => {
   test("exposes the four memory tools", async () => {
     const client = new Client({ name: "test", version: "0.0.1" });
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();

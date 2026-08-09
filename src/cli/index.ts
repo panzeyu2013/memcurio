@@ -122,7 +122,7 @@ async function cmdInit(): Promise<number> {
   loadConfig(root);
   const idx = await Index.create(indexDb(root));
   const backend = idx.backend;
-  idx.audit("init", "-", "memcore initialized");
+  idx.audit("init", "-", "memcurio initialized");
   idx.close();
   console.log(t("init.done", root));
   console.log(t("init.backend", backend));
@@ -814,7 +814,7 @@ async function cmdCurate(rest: string[]): Promise<number> {
 async function cmdCodexDaemon(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
-  const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
+  const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
   console.log(t("daemon.listening", socketPath));
   const daemon = await runCodexDaemon({ socketPath, root });
   await daemon.closed;
@@ -919,12 +919,12 @@ async function cmdDoctor(): Promise<number> {
       check(t("doctor.ftsMirror"), ftsCount === indexed.length && !bad, `${ftsCount}/${indexed.length} rows${ftsCount !== indexed.length || bad ? t("doctor.reindexHint") : ""}`);
     }
     const pending = new Transaction(txnLog(root)).pending();
-    check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcore repair)` : t("doctor.noPending"));
+    check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcurio repair)` : t("doctor.noPending"));
     idx.close();
   } catch (err) {
     check(t("doctor.index"), false, String(err));
   }
-  const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
+  const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
   const pluginDir = join(root, "codex-plugin");
   console.log(`· codex daemon${existsSync(socketPath) ? "" : t("doctor.daemonIdle")}: ${socketPath}`);
   console.log(`${t("doctor.pluginLabel")}${existsSync(join(pluginDir, "plugin.json")) ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);

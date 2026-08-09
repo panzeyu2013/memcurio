@@ -39,10 +39,10 @@ const activeDaemons = new Set<Promise<CodexDaemonHandle>>();
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cx-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
-  prevReflect = process.env.MEMCORE_CODEX_REFLECT;
-  process.env.MEMCORE_CODEX_REFLECT = "0";
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
+  prevReflect = process.env.MEMCURIO_CODEX_REFLECT;
+  process.env.MEMCURIO_CODEX_REFLECT = "0";
 });
 
 afterEach(async () => {
@@ -56,14 +56,14 @@ afterEach(async () => {
     }
   }
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   if (prevReflect === undefined) {
-    delete process.env.MEMCORE_CODEX_REFLECT;
+    delete process.env.MEMCURIO_CODEX_REFLECT;
   } else {
-    process.env.MEMCORE_CODEX_REFLECT = prevReflect;
+    process.env.MEMCURIO_CODEX_REFLECT = prevReflect;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -257,7 +257,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
   test("a failed delivery remains retryable with the same dedupe key", async () => {
     const blockedRoot = join(dir, "blocked-root");
     writeFileSync(blockedRoot, "not a directory");
-    process.env.MEMCORE_ROOT = blockedRoot;
+    process.env.MEMCURIO_ROOT = blockedRoot;
     const handle = createCodexHandler();
     const payload = {
       hook_event_name: "SessionStart",
@@ -266,18 +266,18 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
       source: "startup",
     };
     await expect(handle(payload)).rejects.toThrow();
-    process.env.MEMCORE_ROOT = dir;
+    process.env.MEMCURIO_ROOT = dir;
     const retried = await handle(payload);
     expect(retried.continue).toBe(true);
     expect((retried.hookSpecificOutput as { additionalContext?: string }).additionalContext).toContain(
-      "memcore memory context",
+      "memcurio memory context",
     );
   });
 
   test("concurrent duplicate deliveries share the same failure instead of acknowledging one", async () => {
     const blockedRoot = join(dir, "blocked-concurrent-root");
     writeFileSync(blockedRoot, "not a directory");
-    process.env.MEMCORE_ROOT = blockedRoot;
+    process.env.MEMCURIO_ROOT = blockedRoot;
     const handle = createCodexHandler();
     const payload = {
       hook_event_name: "SessionStart",
@@ -287,7 +287,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     };
     const results = await Promise.allSettled([handle(payload), handle(payload)]);
     expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
-    process.env.MEMCORE_ROOT = dir;
+    process.env.MEMCURIO_ROOT = dir;
     expect((await handle(payload)).continue).toBe(true);
   });
 
@@ -321,9 +321,9 @@ describe("codex hook child process", () => {
       const child = spawn(process.execPath, [hookSrc], {
         env: {
           ...process.env,
-          MEMCORE_ROOT: dir,
-          MEMCORE_CODEX_SOCKET: socketPath,
-          MEMCORE_CODEX_DAEMON: daemonSrc,
+          MEMCURIO_ROOT: dir,
+          MEMCURIO_CODEX_SOCKET: socketPath,
+          MEMCURIO_CODEX_DAEMON: daemonSrc,
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -346,7 +346,7 @@ describe("codex hook child process", () => {
     });
     const parsed = JSON.parse(out.trim()) as { continue: boolean; hookSpecificOutput?: { additionalContext?: string | null } };
     expect(parsed.continue).toBe(true);
-    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcore memory context");
+    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcurio memory context");
     await stopDaemon(daemon, socketPath);
   });
 
@@ -359,9 +359,9 @@ describe("codex hook child process", () => {
       const child = spawn(process.execPath, [hookSrc], {
         env: {
           ...process.env,
-          MEMCORE_ROOT: dir,
-          MEMCORE_CODEX_SOCKET: socketPath,
-          MEMCORE_CODEX_DAEMON: daemonSrc,
+          MEMCURIO_ROOT: dir,
+          MEMCURIO_CODEX_SOCKET: socketPath,
+          MEMCURIO_CODEX_DAEMON: daemonSrc,
           BUN_BIN: "/nonexistent/bun",
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -493,7 +493,7 @@ describe("codex daemon socket", () => {
     });
     const parsed = JSON.parse(resp) as { continue: boolean; hookSpecificOutput?: { additionalContext?: string | null } };
     expect(parsed.continue).toBe(true);
-    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcore memory context");
+    expect(parsed.hookSpecificOutput?.additionalContext).toContain("memcurio memory context");
     await stopDaemon(daemon, socketPath);
   });
 

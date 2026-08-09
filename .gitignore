@@ -1,6 +1,6 @@
 node_modules/
 dist/
-.memcore/
+.memcurio/
 
 .DS_Store
 *.log

@@ -135,22 +135,22 @@ function dirPath(): string {
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "xf-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
-  prevLang = process.env.MEMCORE_LANG;
-  process.env.MEMCORE_LANG = "en";
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
+  prevLang = process.env.MEMCURIO_LANG;
+  process.env.MEMCURIO_LANG = "en";
 });
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   if (prevLang === undefined) {
-    delete process.env.MEMCORE_LANG;
+    delete process.env.MEMCURIO_LANG;
   } else {
-    process.env.MEMCORE_LANG = prevLang;
+    process.env.MEMCURIO_LANG = prevLang;
   }
   rmSync(dir, { recursive: true, force: true });
 });

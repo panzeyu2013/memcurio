@@ -78,12 +78,12 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
   }
 
   const plugin = {
-    name: "memcore-codex",
+    name: "memcurio-codex",
     version: packageVersion(),
     description: "跨 Harness 记忆与上下文管理（codex 适配器）：会话注入 + 记账 + 复盘",
     hooks,
     mcp_servers: {
-      memcore: { command: bunBin, args: [mcpPath] },
+      memcurio: { command: bunBin, args: [mcpPath] },
     },
   };
   const pluginJsonPath = join(outDir, "plugin.json");
@@ -99,7 +99,7 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
     ["session_end", "SessionEnd"],
   ];
   const snippet = [
-    "# memcore-codex hooks 声明（如 plugin.json 未被加载则合并进 ~/.codex/config.toml）",
+    "# memcurio-codex hooks 声明（如 plugin.json 未被加载则合并进 ~/.codex/config.toml）",
     "# 注：PreCompact 当前协议无注入通道，仅保留占位。",
     ...eventNames.flatMap(([tomlName, eventName]) => [
       `[hooks.events.${tomlName}]`,
@@ -108,7 +108,7 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
     ]),
     "",
     "# MCP（模型侧工具面）",
-    "[mcp_servers.memcore]",
+    "[mcp_servers.memcurio]",
     `command = ${tomlQuote(bunBin)}`,
     `args = [${tomlQuote(mcpPath)}]`,
     "",

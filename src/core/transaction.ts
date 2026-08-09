@@ -165,7 +165,7 @@ export function truncateLog(logPath: string): void {
     const base = basename(logPath);
     try {
       for (const name of readdirSync(dir)) {
-        // Only memcore's own rotated segments (<base>.1/.2, legacy <base>.<ts>.old)
+        // Only memcurio's own rotated segments (<base>.1/.2, legacy <base>.<ts>.old)
         // are removed; unrelated files sharing the prefix are left alone.
         const suffix = name.startsWith(`${base}.`) ? name.slice(base.length + 1) : "";
         const isLog = name === base || (suffix !== "" && /^(?:\d+|old|\d+\.old)$/.test(suffix));

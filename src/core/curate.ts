@@ -65,7 +65,7 @@ export class HttpProvider implements CurateProvider {
       }
       return Math.min(2, Math.max(0, score));
     } catch (err) {
-      console.warn(`[memcore] llm reevaluate failed: ${String(err)}`);
+      console.warn(`[memcurio] llm reevaluate failed: ${String(err)}`);
       return null;
     }
   }
@@ -79,7 +79,7 @@ export class HttpProvider implements CurateProvider {
       const parsed = extractJsonObject(out) as { contradictory?: boolean; reason?: string };
       return { contradictory: parsed.contradictory === true, reason: parsed.reason ?? "" };
     } catch (err) {
-      console.warn(`[memcore] llm contradiction check failed: ${String(err)}`);
+      console.warn(`[memcurio] llm contradiction check failed: ${String(err)}`);
       return { contradictory: false, reason: "__unparsable__" };
     }
   }
@@ -93,7 +93,7 @@ export class HttpProvider implements CurateProvider {
       const trimmed = out.trim();
       return trimmed === "" || /^no_merge$/i.test(trimmed) ? null : trimmed;
     } catch (err) {
-      console.warn(`[memcore] llm umbrella suggestion failed: ${String(err)}`);
+      console.warn(`[memcurio] llm umbrella suggestion failed: ${String(err)}`);
       return null;
     }
   }

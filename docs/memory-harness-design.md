@@ -195,7 +195,7 @@ EventEnvelope {                     // 实现：src/core/events.ts（字段 came
 }
 ```
 
-> 实现说明：opencode/codex 适配器不经事件总线中转（进程内直接调用 MemcoreAdapter），事件总线由 `memcore event` 命令消费（sessions 表登记）。
+> 实现说明：opencode/codex 适配器不经事件总线中转（进程内直接调用 MemcurioAdapter），事件总线由 `memcurio event` 命令消费（sessions 表登记）。
 
 ### 4.3 能力分级与优雅降级
 
@@ -228,7 +228,7 @@ capabilities {
 ### 4.4 数据模型
 
 ```
-~/.memcore/
+~/.memcurio/
 ├── memory/                      # Markdown 真源（人可读、可 git）
 │   ├── <namespace>/             # 命名空间 = 路径 slug + 路径哈希（同名校不串扰）
 │   │   ├── MEMORY.md            # 事实/决策/约束（每条 = § id | kind | created | status | pinned）
@@ -249,19 +249,19 @@ capabilities {
 │   ├── codex.token              # socket 鉴权 token（0600，运行时生成）
 │   ├── daemon.log               # daemon stderr（hook 自拉起时重定向至此）
 │   └── hook.log                 # hook 诊断日志
-└── codex-plugin/                # memcore codex-plugin 默认输出目录
+└── codex-plugin/                # memcurio codex-plugin 默认输出目录
 ```
 
-**写入纪律**（MemTxn/TARL 启示）：所有写操作事务化——写临时文件→fsync→原子 rename→事务日志；失败自动回滚，索引可经 `memcore reindex` 从 md 真源重建。
+**写入纪律**（MemTxn/TARL 启示）：所有写操作事务化——写临时文件→fsync→原子 rename→事务日志；失败自动回滚，索引可经 `memcurio reindex` 从 md 真源重建。
 
-> 实现回写（事务语义）：`Transaction` 是**审计日志 + 崩溃检测**（BEGIN/COMMIT/ROLLBACK 记录），原子写保证单文件一致性；跨文件（md+索引）一致性靠"md 真源为最终真相 + `memcore repair --execute`（保留统计重建）"兜底。并发写由 sqlite WAL + busy_timeout + md 文件锁（O_EXCL）保护。
+> 实现回写（事务语义）：`Transaction` 是**审计日志 + 崩溃检测**（BEGIN/COMMIT/ROLLBACK 记录），原子写保证单文件一致性；跨文件（md+索引）一致性靠"md 真源为最终真相 + `memcurio repair --execute`（保留统计重建）"兜底。并发写由 sqlite WAL + busy_timeout + md 文件锁（O_EXCL）保护。
 
 ### 4.5 三功能设计
 
 **功能 A：记忆剪枝（价值感知，Ratchet/MemLens 模式）**
-- 规则层（零 LLM 成本，低频）：状态机 `active → stale → archived`，阈值基于 `use_count / last_used_at / created_at`（新条目宽限期、pinned 豁免）——**已实现**（`memcore prune`：干跑报告默认，`--execute` 事务化执行，`revive` 回滚）
+- 规则层（零 LLM 成本，低频）：状态机 `active → stale → archived`，阈值基于 `use_count / last_used_at / created_at`（新条目宽限期、pinned 豁免）——**已实现**（`memcurio prune`：干跑报告默认，`--execute` 事务化执行，`revive` 回滚）
 - 价值分：`value_score = 1 + 0.05×min(use_count,20)` 随使用触达（touch）更新；LLM 重估走策展层
-- LLM 层（低频，空闲时）：后台"策展"任务——矛盾检测（ConsistencyGate）、伞条目合并、价值重评——**骨架已实现**（`memcore curate`，provider 抽象：Noop 干跑 / HttpProvider 接 OpenAI 兼容 API，需 MEMCORE_LLM_API_KEY 实测）
+- LLM 层（低频，空闲时）：后台"策展"任务——矛盾检测（ConsistencyGate）、伞条目合并、价值重评——**骨架已实现**（`memcurio curate`，provider 抽象：Noop 干跑 / HttpProvider 接 OpenAI 兼容 API，需 MEMCURIO_LLM_API_KEY 实测）
 - 事务化 + 先干跑出报告再执行（抄 Hermes curator 的 dry-run）——**已实现**
 
 **功能 B：会话内上下文管理**
@@ -276,8 +276,8 @@ capabilities {
 
 **功能 C：跨记忆管理**
 - 命名空间：workdir 级隔离（官方是全局单一，这是空白点）；支持共享命名空间（全局偏好）——**已实现**
-- 导入导出：JSONL 格式，可备份/同步——**已实现**（`memcore export` / `import`，幂等按 entryId，写入脱敏）
-- 合并：两个命名空间去重合并（按内容哈希 + 冲突报告；LLM 冲突消解留待策展层）——**已实现**（`memcore merge`，干跑/执行）
+- 导入导出：JSONL 格式，可备份/同步——**已实现**（`memcurio export` / `import`，幂等按 entryId，写入脱敏）
+- 合并：两个命名空间去重合并（按内容哈希 + 冲突报告；LLM 冲突消解留待策展层）——**已实现**（`memcurio merge`，干跑/执行）
 - 可选同步：把命名空间记忆镜像进官方 `~/.codex/memories/extensions/<name>/`（官方预留扩展点）——⏳ **延后**（5.5 原则：共存不接管；官方 memories 管线形态待实机核实）
 
 ### 4.6 安全考虑（全部已实现，src/core/sanitize.ts）
@@ -303,7 +303,7 @@ capabilities {
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 — 骨架（1 周） | 仓库结构、引擎核心（存储层 + 事务化写入）、CLI 框架；`memcore init` / `status` 可跑 | ✅ 完成 |
+| M0 — 骨架（1 周） | 仓库结构、引擎核心（存储层 + 事务化写入）、CLI 框架；`memcurio init` / `status` 可跑 | ✅ 完成 |
 | M1 — 记忆闭环 MVP（2 周） | MCP server（search/remember/forget/status）+ AGENTS.md 基线注入；跨 harness 共享记忆 | ✅ 完成（stdio 冒烟通过） |
 | M2 — 剪枝 + 命名空间 + 导入导出（2 周） | 价值打分 + 状态机 + 干跑报告 + 事务化执行；命名空间隔离、JSONL 导入导出、合并 | ✅ 完成 |
 | M3 — opencode 高集成适配器（2 周） | TS 插件：事件订阅（session.idle/message/tool.*）、session.compacting 注入/替换、自动复盘落盘 | ✅ 代码完成（模拟钩子冒烟） |

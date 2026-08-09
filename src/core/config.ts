@@ -80,7 +80,7 @@ export function loadConfig(root: string): Config {
     parsed = JSON.parse(readFileSync(path, "utf-8"));
     return normalizeConfig(parsed, false);
   } catch (err) {
-    console.warn(`memcore: ignoring unparsable config at ${path} (${String(err)}); using defaults`);
+    console.warn(`memcurio: ignoring unparsable config at ${path} (${String(err)}); using defaults`);
     return { ...DEFAULT_CONFIG };
   }
 }

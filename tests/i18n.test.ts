@@ -6,15 +6,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const LANG_VARS = ["MEMCORE_LANG", "LANG"] as const;
+const LANG_VARS = ["MEMCURIO_LANG", "LANG"] as const;
 let saved: Record<string, string | undefined> = {};
 let dir: string;
 let prevRoot: string | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "i18n-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
   saved = {};
   for (const k of LANG_VARS) {
     saved[k] = process.env[k];
@@ -24,9 +24,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   for (const k of LANG_VARS) {
     if (saved[k] === undefined) {
@@ -43,10 +43,10 @@ describe("currentLang", () => {
     expect(currentLang()).toBe("zh");
   });
 
-  test("MEMCORE_LANG=en switches to English", () => {
-    process.env.MEMCORE_LANG = "en";
+  test("MEMCURIO_LANG=en switches to English", () => {
+    process.env.MEMCURIO_LANG = "en";
     expect(currentLang()).toBe("en");
-    expect(t("remember.missing")).toContain("memcore remember");
+    expect(t("remember.missing")).toContain("memcurio remember");
     expect(t("search.missing")).toContain("keyword");
   });
 
@@ -63,9 +63,9 @@ describe("currentLang", () => {
     }
   });
 
-  test("MEMCORE_LANG wins over LANG", () => {
+  test("MEMCURIO_LANG wins over LANG", () => {
     process.env.LANG = "en_US.UTF-8";
-    process.env.MEMCORE_LANG = "zh";
+    process.env.MEMCURIO_LANG = "zh";
     expect(currentLang()).toBe("zh");
   });
 });
@@ -77,13 +77,13 @@ describe("dictionary parity", () => {
   });
 
   test("success messages are localized in both languages", async () => {
-    process.env.MEMCORE_LANG = "en";
+    process.env.MEMCURIO_LANG = "en";
     const en = await runCli("init")
     expect(en.code).toBe(0);
     expect(en.out).toContain("initialized");
     expect(en.out).toContain("index backend");
 
-    delete process.env.MEMCORE_LANG;
+    delete process.env.MEMCURIO_LANG;
     const zh = await runCli("init")
     expect(zh.out).toContain("已初始化");
     expect(zh.out).toContain("索引后端");
@@ -91,43 +91,43 @@ describe("dictionary parity", () => {
 });
 
 describe("localized CLI output", () => {
-  test("help follows MEMCORE_LANG", async () => {
-    process.env.MEMCORE_LANG = "en";
+  test("help follows MEMCURIO_LANG", async () => {
+    process.env.MEMCURIO_LANG = "en";
     const en = await runCli("help")
     expect(en.code).toBe(0);
-    expect(en.out).toContain("Usage: memcore");
+    expect(en.out).toContain("Usage: memcurio");
     expect(en.out).not.toContain("用法:");
 
-    delete process.env.MEMCORE_LANG;
+    delete process.env.MEMCURIO_LANG;
     const zh = await runCli("help")
-    expect(zh.out).toContain("用法: memcore");
+    expect(zh.out).toContain("用法: memcurio");
   });
 
   test("per-command help is localized", async () => {
-    process.env.MEMCORE_LANG = "en";
+    process.env.MEMCURIO_LANG = "en";
     const en = await runCli("help", "search")
     expect(en.out).toContain("Search memories");
-    delete process.env.MEMCORE_LANG;
+    delete process.env.MEMCURIO_LANG;
     const zh = await runCli("help", "search")
     expect(zh.out).toContain("检索记忆");
   });
 
   test("error messages are localized", async () => {
-    process.env.MEMCORE_LANG = "en";
+    process.env.MEMCURIO_LANG = "en";
     const en = await runCli("search")
     expect(en.code).toBe(2);
     expect(en.err).toContain("missing query");
-    delete process.env.MEMCORE_LANG;
+    delete process.env.MEMCURIO_LANG;
     const zh = await runCli("search")
     expect(zh.err).toContain("关键词");
   });
 
   test("unknown command hint is localized", async () => {
-    process.env.MEMCORE_LANG = "en";
+    process.env.MEMCURIO_LANG = "en";
     const en = await runCli("bogus")
-    expect(en.err).toContain("Run memcore help");
-    delete process.env.MEMCORE_LANG;
+    expect(en.err).toContain("Run memcurio help");
+    delete process.env.MEMCURIO_LANG;
     const zh = await runCli("bogus")
-    expect(zh.err).toContain("运行 memcore help");
+    expect(zh.err).toContain("运行 memcurio help");
   });
 });

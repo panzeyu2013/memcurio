@@ -67,13 +67,13 @@ class FakeProvider implements CurateProvider {
 
 let dir: string;
 let prevRoot: string | undefined;
-const LLM_ENV = ["MEMCORE_LLM_API_KEY", "MEMCORE_LLM_BASE_URL", "MEMCORE_LLM_MODEL"] as const;
+const LLM_ENV = ["MEMCURIO_LLM_API_KEY", "MEMCURIO_LLM_BASE_URL", "MEMCURIO_LLM_MODEL"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cur-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
   savedEnv = {};
   for (const k of LLM_ENV) {
     savedEnv[k] = process.env[k];
@@ -83,9 +83,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   for (const k of LLM_ENV) {
     if (savedEnv[k] === undefined) {
@@ -271,11 +271,11 @@ describe("curate cli", () => {
     const lines: string[] = [];
     const origLog = console.log;
     const origFetch = globalThis.fetch;
-    const savedKey = process.env.MEMCORE_LLM_API_KEY;
-    const savedLang = process.env.MEMCORE_LANG;
-    process.env.MEMCORE_LLM_API_KEY = "test-key";
+    const savedKey = process.env.MEMCURIO_LLM_API_KEY;
+    const savedLang = process.env.MEMCURIO_LANG;
+    process.env.MEMCURIO_LLM_API_KEY = "test-key";
     // The plan output is asserted in English, so pin the language.
-    process.env.MEMCORE_LANG = "en";
+    process.env.MEMCURIO_LANG = "en";
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: "0.5" } }] }), {
         status: 200,
@@ -301,14 +301,14 @@ describe("curate cli", () => {
       console.log = origLog;
       globalThis.fetch = origFetch;
       if (savedKey === undefined) {
-        delete process.env.MEMCORE_LLM_API_KEY;
+        delete process.env.MEMCURIO_LLM_API_KEY;
       } else {
-        process.env.MEMCORE_LLM_API_KEY = savedKey;
+        process.env.MEMCURIO_LLM_API_KEY = savedKey;
       }
       if (savedLang === undefined) {
-        delete process.env.MEMCORE_LANG;
+        delete process.env.MEMCURIO_LANG;
       } else {
-        process.env.MEMCORE_LANG = savedLang;
+        process.env.MEMCURIO_LANG = savedLang;
       }
     }
   });

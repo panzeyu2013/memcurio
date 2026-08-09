@@ -1,11 +1,11 @@
 import type { Plugin } from "@opencode-ai/plugin";
 
-import { MemcoreAdapter } from "../shared/engine.js";
+import { MemcurioAdapter } from "../shared/engine.js";
 import type { ReflectChat } from "../../core/reflect.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 import { Index } from "../../core/db.js";
 import { indexDb, rootDir } from "../../core/paths.js";
-const REPLACE_COMPACTION = process.env.MEMCORE_REPLACE_COMPACTION === "1";
+const REPLACE_COMPACTION = process.env.MEMCURIO_REPLACE_COMPACTION === "1";
 
 function properties(event: { properties?: unknown }): Record<string, unknown> {
   return (event.properties ?? {}) as Record<string, unknown>;
@@ -88,7 +88,7 @@ function harnessReflect(client: { session: SessionClient }, directory: string, i
       if (!summary) {
         return null;
       }
-      const created = await client.session.create({ query: { directory }, body: { title: "memcore-reflection" } });
+      const created = await client.session.create({ query: { directory }, body: { title: "memcurio-reflection" } });
       const id = created.data.id;
       internalSessions.add(id);
       try {
@@ -106,26 +106,26 @@ function harnessReflect(client: { session: SessionClient }, directory: string, i
         void client.session.delete({ path: { id } }).catch(() => {}).finally(() => internalSessions.delete(id));
       }
     } catch (err) {
-      console.error(`memcore harness reflection failed: ${String(err)}`);
+      console.error(`memcurio harness reflection failed: ${String(err)}`);
       return null;
     }
   };
 }
 
-export const MemcorePlugin: Plugin = async ({ directory, client }) => {
+export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
   const internalSessions = new Set<string>();
   const recentCompactions = new Map<string, { summary: string; ts: number }>();
-  const adapter = new MemcoreAdapter({
+  const adapter = new MemcurioAdapter({
     log: (level, message, extra) => {
       void client.app
-        .log({ body: { service: "memcore", level, message, extra } })
+        .log({ body: { service: "memcurio", level, message, extra } })
         .catch(() => {});
     },
     reflect: harnessReflect(client as unknown as { session: SessionClient }, directory, internalSessions),
   });
   const report = (err: unknown): void => {
     void client.app
-      .log({ body: { service: "memcore", level: "error", message: String(err) } })
+      .log({ body: { service: "memcurio", level: "error", message: String(err) } })
       .catch(() => {});
   };
   // Close this host's session rows left open by a crashed/restarted harness
@@ -151,7 +151,7 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
         const info = properties(event).info as { title?: unknown } | undefined;
         // Prefix match: opencode may rewrite/truncate the title, and an early
         // event must still be recognized as our internal reflection session.
-        if (type === "session.created" && typeof info?.title === "string" && info.title.startsWith("memcore-reflection")) {
+        if (type === "session.created" && typeof info?.title === "string" && info.title.startsWith("memcurio-reflection")) {
           internalSessions.add(id);
           return;
         }
@@ -247,4 +247,4 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
 
 // Default export keeps the plugin loadable through the modern loader; the
 // named export exists for legacy loaders that scan function exports.
-export default MemcorePlugin;
+export default MemcurioPlugin;

@@ -11,9 +11,9 @@ export interface LlmEnv {
  *  LLM-facing feature (curate + reflection) so defaults cannot drift. */
 export function llmEnv(): LlmEnv {
   return {
-    apiKey: process.env.MEMCORE_LLM_API_KEY,
-    baseUrl: (process.env.MEMCORE_LLM_BASE_URL ?? DEFAULT_LLM_BASE_URL).replace(/\/+$/, ""),
-    model: process.env.MEMCORE_LLM_MODEL ?? DEFAULT_LLM_MODEL,
+    apiKey: process.env.MEMCURIO_LLM_API_KEY,
+    baseUrl: (process.env.MEMCURIO_LLM_BASE_URL ?? DEFAULT_LLM_BASE_URL).replace(/\/+$/, ""),
+    model: process.env.MEMCURIO_LLM_MODEL ?? DEFAULT_LLM_MODEL,
   };
 }
 

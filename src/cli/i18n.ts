@@ -1,8 +1,8 @@
 export type Lang = "zh" | "en";
 
 export function currentLang(): Lang {
-  // `||` (not `??`) so an empty MEMCORE_LANG falls through to LANG / default.
-  const raw = (process.env.MEMCORE_LANG || process.env.LANG || "").toLowerCase();
+  // `||` (not `??`) so an empty MEMCURIO_LANG falls through to LANG / default.
+  const raw = (process.env.MEMCURIO_LANG || process.env.LANG || "").toLowerCase();
   if (!raw) {
     return "zh";
   }
@@ -13,17 +13,17 @@ export function currentLang(): Lang {
 type Entry = string | ((...args: string[]) => string);
 
 const zh: Record<string, Entry> = {
-  "usage.main": `memcore — 跨 harness 记忆与上下文管理系统
+  "usage.main": `memcurio — 跨 harness 记忆与上下文管理系统
 
-用法: memcore <command> [args]
+用法: memcurio <command> [args]
 
 命令:
-  init               初始化 ~/.memcore 布局
+  init               初始化 ~/.memcurio 布局
   status             显示引擎状态（命名空间/后端/审计/pending）
   remember <内容>    写入一条记忆 [--ns X] [--kind MEMORY|USER]
   list               列出记忆 [--ns X] [--kind K] [--all]
   search <query>     检索记忆 [--ns X] [--kind K] [--top-k N]
-  forget <id>        删除一条记忆（id 从 memcore list 获取）
+  forget <id>        删除一条记忆（id 从 memcurio list 获取）
   pin <id>           固定条目免于剪枝 [--unset]
   revive <id>        将 stale/archived 条目恢复为 active
   prune              价值感知剪枝（干跑报告；--execute 生效）[--ns X]
@@ -41,49 +41,49 @@ const zh: Record<string, Entry> = {
   event              投递统一事件（--json '{...}'）
   mcp                启动 MCP server（stdio）
   codex-daemon       启动 codex 适配器 daemon
-  codex-plugin [dir] 生成 codex 插件包（默认 ~/.memcore/codex-plugin）
+  codex-plugin [dir] 生成 codex 插件包（默认 ~/.memcurio/codex-plugin）
   help [cmd]         命令帮助
 `,
 
-  "help.init": "memcore init\n  初始化 ~/.memcore 布局（可用 MEMCORE_ROOT 覆盖路径）",
-  "help.status": "memcore status\n  显示引擎状态（命名空间/后端/审计/pending）",
-  "help.remember": "memcore remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）",
-  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  列出记忆（默认显示 archived；--all 额外含已删除）",
-  "help.search": "memcore search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）",
-  "help.forget": "memcore forget <id>\n  删除一条记忆（id 从 memcore list 获取）",
-  "help.pin": "memcore pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
-  "help.revive": "memcore revive <id>\n  将 stale/archived 条目恢复为 active",
-  "help.prune": "memcore prune [--ns X] [--execute]\n  价值感知剪枝（干跑报告；--execute 生效）",
-  "help.curate": "memcore curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM 策展（需 MEMCORE_LLM_API_KEY；矛盾/伞合并/重评）",
-  "help.export": "memcore export [--ns X] [--kind K] [--output FILE]\n  导出 JSONL（默认输出到 stdout）",
-  "help.import": "memcore import <file.jsonl> [--ns X]\n  导入 JSONL（--ns 覆盖全部条目命名空间）",
-  "help.merge": "memcore merge <src-ns> <dst-ns> [--execute]\n  命名空间合并（干跑；--execute 生效）",
-  "help.baseline": "memcore baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
-  "help.index": "memcore index\n  重新生成全局 INDEX.md",
-  "help.reindex": "memcore reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
-  "help.compact": "memcore compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；替换 active/stale 旧策略，保留已归档历史）",
-  "help.repair": "memcore repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
-  "help.doctor": "memcore doctor\n  自检环境与数据健康",
-  "help.audit": "memcore audit [--limit N]\n  审计记录",
-  "help.event": "memcore event --json '{...}' 或从 stdin 读取\n  投递统一事件（session_start/session_end 等）",
-  "help.mcp": "memcore mcp\n  启动 MCP server（stdio）",
-  "help.codex-daemon": "memcore codex-daemon\n  启动 codex 适配器 daemon",
-  "help.codex-plugin": "memcore codex-plugin [dir]\n  生成 codex 插件包（默认 ~/.memcore/codex-plugin）",
-  "help.help": "memcore help [cmd]\n  命令帮助",
+  "help.init": "memcurio init\n  初始化 ~/.memcurio 布局（可用 MEMCURIO_ROOT 覆盖路径）",
+  "help.status": "memcurio status\n  显示引擎状态（命名空间/后端/审计/pending）",
+  "help.remember": "memcurio remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）",
+  "help.list": "memcurio list [--ns X] [--kind K] [--all]\n  列出记忆（默认显示 archived；--all 额外含已删除）",
+  "help.search": "memcurio search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）",
+  "help.forget": "memcurio forget <id>\n  删除一条记忆（id 从 memcurio list 获取）",
+  "help.pin": "memcurio pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
+  "help.revive": "memcurio revive <id>\n  将 stale/archived 条目恢复为 active",
+  "help.prune": "memcurio prune [--ns X] [--execute]\n  价值感知剪枝（干跑报告；--execute 生效）",
+  "help.curate": "memcurio curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM 策展（需 MEMCURIO_LLM_API_KEY；矛盾/伞合并/重评）",
+  "help.export": "memcurio export [--ns X] [--kind K] [--output FILE]\n  导出 JSONL（默认输出到 stdout）",
+  "help.import": "memcurio import <file.jsonl> [--ns X]\n  导入 JSONL（--ns 覆盖全部条目命名空间）",
+  "help.merge": "memcurio merge <src-ns> <dst-ns> [--execute]\n  命名空间合并（干跑；--execute 生效）",
+  "help.baseline": "memcurio baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
+  "help.index": "memcurio index\n  重新生成全局 INDEX.md",
+  "help.reindex": "memcurio reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
+  "help.compact": "memcurio compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；替换 active/stale 旧策略，保留已归档历史）",
+  "help.repair": "memcurio repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
+  "help.doctor": "memcurio doctor\n  自检环境与数据健康",
+  "help.audit": "memcurio audit [--limit N]\n  审计记录",
+  "help.event": "memcurio event --json '{...}' 或从 stdin 读取\n  投递统一事件（session_start/session_end 等）",
+  "help.mcp": "memcurio mcp\n  启动 MCP server（stdio）",
+  "help.codex-daemon": "memcurio codex-daemon\n  启动 codex 适配器 daemon",
+  "help.codex-plugin": "memcurio codex-plugin [dir]\n  生成 codex 插件包（默认 ~/.memcurio/codex-plugin）",
+  "help.help": "memcurio help [cmd]\n  命令帮助",
 
-  "remember.missing": 'remember: missing content (memcore remember "内容")',
+  "remember.missing": 'remember: missing content (memcurio remember "内容")',
   "remember.tooLong": (n: string) => `remember: 内容超过 ${n} 字符上限`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${cur}'，如需注入请加 --ns ${cur} 或设置 config.namespace.default`,
   "remember.redacted": "[secrets redacted]",
-  "search.missing": 'search: missing query (memcore search "关键词")',
+  "search.missing": 'search: missing query (memcurio search "关键词")',
   "search.note": (x: string) =>
-    `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcore list 确认记忆存在。`,
+    `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcurio list 确认记忆存在。`,
   "search.filtered": (n: string) => `note: ${n} 条命中因注入风险被过滤，未展示`,
   "search.fallback": (err: string) => `fts 检索失败，回退 LIKE：${err}`,
-  "forget.missing": "forget: missing entry_id (从 memcore list 获取)",
+  "forget.missing": "forget: missing entry_id (从 memcurio list 获取)",
   "forget.done": (id: string) => `已删除 ${id}`,
-  "compact.missing": 'compact: missing content (memcore compact "策略内容")',
+  "compact.missing": 'compact: missing content (memcurio compact "策略内容")',
   "compact.tooLong": (n: string) => `compact: 内容超过 ${n} 字符上限`,
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条，保留已归档历史）`,
   "repair.none": "无未完成事务（事务日志健康）",
@@ -93,8 +93,8 @@ const zh: Record<string, Entry> = {
   "repair.fix": "修复方式：--execute 将从 Markdown 真源重建影子索引（保留使用统计），并清理事务日志。",
   "repair.done": (n: string) => `已修复：从 md 真源重建 ${n} 条，事务日志已清空`,
   "event.tty": "event: stdin 为终端，请用 --json '{...}' 提供信封",
-  "curate.noKeyNote": "未配置 MEMCORE_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。",
-  "curate.needProvider": "curate --execute 需要 LLM provider：设置 MEMCORE_LLM_API_KEY（可选 MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL）",
+  "curate.noKeyNote": "未配置 MEMCURIO_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。",
+  "curate.needProvider": "curate --execute 需要 LLM provider：设置 MEMCURIO_LLM_API_KEY（可选 MEMCURIO_LLM_BASE_URL / MEMCURIO_LLM_MODEL）",
   "curate.plan": (p: string, r: string, c: string, u: string) =>
     `curate plan (provider=${p}): ${r} 条重评，${c} 条矛盾，${u} 条伞合并（干跑）。`,
   "curate.unparsable": (n: string) => `无法解析 ${n} 对（LLM 输出无法解析，需人工复核）`,
@@ -102,10 +102,10 @@ const zh: Record<string, Entry> = {
   "curate.applied": (r: string, c: string, u: string) =>
     `curate 已应用：${r} 个分数，${c} 条矛盾，${u} 条伞合并`,
   "codexPlugin.snippet": "（config.toml 合并备选）",
-  "codexPlugin.hint": "提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcore/，或将 snippet 合并进 ~/.codex/config.toml",
+  "codexPlugin.hint": "提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcurio/，或将 snippet 合并进 ~/.codex/config.toml",
   "codexPlugin.generated": (d: string) => `codex 插件已生成于 ${d}`,
-  "daemon.listening": (p: string) => `memcore codex daemon 监听 ${p}`,
-  "unknownCommand": "运行 memcore help 查看全部命令",
+  "daemon.listening": (p: string) => `memcurio codex daemon 监听 ${p}`,
+  "unknownCommand": "运行 memcurio help 查看全部命令",
   "init.done": (root: string) => `已初始化 ${root}`,
   "init.backend": (b: string) => `索引后端: ${b}`,
   "reindex.done": (n: string, b: string) => `已重建索引 ${n} 条（backend=${b}）`,
@@ -134,8 +134,8 @@ const zh: Record<string, Entry> = {
   "status.audit": (n: string) => `audit     : ${n} records`,
   "status.pending": (n: string) => `pending   : ${n} txns`,
   "status.drift": (truth: string, indexed: string) =>
-    `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcore reindex 修复`,
-  "init.hint": "note: 未找到记忆库。请先运行 `memcore init`（或用 MEMCORE_ROOT 指定位置）。",
+    `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcurio reindex 修复`,
+  "init.hint": "note: 未找到记忆库。请先运行 `memcurio init`（或用 MEMCURIO_ROOT 指定位置）。",
   "doctor.layout": "布局",
   "doctor.config": "配置",
   "doctor.index": "索引",
@@ -146,10 +146,10 @@ const zh: Record<string, Entry> = {
   "doctor.parsable": "可解析",
   "doctor.noPending": "无异常",
   "doctor.aligned": (n: string) => `${n} 条一致`,
-  "doctor.mismatch": (n: string) => `${n} 条不一致或缺失（memcore reindex）`,
+  "doctor.mismatch": (n: string) => `${n} 条不一致或缺失（memcurio reindex）`,
   "doctor.duplicateIds": (n: string) => `${n} 条重复条目 ID`,
   "doctor.unique": "唯一",
-  "doctor.reindexHint": "（memcore reindex）",
+  "doctor.reindexHint": "（memcurio reindex）",
   "doctor.daemonIdle": "（未运行，仅 codex 用户需要）",
   "doctor.pluginMissing": "（未生成，仅 codex 用户需要）",
   "doctor.pluginLabel": "· codex 插件包",
@@ -161,17 +161,17 @@ const zh: Record<string, Entry> = {
 };
 
 const en: Record<string, Entry> = {
-  "usage.main": `memcore — cross-harness memory and context management system
+  "usage.main": `memcurio — cross-harness memory and context management system
 
-Usage: memcore <command> [args]
+Usage: memcurio <command> [args]
 
 Commands:
-  init               Initialize the ~/.memcore layout
+  init               Initialize the ~/.memcurio layout
   status             Show engine status (namespaces/backend/audit/pending)
   remember <text>    Save a memory [--ns X] [--kind MEMORY|USER]
   list               List memories [--ns X] [--kind K] [--all]
   search <query>     Search memories [--ns X] [--kind K] [--top-k N]
-  forget <id>        Delete a memory (get id from memcore list)
+  forget <id>        Delete a memory (get id from memcurio list)
   pin <id>           Pin an entry to skip pruning [--unset]
   revive <id>        Restore a stale/archived entry to active
   prune              Value-aware pruning (dry-run; --execute applies) [--ns X]
@@ -189,49 +189,49 @@ Commands:
   event              Send a unified event (--json '{...}')
   mcp                Start the MCP server (stdio)
   codex-daemon       Start the codex adapter daemon
-  codex-plugin [dir] Generate the codex plugin package (default ~/.memcore/codex-plugin)
+  codex-plugin [dir] Generate the codex plugin package (default ~/.memcurio/codex-plugin)
   help [cmd]         Command help
 `,
 
-  "help.init": "memcore init\n  Initialize the ~/.memcore layout (override with MEMCORE_ROOT)",
-  "help.status": "memcore status\n  Show engine status (namespaces/backend/audit/pending)",
-  "help.remember": "memcore remember <text> [--ns X] [--kind MEMORY|USER]\n  Save a memory (secrets redacted on write; injection patterns audited)",
-  "help.list": "memcore list [--ns X] [--kind K] [--all]\n  List memories (archived shown by default; --all additionally includes deleted)",
-  "help.search": "memcore search <query> [--ns X] [--kind K] [--top-k N]\n  Search memories (trigram/like; hits count as usage)",
-  "help.forget": "memcore forget <id>\n  Delete a memory (get id from memcore list)",
-  "help.pin": "memcore pin <id> [--unset]\n  Pin an entry to skip pruning / unpin",
-  "help.revive": "memcore revive <id>\n  Restore a stale/archived entry to active",
-  "help.prune": "memcore prune [--ns X] [--execute]\n  Value-aware pruning (dry-run; --execute applies)",
-  "help.curate": "memcore curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM curation (needs MEMCORE_LLM_API_KEY; contradictions/umbrella/re-eval)",
-  "help.export": "memcore export [--ns X] [--kind K] [--output FILE]\n  Export JSONL (stdout by default)",
-  "help.import": "memcore import <file.jsonl> [--ns X]\n  Import JSONL (--ns overrides all entry namespaces)",
-  "help.merge": "memcore merge <src-ns> <dst-ns> [--execute]\n  Merge namespaces (dry-run; --execute applies)",
-  "help.baseline": "memcore baseline [dir] [--top-k N]\n  Inject the AGENTS.md memory section (auto-injected on read)",
-  "help.index": "memcore index\n  Regenerate the global INDEX.md",
-  "help.reindex": "memcore reindex\n  Rebuild the shadow index from the Markdown source of truth (keeps usage stats)",
-  "help.compact": "memcore compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces active/stale strategies, keeps archived history)",
-  "help.repair": "memcore repair [--execute]\n  Detect/fix transaction anomalies (--execute triggers rebuild)",
-  "help.doctor": "memcore doctor\n  Self-check environment and data health",
-  "help.audit": "memcore audit [--limit N]\n  Audit records",
-  "help.event": "memcore event --json '{...}' or read from stdin\n  Send a unified event (session_start/session_end, etc.)",
-  "help.mcp": "memcore mcp\n  Start the MCP server (stdio)",
-  "help.codex-daemon": "memcore codex-daemon\n  Start the codex adapter daemon",
-  "help.codex-plugin": "memcore codex-plugin [dir]\n  Generate the codex plugin package (default ~/.memcore/codex-plugin)",
-  "help.help": "memcore help [cmd]\n  Command help",
+  "help.init": "memcurio init\n  Initialize the ~/.memcurio layout (override with MEMCURIO_ROOT)",
+  "help.status": "memcurio status\n  Show engine status (namespaces/backend/audit/pending)",
+  "help.remember": "memcurio remember <text> [--ns X] [--kind MEMORY|USER]\n  Save a memory (secrets redacted on write; injection patterns audited)",
+  "help.list": "memcurio list [--ns X] [--kind K] [--all]\n  List memories (archived shown by default; --all additionally includes deleted)",
+  "help.search": "memcurio search <query> [--ns X] [--kind K] [--top-k N]\n  Search memories (trigram/like; hits count as usage)",
+  "help.forget": "memcurio forget <id>\n  Delete a memory (get id from memcurio list)",
+  "help.pin": "memcurio pin <id> [--unset]\n  Pin an entry to skip pruning / unpin",
+  "help.revive": "memcurio revive <id>\n  Restore a stale/archived entry to active",
+  "help.prune": "memcurio prune [--ns X] [--execute]\n  Value-aware pruning (dry-run; --execute applies)",
+  "help.curate": "memcurio curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM curation (needs MEMCURIO_LLM_API_KEY; contradictions/umbrella/re-eval)",
+  "help.export": "memcurio export [--ns X] [--kind K] [--output FILE]\n  Export JSONL (stdout by default)",
+  "help.import": "memcurio import <file.jsonl> [--ns X]\n  Import JSONL (--ns overrides all entry namespaces)",
+  "help.merge": "memcurio merge <src-ns> <dst-ns> [--execute]\n  Merge namespaces (dry-run; --execute applies)",
+  "help.baseline": "memcurio baseline [dir] [--top-k N]\n  Inject the AGENTS.md memory section (auto-injected on read)",
+  "help.index": "memcurio index\n  Regenerate the global INDEX.md",
+  "help.reindex": "memcurio reindex\n  Rebuild the shadow index from the Markdown source of truth (keeps usage stats)",
+  "help.compact": "memcurio compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces active/stale strategies, keeps archived history)",
+  "help.repair": "memcurio repair [--execute]\n  Detect/fix transaction anomalies (--execute triggers rebuild)",
+  "help.doctor": "memcurio doctor\n  Self-check environment and data health",
+  "help.audit": "memcurio audit [--limit N]\n  Audit records",
+  "help.event": "memcurio event --json '{...}' or read from stdin\n  Send a unified event (session_start/session_end, etc.)",
+  "help.mcp": "memcurio mcp\n  Start the MCP server (stdio)",
+  "help.codex-daemon": "memcurio codex-daemon\n  Start the codex adapter daemon",
+  "help.codex-plugin": "memcurio codex-plugin [dir]\n  Generate the codex plugin package (default ~/.memcurio/codex-plugin)",
+  "help.help": "memcurio help [cmd]\n  Command help",
 
-  "remember.missing": 'remember: missing content (memcore remember "content")',
+  "remember.missing": 'remember: missing content (memcurio remember "content")',
   "remember.tooLong": (n: string) => `remember: content exceeds ${n} characters`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: memory saved to namespace '${ns}'; current directory sessions inject from '${cur}' — use --ns ${cur} or set config.namespace.default to inject here`,
   "remember.redacted": "[secrets redacted]",
-  "search.missing": 'search: missing query (memcore search "keyword")',
+  "search.missing": 'search: missing query (memcurio search "keyword")',
   "search.note": (x: string) =>
-    `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcore list to confirm memories exist.`,
+    `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcurio list to confirm memories exist.`,
   "search.filtered": (n: string) => `note: ${n} hits filtered out by the injection scan, not shown`,
   "search.fallback": (err: string) => `fts search failed, falling back to LIKE: ${err}`,
-  "forget.missing": "forget: missing entry_id (get it from memcore list)",
+  "forget.missing": "forget: missing entry_id (get it from memcurio list)",
   "forget.done": (id: string) => `forgot ${id}`,
-  "compact.missing": 'compact: missing content (memcore compact "strategy")',
+  "compact.missing": 'compact: missing content (memcurio compact "strategy")',
   "compact.tooLong": (n: string) => `compact: content exceeds ${n} characters`,
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries, kept archived history)`,
   "repair.none": "no pending transactions (transaction log healthy)",
@@ -241,8 +241,8 @@ Commands:
   "repair.fix": "Fix: --execute rebuilds the shadow index from the Markdown source of truth (keeps usage stats) and clears the transaction log.",
   "repair.done": (n: string) => `repaired: rebuilt ${n} entries from md truth source, transaction log cleared`,
   "event.tty": "event: stdin is a terminal; pass the envelope with --json '{...}'",
-  "curate.noKeyNote": "MEMCORE_LLM_API_KEY not set: rule-based scan only, no LLM calls. Set it and run --execute for full curation.",
-  "curate.needProvider": "curate --execute requires an LLM provider: set MEMCORE_LLM_API_KEY (optional MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL)",
+  "curate.noKeyNote": "MEMCURIO_LLM_API_KEY not set: rule-based scan only, no LLM calls. Set it and run --execute for full curation.",
+  "curate.needProvider": "curate --execute requires an LLM provider: set MEMCURIO_LLM_API_KEY (optional MEMCURIO_LLM_BASE_URL / MEMCURIO_LLM_MODEL)",
   "curate.plan": (p: string, r: string, c: string, u: string) =>
     `curate plan (provider=${p}): ${r} reevaluations, ${c} contradictions, ${u} umbrellas (dry-run).`,
   "curate.unparsable": (n: string) => `unparsable ${n} pairs (LLM output unparsable, needs manual review)`,
@@ -250,10 +250,10 @@ Commands:
   "curate.applied": (r: string, c: string, u: string) =>
     `curate applied: ${r} scores, ${c} contradictions, ${u} umbrellas`,
   "codexPlugin.snippet": "(fallback for merging into config.toml)",
-  "codexPlugin.hint": "Note: if codex does not auto-load the plugin, copy the plugin.json directory to ~/.codex/plugins/memcore/, or merge the snippet into ~/.codex/config.toml",
+  "codexPlugin.hint": "Note: if codex does not auto-load the plugin, copy the plugin.json directory to ~/.codex/plugins/memcurio/, or merge the snippet into ~/.codex/config.toml",
   "codexPlugin.generated": (d: string) => `codex plugin generated in ${d}`,
-  "daemon.listening": (p: string) => `memcore codex daemon listening on ${p}`,
-  "unknownCommand": "Run memcore help to see all commands.",
+  "daemon.listening": (p: string) => `memcurio codex daemon listening on ${p}`,
+  "unknownCommand": "Run memcurio help to see all commands.",
   "init.done": (root: string) => `initialized ${root}`,
   "init.backend": (b: string) => `index backend: ${b}`,
   "reindex.done": (n: string, b: string) => `reindexed ${n} entries (backend=${b})`,
@@ -282,8 +282,8 @@ Commands:
   "status.audit": (n: string) => `audit     : ${n} records`,
   "status.pending": (n: string) => `pending   : ${n} txns`,
   "status.drift": (truth: string, indexed: string) =>
-    `note: md truth has ${truth} entries but the index has ${indexed}; run memcore reindex to repair`,
-  "init.hint": "note: no memory store found. Run `memcore init` first (or point MEMCORE_ROOT elsewhere).",
+    `note: md truth has ${truth} entries but the index has ${indexed}; run memcurio reindex to repair`,
+  "init.hint": "note: no memory store found. Run `memcurio init` first (or point MEMCURIO_ROOT elsewhere).",
   "doctor.layout": "layout",
   "doctor.config": "config",
   "doctor.index": "index",
@@ -294,10 +294,10 @@ Commands:
   "doctor.parsable": "parseable",
   "doctor.noPending": "no pending",
   "doctor.aligned": (n: string) => `${n} aligned`,
-  "doctor.mismatch": (n: string) => `${n} mismatched or missing entries (memcore reindex)`,
+  "doctor.mismatch": (n: string) => `${n} mismatched or missing entries (memcurio reindex)`,
   "doctor.duplicateIds": (n: string) => `${n} duplicate entry id(s)`,
   "doctor.unique": "unique",
-  "doctor.reindexHint": " (memcore reindex)",
+  "doctor.reindexHint": " (memcurio reindex)",
   "doctor.daemonIdle": " (not running; codex users only)",
   "doctor.pluginMissing": " (not generated; codex users only)",
   "doctor.pluginLabel": "· codex plugin package",

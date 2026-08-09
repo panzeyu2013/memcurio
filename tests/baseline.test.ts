@@ -17,15 +17,15 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "base-"));
   workdir = mkdtempSync(join(tmpdir(), "proj-"));
   ns = namespaceFor(workdir);
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
 });
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   rmSync(dir, { recursive: true, force: true });
   rmSync(workdir, { recursive: true, force: true });
@@ -37,7 +37,7 @@ async function run(...argv: string[]): Promise<{ code: number; out: string }> {
 }
 
 describe("baseline injection", () => {
-  test("memcore index generates INDEX.md with namespaces", async () => {
+  test("memcurio index generates INDEX.md with namespaces", async () => {
     await run("init");
     await run("remember", "跨会话记忆系统剪枝策略", "--ns", "proj-x");
     const { code } = await run("index");
@@ -55,8 +55,8 @@ describe("baseline injection", () => {
     expect(code).toBe(0);
     expect(out).toContain("AGENTS.md");
     const agents = readFileSync(join(workdir, "AGENTS.md"), "utf-8");
-    expect(agents).toContain("<!-- memcore:start -->");
-    expect(agents).toContain("<!-- memcore:end -->");
+    expect(agents).toContain("<!-- memcurio:start -->");
+    expect(agents).toContain("<!-- memcurio:end -->");
     expect(agents).toContain("MEMORY.md");
     expect(agents).toContain("跨会话记忆系统剪枝策略");
     expect(agents).toContain("memory_search");
@@ -70,7 +70,7 @@ describe("baseline injection", () => {
     await run("remember", "第二条记忆", "--ns", ns);
     await run("baseline", workdir);
     const agents = readFileSync(join(workdir, "AGENTS.md"), "utf-8");
-    expect(agents.split("memcore:start").length - 1).toBe(1);
+    expect(agents.split("memcurio:start").length - 1).toBe(1);
     expect(agents).toContain("第一条记忆");
     expect(agents).toContain("第二条记忆");
     expect(agents).toContain("## 项目说明");
@@ -90,21 +90,21 @@ describe("baseline injection", () => {
 
   test("unmatched marker throws a clear error", async () => {
     await run("init");
-    writeFileSync(join(workdir, "AGENTS.md"), "前面内容\n<!-- memcore:start -->\n没有结束标记\n");
+    writeFileSync(join(workdir, "AGENTS.md"), "前面内容\n<!-- memcurio:start -->\n没有结束标记\n");
     const { code, out } = await run("baseline", workdir);
     expect(code).toBe(1);
-    expect(out).toContain("unmatched memcore marker");
+    expect(out).toContain("unmatched memcurio marker");
   });
 
   test("swapped markers (END before START) are rejected, not interleaved", async () => {
     await run("init");
     writeFileSync(
       join(workdir, "AGENTS.md"),
-      "前面\n<!-- memcore:end -->\n中间\n<!-- memcore:start -->\n后面\n",
+      "前面\n<!-- memcurio:end -->\n中间\n<!-- memcurio:start -->\n后面\n",
     );
     const { code, out } = await run("baseline", workdir);
     expect(code).toBe(1);
-    expect(out).toContain("mismatched memcore markers");
+    expect(out).toContain("mismatched memcurio markers");
     const agents = readFileSync(join(workdir, "AGENTS.md"), "utf-8");
     expect(agents).toContain("前面");
     expect(agents).toContain("后面");

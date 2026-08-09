@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const LANG_VARS = ["MEMCORE_LANG", "LANG"] as const;
+const LANG_VARS = ["MEMCURIO_LANG", "LANG"] as const;
 
 let dir: string;
 let prevRoot: string | undefined;
@@ -15,8 +15,8 @@ let savedLang: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cli-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
   savedLang = {};
   for (const k of LANG_VARS) {
     savedLang[k] = process.env[k];
@@ -26,9 +26,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   for (const k of LANG_VARS) {
     if (savedLang[k] === undefined) {
@@ -45,7 +45,7 @@ async function run(...argv: string[]): Promise<{ code: number; out: string }> {
   return { code: r.code, out: r.out + "\n" + r.err };
 }
 
-describe("memcore cli", () => {
+describe("memcurio cli", () => {
   test("init creates layout", async () => {
     const { code } = await run("init");
     expect(code).toBe(0);
@@ -180,8 +180,8 @@ describe("memcore cli", () => {
   test("help [cmd] prints per-command help", async () => {
     const { code, out } = await run("help", "search");
     expect(code).toBe(0);
-    expect(out).toContain("memcore search");
+    expect(out).toContain("memcurio search");
     const unknown = await run("help", "no-such-cmd");
-    expect(unknown.out).toContain("用法: memcore");
+    expect(unknown.out).toContain("用法: memcurio");
   });
 });

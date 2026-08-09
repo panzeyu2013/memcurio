@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { MemcorePlugin, partIdFor, sessionIdFor } from "../src/adapters/opencode/plugin.js";
+import { MemcurioPlugin, partIdFor, sessionIdFor } from "../src/adapters/opencode/plugin.js";
 import { Index } from "../src/core/db.js";
 import { indexDb, namespaceFor } from "../src/core/paths.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -14,15 +14,15 @@ const ns = namespaceFor(PROJ);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "oc-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
 });
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -37,7 +37,7 @@ interface FakePlugin {
 }
 
 async function makeFakePlugin(client: unknown): Promise<FakePlugin> {
-  const plugin = await MemcorePlugin({ directory: PROJ, client } as unknown as never);
+  const plugin = await MemcurioPlugin({ directory: PROJ, client } as unknown as never);
   return plugin as unknown as FakePlugin;
 }
 
@@ -64,7 +64,7 @@ describe("event shape helpers", () => {
   });
 });
 
-describe("MemcorePlugin event handling", () => {
+describe("MemcurioPlugin event handling", () => {
   test("session.created registers a session row; idle+deleted close it", async () => {
     const fakeClient = {
       app: { log: async () => ({}) },
@@ -100,7 +100,7 @@ describe("MemcorePlugin event handling", () => {
   test("handler failures are reported, not thrown", async () => {
     const errors: string[] = [];
     writeFileSync(join(dir, "blocker"), "x");
-    process.env.MEMCORE_ROOT = join(dir, "blocker", "nested");
+    process.env.MEMCURIO_ROOT = join(dir, "blocker", "nested");
     const plugin = await makeFakePlugin({
       app: {
         log: async ({ body }: { body: { level: string; message: string } }) => {
@@ -240,6 +240,6 @@ describe("MemcorePlugin event handling", () => {
     const output = { prompt: "original", context: [] as unknown[] };
     await plugin["experimental.session.compacting"]!({ sessionID: "s1" }, output);
     expect(output.context.length).toBeGreaterThan(0);
-    expect(String(output.context[0])).toContain("memcore memory context");
+    expect(String(output.context[0])).toContain("memcurio memory context");
   });
 });

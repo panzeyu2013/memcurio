@@ -17,13 +17,13 @@ import { join } from "node:path";
 
 let dir: string;
 let prevRoot: string | undefined;
-const LANG_VARS = ["MEMCORE_LANG", "LANG"] as const;
+const LANG_VARS = ["MEMCURIO_LANG", "LANG"] as const;
 let savedLang: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "fix-"));
-  prevRoot = process.env.MEMCORE_ROOT;
-  process.env.MEMCORE_ROOT = dir;
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
   savedLang = {};
   for (const k of LANG_VARS) {
     savedLang[k] = process.env[k];
@@ -33,9 +33,9 @@ beforeEach(() => {
 
 afterEach(() => {
   if (prevRoot === undefined) {
-    delete process.env.MEMCORE_ROOT;
+    delete process.env.MEMCURIO_ROOT;
   } else {
-    process.env.MEMCORE_ROOT = prevRoot;
+    process.env.MEMCURIO_ROOT = prevRoot;
   }
   for (const k of LANG_VARS) {
     if (savedLang[k] === undefined) {
@@ -311,7 +311,7 @@ describe("F6 锁残留恢复", () => {
 describe("A6 archived 排除（静态注入）", () => {
   test("buildStaticContext 不含 archived 条目", async () => {
     await runCli("init");
-    const { MemcoreAdapter } = await import("../src/adapters/shared/engine.js");
+    const { MemcurioAdapter } = await import("../src/adapters/shared/engine.js");
     const { addEntry } = await import("../src/core/mdStore.js");
     const projNs = namespaceFor("/tmp/ProjA");
     const idx = await Index.create(indexDb(dir));
@@ -320,7 +320,7 @@ describe("A6 archived 排除（静态注入）", () => {
     addEntry(nsDir(dir, projNs), makeEntry({ ns: projNs, content: "活跃记忆" }));
     idx.add(makeEntry({ ns: projNs, content: "活跃记忆" }));
     idx.close();
-    const adapter = new MemcoreAdapter();
+    const adapter = new MemcurioAdapter();
     const ctx = await adapter.buildStaticContext("/tmp/ProjA");
     expect(ctx).toContain("活跃记忆");
     expect(ctx).not.toContain("已退役记忆");

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
-import { MemcoreAdapter } from "../shared/engine.js";
+import { MemcurioAdapter } from "../shared/engine.js";
 import type { AdapterLog } from "../shared/engine.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
@@ -51,9 +51,9 @@ function filePathFromToolInput(toolInput: unknown): string | undefined {
 }
 
 export function createCodexHandler(log?: AdapterLog) {
-  const adapter = new MemcoreAdapter({
+  const adapter = new MemcurioAdapter({
     log,
-    reflect: process.env.MEMCORE_CODEX_REFLECT === "0" ? undefined : codexExecReflect({ log }),
+    reflect: process.env.MEMCURIO_CODEX_REFLECT === "0" ? undefined : codexExecReflect({ log }),
   });
   const recent = new Map<string, number>();
   const inFlight = new Map<string, Promise<Record<string, unknown>>>();
@@ -243,7 +243,7 @@ export function codexExecReflect(opts: {
   timeoutMs?: number;
   bin?: string;
 } = {}): ReflectChat {
-  const bin = opts.bin ?? process.env.MEMCORE_CODEX_BIN ?? "codex";
+  const bin = opts.bin ?? process.env.MEMCURIO_CODEX_BIN ?? "codex";
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const log = opts.log ?? (() => {});
   return ({ summary, strategy }) =>
@@ -420,7 +420,7 @@ export async function runCodexDaemon(opts: {
   log?: AdapterLog;
 }): Promise<CodexDaemonHandle> {
   mkdirSync(dirname(opts.socketPath), { recursive: true });
-  const root = opts.root ?? (process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore"));
+  const root = opts.root ?? (process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio"));
   const token = ensureToken(root);
   const handle = createCodexHandler(opts.log);
   const pidPath = `${opts.socketPath}.pid`;
@@ -514,11 +514,11 @@ export async function runCodexDaemon(opts: {
       try {
         parsed = JSON.parse(line) as { token?: string; input?: unknown };
       } catch {
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcore error: invalid request" }) + "\n");
+        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error: invalid request" }) + "\n");
         return;
       }
       if (parsed.token !== token) {
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcore error: unauthorized" }) + "\n");
+        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error: unauthorized" }) + "\n");
         return;
       }
       try {
@@ -528,7 +528,7 @@ export async function runCodexDaemon(opts: {
         if (opts.log) {
           opts.log("error", `handleEvent failed: ${String(err)}`);
         }
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcore error" }) + "\n");
+        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error" }) + "\n");
       }
     }
   });
@@ -608,7 +608,7 @@ export async function runCodexDaemon(opts: {
   }
 
   server.on("error", (err) => {
-    console.error(`memcore codex daemon error: ${String(err)}`);
+    console.error(`memcurio codex daemon error: ${String(err)}`);
   });
 
   const cleanup = (): void => {
@@ -695,8 +695,8 @@ const isMain = (() => {
   }
 })();
 if (isMain) {
-  const root = process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore");
-  const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
+  const root = process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio");
+  const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
   const daemon = await runCodexDaemon({ socketPath, root });
   await daemon.closed;
 }

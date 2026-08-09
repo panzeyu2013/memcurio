@@ -8,7 +8,7 @@ const result = await Bun.build({
   entrypoints: [join(import.meta.dir, "..", "src", "adapters", "opencode", "plugin.ts")],
   outdir: outDir,
   target: "bun",
-  naming: "opencode-memcore-plugin.js",
+  naming: "opencode-memcurio-plugin.js",
 });
 
 if (!result.success) {
@@ -18,4 +18,4 @@ if (!result.success) {
   process.exit(1);
 }
 
-console.log(`bundled -> ${join(outDir, "opencode-memcore-plugin.js")}`);
+console.log(`bundled -> ${join(outDir, "opencode-memcurio-plugin.js")}`);
