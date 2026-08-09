@@ -53,7 +53,7 @@ describe("retriever", () => {
     const r = getRetriever(idx);
     const hits = r.search({ query: "记忆系统", topK: 10 });
     expect(hits.map((h) => h.entryId)).toContain("a1b2c3d4");
-    expect(hits[0].content).toContain("剪枝策略");
+    expect(hits[0]?.content).toContain("剪枝策略");
     idx.close();
   });
 
@@ -75,7 +75,7 @@ describe("retriever", () => {
     ]);
     const r = getRetriever(idx);
     const hits = r.search({ query: "pruning strategy", topK: 10 });
-    expect(hits[0].entryId).toBe("a1b2c3d4");
+    expect(hits[0]?.entryId).toBe("a1b2c3d4");
     idx.close();
   });
 

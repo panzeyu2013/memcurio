@@ -1,6 +1,12 @@
 node_modules/
 dist/
 .memcurio/
+coverage/
+
+# Secrets: MEMCURIO_LLM_API_KEY etc. are read from the environment, and a
+# local .env should never be committed.
+.env
+.env.*
 
 .DS_Store
 *.log

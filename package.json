@@ -23,15 +23,18 @@
     "llm"
   ],
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.1.3"
   },
   "files": [
     "dist",
     "docs",
     "README.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "type": "module",
+  "main": "./dist/cli/index.js",
+  "types": "./dist/cli/index.d.ts",
   "bin": {
     "memcurio": "dist/cli/index.js"
   },
@@ -40,6 +43,7 @@
     "prepare": "bun run build && bun run bundle:plugin",
     "prepack": "bun run build && bun run bundle:plugin",
     "test": "bun test",
+    "lint": "biome lint src tests scripts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "dev": "bun run src/cli/index.ts",
     "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts"
@@ -49,9 +53,13 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.7",
     "@opencode-ai/plugin": "^1.18.15",
     "@types/bun": "^1.3.14",
     "@types/node": "^24.0.0",
     "typescript": "^5.5.0"
+  },
+  "overrides": {
+    "zod": "4.4.3"
   }
 }
