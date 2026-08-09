@@ -65,21 +65,28 @@ describe("memcurio compact command", () => {
     const idx = await Index.create(indexDb(dir));
     const entries = idx.list({ ns: "default", kind: "COMPACT" });
     expect(entries).toHaveLength(1);
-    expect(entries[0].kind).toBe("COMPACT");
+    expect(entries[0]?.kind).toBe("COMPACT");
     idx.close();
   });
 
-  test("replaces the previous strategy in the namespace", async () => {
+  test("replaces the previous strategy by archiving it, never deleting", async () => {
     await runCli("init")
     await runCli("compact", "old strategy content")
     const { code, out } = await runCli("compact", "new strategy content")
     expect(code).toBe(0);
     expect(out).toContain("replaced 1 old strategy");
     const parsed = readAll(nsDir(dir, "default")).filter((e) => e.kind === "COMPACT");
-    expect(parsed.map((e) => e.content)).toEqual(["new strategy content"]);
+    // The old strategy is archived, not removed: the daemon appends its
+    // compaction reflections to the active entry, so deletion would destroy
+    // that history.
+    expect(parsed.map((e) => `${e.status}:${e.content}`).sort()).toEqual([
+      "active:new strategy content",
+      "archived:old strategy content",
+    ]);
     const idx = await Index.create(indexDb(dir));
-    const entries = idx.list({ ns: "default", kind: "COMPACT", allStatus: true });
-    expect(entries).toHaveLength(1);
+    const active = idx.list({ ns: "default", kind: "COMPACT" }).filter((e) => e.status === "active");
+    expect(active).toHaveLength(1);
+    expect(active[0]?.content).toBe("new strategy content");
     idx.close();
   });
 
@@ -125,10 +132,10 @@ describe("compaction strategy loop", () => {
     const idx = await Index.create(indexDb(dir));
     const entries = idx.list({ ns: ns, kind: "COMPACT", allStatus: true });
     expect(entries).toHaveLength(1);
-    expect(entries[0].content).toContain("Reflection");
-    expect(entries[0].content).toContain("prompt:");
-    expect(entries[0].content).toContain("memory:");
-    expect(entries[0].content).toContain("keep context under 8k tokens");
+    expect(entries[0]?.content).toContain("Reflection");
+    expect(entries[0]?.content).toContain("prompt:");
+    expect(entries[0]?.content).toContain("memory:");
+    expect(entries[0]?.content).toContain("keep context under 8k tokens");
     const md = readFileSync(join(nsDir(dir, ns), "COMPACT.md"), "utf-8");
     expect(md).toContain("Reflection");
     idx.close();
@@ -142,7 +149,7 @@ describe("compaction strategy loop", () => {
     const idx = await Index.create(indexDb(dir));
     const entries = idx.list({ ns: ns, kind: "COMPACT", allStatus: true });
     expect(entries).toHaveLength(1);
-    expect(entries[0].content).toContain("Reflection");
+    expect(entries[0]?.content).toContain("Reflection");
     idx.close();
   });
 
@@ -156,10 +163,11 @@ describe("compaction strategy loop", () => {
     await adapter.sessionCompacted("s1");
     const idx = await Index.create(indexDb(dir));
     const entry = idx.list({ ns: ns, kind: "COMPACT", allStatus: true })[0];
-    expect(entry.content).toContain("Reflection");
-    expect(entry.content).toContain("2 messages");
-    expect(entry.content).toContain("Read×1");
-    expect(entry.content).toContain("a.ts");
+    expect(entry).toBeDefined();
+    expect(entry?.content).toContain("Reflection");
+    expect(entry?.content).toContain("2 messages");
+    expect(entry?.content).toContain("Read×1");
+    expect(entry?.content).toContain("a.ts");
     idx.close();
   });
 
@@ -178,8 +186,9 @@ describe("compaction strategy loop", () => {
     expect(calls).toBe(2);
     const idx = await Index.create(indexDb(dir));
     const entry = idx.list({ ns, kind: "COMPACT", allStatus: true })[0];
-    expect(entry.content).toContain("first compaction");
-    expect(entry.content).toContain("second compaction");
+    expect(entry).toBeDefined();
+    expect(entry?.content).toContain("first compaction");
+    expect(entry?.content).toContain("second compaction");
     idx.close();
   });
 
@@ -208,8 +217,9 @@ describe("compaction strategy loop", () => {
       await adapter.sessionCompacted("s1", "summary with enough detail for the LLM to analyze");
       const idx = await Index.create(indexDb(dir));
       const entry = idx.list({ ns: ns, kind: "COMPACT", allStatus: true })[0];
-      expect(entry.content).toContain("add more detail about active file paths");
-      expect(entry.content).toContain("drop embeddings");
+      expect(entry).toBeDefined();
+      expect(entry?.content).toContain("add more detail about active file paths");
+      expect(entry?.content).toContain("drop embeddings");
       idx.close();
     } finally {
       globalThis.fetch = origFetch;
@@ -246,14 +256,14 @@ describe("COMPACT lifecycle", () => {
     await runCli("compact", "strategy round-trip content")
     const parsed = parseFile(readFileSync(join(nsDir(dir, "default"), "COMPACT.md"), "utf-8"), "default");
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].kind).toBe("COMPACT");
+    expect(parsed[0]?.kind).toBe("COMPACT");
     await runCli("reindex")
     const idx = await Index.create(indexDb(dir));
     expect(idx.list({ kind: "COMPACT" })).toHaveLength(1);
     idx.close();
   });
 
-  test("MCP memory_remember accepts COMPACT kind end-to-end", async () => {
+  test("MCP memory_remember rejects COMPACT kind (strategies are CLI/daemon-owned)", async () => {
     await runCli("init")
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -266,12 +276,11 @@ describe("COMPACT lifecycle", () => {
       name: "memory_remember",
       arguments: { content: "压缩策略：保持上下文在 8k tokens 内", kind: "COMPACT" },
     })) as { content?: Array<{ text?: string }>; isError?: boolean };
-    expect(result.isError).not.toBe(true);
-    const parsed = JSON.parse(result.content?.[0]?.text ?? "{}") as { entryId: string };
+    expect(result.isError).toBe(true);
     await client.close();
     await server.close();
     const idx = await Index.create(indexDb(dir));
-    expect(idx.get(parsed.entryId)?.kind).toBe("COMPACT");
+    expect(idx.list({ kind: "COMPACT" })).toHaveLength(0);
     idx.close();
   });
 });
@@ -358,6 +367,38 @@ describe("reflectOnCompaction fallback", () => {
       },
     });
     expect(r.memory).toContain("Compaction summary captured");
+  });
+
+  test("a never-settling chat is cut off by the total budget", async () => {
+    // A harness chat without its own timeout (e.g. opencode in-process) must
+    // not be able to hang reflection past budgetMs.
+    const start = Date.now();
+    const r = await reflectOnCompaction({
+      summary: "s",
+      budgetMs: 80,
+      chat: () => new Promise<never>(() => {}), // never settles
+    });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(70);
+    expect(elapsed).toBeLessThan(2000);
+    expect(r.memory).toContain("Compaction summary captured");
+  });
+
+  test("the HTTP fallback runs within the remaining budget", async () => {
+    // chat burns most of the budget; the fallback must finish inside the rest
+    // and the whole chain must still stay within budgetMs.
+    const start = Date.now();
+    const r = await reflectOnCompaction({
+      summary: "s",
+      budgetMs: 60,
+      chat: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return null;
+      },
+    });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1500);
+    expect(r.memory.length).toBeGreaterThan(0);
   });
 
   test("HTTP reflection puts the timeout signal on fetch options", async () => {

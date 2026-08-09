@@ -1,3 +1,5 @@
+import { redactSecrets } from "./sanitize.js";
+
 export const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_LLM_MODEL = "gpt-4o-mini";
 
@@ -74,7 +76,9 @@ export async function llmChat(
     break;
   }
   if (!res.ok) {
-    throw new Error(`llm ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    // The upstream error body may echo parts of our request; redact before
+    // logging so secrets in the prompt never leak into logs.
+    throw new Error(`llm ${res.status}: ${redactSecrets((await res.text()).slice(0, 200)).text}`);
   }
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
@@ -86,14 +90,16 @@ export async function llmChat(
  *  when no JSON object is present. Prose containing extra "{" / "}" after the
  *  object is tolerated by trying each candidate end brace in turn; if the
  *  earliest "{" start fails every candidate end (e.g. prose before the object
- *  contains its own braces), later "{" starts are tried. */
+ *  contains its own braces), later "{" starts are tried. Error messages are
+ *  redacted: LLM output can echo secrets from the prompt. */
 export function extractJsonObject(text: string): unknown {
   const starts: number[] = [];
   for (let i = text.indexOf("{"); i >= 0 && starts.length < 5; i = text.indexOf("{", i + 1)) {
     starts.push(i);
   }
+  const preview = (): string => redactSecrets(text.slice(0, 120)).text;
   if (starts.length === 0) {
-    throw new Error(`no JSON object in LLM output: ${text.slice(0, 120)}`);
+    throw new Error(`no JSON object in LLM output: ${preview()}`);
   }
   for (const start of starts) {
     let end = text.lastIndexOf("}");
@@ -107,5 +113,5 @@ export function extractJsonObject(text: string): unknown {
       }
     }
   }
-  throw new Error(`no JSON object in LLM output: ${text.slice(0, 120)}`);
+  throw new Error(`no JSON object in LLM output: ${preview()}`);
 }

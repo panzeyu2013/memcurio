@@ -5,15 +5,16 @@ export interface SanitizeResult {
 
 const SECRET_PATTERNS: RegExp[] = [
   // key=value / key: value with optional spaces inside the key name ("API Key")
-  // and around the separator.
+  // and around the separator. Known tradeoff: a legit "pk=..." (public key)
+  // entry is redacted too — over-redaction is preferred over leaking secrets.
   /(?<![A-Za-z0-9])(?:sk|pk|api[\s_-]*key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{12,}["']?/giu,
-  /sk-[\p{L}\p{N}_\-]{16,}/giu,
+  /sk-[\p{L}\p{N}_-]{16,}/giu,
   /(?:sk|rk)_(?:live|test)_[\p{L}\p{N}]{16,}/gu,
   /AKIA[0-9A-Z]{16}\b/g,
   /gh[pousr]_[A-Za-z0-9]{20,}\b/g,
   /github_pat_[A-Za-z0-9_]{20,}\b/g,
-  /AIza[0-9A-Za-z_\-]{30,}\b/g,
-  /(?<![A-Za-z0-9])(?:Bearer|bearer|BEARER)\s+["']?[\p{L}\p{N}._\-]{20,}["']?/gu,
+  /AIza[0-9A-Za-z_-]{30,}\b/g,
+  /(?<![A-Za-z0-9])(?:Bearer|bearer|BEARER)\s+["']?[\p{L}\p{N}._-]{20,}["']?/gu,
   /(?<![A-Za-z0-9])-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/g,
   // name<whitespace>value
   /(?<![A-Za-z0-9])(?:api[\s_-]*key|apikey|secret|token|password|passwd|bearer)\s+["']?[\p{L}\p{N}_\-./]{16,}["']?/giu,
@@ -28,6 +29,10 @@ const SECRET_PATTERNS: RegExp[] = [
 // lowercase and one digit (base64/url-safe secrets with no key name). A token
 // must additionally score >=4.5 bits/char of Shannon entropy, which excludes
 // prose identifiers (branch/version names, mixed-case hex digests score 4.0).
+// Known tradeoff: genuinely random long tokens that happen to score below the
+// entropy bar (or long mixed-case product IDs above it) are misclassified —
+// acceptable for a heuristic whose failure mode is over- or under-redaction
+// of already-rare shapes.
 const HIGH_ENTROPY = /(?<![A-Za-z0-9])([A-Za-z0-9+/_=-]{24,})(?![A-Za-z0-9])/g;
 
 /** Shannon entropy in bits/char. Near-uniform base64/url-safe secrets score
@@ -61,6 +66,8 @@ export function normalizeText(text: string): string {
       // zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/PDI),
       // Arabic letter mark, soft hyphen, Mongolian vowel separator, combining
       // grapheme joiner, and C0 control characters
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the C0 range and bidi controls are stripped on purpose
+      // biome-ignore lint/suspicious/noMisleadingCharacterClass: mixed ranges of zero-width/control chars are intentional
       /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g,
       "",
     )
@@ -93,8 +100,9 @@ export function redactSecrets(text: string): SanitizeResult {
 }
 
 const INJECTION_PATTERNS: RegExp[] = [
-  /ignore\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|prompts)/i,
-  /disregard\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|prompts)/i,
+  /ignore\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|directives|prompts)/i,
+  /disregard\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|directives|prompts)/i,
+  /dismiss\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|directives|prompts)/i,
   /do\s*not\s*(?:follow|obey)\s*(?:the\s*)?(?:instructions|rules|system\s*prompt)/i,
   /forget\s*(?:all\s*)?(?:previous|prior)\s*(?:instructions|prompts|context)/i,
   /you\s*are\s*now\s*(?:an?\s*)?(?:different|free|unaligned|unfiltered|no\s*longer)/i,
@@ -103,8 +111,12 @@ const INJECTION_PATTERNS: RegExp[] = [
   /print\s*(?:all\s*|your\s*)?(?:previous|prior)\s*(?:instructions|prompts|system\s*message)/i,
   /<system>\s*(?:ignore|override)/i,
   /\[\s*(?:system|instruction)\s*\]\s*(?:ignore|override)/i,
+  // "reveal/disclose/expose your secrets/system prompt": covers exfiltration
+  // requests that do not name files (the read/print patterns below do).
+  /(?:reveal|disclose|expose|leak|dump)\s*(?:(?:all|your|the)\s*){0,2}(?:secrets?|secret\s*keys?|system\s*prompt|instructions?|prompts?)/i,
   /忽略\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
   /无视\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
+  /(?:忽视|不理会|别管)\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)?\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示|系统提示)/,
   /忘记\s*(?:所有|全部)?\s*(?:之前|先前)\s*的?\s*(?:所有|全部)?\s*(?:指令|提示|上下文)/,
   /不要\s*(?:遵守|遵循)\s*(?:系统)?\s*(?:指令|提示)/,
   /你\s*(?:现在|已经|已)?\s*(?:不受限制|不再受限制|解除限制|无限制|是自由的|不再受限)/,
@@ -122,7 +134,13 @@ export function scanInjection(text: string): string[] {
   // between letters for matching. Every injection pattern uses \s* between
   // words, so a letter-space-letter collapse never changes which patterns
   // match English text — it only defeats the space-padded variants.
-  const compacted = normalized.replace(/(?<=\p{L})\s+(?=\p{L})/gu, "");
+  const compacted = normalized
+    .replace(/(?<=\p{L})\s+(?=\p{L})/gu, "")
+    // CJK punctuation-split obfuscation ("忽视，之前的指令"): collapse the
+    // common Chinese separators between letters. normalizeText has already
+    // turned fullwidth commas into ASCII ones, so both forms are folded.
+    // Periods are deliberately left alone (English matching semantics).
+    .replace(/(?<=\p{L})[,;，。、；](?=\p{L})/gu, "");
   const flags: string[] = [];
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(compacted)) {

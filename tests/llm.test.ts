@@ -28,6 +28,11 @@ describe("extractJsonObject", () => {
   test("throws on output without JSON", () => {
     expect(() => extractJsonObject("no json here")).toThrow(/no JSON object/);
   });
+
+  test("error messages redact secrets echoed by the LLM output", () => {
+    expect(() => extractJsonObject("sk-ant-1234567890abcdef no json")).toThrow(/\[REDACTED\]/);
+    expect(() => extractJsonObject("sk-ant-1234567890abcdef no json")).not.toThrow(/sk-ant/);
+  });
 });
 
 describe("llmChat", () => {
@@ -76,7 +81,54 @@ describe("llmChat", () => {
     expect(calls).toBe(1);
   });
 
-  test("throws on empty choice content", async () => {
+  test("redacts secrets echoed in the error body", async () => {
+    globalThis.fetch = (async () =>
+      new Response('error: invalid api key sk-ant-1234567890abcdefxx', { status: 400 })) as unknown as typeof fetch;
+    const err = await llmChat("system", "user", { apiKey: "bad" }).catch((e: unknown) => e);
+    const msg = err instanceof Error ? err.message : String(err);
+    expect(msg).toContain("[REDACTED]");
+    expect(msg).not.toContain("sk-ant-1234567890abcdefxx");
+  });
+
+  test("retries network errors with backoff", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw new TypeError("fetch failed");
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    await expect(llmChat("system", "user", { apiKey: "k" })).resolves.toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  test("timeouts are retried", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      const err = new Error("aborted");
+      err.name = "TimeoutError";
+      throw err;
+    }) as unknown as typeof fetch;
+    await expect(llmChat("system", "user", { apiKey: "k" })).rejects.toThrow();
+    expect(calls).toBe(3);
+  });
+
+  test("non-transient errors are not retried", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      throw new Error("user abort");
+    }) as unknown as typeof fetch;
+    await expect(llmChat("system", "user", { apiKey: "k" })).rejects.toThrow("user abort");
+    expect(calls).toBe(1);
+  });
+
+  test("returns empty string when choices are empty", async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ choices: [] }), {
         status: 200,

@@ -6,9 +6,7 @@ export interface CompactionReflection {
   memory: string;
 }
 
-export interface ReflectChat {
-  (opts: { summary?: string; strategy?: string }): Promise<CompactionReflection | null>;
-}
+export type ReflectChat = (opts: { summary?: string; strategy?: string }) => Promise<CompactionReflection | null>;
 
 function fallback(summary: string | undefined): CompactionReflection {
   return {
@@ -75,14 +73,42 @@ async function httpReflect(opts: { summary?: string; strategy?: string }): Promi
   return parseReflectionResponse(raw);
 }
 
+/** Race a promise against a deadline. A late rejection of the raced promise
+ *  is consumed here (never an unhandled rejection), and the timer is unref'd
+ *  and cleared so a fast winner never keeps a short-lived process (CLI
+ *  script, test) alive for the full budget. */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  if (ms <= 0) {
+    return Promise.resolve(null);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+    timer.unref?.();
+  });
+  const raced = Promise.race([p, deadline]);
+  void raced.then(
+    () => clearTimeout(timer),
+    () => clearTimeout(timer),
+  );
+  return raced;
+}
+
 export async function reflectOnCompaction(opts: {
   summary?: string;
   strategy?: string;
   chat?: ReflectChat;
+  /** Total wall-clock budget for the whole chain (harness chat + HTTP
+   *  fallback). Bounds the wait for synchronous adapters (codex hook waits
+   *  ~125s), so the chain can never run indefinitely — including harnesses
+   *  whose chat implementation has no internal timeout. */
+  budgetMs?: number;
 }): Promise<CompactionReflection> {
+  const budgetMs = opts.budgetMs ?? 120_000;
+  const start = Date.now();
   if (opts.chat) {
     try {
-      const r = await opts.chat(opts);
+      const r = await withDeadline(opts.chat(opts), budgetMs);
       if (r) {
         return r;
       }
@@ -90,13 +116,16 @@ export async function reflectOnCompaction(opts: {
       console.warn(`[memcurio] harness reflection failed, falling back: ${String(err)}`);
     }
   }
-  try {
-    const r = await httpReflect(opts);
-    if (r) {
-      return r;
+  const remaining = budgetMs - (Date.now() - start);
+  if (remaining > 0) {
+    try {
+      const r = await withDeadline(httpReflect(opts), remaining);
+      if (r) {
+        return r;
+      }
+    } catch (err) {
+      console.warn(`[memcurio] http reflection failed, using fallback: ${String(err)}`);
     }
-  } catch (err) {
-    console.warn(`[memcurio] http reflection failed, using fallback: ${String(err)}`);
   }
   return fallback(opts.summary);
 }
