@@ -81,14 +81,14 @@ describe("memcurio MCP server", () => {
       })) as CallResult,
     ) as { hits: Array<{ entryId: string; content: string; ns: string }> };
     expect(search.hits.length).toBeGreaterThan(0);
-    expect(search.hits[0].entryId).toBe(remembered.entryId);
-    expect(search.hits[0].content).toContain("剪枝策略");
+    expect(search.hits[0]?.entryId).toBe(remembered.entryId);
+    expect(search.hits[0]?.content).toContain("剪枝策略");
 
     const status = parseText(
       (await client.callTool({ name: "memory_status", arguments: {} })) as CallResult,
     ) as { backend: string; namespaces: string[]; counts: Record<string, Record<string, number>> };
     expect(status.namespaces).toContain("proj-a");
-    expect(status.counts["proj-a"].active).toBe(1);
+    expect(status.counts["proj-a"]?.active).toBe(1);
     expect(["trigram", "like"]).toContain(status.backend);
 
     // Audit side effects: remember/search must leave traces (this is the MCP
