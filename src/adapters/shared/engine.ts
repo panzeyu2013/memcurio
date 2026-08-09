@@ -1,17 +1,17 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 
 import { fitLines, renderBudgetNotice } from "../../core/budget.js";
 import { loadConfig } from "../../core/config.js";
 import { Index } from "../../core/db.js";
 import { addEntry, parseFile, updateKind } from "../../core/mdStore.js";
-import type { Entry } from "../../core/mdStore.js";
+import type { Entry, Status } from "../../core/mdStore.js";
 import { ensureLayout, indexDb, memoryRoot, namespaceFor, nsDir, rootDir as coreRoot, txnLog } from "../../core/paths.js";
 import { appendReflection, formatReflection, reflectOnCompaction } from "../../core/reflect.js";
 import type { ReflectChat } from "../../core/reflect.js";
 import { getRetriever } from "../../core/retriever.js";
-import { sanitizeForInjection } from "../../core/sanitize.js";
+import { redactSecrets, sanitizeForInjection } from "../../core/sanitize.js";
 import { selectStatic } from "../../core/select.js";
 import { Transaction } from "../../core/transaction.js";
 
@@ -108,8 +108,15 @@ export class MemcoreAdapter {
   async #maybeTouchMemoryFile(s: SessionState, filePath: string): Promise<void> {
     const root = coreRoot();
     const memRoot = memoryRoot(root);
-    const resolved = resolve(filePath);
-    if (!resolved.startsWith(resolve(memRoot) + "/") || !resolved.endsWith(".md")) {
+    // Resolve symlinks so a memory file reached through a symlink is still
+    // detected, and a symlink pointing outside the memory root is skipped.
+    let resolved: string;
+    try {
+      resolved = realpathSync(filePath);
+    } catch {
+      return;
+    }
+    if (!resolved.startsWith(realpathSync(memRoot) + "/") || !resolved.endsWith(".md")) {
       return;
     }
     if (resolved.endsWith("INDEX.md")) {
@@ -155,6 +162,10 @@ export class MemcoreAdapter {
     if (!s) {
       return;
     }
+    // codex can fire PostCompact more than once (hook retries); reflect once.
+    if (s.compacted) {
+      return;
+    }
     s.compacted = true;
     await this.#reflectOnCompaction(s, summary);
   }
@@ -164,23 +175,30 @@ export class MemcoreAdapter {
       .map(([t, n]) => `${t}×${n}`)
       .join(", ");
     const files = [...s.touchedFiles].slice(0, 10).join(", ");
-    return `Session ${s.sessionId} (host=${s.host}, ns=${s.ns}, workdir=${s.workdir}): ${s.seenParts.size} messages, tools: ${tools || "none"}, files: ${files || "none"}`;
+    return `Session ${s.sessionId} (host=${s.host}, ns=${s.ns}, workdir=${(s.workdir ?? "").slice(0, 500)}): ${s.seenParts.size} messages, tools: ${tools || "none"}, files: ${files || "none"}`;
   }
 
   async #reflectOnCompaction(s: SessionState, summary?: string): Promise<void> {
     const root = coreRoot();
     const idx = await Index.create(indexDb(root));
     try {
-      const prev = idx
+      const all = idx
         .list({ ns: s.ns, kind: "COMPACT", allStatus: true })
         .filter((e) => e.status !== "deleted")
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const prev = all[0];
       const reflection = await reflectOnCompaction({
         summary: (summary ?? this.#sessionSummaryText(s)).slice(0, 2000),
         strategy: prev?.content,
         chat: this.reflect,
       });
-      const section = formatReflection(reflection, new Date().toISOString());
+      // Re-redact the model's reply: it may echo secrets from the summary.
+      const safePrompt = redactSecrets(reflection.prompt);
+      const safeMemory = redactSecrets(reflection.memory);
+      const section = formatReflection(
+        { prompt: safePrompt.text, memory: safeMemory.text },
+        new Date().toISOString(),
+      );
       const txn = new Transaction(txnLog(root));
       txn.run("adapter.compact_reflect", s.ns, prev?.entryId ?? "-", () => {
         if (prev) {
@@ -206,6 +224,22 @@ export class MemcoreAdapter {
           };
           addEntry(nsDir(root, s.ns), entry);
           idx.add(entry);
+        }
+        // COMPACT entries are exempt from auto-pruning, so cap their count:
+        // archive all but the most recent 8.
+        const toArchive = all.slice(8).filter((e) => e.status === "active");
+        for (const e of toArchive) {
+          const updated: Entry = { ...e, status: "archived" as Entry["status"] };
+          idx.add(updated);
+          updateKind(nsDir(root, s.ns), "COMPACT", (entries) =>
+            entries.map((x) => (x.entryId === e.entryId ? { ...x, status: "archived" as Status } : x)),
+          );
+        }
+        if (safePrompt.redacted || safeMemory.redacted) {
+          idx.audit("warn.redacted", s.ns, `secret redacted in compaction reflection`);
+        }
+        if (toArchive.length) {
+          idx.audit("adapter.compact_cap", s.ns, `archived ${toArchive.length} old COMPACT entries`);
         }
         idx.audit("adapter.compact_reflect", s.ns, prev ? `appended to ${prev.entryId}` : "created");
       });
@@ -248,12 +282,13 @@ export class MemcoreAdapter {
     const content = [
       `# Session review ${s.sessionId} (${s.ns})`,
       `- host: ${s.host}`,
-      `- workdir: ${s.workdir}`,
+      `- workdir: ${(s.workdir ?? "").slice(0, 500)}`,
       `- timeframe: ${s.startedAt} ~ ${now.toISOString()}`,
       `- messages: ${s.seenParts.size} parts`,
       `- tools: ${tools || "none"}`,
       `- files: ${files || "none"}`,
     ].join("\n");
+    const redacted = redactSecrets(content);
     const entryId = createHash("sha1")
       .update(`session|${s.sessionId}|${s.writtenCount}|${now.toISOString()}`)
       .digest("hex")
@@ -262,7 +297,7 @@ export class MemcoreAdapter {
       entryId,
       ns: s.ns,
       kind: "SESSION",
-      content,
+      content: redacted.text,
       createdAt: now.toISOString(),
       status: "active",
       pinned: false,
@@ -277,6 +312,9 @@ export class MemcoreAdapter {
         addEntry(nsDir(root, s.ns), entry);
         idx.add(entry);
         idx.audit("adapter.session_record", s.ns, `${entryId} (${reason})`);
+        if (redacted.redacted) {
+          idx.audit("warn.redacted", s.ns, `secret redacted in session record ${entryId}`);
+        }
       });
     } finally {
       idx.close();

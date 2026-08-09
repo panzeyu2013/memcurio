@@ -22,10 +22,14 @@ export function sessionIdFor(event: { type?: string; properties?: unknown }): st
     case "session.compacted": {
       return typeof p.sessionID === "string" ? p.sessionID : "";
     }
-    case "message.part.updated":
-    case "message.part.removed": {
+    case "message.part.updated": {
       const part = p.part as { sessionID?: unknown } | undefined;
       return typeof part?.sessionID === "string" ? part.sessionID : "";
+    }
+    case "message.part.removed": {
+      // The SDK EventMessagePartRemoved carries sessionID at the top level of
+      // properties (no `part.sessionID`), unlike message.part.updated.
+      return typeof p.sessionID === "string" ? p.sessionID : "";
     }
     default:
       return "";
@@ -42,17 +46,29 @@ interface SessionMessage {
   parts: Array<{ type?: string; text?: string }>;
 }
 
-function summaryFromMessages(messages: SessionMessage[]): string | undefined {
-  const last = messages.at(-1);
-  if (!last) {
-    return undefined;
-  }
-  const text = last.parts
+function textOf(m: SessionMessage): string | undefined {
+  const text = m.parts
     .filter((p) => p.type === "text" && typeof p.text === "string" && p.text)
     .map((p) => String(p.text))
     .join("\n")
     .trim();
   return text ? text.slice(0, 2000) : undefined;
+}
+
+/** Extract the compaction summary. The *last* text part is opencode's
+ *  auto-continue boilerplate ("Continue if you have next steps…"); the real
+ *  summary is the assistant message flagged with info.summary. */
+function summaryFromMessages(messages: SessionMessage[]): string | undefined {
+  for (const m of [...messages].reverse()) {
+    if (m.info?.summary) {
+      const text = textOf(m);
+      if (text) {
+        return text;
+      }
+    }
+  }
+  const last = messages.at(-1);
+  return last ? textOf(last) : undefined;
 }
 
 interface SessionClient {

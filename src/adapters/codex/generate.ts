@@ -19,6 +19,17 @@ export interface GeneratedPlugin {
   snippetPath: string;
 }
 
+/** POSIX shell single-quote escaping for paths embedded into hook commands
+ *  (codex runs `command` hooks through a shell). */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** TOML basic-string escaping (JSON escaping is a compatible subset). */
+function tomlQuote(s: string): string {
+  return JSON.stringify(s);
+}
+
 export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlugin> {
   mkdirSync(outDir, { recursive: true });
   const distDir = join(import.meta.dir, "..", "..", "..", "dist");
@@ -42,7 +53,10 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
   const daemonPath = join(outDir, "daemon.js");
   const hookPath = join(outDir, "hook.js");
   const mcpPath = join(outDir, "index.js");
-  const hookCommand = `bun ${hookPath}`;
+  // Embed the absolute bun binary so codex (which may run with a different
+  // PATH, e.g. launched from a GUI) does not need `bun` on its PATH.
+  const bunBin = process.env.BUN_BIN ?? process.execPath;
+  const hookCommand = `${bunBin} ${shellQuote(hookPath)}`;
 
   const hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>> = {};
   for (const event of HOOK_EVENTS) {
@@ -55,7 +69,7 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
     description: "跨 Harness 记忆与上下文管理（codex 适配器）：会话注入 + 记账 + 复盘",
     hooks,
     mcp_servers: {
-      memcore: { command: "bun", args: [mcpPath] },
+      memcore: { command: bunBin, args: [mcpPath] },
     },
   };
   const pluginJsonPath = join(outDir, "plugin.json");
@@ -76,13 +90,13 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
     ...eventNames.flatMap(([tomlName, eventName]) => [
       `[hooks.events.${tomlName}]`,
       'matcher = ""',
-      `hooks = [{ type = "command", command = "${hookCommand}" }]  # ${eventName}`,
+      `hooks = [{ type = "command", command = ${tomlQuote(hookCommand)} }]  # ${eventName}`,
     ]),
     "",
     "# MCP（模型侧工具面）",
     "[mcp_servers.memcore]",
-    'command = "bun"',
-    `args = ["${mcpPath}"]`,
+    `command = ${tomlQuote(bunBin)}`,
+    `args = [${tomlQuote(mcpPath)}]`,
     "",
   ].join("\n");
   const snippetPath = join(outDir, "codex-config.toml.snippet");

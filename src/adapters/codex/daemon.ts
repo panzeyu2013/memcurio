@@ -10,6 +10,8 @@ import { pathToFileURL } from "node:url";
 import { MemcoreAdapter } from "../shared/engine.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
+import { Index } from "../../core/db.js";
+import { indexDb } from "../../core/paths.js";
 
 export interface CodexEventInput {
   hook_event_name?: string;
@@ -55,6 +57,10 @@ export function createCodexHandler(log?: AdapterLog) {
         return input.tool_use_id ? `PostToolUse:${input.tool_use_id}` : null;
       case "UserPromptSubmit":
         return input.turn_id ? `UserPromptSubmit:${input.turn_id}` : null;
+      // SessionStart is not retried by codex, but the hook client can time out
+      // and re-send; without a key the in-memory session stats get reset twice.
+      case "SessionStart":
+        return input.session_id ? `SessionStart:${input.session_id}` : null;
       default:
         return null;
     }
@@ -153,7 +159,13 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
     if (ev.type === "item.completed") {
       const item = ev.item as { type?: unknown; text?: unknown } | undefined;
       if (item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
-        finalReply = item.text;
+        // Prefer the message that actually parses as our reflection JSON; the
+        // last agent_message may be an intermediate "let me check…" stub.
+        if (parseReflectionResponse(item.text)) {
+          finalReply = item.text;
+        } else if (finalReply === undefined) {
+          finalReply = item.text;
+        }
       }
     }
   }
@@ -215,8 +227,14 @@ export function codexExecReflect(opts: {
         stdout += d.toString();
       });
       child.stderr.on("data", (d: Buffer) => {
-        stderr += d.toString();
+        if (stderr.length < 4096) {
+          stderr += d.toString().slice(0, 4096 - stderr.length);
+        }
       });
+      // A killed/closed child can emit EPIPE/ECONNRESET on its pipes; without
+      // handlers that would crash the whole daemon (and every hook with it).
+      child.stdout.on("error", () => {});
+      child.stderr.on("error", () => {});
       child.on("error", (err) => {
         log("warn", `codex exec unavailable: ${String(err)}`);
         settle(null);
@@ -327,6 +345,9 @@ export async function runCodexDaemon(opts: {
   const server = createServer((socket) => {
     let buf = "";
     let handled = false;
+    // Idle timeout for receiving the request line only; once the line arrives
+    // the handler may run long (cold SQLite open, FTS backfill) and must not
+    // be killed mid-flight — that is what makes the hook retry and double-fire.
     socket.setTimeout(15_000, () => socket.destroy());
     socket.on("error", (err) => {
       if (opts.log) {
@@ -345,6 +366,7 @@ export async function runCodexDaemon(opts: {
         return;
       }
       handled = true;
+      socket.setTimeout(0);
       touch();
       const line = buf.slice(0, nl).trim();
       respond(line, socket).catch(() => void 0);
@@ -376,23 +398,25 @@ export async function runCodexDaemon(opts: {
   });
 
   async function listen(): Promise<void> {
-    const prev = process.umask(0o077);
+    // Lock the socket directory down so the socket file's temporary permissions
+    // are irrelevant; chmod the socket itself again after bind.
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(opts.socketPath, () => {
-          server.removeListener("error", reject);
-          try {
-            chmodSync(opts.socketPath, 0o600);
-          } catch {
-            void 0;
-          }
-          resolve();
-        });
-      });
-    } finally {
-      process.umask(prev);
+      chmodSync(dirname(opts.socketPath), 0o700);
+    } catch {
+      void 0;
     }
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(opts.socketPath, () => {
+        server.removeListener("error", reject);
+        try {
+          chmodSync(opts.socketPath, 0o600);
+        } catch {
+          void 0;
+        }
+        resolve();
+      });
+    });
   }
 
   try {
@@ -477,10 +501,29 @@ export async function runCodexDaemon(opts: {
     shutdown();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
+      // Force-drop lingering connections that never completed a request.
+      (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     });
   }
 
+  // A previous daemon process may have crashed with open session rows; close
+  // them so `ended_at IS NULL` never leaks.
+  await closeStaleSessions(root);
+
   return { socketPath: opts.socketPath, closed, close };
+}
+
+async function closeStaleSessions(root: string): Promise<void> {
+  try {
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.closeAllSessions(new Date().toISOString());
+    } finally {
+      idx.close();
+    }
+  } catch {
+    // non-fatal: the DB may be locked by another process at boot
+  }
 }
 
 const isMain = (() => {
