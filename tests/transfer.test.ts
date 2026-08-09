@@ -54,6 +54,9 @@ describe("serialize / parse", () => {
     expect(() => parseExport(`${base},"useCount":1.5}\n`)).toThrow(/useCount/);
     expect(() => parseExport(`${base},"valueScore":99}\n`)).toThrow(/valueScore/);
     expect(() => parseExport(`${base},"lastUsedAt":123}\n`)).toThrow(/lastUsedAt/);
+    // ns must be a string, not a number that the regex would coerce.
+    expect(() => parseExport(`${base},"ns":123}\n`)).toThrow(/ns/);
+    expect(() => parseExport(`${base},"ns":"../escape"}\n`)).toThrow(/invalid namespace/);
   });
 });
 
@@ -74,7 +77,7 @@ describe("planImport", () => {
   test("ns override applies", async () => {
     const idx = await Index.create(join(dirPath(), "i.sqlite"));
     const plan = planImport([makeEntry()], idx, "other");
-    expect(plan.added[0].ns).toBe("other");
+    expect(plan.added[0]?.ns).toBe("other");
     idx.close();
   });
 
@@ -83,9 +86,9 @@ describe("planImport", () => {
     idx.add(makeEntry({ ns: "source" }));
     const plan = planImport([makeEntry({ ns: "source" })], idx, "target");
     expect(plan.added).toHaveLength(1);
-    expect(plan.added[0].ns).toBe("target");
-    expect(plan.added[0].entryId).toMatch(/^[0-9a-f]{32}$/);
-    expect(plan.added[0].entryId).not.toBe("a1b2c3d4");
+    expect(plan.added[0]?.ns).toBe("target");
+    expect(plan.added[0]?.entryId).toMatch(/^[0-9a-f]{32}$/);
+    expect(plan.added[0]?.entryId).not.toBe("a1b2c3d4");
     expect(plan.skippedExisting).toBe(0);
     idx.close();
   });
@@ -118,8 +121,8 @@ describe("planMerge", () => {
     ];
     const plan = planMerge(src, dst, "dst-ns");
     expect(plan.toCopy.map((e) => e.entryId)).not.toEqual(["a1b2c3d4"]);
-    expect(plan.toCopy[0].entryId).toMatch(/^[0-9a-f]{32}$/);
-    expect(plan.toCopy[0].ns).toBe("dst-ns");
+    expect(plan.toCopy[0]?.entryId).toMatch(/^[0-9a-f]{32}$/);
+    expect(plan.toCopy[0]?.ns).toBe("dst-ns");
     expect(plan.conflicts.map((c) => c.entryId)).toEqual(["11112222"]);
     expect(plan.dupsByContent.map((d) => d.entryId)).toEqual(["c9d0e1f2"]);
   });
@@ -157,7 +160,7 @@ afterEach(() => {
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
   const r = await runCli(...argv);
-  return { code: r.code, out: r.out + "\n" + r.err };
+  return { code: r.code, out: `${r.out}\n${r.err}` };
 }
 
 describe("export / import / merge cli", () => {
@@ -247,7 +250,9 @@ describe("export / import / merge cli", () => {
     const list = await run("list", "--ns", "src-a");
     const id = extractId(list);
     const idx = await Index.create(indexDb(dir));
-    const e = idx.get(id)!;
+    const found = idx.get(id);
+    expect(found).toBeTruthy();
+    const e = found as Entry;
     const other: Entry = { ...e, ns: "dst-b", content: "相同 id 不同内容 B" };
     idx.add(other);
     idx.close();
@@ -263,13 +268,15 @@ function extractId(r: { out: string }): string {
   if (!m) {
     throw new Error(`no entry id found in list output: ${JSON.stringify(r.out.slice(0, 120))}`);
   }
-  return m[1];
+  const id = m[1];
+  if (id === undefined) throw new Error("no entry id found in list output");
+  return id;
 }
 
 function addEntryDirect(entry: Entry): void {
   const file = join(nsDir(dir, entry.ns), "MEMORY.md");
   const md = existsSync(file) ? readFileSync(file, "utf-8") : "";
   const line = `§ ${entry.entryId} | ${entry.kind} | ${entry.createdAt} | ${entry.status}`;
-  const next = md.trim() ? md.trimEnd() + "\n\n" + line + "\n\n" + entry.content + "\n" : line + "\n\n" + entry.content + "\n";
+  const next = md.trim() ? `${md.trimEnd()}\n\n${line}\n\n${entry.content}\n` : `${line}\n\n${entry.content}\n`;
   writeFileSync(file, next);
 }

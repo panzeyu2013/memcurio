@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 
-import { Index } from "./db.js";
+import type { Index } from "./db.js";
 import { KINDS, updateKindsAtomically } from "./mdStore.js";
 import type { Entry, Kind, Status } from "./mdStore.js";
 import { assertValidNs, nsDir } from "./paths.js";
@@ -50,10 +50,10 @@ export function serializeExport(entries: Entry[]): string {
   // "deleted" rows are physical-removal markers, never real state (forget
   // removes from truth; parseExport rejects them), so they must not enter an
   // export stream or export -> import round-trips would fail on them.
-  return entries
+  return `${entries
     .filter((e) => e.status !== "deleted")
     .map((e) => JSON.stringify(toExportRow(e)))
-    .join("\n") + "\n";
+    .join("\n")}\n`;
 }
 
 export function parseExport(text: string): Entry[] {
@@ -106,6 +106,9 @@ export function parseExport(text: string): Entry[] {
     }
     if (r.lastUsedAt !== undefined && r.lastUsedAt !== null && (typeof r.lastUsedAt !== "string" || !validTimestamp(r.lastUsedAt))) {
       throw new Error(`invalid export line ${lineNo}: lastUsedAt must be a valid timestamp or null`);
+    }
+    if (r.ns !== undefined && typeof r.ns !== "string") {
+      throw new Error(`invalid export line ${lineNo}: ns must be a string`);
     }
     out.push({
       entryId: r.entryId,
@@ -281,6 +284,15 @@ export function applyMerge(plan: MergePlan, idx: Index, root: string): void {
   );
 }
 
+/** Refuse obviously pathological export files before reading them into
+ *  memory; the content cap per entry is far smaller, so a healthy export is
+ *  nowhere near this bound. */
+const MAX_EXPORT_FILE_BYTES = 512 * 1024 * 1024;
+
 export function readExportFile(path: string): Entry[] {
+  const size = statSync(path).size;
+  if (size > MAX_EXPORT_FILE_BYTES) {
+    throw new Error(`export file too large (${size} bytes > ${MAX_EXPORT_FILE_BYTES})`);
+  }
   return parseExport(readFileSync(path, "utf-8"));
 }

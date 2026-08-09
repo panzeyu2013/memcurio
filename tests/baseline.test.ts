@@ -33,7 +33,7 @@ afterEach(() => {
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
   const r = await runCli(...argv);
-  return { code: r.code, out: r.out + "\n" + r.err };
+  return { code: r.code, out: `${r.out}\n${r.err}` };
 }
 
 describe("baseline injection", () => {

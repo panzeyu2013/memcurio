@@ -53,21 +53,21 @@ describe("parseFile", () => {
       content: "偏好简洁回答",
       status: "stale",
     });
-    const text = renderEntry(e1) + "\n\n" + renderEntry(e2);
+    const text = `${renderEntry(e1)}\n\n${renderEntry(e2)}`;
     const parsed = parseFile(text, "default");
     expect(parsed).toHaveLength(2);
-    expect(parsed[0].entryId).toBe("a1b2c3d4");
-    expect(parsed[0].content).toBe("跨会话记忆系统");
-    expect(parsed[1].kind).toBe("USER");
-    expect(parsed[1].status).toBe("stale");
-    expect(parsed[1].content).toBe("偏好简洁回答");
+    expect(parsed[0]?.entryId).toBe("a1b2c3d4");
+    expect(parsed[0]?.content).toBe("跨会话记忆系统");
+    expect(parsed[1]?.kind).toBe("USER");
+    expect(parsed[1]?.status).toBe("stale");
+    expect(parsed[1]?.content).toBe("偏好简洁回答");
   });
 
   test("content lines starting with § are not separators unless valid meta", () => {
     const e = makeEntry({ content: "§ 注意：这里是正文\n§ 12ab | 不是分隔" });
     const parsed = parseFile(renderEntry(e), "default");
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].content).toContain("注意");
+    expect(parsed[0]?.content).toContain("注意");
   });
 
   test("content lines mimicking a full header do not split an entry", () => {
@@ -76,7 +76,7 @@ describe("parseFile", () => {
     });
     const parsed = parseFile(renderEntry(e), "default");
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].content).toBe("第一段正文\n§ e5f6a7b8 | MEMORY | 2026-08-08T00:00:00.000Z | active\n第二段正文");
+    expect(parsed[0]?.content).toBe("第一段正文\n§ e5f6a7b8 | MEMORY | 2026-08-08T00:00:00.000Z | active\n第二段正文");
   });
 
   test("headers with unknown kind or status are treated as body text", () => {
@@ -84,8 +84,8 @@ describe("parseFile", () => {
       "§ a1b2c3d4 | MEMORY | 2026-08-08T00:00:00.000Z | active\n\n正文\n§ e5f6a7b8 | FOO | 2026-08-08T00:00:00.000Z | active\n§ c9d0e1f2 | MEMORY | 2026-08-08T00:00:00.000Z | nope";
     const parsed = parseFile(text, "default");
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].entryId).toBe("a1b2c3d4");
-    expect(parsed[0].content).toContain("FOO");
+    expect(parsed[0]?.entryId).toBe("a1b2c3d4");
+    expect(parsed[0]?.content).toContain("FOO");
   });
 
   test("updateKind skips no-op rewrites", () => {
@@ -139,7 +139,7 @@ describe("addEntry / updateEntries", () => {
   test("updateKind preserves hand-written prose outside the § blocks", () => {
     const dir = mkTmp();
     const path = kindFile(dir, "MEMORY");
-    const handwritten = [
+    const handwrittenLines = [
       "# 我的项目笔记",
       "",
       "这是手写说明，不应被工具删除。",
@@ -147,7 +147,8 @@ describe("addEntry / updateEntries", () => {
       renderEntry(makeEntry()).trimEnd(),
       "",
       "尾部备注：保留。",
-    ].join("\n") + "\n";
+    ].join("\n");
+    const handwritten = `${handwrittenLines}\n`;
     writeFileSync(path, handwritten);
     updateKind(dir, "MEMORY", (entries) => entries.map((e) => ({ ...e, status: "stale" as const })));
     const text = readFileSync(path, "utf-8");
@@ -164,7 +165,7 @@ describe("addEntry / updateEntries", () => {
   test("updateKind removes entries but keeps prose; addEntry appends to prose files", () => {
     const dir = mkTmp();
     const path = kindFile(dir, "MEMORY");
-    writeFileSync(path, "# 标题\n\n" + renderEntry(makeEntry()).trimEnd() + "\n");
+    writeFileSync(path, `# 标题\n\n${renderEntry(makeEntry()).trimEnd()}\n`);
     updateKind(dir, "MEMORY", () => []);
     let text = readFileSync(path, "utf-8");
     expect(text).toContain("# 标题");

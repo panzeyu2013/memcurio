@@ -39,7 +39,7 @@ describe("Transaction", () => {
     ).toThrow("boom");
     const records = readRecords(log);
     expect(records.map((r) => r.op)).toEqual(["BEGIN", "ROLLBACK"]);
-    expect(records[1].error).toContain("boom");
+    expect(records[1]?.error).toContain("boom");
     // ROLLBACK marks the transaction as resolved: the synchronous md/SQLite
     // writes were already undone, so it must not show up as pending work.
     expect(txn.pending()).toHaveLength(0);
@@ -122,8 +122,9 @@ describe("Transaction", () => {
       stderr: "ignore",
     });
     try {
-      // Wait until the child actually holds the lock.
-      for (let i = 0; i < 100 && !existsSync(lockPath); i++) {
+      // Wait until the child actually holds the lock (generous bound: bun
+      // process cold start under CI load can exceed 1s).
+      for (let i = 0; i < 500 && !existsSync(lockPath); i++) {
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(existsSync(lockPath)).toBe(true);
@@ -270,8 +271,8 @@ describe("updateKindsAtomically", () => {
     ], () => {
       throw new Error("index commit failed");
     })).toThrow("index commit failed");
-    expect(parseFile(readFileSync(aPath, "utf-8"), "a")[0].status).toBe("active");
-    expect(parseFile(readFileSync(bPath, "utf-8"), "b")[0].status).toBe("active");
+    expect(parseFile(readFileSync(aPath, "utf-8"), "a")[0]?.status).toBe("active");
+    expect(parseFile(readFileSync(bPath, "utf-8"), "b")[0]?.status).toBe("active");
   });
 
   test("removes a newly-created truth file when the commit fails", () => {
@@ -308,5 +309,5 @@ function readRecords(path: string): TxnRecord[] {
 
 function appendRaw(path: string, line: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, line + "\n", "utf-8");
+  appendFileSync(path, `${line}\n`, "utf-8");
 }

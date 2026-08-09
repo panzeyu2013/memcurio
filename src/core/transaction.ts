@@ -74,7 +74,9 @@ export interface LockOptions {
 }
 
 export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
-  mkdirSync(dirname(lockPath), { recursive: true });
+  // 0700: the locks directory is created on demand and would otherwise inherit
+  // the umask; the lock files themselves are 0600.
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
   const timeoutMs = opts.timeoutMs ?? LOCK_TIMEOUT_MS;
   const start = Date.now();
   const holder = `${process.pid}|${Date.now()}`;
@@ -99,6 +101,11 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions
       if (lockHeldByUs(lockPath)) {
         throw new Error(`re-entrant file lock: ${lockPath}`);
       }
+      // Bounded synchronous sleep. The wait is capped at LOCK_TIMEOUT_MS (20s),
+      // so the worst-case freeze is short even on the single-threaded codex
+      // daemon, where contention (another process holding the md lock) briefly
+      // stalls socket handling. Contention is rare: writers serialize on the
+      // same md file, and the daemon itself holds each lock only briefly.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       continue;
     }
@@ -108,7 +115,17 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions
     try {
       return fn();
     } finally {
-      unlinkSync(lockPath);
+      // A contender that reclaimed our lock as stale (or a crash-cleanup
+      // racing us) may have already removed the file: tolerate ENOENT instead
+      // of failing the completed operation. Any other failure (EACCES, EISDIR)
+      // leaves a lock behind that would wedge future holders, so surface it.
+      try {
+        unlinkSync(lockPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.warn(`[memcurio] failed to release file lock ${lockPath}: ${String(err)}`);
+        }
+      }
     }
   }
 }
@@ -228,7 +245,7 @@ export class Transaction {
     mkdirSync(dirname(this.logPath), { recursive: true });
     withFileLock(logLockPath(this.logPath), () => {
       rotateLog(this.logPath);
-      appendFileSync(this.logPath, JSON.stringify(record) + "\n", { encoding: "utf-8", mode: 0o600 });
+      appendFileSync(this.logPath, `${JSON.stringify(record)}\n`, { encoding: "utf-8", mode: 0o600 });
     });
   }
 
@@ -242,7 +259,24 @@ export class Transaction {
       this.append({ op: "ROLLBACK", txn, error: String(err), ts: new Date().toISOString() });
       throw err;
     }
-    this.append({ op: "COMMIT", txn, ts: new Date().toISOString() });
+    try {
+      this.append({ op: "COMMIT", txn, ts: new Date().toISOString() });
+    } catch (err) {
+      // The md/SQLite writes already committed; failing the caller here would
+      // make it retry and duplicate the writes. Retry the append once, and if
+      // it still fails, record a COMMIT line carrying the error so pending()
+      // resolves this transaction (a bare BEGIN would leave a phantom pending
+      // that `repair` misinterprets as an unfinished write).
+      try {
+        this.append({ op: "COMMIT", txn, ts: new Date().toISOString() });
+      } catch {
+        try {
+          this.append({ op: "COMMIT", txn, error: String(err), ts: new Date().toISOString() });
+        } catch (second) {
+          console.warn(`[memcurio] failed to record COMMIT for ${txn} (business writes succeeded): ${String(second)}`);
+        }
+      }
+    }
   }
 
   pending(): TxnRecord[] {

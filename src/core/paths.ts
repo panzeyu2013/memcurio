@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 
 export function rootDir(): string {
   const env = process.env.MEMCURIO_ROOT;
-  return env && env.trim() ? env.trim() : join(homedir(), ".memcurio");
+  return env?.trim() ? env.trim() : join(homedir(), ".memcurio");
 }
 
 export function ensureLayout(root: string): void {
@@ -112,7 +112,10 @@ export function namespaces(root: string): string[] {
   const mem = join(root, "memory");
   try {
     return readdirSync(mem, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      // Skip dot directories: a stray .trash/ or .git/ in memory/ is not a
+      // namespace, and feeding it to nsDir would trip assertValidNs and take
+      // down every command that iterates namespaces.
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
       .map((e) => e.name)
       .sort();
   } catch {

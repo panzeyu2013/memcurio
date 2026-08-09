@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { main } from "../src/cli/index.js";
 import { Index } from "../src/core/db.js";
-import { applyCuratePlan, bigramOverlap, buildCuratePlan, HttpProvider, NoopProvider, parseJsonFromText } from "../src/core/curate.js";
+import { applyCuratePlan, bigramOverlap, buildCuratePlan, HttpProvider, NoopProvider } from "../src/core/curate.js";
 import type { CuratePlan, CurateProvider } from "../src/core/curate.js";
+import { extractJsonObject } from "../src/core/llm.js";
 import { addEntry } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { indexDb, nsDir } from "../src/core/paths.js";
@@ -40,9 +41,9 @@ describe("bigramOverlap", () => {
   });
 });
 
-describe("parseJsonFromText", () => {
+describe("extractJsonObject", () => {
   test("extracts JSON from prose", () => {
-    expect(parseJsonFromText('结论：\n{"contradictory": true, "reason": "x"}')).toEqual({
+    expect(extractJsonObject('结论：\n{"contradictory": true, "reason": "x"}')).toEqual({
       contradictory: true,
       reason: "x",
     });
@@ -116,7 +117,7 @@ describe("buildCuratePlan", () => {
     });
     const plan = await buildCuratePlan(idx, provider, { minUseForReeval: 5 });
     expect(plan.reevaluations).toHaveLength(1);
-    expect(plan.reevaluations[0].score).toBe(0.5);
+    expect(plan.reevaluations[0]?.score).toBe(0.5);
     idx.close();
   });
 
@@ -129,7 +130,7 @@ describe("buildCuratePlan", () => {
     });
     const plan = await buildCuratePlan(idx, provider);
     expect(plan.umbrellas).toHaveLength(1);
-    expect(plan.umbrellas[0].group.map((e) => e.entryId).sort()).toEqual(["a1b2c3d4", "e5f6a7b8"]);
+    expect(plan.umbrellas[0]?.group.map((e) => e.entryId).sort()).toEqual(["a1b2c3d4", "e5f6a7b8"]);
     idx.close();
   });
 
@@ -141,7 +142,7 @@ describe("buildCuratePlan", () => {
     const provider = new FakeProvider({ suggestUmbrella: async () => "合并后的伞条目内容" });
     const plan = await buildCuratePlan(idx, provider);
     expect(plan.umbrellas).toHaveLength(1);
-    expect(plan.umbrellas[0].group).toHaveLength(3);
+    expect(plan.umbrellas[0]?.group).toHaveLength(3);
     idx.close();
   });
 
@@ -154,7 +155,7 @@ describe("buildCuratePlan", () => {
     });
     const plan = await buildCuratePlan(idx, provider);
     expect(plan.contradictions).toHaveLength(1);
-    expect(plan.contradictions[0].reason).toBe("存储后端冲突");
+    expect(plan.contradictions[0]?.reason).toBe("存储后端冲突");
     idx.close();
   });
 
@@ -215,7 +216,7 @@ describe("applyCuratePlan", () => {
     expect(idx.get("e5f6a7b8")?.status).toBe("stale");
     const umbrellas = idx.list({ ns: "default" }).filter((e) => e.entryId !== "a1b2c3d4" && e.entryId !== "e5f6a7b8");
     expect(umbrellas).toHaveLength(1);
-    expect(umbrellas[0].content).toContain("伞条目");
+    expect(umbrellas[0]?.content).toContain("伞条目");
     const contradictions = idx.driver.all<{ entry_a: string }>("SELECT entry_a FROM contradictions");
     expect(contradictions.length).toBe(1);
     idx.close();
@@ -261,8 +262,8 @@ describe("HttpProvider", () => {
     expect(v.reason).toBe("__unparsable__");
   });
 
-  test("parseJsonFromText throws on output without JSON", () => {
-    expect(() => parseJsonFromText("no json here")).toThrow(/no JSON object/);
+  test("extractJsonObject throws on output without JSON", () => {
+    expect(() => extractJsonObject("no json here")).toThrow(/no JSON object/);
   });
 });
 
@@ -270,6 +271,7 @@ describe("curate cli", () => {
   test("dry-run reports a real plan without applying it", async () => {
     const lines: string[] = [];
     const origLog = console.log;
+    const origWarn = console.warn;
     const origFetch = globalThis.fetch;
     const savedKey = process.env.MEMCURIO_LLM_API_KEY;
     const savedLang = process.env.MEMCURIO_LANG;
@@ -283,10 +285,15 @@ describe("curate cli", () => {
       })) as unknown as typeof fetch;
     try {
       console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
+      // LLM failure paths warn on console.warn; silence them so the suite
+      // output stays clean.
+      console.warn = () => {};
       await main(["init"]);
       await main(["remember", "项目使用 SQLite FTS5 trigram 做检索"]);
       const idx = await Index.create(indexDb(dir));
-      const entryId = idx.list()[0].entryId;
+      const entry = idx.list()[0];
+      if (entry === undefined) throw new Error("expected an entry");
+      const entryId = entry.entryId;
       idx.touch([entryId]);
       idx.close();
       const code = await main(["curate", "--min-use", "1"]);
@@ -295,10 +302,11 @@ describe("curate cli", () => {
       expect(lines.join("\n")).toContain("dry-run");
       // The plan was reported but nothing was applied.
       const idx2 = await Index.create(indexDb(dir));
-      expect(idx2.list()[0].valueScore).toBeCloseTo(1.05, 5);
+      expect(idx2.list()[0]?.valueScore).toBeCloseTo(1.05, 5);
       idx2.close();
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
       globalThis.fetch = origFetch;
       if (savedKey === undefined) {
         delete process.env.MEMCURIO_LLM_API_KEY;

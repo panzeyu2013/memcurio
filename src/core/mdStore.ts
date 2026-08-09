@@ -35,24 +35,28 @@ export function isKnownStatus(status: string): boolean {
 }
 
 function isHeader(lines: string[], idx: number, expectedKind?: Kind): boolean {
-  if (idx > 0 && lines[idx - 1].trim() !== "") {
+  if (idx > 0 && (lines[idx - 1] ?? "").trim() !== "") {
     return false;
   }
   // A header must be followed by a blank line (or EOF): the canonical renderEntry
   // format is "§ meta\n\ncontent", and this also prevents prose that merely looks
   // like a header (inside an entry body) from splitting entries.
-  if (idx + 1 < lines.length && lines[idx + 1].trim() !== "") {
+  if (idx + 1 < lines.length && (lines[idx + 1] ?? "").trim() !== "") {
     return false;
   }
-  const m = SEP.exec(lines[idx]);
-  if (!m || !isKnownKind(m[2]) || !isKnownStatus(m[4])) {
+  const m = SEP.exec(lines[idx] ?? "");
+  if (!m) {
+    return false;
+  }
+  const [, , kind, , status] = m;
+  if (kind === undefined || status === undefined || !isKnownKind(kind) || !isKnownStatus(status)) {
     return false;
   }
   // When the file kind is known (from the file name), a header declaring a
   // different kind is prose, not an entry header. This also guarantees the
   // header kind always matches the file kind, so writing back never silently
   // rewrites a header's declared kind.
-  return expectedKind === undefined || m[2] === expectedKind;
+  return expectedKind === undefined || kind === expectedKind;
 }
 
 export function renderEntry(e: Entry): string {
@@ -67,13 +71,17 @@ export function parseFile(text: string, ns: string, expectedKind?: Kind): Entry[
   let i = 0;
   while (i < lines.length) {
     if (isHeader(lines, i, expectedKind)) {
-      const m = SEP.exec(lines[i]);
+      const m = SEP.exec(lines[i] ?? "");
       if (m) {
         const [, entryId, kind, createdAt, status, pinned] = m;
+        if (entryId === undefined || kind === undefined || createdAt === undefined || status === undefined) {
+          i += 1;
+          continue;
+        }
         const body: string[] = [];
         i += 1;
         while (i < lines.length && !isHeader(lines, i, expectedKind)) {
-          body.push(lines[i]);
+          body.push(lines[i] ?? "");
           i += 1;
         }
         entries.push({
@@ -113,16 +121,20 @@ function parseBlocks(text: string, ns: string, kind: Kind): Block[] {
         blocks.push({ type: "text", raw: textBuf.join("\n") });
         textBuf = [];
       }
-      const m = SEP.exec(lines[i]);
+      const m = SEP.exec(lines[i] ?? "");
       if (!m) {
         i += 1;
         continue;
       }
       const [, entryId, , createdAt, status, pinned] = m;
+      if (entryId === undefined || createdAt === undefined || status === undefined) {
+        i += 1;
+        continue;
+      }
       const body: string[] = [];
       i += 1;
       while (i < lines.length && !isHeader(lines, i, kind)) {
-        body.push(lines[i]);
+        body.push(lines[i] ?? "");
         i += 1;
       }
       blocks.push({
@@ -143,7 +155,7 @@ function parseBlocks(text: string, ns: string, kind: Kind): Block[] {
       });
       continue;
     }
-    textBuf.push(lines[i]);
+    textBuf.push(lines[i] ?? "");
     i += 1;
   }
   if (textBuf.length) {
@@ -199,7 +211,7 @@ export function addEntry(dir: string, entry: Entry): void {
   const path = kindFile(dir, entry.kind);
   withFileLock(`${dir}/.lock-${entry.kind}.md`, () => {
     const text = readText(path);
-    const next = text.trim() ? text.trimEnd() + "\n\n" + renderEntry(entry) : renderEntry(entry);
+    const next = text.trim() ? `${text.trimEnd()}\n\n${renderEntry(entry)}` : renderEntry(entry);
     atomicWrite(path, next);
   });
 }
@@ -210,7 +222,7 @@ export function updateKind(dir: string, kind: Kind, mutate: (entries: Entry[]) =
   withFileLock(`${dir}/.lock-${kind}.md`, () => {
     const text = readText(path);
     const rendered = renderMutation(text, ns, kind, mutate);
-    if (rendered === text.trimEnd() + "\n") {
+    if (rendered === `${text.trimEnd()}\n`) {
       return;
     }
     atomicWrite(path, rendered);
@@ -225,7 +237,8 @@ export interface KindMutation {
 
 function renderMutation(text: string, ns: string, kind: Kind, mutate: KindMutation["mutate"]): string {
   const parsed = parseBlocks(text, ns, kind);
-  const next = mutate(parsed.filter((b) => b.type === "entry").map((b) => b.entry!));
+  const isEntry = (b: Block): b is Block & { entry: Entry } => b.type === "entry";
+  const next = mutate(parsed.filter(isEntry).map((b) => b.entry));
   const nextById = new Map(next.map((e) => [e.entryId, e]));
   const used = new Set<string>();
   const out: string[] = [];
@@ -234,12 +247,16 @@ function renderMutation(text: string, ns: string, kind: Kind, mutate: KindMutati
       out.push(b.raw);
       continue;
     }
-    const e = nextById.get(b.entry!.entryId);
+    const entry = b.entry;
+    if (!entry) {
+      continue;
+    }
+    const e = nextById.get(entry.entryId);
     if (!e || used.has(e.entryId)) {
       continue;
     }
     used.add(e.entryId);
-    out.push(entryEquals(b.entry!, e) ? b.raw : renderEntry(e));
+    out.push(entryEquals(entry, e) ? b.raw : renderEntry(e));
   }
   for (const e of next) {
     if (!used.has(e.entryId)) {
@@ -247,7 +264,7 @@ function renderMutation(text: string, ns: string, kind: Kind, mutate: KindMutati
       out.push(renderEntry(e));
     }
   }
-  return out.join("\n").trimEnd() + "\n";
+  return `${out.join("\n").trimEnd()}\n`;
 }
 
 /**
@@ -266,13 +283,21 @@ export function updateKindsAtomically(mutations: KindMutation[], commit: (entrie
     group.mutates.push(mutation.mutate);
     grouped.set(path, group);
   }
-  const groups = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+  // Deterministic, locale-independent ordering: every process must acquire
+  // the per-file locks in the same sequence or concurrent writers could
+  // deadlock across processes with different locales.
+  const groups = [...grouped.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const lockAll = (index: number, work: () => void): void => {
     if (index >= groups.length) {
       work();
       return;
     }
-    const [, group] = groups[index];
+    const entry = groups[index];
+    if (entry === undefined) {
+      // Unreachable: the recursion stops exactly at groups.length.
+      return;
+    }
+    const [, group] = entry;
     withFileLock(`${group.nsDir}/.lock-${group.kind}.md`, () => lockAll(index + 1, work));
   };
 
@@ -291,20 +316,29 @@ export function updateKindsAtomically(mutations: KindMutation[], commit: (entrie
     const written: string[] = [];
     try {
       for (const [path, text] of rendered) {
-        if (text !== originals.get(path)!.text.trimEnd() + "\n") {
+        const original = originals.get(path);
+        if (original && text !== `${original.text.trimEnd()}\n`) {
           atomicWrite(path, text);
           written.push(path);
         }
       }
       const finalEntries: Entry[] = [];
       for (const [path, group] of groups) {
-        finalEntries.push(...parseFile(rendered.get(path)!, nsName(group.nsDir), group.kind));
+        const text = rendered.get(path);
+        if (text === undefined) {
+          throw new Error(`batch write missing rendered content for ${path}`);
+        }
+        finalEntries.push(...parseFile(text, nsName(group.nsDir), group.kind));
       }
       commit(finalEntries);
     } catch (err) {
       const rollbackErrors: unknown[] = [];
       for (const path of written.reverse()) {
-        const original = originals.get(path)!;
+        const original = originals.get(path);
+        if (original === undefined) {
+          rollbackErrors.push(new Error(`batch rollback missing original content for ${path}`));
+          continue;
+        }
         try {
           if (original.existed) {
             atomicWrite(path, original.text);

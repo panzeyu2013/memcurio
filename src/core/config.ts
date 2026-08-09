@@ -66,7 +66,13 @@ function validString(v: unknown, def: string): string {
 export function loadConfig(root: string): Config {
   const path = configPath(root);
   if (!existsSync(path)) {
-    writeFileSync(path, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n", { mode: 0o600 });
+    // Best-effort: on a read-only root, commands still run with defaults
+    // instead of failing (config is a convenience, not a dependency).
+    try {
+      writeFileSync(path, `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`, { mode: 0o600 });
+    } catch {
+      void 0;
+    }
     return { ...DEFAULT_CONFIG };
   }
   // Converge permissions even when the file pre-existed with looser ones.
@@ -80,7 +86,7 @@ export function loadConfig(root: string): Config {
     parsed = JSON.parse(readFileSync(path, "utf-8"));
     return normalizeConfig(parsed, false);
   } catch (err) {
-    console.warn(`memcurio: ignoring unparsable config at ${path} (${String(err)}); using defaults`);
+    console.warn(`[memcurio] ignoring unparsable config at ${path} (${String(err)}); using defaults`);
     return { ...DEFAULT_CONFIG };
   }
 }

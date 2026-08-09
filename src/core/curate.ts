@@ -1,4 +1,4 @@
-import { Index } from "./db.js";
+import type { Index } from "./db.js";
 import { newEntry, updateKindsAtomically } from "./mdStore.js";
 import type { Entry, Kind, Status } from "./mdStore.js";
 import { nsDir, txnLog } from "./paths.js";
@@ -33,11 +33,6 @@ export interface HttpProviderOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
-}
-
-/** Back-compat alias; prefer extractJsonObject from ./llm.js. */
-export function parseJsonFromText(text: string): unknown {
-  return extractJsonObject(text);
 }
 
 export class HttpProvider implements CurateProvider {
@@ -148,14 +143,22 @@ function candidatePairs(entries: Entry[], maxPairs: number): Array<[number, numb
   }
   const buckets = new Map<string, number[]>();
   for (let i = 0; i < entries.length; i++) {
-    const rare = [...grams[i]]
+    const entryGrams = grams[i];
+    if (entryGrams === undefined) {
+      continue;
+    }
+    const entry = entries[i];
+    if (entry === undefined) {
+      continue;
+    }
+    const rare = [...entryGrams]
       .sort((a, b) => (frequency.get(a) ?? 0) - (frequency.get(b) ?? 0) || a.localeCompare(b))
       // A small handful misses ordinary near-duplicates whose differing suffix
       // contributes the rarest grams. Thirty-two keeps candidate generation
       // bounded while retaining enough of typical short memory entries.
       .slice(0, 32);
     for (const gram of rare) {
-      const key = `${entries[i].ns}\0${entries[i].kind}\0${gram}`;
+      const key = `${entry.ns}\0${entry.kind}\0${gram}`;
       const bucket = buckets.get(key) ?? [];
       bucket.push(i);
       buckets.set(key, bucket);
@@ -166,8 +169,13 @@ function candidatePairs(entries: Entry[], maxPairs: number): Array<[number, numb
   for (const bucket of buckets.values()) {
     for (let a = 0; a < bucket.length; a++) {
       for (let b = a + 1; b < bucket.length; b++) {
-        const i = Math.min(bucket[a], bucket[b]);
-        const j = Math.max(bucket[a], bucket[b]);
+        const ia = bucket[a];
+        const ib = bucket[b];
+        if (ia === undefined || ib === undefined) {
+          continue;
+        }
+        const i = Math.min(ia, ib);
+        const j = Math.max(ia, ib);
         const key = `${i}:${j}`;
         if (seen.has(key)) {
           continue;
@@ -227,11 +235,16 @@ export async function buildCuratePlan(
 
   const parent = entries.map((_, i) => i);
   const find = (i: number): number => {
-    while (parent[i] !== i) {
-      parent[i] = parent[parent[i]];
-      i = parent[i];
+    let current = i;
+    while (parent[current] !== current) {
+      const next = parent[current];
+      if (next === undefined) {
+        return current;
+      }
+      parent[current] = parent[next] ?? next;
+      current = next;
     }
-    return i;
+    return current;
   };
   const union = (a: number, b: number): void => {
     const ra = find(a);
@@ -244,7 +257,12 @@ export async function buildCuratePlan(
   const pairs = candidatePairs(entries, Math.max(100, maxChecks * 20));
   const overlaps = new Map<string, number>();
   for (const [i, j] of pairs) {
-    const overlap = bigramOverlap(entries[i].content, entries[j].content);
+    const ei = entries[i];
+    const ej = entries[j];
+    if (ei === undefined || ej === undefined) {
+      continue;
+    }
+    const overlap = bigramOverlap(ei.content, ej.content);
     overlaps.set(`${i}:${j}`, overlap);
     if (overlap >= 0.85) {
       union(i, j);
@@ -253,8 +271,12 @@ export async function buildCuratePlan(
   const groups = new Map<number, Entry[]>();
   for (let i = 0; i < entries.length; i++) {
     const root = find(i);
+    const entry = entries[i];
+    if (entry === undefined) {
+      continue;
+    }
     const group = groups.get(root) ?? [];
-    group.push(entries[i]);
+    group.push(entry);
     groups.set(root, group);
   }
   for (const group of groups.values()) {
@@ -271,8 +293,13 @@ export async function buildCuratePlan(
   }
 
   for (const [i, j] of pairs) {
-    const a = entries[i];
-    const b = entries[j];
+    const ei = entries[i];
+    const ej = entries[j];
+    if (ei === undefined || ej === undefined) {
+      continue;
+    }
+    const a = ei;
+    const b = ej;
     if (find(i) === find(j) || (overlaps.get(`${i}:${j}`) ?? 0) < minOverlap) {
       continue;
     }
@@ -297,9 +324,13 @@ export async function applyCuratePlan(idx: Index, root: string, plan: CuratePlan
     `${plan.reevaluations.length} reeval, ${plan.contradictions.length} contradictions, ${plan.umbrellas.length} umbrellas`,
     () => {
       const umbrellas = plan.umbrellas.map((u) => {
+        const first = u.group[0];
+        if (first === undefined) {
+          throw new Error("curate: umbrella group is empty");
+        }
         const redacted = redactSecrets(u.content);
         const injectionFlags = scanInjection(redacted.text);
-        const entry = newEntry(u.group[0].ns, u.group[0].kind as Kind, redacted.text, {
+        const entry = newEntry(first.ns, first.kind as Kind, redacted.text, {
           valueScore: u.group.reduce((s, e) => s + e.valueScore, 0) / u.group.length,
         });
         return { ...u, entry, redacted: redacted.redacted, injectionFlags };
