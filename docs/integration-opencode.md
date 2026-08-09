@@ -18,7 +18,7 @@
 |---|---|
 | `session.created` | 登记会话（sessions 表 + 审计），确定命名空间 |
 | `message.part.*` | 统计消息 part（去重） |
-| `tool.execute.after` | 统计工具使用/涉及文件；若读取的是 `~/.memcore/memory/**/*.md` 则对其条目 `touch`（use_count↑、value_score↑）——基线模式的读侧记账闭环 |
+| `tool.execute.after` | 统计工具使用/涉及文件；若读取的是 `~/.memcore/memory/<ns>/*.md`（`INDEX.md` 除外）则对其条目 `touch`（use_count↑、value_score↑）——基线模式的读侧记账闭环 |
 | `session.idle` | 节流写会话复盘（`SESSION.md`：起止时间/消息数/工具/文件） |
 | `session.compacted` | 压缩完成后经 `client.session.messages` 读取压缩摘要 → 反思写回 COMPACT 压缩策略。反思默认走 **harness 自身模型**（临时会话 + `session.prompt`，完成后删除，无需额外 API key）；失败时降级为 env LLM 或规则兜底 |
 | `experimental.session.compacting` | 注入"长期记忆上下文" + **COMPACT 压缩策略**（压缩前强制注入）；`MEMCORE_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词（保留任务状态/决策/涉及文件） |

@@ -61,11 +61,27 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 222 用例
-bunx tsc --noEmit # 类型检查
+bun test          # 全部用例（当前 225+）
+bun run typecheck # 类型检查（覆盖 src/tests/scripts）
 bun run bundle:plugin
 ```
 
-CLI 用户文案支持 i18n：默认中文，`MEMCORE_LANG=en`（或 `LANG=en*`）切换英文；注入 AI 上下文的记忆内容统一为英文。
+CLI 用户文案支持 i18n：默认中文（无 `LANG` 时）；`MEMCORE_LANG=zh` / `en` 显式指定，`LANG=zh*` 中文、其余语言环境（en/fr/de/ja…）英文；注入 AI 上下文的记忆内容统一为英文。
+
+### 环境变量
+
+| 变量 | 含义 |
+|---|---|
+| `MEMCORE_ROOT` | 数据根目录（默认 `~/.memcore`） |
+| `MEMCORE_LANG` / `LANG` | CLI 文案语言（zh/en，默认 zh） |
+| `MEMCORE_LLM_API_KEY` | curate / 压缩反思的 LLM API Key |
+| `MEMCORE_LLM_BASE_URL` | OpenAI 兼容 base URL（默认 `https://api.openai.com/v1`） |
+| `MEMCORE_LLM_MODEL` | 反思/策展模型（默认 `gpt-4o-mini`） |
+| `MEMCORE_CODEX_SOCKET` | codex daemon socket 路径（默认 `<root>/state/codex.sock`） |
+| `MEMCORE_CODEX_DAEMON` | hook 自拉起的 daemon 入口（默认与 hook 同目录 `daemon.js`） |
+| `MEMCORE_CODEX_BIN` | 反思用的 `codex` 可执行文件（默认 PATH 上的 `codex`） |
+| `MEMCORE_CODEX_REFLECT` | 设为 `0` 禁用 codex exec 反思通道 |
+| `BUN_BIN` | hook/生成插件使用的 bun 可执行文件路径（默认自动探测） |
+| `MEMCORE_REPLACE_COMPACTION` | opencode 插件：设为 `1` 时整体替换压缩提示词（启动时读取，改动需重启 opencode） |
 
 设计原则：接口通用、差异关进实现——引擎认识零种语言、零个 harness；检索后端（trigram/like/embedding）可插拔；语言与 harness 都是被隔离的实现细节。

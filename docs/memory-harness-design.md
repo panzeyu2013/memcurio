@@ -178,12 +178,12 @@
 - **适配器层**：每 harness 一个薄壳，只做"事件翻译 + 注入通道"，声明能力等级
 - **CLI**：手动管理（剪枝报告、导入导出、审计、状态、策展、codex 插件生成）、可独立于任何 harness 使用
 
-> 实现状态：M0–M4 代码全部落地（222 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
+> 实现状态：M0–M4 代码全部落地（225+ 用例），真实 harness 验证待启用。现状图见 docs/architecture.md。
 
 ### 4.2 统一事件模型（引擎的唯一输入）
 
 ```
-EventEnvelope {                     // 实现：src/core/events.ts（camelCase，10 事件）
+EventEnvelope {                     // 实现：src/core/events.ts（字段 camelCase，事件名 snake_case，10 事件）
   host: "opencode" | "codex" | "pi" | "claude" | "cli" | "mcp"
   actor: "user" | "agent" | "subagent"
   sessionId: str
@@ -230,10 +230,11 @@ capabilities {
 ```
 ~/.memcore/
 ├── memory/                      # Markdown 真源（人可读、可 git）
-│   ├── <namespace>/             # 命名空间 = workdir 哈希或路径 slug
+│   ├── <namespace>/             # 命名空间 = 路径 slug + 路径哈希（同名校不串扰）
 │   │   ├── MEMORY.md            # 事实/决策/约束（每条 = § id | kind | created | status | pinned）
 │   │   ├── USER.md              # 用户画像/偏好
-│   │   └── SESSION.md           # 会话复盘（kind=SESSION，适配器自动落盘）
+│   │   ├── SESSION.md           # 会话复盘（kind=SESSION，适配器自动落盘）
+│   │   └── COMPACT.md           # 压缩策略 + 反思写回（kind=COMPACT，最多保留 8 条）
 │   └── INDEX.md                 # 全局导航索引（AGENTS.md 引用的入口）
 ├── index.sqlite                 # 影子索引（FTS5 trigram，语言无关，衍生可重建）
 │   ├── entries(entry_id, ns, kind, content, created_at, last_used_at, use_count, value_score, status, pinned)
@@ -244,7 +245,10 @@ capabilities {
 ├── config.json                  # 预算（maxInjectTokens/topKStatic）、剪枝阈值、命名空间
 ├── state/
 │   ├── transactions.jsonl       # 事务日志（BEGIN/COMMIT/ROLLBACK，原子写 + 可回滚）
-│   └── codex.sock               # codex 适配器 daemon 的 unix socket（运行时生成）
+│   ├── codex.sock               # codex 适配器 daemon 的 unix socket（运行时生成）
+│   ├── codex.token              # socket 鉴权 token（0600，运行时生成）
+│   ├── daemon.log               # daemon stderr（hook 自拉起时重定向至此）
+│   └── hook.log                 # hook 诊断日志
 └── codex-plugin/                # memcore codex-plugin 默认输出目录
 ```
 

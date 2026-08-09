@@ -15,7 +15,7 @@ flowchart TB
 
   subgraph AD["适配器层（薄壳，只做事件翻译+注入通道）"]
     AOC["opencode 插件 ✅<br/>event / compacting / tool 钩子<br/>bun 打包单文件"]
-    ACX["codex 适配器 ✅<br/>1 daemon + N hook 薄壳<br/>SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd"]
+    ACX["codex 适配器 ✅<br/>1 daemon + N hook 薄壳<br/>SessionStart/UserPromptSubmit/PostToolUse/<br/>PreCompact/PostCompact/Stop/SessionEnd"]
     AB["基线（零代码）<br/>AGENTS.md + INDEX.md 注入"]
   end
 
@@ -84,8 +84,8 @@ src/
 │   ├── events.ts       事件模型（host/event 校验）
 │   ├── paths.ts        布局（0700）+ ns 白名单（防穿越）
 │   ├── config.ts       config.json（budget/prune/namespace）
-│   ├── transaction.ts  原子写（0600+O_EXCL+目录fsync）+ 文件锁（pid/残留回收）+ 事务日志
-│   ├── mdStore.ts      真源解析/渲染（§ id | kind | created | status | pinned）
+│   ├── transaction.ts  原子写（0600+O_EXCL+目录fsync）+ 文件锁（pid/残留回收，存活持有者不抢）+ 事务日志
+│   ├── mdStore.ts      真源解析/渲染（§ id | kind | created | status | pinned；重写保留非条目内容）
 │   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（WAL+busy_timeout）
 │   ├── db.ts           影子索引（entries/sessions/contradictions/audit/meta + FTS5）
 │   │                   rebuild 保留统计 + schema_version 迁移 + withTransaction（嵌套防护）
@@ -111,7 +111,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          222 用例（21 文件）
+tests/                          225+ 用例（21 文件）
 ```
 
 ## 4. 存储布局
@@ -122,13 +122,17 @@ tests/                          222 用例（21 文件）
 │   ├── <namespace>/
 │   │   ├── MEMORY.md      # 事实/决策/约束（§ id | kind | created | status | pinned）
 │   │   ├── USER.md        # 偏好
-│   │   └── SESSION.md     # 会话复盘（适配器自动落盘）
+│   │   ├── SESSION.md     # 会话复盘（适配器自动落盘）
+│   │   └── COMPACT.md     # 压缩策略 + 反思写回（kind=COMPACT）
 │   └── INDEX.md           # 全局导航索引（AGENTS.md 引用）
 ├── index.sqlite           # 影子索引（FTS5 trigram，可重建）
 ├── config.json            # budget / prune 阈值 / namespace
 ├── state/
 │   ├── transactions.jsonl # 事务日志
-│   └── codex.sock         # codex daemon socket（运行时）
+│   ├── codex.sock         # codex daemon socket（运行时）
+│   ├── codex.token        # socket 鉴权 token（0600）
+│   ├── daemon.log         # daemon stderr（hook 自拉起时重定向）
+│   └── hook.log           # hook 诊断日志
 └── codex-plugin/          # memcore codex-plugin 默认输出
 ```
 
