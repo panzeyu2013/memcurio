@@ -38,6 +38,11 @@ async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   }
 }
 
+function positiveInt(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+}
+
 async function cmdInit(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
@@ -46,19 +51,21 @@ async function cmdInit(): Promise<number> {
   const backend = idx.backend;
   idx.audit("init", "-", "memcore initialized");
   idx.close();
-  console.log(`initialized ${root}`);
-  console.log(`index backend: ${backend}`);
+  console.log(t("init.done", root));
+  console.log(t("init.backend", backend));
   return 0;
 }
 
 async function cmdStatus(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
-    console.log(`root      : ${root}`);
-    console.log(`config    : ${configPath(root)} (${existsSync(configPath(root)) ? "ok" : "missing"})`);
+    console.log(t("status.root", root));
+    console.log(
+      t("status.config", configPath(root), existsSync(configPath(root)) ? t("status.configOk") : t("status.configMissing")),
+    );
     const counts = idx.counts();
     if (!Object.keys(counts).length) {
-      console.log("namespaces: (none)");
+      console.log(t("status.namespaces"));
     }
     for (const [ns, statuses] of Object.entries(counts)) {
       const parts = Object.entries(statuses)
@@ -67,10 +74,10 @@ async function cmdStatus(): Promise<number> {
         .join(", ");
       console.log(`  ${ns.padEnd(11)}: ${parts}`);
     }
-    console.log(`index     : sqlite + ${idx.backend}`);
-    console.log(`audit     : ${idx.auditCount()} records`);
-    const pending = new Transaction(txnLog(root)).pending();
-    console.log(`pending   : ${pending.length} txns`);
+    console.log(t("status.index", idx.backend));
+    console.log(t("status.audit", String(idx.auditCount())));
+    const txn = new Transaction(txnLog(root));
+    console.log(t("status.pending", String(txn.pending().length)));
     return 0;
   });
 }
@@ -170,7 +177,7 @@ async function cmdSearch(rest: string[]): Promise<number> {
     return fail(t("search.missing"));
   }
   const kind = values.kind ? ((values.kind as string).toUpperCase() as Kind) : undefined;
-  const topK = Math.max(1, Number(values["top-k"] ?? 10) || 10);
+  const topK = positiveInt(values["top-k"], 10);
   return withIndex(async (idx) => {
     const retriever = getRetriever(idx, (err) =>
       console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
@@ -187,9 +194,12 @@ async function cmdSearch(rest: string[]): Promise<number> {
       console.log(`${h.score.toFixed(2).padStart(7)} ${h.reason.padEnd(12)} ${h.entryId} ${h.ns}/${h.kind} ${preview}`);
     }
     idx.touch(safeHits.map((h) => h.entryId));
-    idx.audit("search", values.ns as string | undefined ?? "-", `${JSON.stringify(redactSecrets(query).text)} -> ${safeHits.length} hits${hits.length !== safeHits.length ? ` (${hits.length - safeHits.length} filtered)` : ""}`);
-    if (!safeHits.length) {
+    const filtered = hits.length - safeHits.length;
+    idx.audit("search", values.ns as string | undefined ?? "-", `${JSON.stringify(redactSecrets(query).text)} -> ${safeHits.length} hits${filtered > 0 ? ` (${filtered} filtered)` : ""}`);
+    if (!safeHits.length && !filtered) {
       console.error(t("search.note", values.ns ?? "all"));
+    } else if (filtered > 0) {
+      console.error(t("search.filtered", String(filtered)));
     }
     return 0;
   });
@@ -213,7 +223,7 @@ async function cmdForget(rest: string[]): Promise<number> {
       idx.delete(entryId);
       idx.audit("forget", entry.ns, entryId);
     });
-    console.log(`forgot ${entryId}`);
+    console.log(t("forget.done", entryId));
     return 0;
   });
 }
@@ -280,12 +290,23 @@ async function cmdReindex(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
     const entries: Entry[] = [];
+    let redacted = 0;
     for (const ns of namespaces(root)) {
-      entries.push(...readAll(nsDir(root, ns)));
+      for (const e of readAll(nsDir(root, ns))) {
+        const r = redactSecrets(e.content);
+        if (r.redacted) {
+          redacted += 1;
+          e.content = r.text;
+        }
+        entries.push(e);
+      }
     }
     idx.rebuild(entries);
-    idx.audit("reindex", "-", `${entries.length} entries`);
-    console.log(`reindexed ${entries.length} entries (backend=${idx.backend})`);
+    idx.audit("reindex", "-", `${entries.length} entries${redacted ? ` (${redacted} redacted)` : ""}`);
+    if (redacted) {
+      idx.audit("warn.redacted", "-", `secrets redacted during reindex: ${redacted} entries`);
+    }
+    console.log(t("reindex.done", String(entries.length), idx.backend));
     return 0;
   });
 }
@@ -297,12 +318,20 @@ async function cmdRepair(rest: string[]): Promise<number> {
     options: { execute: { type: "boolean" } },
   });
   const root = rootDir();
-  const pending = new Transaction(txnLog(root)).pending();
+  const txnLogObj = new Transaction(txnLog(root));
+  const pending = txnLogObj.pending();
+  const corrupt = txnLogObj.corruptLines();
   if (!pending.length) {
     console.log(t("repair.none"));
+    if (corrupt > 0) {
+      console.log(t("repair.corrupt", String(corrupt)));
+    }
     return 0;
   }
   console.log(t("repair.pendingHeader", String(pending.length)));
+  if (corrupt > 0) {
+    console.log(t("repair.corrupt", String(corrupt)));
+  }
   for (const p of pending) {
     console.log(`  ${p.txn} ${p.action ?? "?"} ns=${p.ns ?? "-"} ${p.detail ?? ""}`);
   }
@@ -313,13 +342,24 @@ async function cmdRepair(rest: string[]): Promise<number> {
   }
   return withIndex(async (idx) => {
     const entries: Entry[] = [];
+    let redacted = 0;
     for (const ns of namespaces(root)) {
-      entries.push(...readAll(nsDir(root, ns)));
+      for (const e of readAll(nsDir(root, ns))) {
+        const r = redactSecrets(e.content);
+        if (r.redacted) {
+          redacted += 1;
+          e.content = r.text;
+        }
+        entries.push(e);
+      }
     }
     idx.rebuild(entries);
-    idx.audit("repair", "-", `rebuilt from md: ${entries.length} entries, cleared ${pending.length} pending txns`);
+    idx.audit("repair", "-", `rebuilt from md: ${entries.length} entries, cleared ${pending.length} pending txns${redacted ? ` (${redacted} redacted)` : ""}`);
+    if (redacted) {
+      idx.audit("warn.redacted", "-", `secrets redacted during repair: ${redacted} entries`);
+    }
     truncateLog(txnLog(root));
-    console.log(`repaired: rebuilt ${entries.length} entries from md truth source, transaction log cleared`);
+    console.log(t("repair.done", String(entries.length)));
     return 0;
   });
 }
@@ -330,7 +370,7 @@ async function cmdAudit(rest: string[]): Promise<number> {
     allowPositionals: true,
     options: { limit: { type: "string" } },
   });
-  const limit = Math.max(1, Number(values.limit ?? 20) || 20);
+  const limit = positiveInt(values.limit, 20);
   return withIndex(async (idx) => {
     for (const r of idx.auditRecent(limit)) {
       console.log(`${String(r.ts)} ${String(r.action).padEnd(10)} ${String(r.ns).padEnd(11)} ${String(r.detail)}`);
@@ -387,7 +427,7 @@ async function cmdPrune(rest: string[]): Promise<number> {
     const entries = idx.list({ ns, allStatus: true });
     const transitions = computeTransitions(entries, new Date(), config.prune);
     if (!transitions.length) {
-      console.log("nothing to prune");
+      console.log(t("prune.none"));
       return 0;
     }
     for (const t of transitions) {
@@ -416,7 +456,7 @@ async function cmdPrune(rest: string[]): Promise<number> {
         transitions.map((t) => `${t.entryId}:${t.from}->${t.to}`).join(","),
       );
     });
-    console.log(`applied ${transitions.length} transitions`);
+    console.log(t("prune.applied", String(transitions.length)));
     return 0;
   });
 }
@@ -491,7 +531,7 @@ async function cmdExport(rest: string[]): Promise<number> {
     const text = serializeExport(entries);
     if (values.output) {
       writeExport(values.output, entries);
-      console.log(`exported ${entries.length} entries -> ${values.output}`);
+      console.log(t("export.done", String(entries.length), values.output));
     } else {
       process.stdout.write(text);
     }
@@ -511,21 +551,25 @@ async function cmdImport(rest: string[]): Promise<number> {
   }
   const nsOverride = values.ns as string | undefined;
   if (nsOverride) {
-    assertValidNs(nsOverride);
+    try {
+      assertValidNs(nsOverride);
+    } catch (err) {
+      return fail(String((err as Error).message));
+    }
   }
   const root = rootDir();
   return withIndex(async (idx) => {
     const parsed = readExportFile(path);
     const plan = planImport(parsed, idx, nsOverride);
     for (const c of plan.conflicts) {
-      console.log(`conflict ${c.entryId} exists with different content (skipped, ns=${c.ns})`);
+      console.log(t("import.conflict", c.entryId, c.ns));
     }
     const txn = new Transaction(txnLog(root));
     txn.run("import", nsOverride ?? "-", path, () => {
       applyImport(plan, idx, root);
       idx.audit("import", nsOverride ?? "-", `${path}: +${plan.added.length}, skip ${plan.skippedExisting}, dup ${plan.skippedDuplicate}, conflict ${plan.conflicts.length}`);
     });
-    console.log(`imported ${plan.added.length} entries (${plan.skippedExisting} existing, ${plan.skippedDuplicate} content-dup, ${plan.conflicts.length} conflicts)`);
+    console.log(t("import.done", String(plan.added.length), String(plan.skippedExisting), String(plan.skippedDuplicate), String(plan.conflicts.length)));
     return 0;
   });
 }
@@ -570,7 +614,7 @@ async function cmdMerge(rest: string[]): Promise<number> {
       applyMerge(plan, idx, root);
       idx.audit("merge", `${srcNs}->${dstNs}`, `copied ${plan.toCopy.length}, conflicts ${plan.conflicts.length}`);
     });
-    console.log(`merged ${plan.toCopy.length} entries into ${dstNs}`);
+    console.log(t("merge.done", String(plan.toCopy.length), dstNs));
     return 0;
   });
 }
@@ -623,7 +667,7 @@ async function cmdCurate(rest: string[]): Promise<number> {
       return fail(t("curate.needProvider"));
     }
     await applyCuratePlan(idx, root, plan);
-    console.log(`curate applied: ${plan.reevaluations.length} scores, ${plan.contradictions.length} contradictions, ${plan.umbrellas.length} umbrellas`);
+    console.log(t("curate.applied", String(plan.reevaluations.length), String(plan.contradictions.length), String(plan.umbrellas.length)));
     return 0;
   });
 }
@@ -632,7 +676,7 @@ async function cmdCodexDaemon(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
   const socketPath = process.env.MEMCORE_CODEX_SOCKET ?? defaultSocketPath(root);
-  console.log(`memcore codex daemon listening on ${socketPath}`);
+  console.log(t("daemon.listening", socketPath));
   const daemon = await runCodexDaemon({ socketPath, root });
   await daemon.closed;
   return 0;
@@ -644,7 +688,7 @@ async function cmdCodexPlugin(rest: string[]): Promise<number> {
   ensureLayout(root);
   const outDir = positionals[0] ?? join(root, "codex-plugin");
   const generated = await generateCodexPlugin(outDir);
-  console.log(`codex plugin generated in ${generated.outDir}`);
+  console.log(t("codexPlugin.generated", generated.outDir));
   console.log(`  daemon  : ${generated.daemonPath}`);
   console.log(`  hook    : ${generated.hookPath}`);
   console.log(`  plugin  : ${generated.pluginJsonPath}`);
@@ -656,7 +700,7 @@ async function cmdCodexPlugin(rest: string[]): Promise<number> {
 async function cmdIndex(): Promise<number> {
   const root = rootDir();
   await generateIndex();
-  console.log(`index regenerated: ${memoryRoot(root)}/INDEX.md`);
+  console.log(t("index.done", memoryRoot(root)));
   return 0;
 }
 
@@ -667,14 +711,14 @@ async function cmdBaseline(rest: string[]): Promise<number> {
     options: { "top-k": { type: "string" } },
   });
   const workdir = positionals[0] ?? process.cwd();
-  const topK = values["top-k"] ? Math.max(1, Number(values["top-k"]) || 10) : undefined;
+  const topK = values["top-k"] ? positiveInt(values["top-k"], 10) : undefined;
   const root = rootDir();
   ensureLayout(root);
   loadConfig(root);
   await generateIndex();
   const ns = namespaceFor(workdir);
   const count = await injectBaseline(workdir, topK);
-  console.log(`baseline written: ${workdir}/AGENTS.md (${count} entries injected, ns=${ns})`);
+  console.log(t("baseline.done", workdir, String(count), ns));
   return 0;
 }
 

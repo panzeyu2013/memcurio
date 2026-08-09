@@ -2,7 +2,11 @@ export type Lang = "zh" | "en";
 
 export function currentLang(): Lang {
   const raw = (process.env.MEMCORE_LANG ?? process.env.LANG ?? "").toLowerCase();
-  return raw.startsWith("en") ? "en" : "zh";
+  if (!raw) {
+    return "zh";
+  }
+  // Only zh locales map to Chinese; anything else (fr, de, ja…) gets English.
+  return raw.startsWith("zh") ? "zh" : "en";
 }
 
 type Entry = string | ((...args: string[]) => string);
@@ -72,19 +76,47 @@ const zh: Record<string, Entry> = {
   "search.missing": 'search: missing query (memcore search "关键词")',
   "search.note": (x: string) =>
     `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcore list 确认记忆存在。`,
+  "search.filtered": (n: string) => `note: ${n} 条命中因注入风险被过滤，未展示`,
   "forget.missing": "forget: missing entry_id (从 memcore list 获取)",
+  "forget.done": (id: string) => `已删除 ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "策略内容")',
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条）`,
   "repair.none": "no pending transactions (事务日志健康)",
   "repair.pendingHeader": (n: string) => `${n} 个未完成事务：`,
+  "repair.corrupt": (n: string) => `note: ${n} 行事务日志无法解析（torn write），已忽略`,
   "repair.truth": "md 真源为最终真相，索引可重建。",
   "repair.fix": "修复方式：--execute 将从 Markdown 真源重建影子索引（保留使用统计），并清理事务日志。",
+  "repair.done": (n: string) => `已修复：从 md 真源重建 ${n} 条，事务日志已清空`,
   "event.tty": "event: stdin 为终端，请用 --json '{...}' 提供信封",
   "curate.noKeyNote": "未配置 MEMCORE_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。",
   "curate.needProvider": "curate --execute 需要 LLM provider：设置 MEMCORE_LLM_API_KEY（可选 MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL）",
+  "curate.applied": (r: string, c: string, u: string) =>
+    `curate 已应用：${r} 个分数，${c} 条矛盾，${u} 条伞合并`,
   "codexPlugin.snippet": "（config.toml 合并备选）",
   "codexPlugin.hint": "提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcore/，或将 snippet 合并进 ~/.codex/config.toml",
+  "codexPlugin.generated": (d: string) => `codex 插件已生成于 ${d}`,
+  "daemon.listening": (p: string) => `memcore codex daemon 监听 ${p}`,
   "unknownCommand": "运行 memcore help 查看全部命令",
+  "init.done": (root: string) => `已初始化 ${root}`,
+  "init.backend": (b: string) => `索引后端: ${b}`,
+  "reindex.done": (n: string, b: string) => `已重建索引 ${n} 条（backend=${b}）`,
+  "export.done": (n: string, p: string) => `已导出 ${n} 条 -> ${p}`,
+  "import.done": (a: string, e: string, d: string, c: string) =>
+    `已导入 ${a} 条（${e} 已存在，${d} 内容重复，${c} 冲突）`,
+  "import.conflict": (id: string, ns: string) => `冲突 ${id} 已存在但内容不同（跳过，ns=${ns}）`,
+  "merge.done": (n: string, dst: string) => `已合并 ${n} 条到 ${dst}`,
+  "prune.none": "没有可剪枝的条目",
+  "prune.applied": (n: string) => `已应用 ${n} 条状态转换`,
+  "baseline.done": (w: string, c: string, ns: string) => `baseline 已写入: ${w}/AGENTS.md（注入 ${c} 条，ns=${ns}）`,
+  "index.done": (p: string) => `索引已重新生成: ${p}/INDEX.md`,
+  "status.root": (r: string) => `root      : ${r}`,
+  "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
+  "status.configOk": "ok",
+  "status.configMissing": "missing",
+  "status.namespaces": "namespaces: (none)",
+  "status.index": (b: string) => `index     : sqlite + ${b}`,
+  "status.audit": (n: string) => `audit     : ${n} records`,
+  "status.pending": (n: string) => `pending   : ${n} txns`,
   "doctor.layout": "布局",
   "doctor.index": "索引",
   "doctor.txn": "事务",
@@ -162,19 +194,47 @@ Commands:
   "search.missing": 'search: missing query (memcore search "keyword")',
   "search.note": (x: string) =>
     `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcore list to confirm memories exist.`,
+  "search.filtered": (n: string) => `note: ${n} hits filtered out by the injection scan, not shown`,
   "forget.missing": "forget: missing entry_id (get it from memcore list)",
+  "forget.done": (id: string) => `forgot ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "strategy")',
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries)`,
   "repair.none": "no pending transactions (transaction log healthy)",
   "repair.pendingHeader": (n: string) => `${n} unfinished transactions:`,
+  "repair.corrupt": (n: string) => `note: ${n} transaction log lines are unparsable (torn write), ignored`,
   "repair.truth": "Markdown is the source of truth; the index can be rebuilt.",
   "repair.fix": "Fix: --execute rebuilds the shadow index from the Markdown source of truth (keeps usage stats) and clears the transaction log.",
+  "repair.done": (n: string) => `repaired: rebuilt ${n} entries from md truth source, transaction log cleared`,
   "event.tty": "event: stdin is a terminal; pass the envelope with --json '{...}'",
   "curate.noKeyNote": "MEMCORE_LLM_API_KEY not set: rule-based scan only, no LLM calls. Set it and run --execute for full curation.",
   "curate.needProvider": "curate --execute requires an LLM provider: set MEMCORE_LLM_API_KEY (optional MEMCORE_LLM_BASE_URL / MEMCORE_LLM_MODEL)",
+  "curate.applied": (r: string, c: string, u: string) =>
+    `curate applied: ${r} scores, ${c} contradictions, ${u} umbrellas`,
   "codexPlugin.snippet": "(fallback for merging into config.toml)",
   "codexPlugin.hint": "Note: if codex does not auto-load the plugin, copy the plugin.json directory to ~/.codex/plugins/memcore/, or merge the snippet into ~/.codex/config.toml",
+  "codexPlugin.generated": (d: string) => `codex plugin generated in ${d}`,
+  "daemon.listening": (p: string) => `memcore codex daemon listening on ${p}`,
   "unknownCommand": "Run memcore help to see all commands.",
+  "init.done": (root: string) => `initialized ${root}`,
+  "init.backend": (b: string) => `index backend: ${b}`,
+  "reindex.done": (n: string, b: string) => `reindexed ${n} entries (backend=${b})`,
+  "export.done": (n: string, p: string) => `exported ${n} entries -> ${p}`,
+  "import.done": (a: string, e: string, d: string, c: string) =>
+    `imported ${a} entries (${e} existing, ${d} content-dup, ${c} conflicts)`,
+  "import.conflict": (id: string, ns: string) => `conflict ${id} exists with different content (skipped, ns=${ns})`,
+  "merge.done": (n: string, dst: string) => `merged ${n} entries into ${dst}`,
+  "prune.none": "nothing to prune",
+  "prune.applied": (n: string) => `applied ${n} transitions`,
+  "baseline.done": (w: string, c: string, ns: string) => `baseline written: ${w}/AGENTS.md (${c} entries injected, ns=${ns})`,
+  "index.done": (p: string) => `index regenerated: ${p}/INDEX.md`,
+  "status.root": (r: string) => `root      : ${r}`,
+  "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
+  "status.configOk": "ok",
+  "status.configMissing": "missing",
+  "status.namespaces": "namespaces: (none)",
+  "status.index": (b: string) => `index     : sqlite + ${b}`,
+  "status.audit": (n: string) => `audit     : ${n} records`,
+  "status.pending": (n: string) => `pending   : ${n} txns`,
   "doctor.layout": "layout",
   "doctor.index": "index",
   "doctor.txn": "transactions",
@@ -188,6 +248,11 @@ Commands:
 };
 
 const dicts: Record<Lang, Record<string, Entry>> = { zh, en };
+
+/** Keys present in a language dictionary (for parity checks). */
+export function langKeys(lang: Lang): string[] {
+  return Object.keys(dicts[lang]);
+}
 
 export function t(key: string, ...args: string[]): string {
   const entry = dicts[currentLang()][key] ?? zh[key] ?? key;

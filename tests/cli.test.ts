@@ -1,22 +1,28 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { configPath, indexDb, nsDir } from "../src/core/paths.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const origLog = console.log;
-const origErr = console.error;
+const LANG_VARS = ["MEMCORE_LANG", "LANG"] as const;
 
 let dir: string;
 let prevRoot: string | undefined;
+let savedLang: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cli-"));
   prevRoot = process.env.MEMCORE_ROOT;
   process.env.MEMCORE_ROOT = dir;
+  savedLang = {};
+  for (const k of LANG_VARS) {
+    savedLang[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
@@ -25,20 +31,19 @@ afterEach(() => {
   } else {
     process.env.MEMCORE_ROOT = prevRoot;
   }
+  for (const k of LANG_VARS) {
+    if (savedLang[k] === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = savedLang[k];
+    }
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
-  const lines: string[] = [];
-  console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  try {
-    const code = await main(argv);
-    return { code, out: lines.join("\n") };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
-  }
+  const r = await runCli(...argv);
+  return { code: r.code, out: r.out + "\n" + r.err };
 }
 
 describe("memcore cli", () => {
@@ -123,6 +128,15 @@ describe("memcore cli", () => {
       JSON.stringify({ host: "opencode", event: "session_end", sessionId: "s1", workdir: "/tmp/proj" }),
     );
     expect(code).toBe(0);
+    const { Index } = await import("../src/core/db.js");
+    const { indexDb } = await import("../src/core/paths.js");
+    const idx = await Index.create(indexDb(dir));
+    const row = idx.driver.get<{ started_at: string; ended_at: string | null }>(
+      "SELECT started_at, ended_at FROM sessions WHERE session_id = 's1'",
+    );
+    expect(row?.started_at).toBeTruthy();
+    expect(row?.ended_at).toBeTruthy();
+    idx.close();
   });
 
   test("unknown host rejected", async () => {
@@ -145,6 +159,19 @@ describe("memcore cli", () => {
     expect(usage.code).toBe(2);
     const runtime = await run("import", join(dir, "missing.jsonl"));
     expect(runtime.code).toBe(1);
+  });
+
+  test("import with an invalid --ns is a usage error (exit 2)", async () => {
+    await run("init");
+    const bad = await run("import", join(dir, "missing.jsonl"), "--ns", "../../escape");
+    expect(bad.code).toBe(2);
+  });
+
+  test("--top-k 0 coerces to the default instead of returning nothing", async () => {
+    await run("init");
+    await run("remember", "跨会话记忆系统剪枝策略");
+    const { out } = await run("search", "记忆系统", "--top-k", "0");
+    expect(out).toContain("跨会话记忆系统剪枝策略");
   });
 
   test("help [cmd] prints per-command help", async () => {

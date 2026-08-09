@@ -71,6 +71,39 @@ describe("currentLang", () => {
     expect(currentLang()).toBe("zh");
     expect(t("remember.missing")).toContain("内容");
   });
+
+  test("non-zh non-en locales (fr/de/ja/C) get English, not Chinese", () => {
+    for (const locale of ["fr_FR.UTF-8", "de_DE.UTF-8", "ja_JP.UTF-8", "C.UTF-8"]) {
+      process.env.LANG = locale;
+      expect(currentLang(), locale).toBe("en");
+    }
+  });
+
+  test("MEMCORE_LANG wins over LANG", () => {
+    process.env.LANG = "en_US.UTF-8";
+    process.env.MEMCORE_LANG = "zh";
+    expect(currentLang()).toBe("zh");
+  });
+});
+
+describe("dictionary parity", () => {
+  test("zh and en expose exactly the same key set", async () => {
+    const { langKeys } = await import("../src/cli/i18n.js");
+    expect(langKeys("zh").sort()).toEqual(langKeys("en").sort());
+  });
+
+  test("success messages are localized in both languages", async () => {
+    process.env.MEMCORE_LANG = "en";
+    const en = await capture(["init"]);
+    expect(en.code).toBe(0);
+    expect(en.out).toContain("initialized");
+    expect(en.out).toContain("index backend");
+
+    delete process.env.MEMCORE_LANG;
+    const zh = await capture(["init"]);
+    expect(zh.out).toContain("已初始化");
+    expect(zh.out).toContain("索引后端");
+  });
 });
 
 describe("localized CLI output", () => {
