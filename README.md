@@ -1,89 +1,131 @@
-# memcore
+# memcurio
 
-跨 AI 编码 harness（opencode / codex）的记忆与上下文管理系统。会话内（上下文管理）+ 跨会话（记忆）的全自动闭环，harness 无关、语言无关；核心引擎零运行时依赖（bun 内建 SQLite），仅 MCP server 依赖 @modelcontextprotocol/sdk + zod。
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Bun](https://img.shields.io/badge/bun-%3E%3D1.0.0-black?logo=bun)](https://bun.sh)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-## 安装
+**memcurio** is a harness-agnostic, language-agnostic memory and context management system for AI coding agents. It closes the loop between **within-session context management** and **cross-session memory** — automatically, for any harness (opencode, codex, or anything speaking MCP).
 
-```bash
-bun install        # 安装依赖并自动构建 dist（prepare 脚本）
-bun link           # 全局可用 memcore 命令
-```
+The core engine has **zero runtime dependencies** (bun's built-in SQLite); only the MCP server depends on `@modelcontextprotocol/sdk` + `zod`.
 
-## 快速上手
+## Why memcurio
 
-```bash
-# 1. 初始化（数据在 ~/.memcore，可用 MEMCORE_ROOT 覆盖）
-bun run src/cli/index.ts init
+- **Fully automatic closed loop** — memories are written, retrieved, injected, and reflected back without manual prompt engineering.
+- **Harness-agnostic core** — the engine knows zero harnesses and zero languages; harness/language concerns live only in `src/adapters/` and pluggable backends (retriever, LLM provider).
+- **Markdown as source of truth** — `memory/*.md` is human-readable and directly editable; the SQLite shadow index is a rebuildable derived cache (`reindex` / `repair`).
+- **Safe by default** — promptware-injection sanitization, secret redaction, file permissions `0700/0600`, socket auth, and full audit trail on every write.
+- **Value-aware lifecycle** — pruning with value scoring and pinning, LLM curation (contradiction detection / umbrella merging / re-evaluation), and injection budgets.
 
-# 2. 写入记忆（写入即脱敏密钥、审计注入模式）
-memcore remember "项目 A 使用 SQLite FTS5 trigram 做检索" --ns proj-a
-memcore remember "用户偏好简洁回答" --kind USER
+## Installation
 
-# 3. 检索（建议直接使用内容中的连续片段）
-memcore search "SQLite FTS5 trigram"
-
-# 4. 项目内基线注入（AGENTS.md 记忆区块，读侧自动注入）
-memcore baseline .
-
-# 5. 自检 / 查看状态
-memcore doctor
-memcore status
-```
-
-## 接入 harness
-
-- **opencode**：`bun run bundle:plugin` → 复制 `dist/opencode-memcore-plugin.js` 到 `~/.config/opencode/plugins/`；MCP 配置见 `docs/integration-opencode.md`
-- **codex**：`memcore codex-plugin` 生成插件包（daemon + hook + plugin.json + MCP bundle）；`docs/integration-codex.md`
-- **任何 harness**：AGENTS.md 基线 + MCP stdio（`memcore mcp`）
-
-## 常用运维
+Requires [bun](https://bun.sh) >= 1.0.
 
 ```bash
-memcore prune            # 价值感知剪枝（干跑报告；--execute 生效）
-memcore compact <策略>   # 更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回）
-memcore pin <id>         # 豁免剪枝
-memcore export           # JSONL 备份 / import 恢复 / merge 合并命名空间
-memcore curate           # LLM 策展（需 MEMCORE_LLM_API_KEY；矛盾/伞合并/重评）
-memcore reindex          # md 真源重建索引（保留使用统计）
-memcore repair --execute # 事务异常修复
-memcore audit            # 全部变更留痕
+bun install        # installs deps and builds dist automatically (prepare script)
+bun link           # makes the memcurio command available globally
 ```
 
-## 文档
+## Quick start
 
-| 文档 | 内容 |
+```bash
+# 1. Initialize (data lives in ~/.memcurio, override with MEMCURIO_ROOT)
+memcurio init
+
+# 2. Remember (secrets are redacted on write; audit mode is on by default)
+memcurio remember "Project A uses SQLite FTS5 trigram for retrieval" --ns proj-a
+memcurio remember "User prefers concise answers" --kind USER
+
+# 3. Search (match on contiguous fragments from the content)
+memcurio search "SQLite FTS5 trigram"
+
+# 4. Inject an AGENTS.md memory section into a project (auto-injected on reads)
+memcurio baseline .
+
+# 5. Self-check / status
+memcurio doctor
+memcurio status
+```
+
+## Harness integration
+
+| Harness | How it connects | Details |
+|---|---|---|
+| **opencode** | Single-file plugin | `bun run bundle:plugin` → copy `dist/opencode-memcurio-plugin.js` to `~/.config/opencode/plugins/`; MCP config in [docs/integration-opencode.md](docs/integration-opencode.md) |
+| **codex** | Generated plugin package (daemon + hook + plugin.json + MCP bundle) | `memcurio codex-plugin`; see [docs/integration-codex.md](docs/integration-codex.md) |
+| **Any harness** | AGENTS.md baseline + MCP stdio | `memcurio mcp` |
+
+## CLI reference
+
+```
+memcurio init               Initialize the ~/.memcurio layout
+memcurio status             Show engine status
+memcurio remember <text>    Save a memory [--ns X] [--kind MEMORY|USER]
+memcurio list               List memories [--ns X] [--kind K] [--all]
+memcurio search <query>     Search memories [--ns X] [--kind K] [--top-k N]
+memcurio forget <id>        Delete a memory
+memcurio pin <id>           Pin an entry to skip pruning [--unset]
+memcurio revive <id>        Restore a stale/archived entry to active
+memcurio prune              Value-aware pruning (dry-run; --execute applies) [--ns X]
+memcurio curate             LLM curation dry-run (--execute applies) [--ns X]
+memcurio export             Export JSONL [--ns X] [--kind K] [--output FILE]
+memcurio import <file>      Import JSONL [--ns X]
+memcurio merge <src> <dst>  Merge namespaces (dry-run; --execute applies)
+memcurio baseline [dir]     Inject the AGENTS.md memory section [--top-k N]
+memcurio index              Regenerate the global INDEX.md
+memcurio reindex            Rebuild the shadow index from Markdown source of truth
+memcurio compact <text>     Update the context-compression strategy [--ns X]
+memcurio repair             Detect/fix transaction anomalies (--execute triggers rebuild)
+memcurio doctor             Self-check environment and data health
+memcurio audit              Audit records [--limit N]
+memcurio event              Send a unified event (--json '{...}')
+memcurio mcp                Start the MCP server (stdio)
+memcurio codex-daemon       Start the codex adapter daemon
+memcurio codex-plugin [dir] Generate the codex plugin package
+memcurio help [cmd]         Command help
+```
+
+## Environment variables
+
+| Variable | Description |
 |---|---|
-| `docs/architecture.md` | 当前架构图（分层/数据流/模块地图/存储布局/里程碑） |
-| `docs/memory-harness-design.md` | 原始调研与设计（论文依据、能力矩阵、三功能） |
-| `docs/integration-opencode.md` | opencode 插件接入 |
-| `docs/integration-codex.md` | codex 适配器接入（协议源码核实） |
+| `MEMCURIO_ROOT` | Data root directory (default `~/.memcurio`) |
+| `MEMCURIO_LANG` / `LANG` | CLI language (`zh`/`en`, default `zh`) |
+| `MEMCURIO_LLM_API_KEY` | API key for `curate` and compaction reflection |
+| `MEMCURIO_LLM_BASE_URL` | OpenAI-compatible base URL (default `https://api.openai.com/v1`) |
+| `MEMCURIO_LLM_MODEL` | Reflection/curation model (default `gpt-4o-mini`) |
+| `MEMCURIO_CODEX_SOCKET` | codex daemon socket path (default `<root>/state/codex.sock`) |
+| `MEMCURIO_CODEX_DAEMON` | Daemon entry the hook auto-starts (default `daemon.js` next to the hook) |
+| `MEMCURIO_CODEX_BIN` | `codex` binary used for reflection (default `codex` on PATH) |
+| `MEMCURIO_CODEX_REFLECT` | Set to `0` to disable the codex exec reflection channel |
+| `BUN_BIN` | bun executable path for hooks/generated plugins (auto-detected) |
+| `MEMCURIO_REPLACE_COMPACTION` | opencode plugin: set to `1` to fully replace the compaction prompt (read at startup) |
 
-## 开发
+## i18n and exit codes
+
+- CLI copy supports i18n: Chinese by default (when `LANG` is unset); `MEMCURIO_LANG=zh`/`en` to force, `LANG=zh*` for Chinese, all other locales (en/fr/de/ja…) get English. Injection templates and reflection output are always English; memory content is injected verbatim (never translated or normalized).
+- Exit codes: `0` success · `1` data/runtime error (missing entry, import conflict, pending repairs…) · `2` usage error (unknown command/flag, missing required argument, invalid ns/kind). `doctor` exits `0` when healthy, `1` when it finds problems.
+
+## Documentation
+
+| Doc | Content |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Current architecture (layers / data flow / module map / storage layout / milestones) |
+| [docs/memory-harness-design.md](docs/memory-harness-design.md) | Original research and design (papers, capability matrix, three functions) |
+| [docs/integration-opencode.md](docs/integration-opencode.md) | opencode plugin integration |
+| [docs/integration-codex.md](docs/integration-codex.md) | codex adapter integration (verified against protocol source) |
+| [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
+
+## Development
 
 ```bash
-bun test          # 全部用例（当前 320）
-bun run typecheck # 类型检查（覆盖 src/tests/scripts）
+bun test            # full test suite (bun test, isolated)
+bun run typecheck   # typecheck (covers src/tests/scripts)
+bun run build       # tsc build
 bun run bundle:plugin
 ```
 
-CLI 用户文案支持 i18n：默认中文（无 `LANG` 时）；`MEMCORE_LANG=zh` / `en` 显式指定，`LANG=zh*` 中文、其余语言环境（en/fr/de/ja…）英文；注入模板与反思输出统一为英文，记忆内容按原样注入（不翻译、不统一语言）。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for design principles, code style, testing, and commit conventions.
 
-退出码约定：`0` 成功；`1` 数据/运行时错误（如条目不存在、导入冲突、repair 干跑发现待修复项）；`2` 用法错误（未知命令/选项、缺少必填参数、无效 ns/kind）。`doctor` 健康时 `0`、发现问题时 `1`。
+## License
 
-### 环境变量
-
-| 变量 | 含义 |
-|---|---|
-| `MEMCORE_ROOT` | 数据根目录（默认 `~/.memcore`） |
-| `MEMCORE_LANG` / `LANG` | CLI 文案语言（zh/en，默认 zh） |
-| `MEMCORE_LLM_API_KEY` | curate / 压缩反思的 LLM API Key |
-| `MEMCORE_LLM_BASE_URL` | OpenAI 兼容 base URL（默认 `https://api.openai.com/v1`） |
-| `MEMCORE_LLM_MODEL` | 反思/策展模型（默认 `gpt-4o-mini`） |
-| `MEMCORE_CODEX_SOCKET` | codex daemon socket 路径（默认 `<root>/state/codex.sock`） |
-| `MEMCORE_CODEX_DAEMON` | hook 自拉起的 daemon 入口（默认与 hook 同目录 `daemon.js`） |
-| `MEMCORE_CODEX_BIN` | 反思用的 `codex` 可执行文件（默认 PATH 上的 `codex`） |
-| `MEMCORE_CODEX_REFLECT` | 设为 `0` 禁用 codex exec 反思通道 |
-| `BUN_BIN` | hook/生成插件使用的 bun 可执行文件路径（默认自动探测） |
-| `MEMCORE_REPLACE_COMPACTION` | opencode 插件：设为 `1` 时整体替换压缩提示词（启动时读取，改动需重启 opencode） |
-
-设计原则：接口通用、差异关进实现——引擎认识零种语言、零个 harness；检索后端（trigram/like/embedding）可插拔；语言与 harness 都是被隔离的实现细节。
+[MIT](LICENSE) © memcurio contributors
