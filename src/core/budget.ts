@@ -39,7 +39,11 @@ export function renderBudgetNotice(truncated: number): string {
 
 /** Inject a truncated prefix of an over-budget single line instead of dropping
  *  it entirely (whole-line granularity would otherwise waste the budget). The
- *  returned string never exceeds budgetTokens (the marker cost is reserved). */
+ *  returned string never exceeds budgetTokens (the marker cost is reserved).
+ *  Characters are accumulated one at a time with the per-character cost: an
+ *  average over the whole line (tokens/char) over-approximates how many CJK
+ *  chars fit when the line mixes dense CJK prefixes with ASCII suffixes, which
+ *  would silently blow the budget. */
 function fitPartialLine(line: string, budgetTokens: number): string {
   if (budgetTokens <= 0 || !line) {
     return "";
@@ -49,10 +53,22 @@ function fitPartialLine(line: string, budgetTokens: number): string {
     return line;
   }
   const marker = " …[truncated]";
-  const markerCost = estimateTokens(marker);
-  const tokensPerChar = total / Math.max(1, line.length);
-  const keep = Math.max(1, Math.floor((budgetTokens - markerCost) / tokensPerChar));
-  return line.slice(0, keep) + marker;
+  const maxBodyTokens = budgetTokens - estimateTokens(marker);
+  if (maxBodyTokens < 1) {
+    // The budget cannot hold even one character plus the marker.
+    return "";
+  }
+  let body = "";
+  let used = 0;
+  for (const ch of line) {
+    const cost = CJK.test(ch) ? 1 : 0.25;
+    if (used + cost > maxBodyTokens) {
+      break;
+    }
+    body += ch;
+    used += cost;
+  }
+  return body ? `${body}${marker}` : marker;
 }
 
 export function fitContext(lines: string[], budgetTokens: number): string {
@@ -76,9 +92,23 @@ export function fitContext(lines: string[], budgetTokens: number): string {
   }
   if (body.lines.length === 0 && clean.length > 0 && budgetTokens > 10) {
     // Every line was too big for the budget: keep a partial first line rather
-    // than silently dropping all context.
-    const partial = fitPartialLine(clean[0], Math.max(1, budgetTokens - estimateTokens(notice)));
+    // than silently dropping all context. Reserve the notice and the join
+    // newline so the combined result stays inside the global budget; when the
+    // notice alone already fills the budget, content cannot fit at all.
+    const noticeBudget = estimateTokens(notice);
+    const partialBudget = budgetTokens - noticeBudget - 1;
+    if (partialBudget < 1) {
+      return notice;
+    }
+    const first = clean[0];
+    if (first === undefined) {
+      return notice;
+    }
+    const partial = fitPartialLine(first, partialBudget);
     return [partial, notice].filter((l) => l !== "").join("\n");
   }
-  return [...body.lines, notice].join("\n");
+  // With a very small budget the notice itself may not fit; drop it rather
+  // than exceed the budget (the notice is diagnostic, the content is not).
+  const safeNotice = estimateTokens(notice) <= budgetTokens ? notice : "";
+  return [...body.lines, safeNotice].filter((l) => l !== "").join("\n");
 }

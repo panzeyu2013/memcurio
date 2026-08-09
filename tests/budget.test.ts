@@ -49,7 +49,36 @@ describe("fitLines", () => {
 
 describe("fitContext", () => {
   test("accounts for headers and notices in the same global budget", () => {
-    const rendered = fitContext(["HEADER " + "x".repeat(80), "body " + "y".repeat(200), "tail"], 25);
+    const rendered = fitContext([`HEADER ${"x".repeat(80)}`, `body ${"y".repeat(200)}`, "tail"], 25);
     expect(estimateTokens(rendered)).toBeLessThanOrEqual(25);
+  });
+
+  test("partial line never exceeds the budget even with a dense CJK prefix", () => {
+    // CJK chars cost 1 token each while the ASCII tail costs 0.25: the old
+    // whole-line average estimated too many chars fit and blew the budget.
+    const line = `跨会话记忆系统剪枝策略${"x".repeat(200)}`;
+    for (const budget of [50, 25]) {
+      const rendered = fitContext([line], budget);
+      expect(estimateTokens(rendered), `budget=${budget}`).toBeLessThanOrEqual(budget);
+      expect(rendered, `budget=${budget}`).toContain("truncated");
+    }
+  });
+
+  test("fitContext keeps a partial line when every line is over budget", () => {
+    const rendered = fitContext(["a".repeat(500)], 30);
+    expect(estimateTokens(rendered)).toBeLessThanOrEqual(30);
+    expect(rendered).toContain("[truncated]");
+    expect(rendered).toContain("more not injected");
+  });
+
+  test("tiny budgets fall back to the notice without exceeding the budget", () => {
+    // The truncation notice itself costs ~11 tokens; below that nothing else
+    // can fit, and the output must still stay within the budget.
+    for (const budget of [11, 7, 3, 1]) {
+      const rendered = fitContext([`跨${"x".repeat(100)}`], budget);
+      expect(estimateTokens(rendered), `budget=${budget}`).toBeLessThanOrEqual(budget);
+    }
+    const rendered = fitContext([`跨${"x".repeat(100)}`], 11);
+    expect(rendered).toContain("not injected");
   });
 });
