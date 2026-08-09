@@ -182,16 +182,20 @@ export async function buildCuratePlan(
     return true;
   };
 
-  for (const e of entries) {
-    if (e.useCount >= minUse) {
-      const score = await provider.reevaluate(e);
-      if (score !== null && Math.abs(score - e.valueScore) > 0.05) {
-        plan.reevaluations.push({ entry: e, score });
-      }
+  // Reevaluation calls one LLM request per candidate (each up to 30s), so cap it
+  // at maxChecks candidates ordered by usage — the most-used entries first.
+  const reevalCandidates = entries
+    .filter((e) => e.useCount >= minUse)
+    .sort((a, b) => b.useCount - a.useCount)
+    .slice(0, maxChecks);
+  for (const e of reevalCandidates) {
+    const score = await provider.reevaluate(e);
+    if (score !== null && Math.abs(score - e.valueScore) > 0.05) {
+      plan.reevaluations.push({ entry: e, score });
     }
   }
 
-  for (let i = 0; i < entries.length; i++) {
+  outer: for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
       const a = entries[i];
       const b = entries[j];
@@ -201,7 +205,7 @@ export async function buildCuratePlan(
       const overlap = bigramOverlap(a.content, b.content);
       if (overlap >= 0.85) {
         if (!nextCheck()) {
-          continue;
+          break outer;
         }
         const content = await provider.suggestUmbrella([a, b]);
         if (content) {
@@ -209,7 +213,7 @@ export async function buildCuratePlan(
         }
       } else if (overlap >= minOverlap) {
         if (!nextCheck()) {
-          continue;
+          break outer;
         }
         const verdict = await provider.checkContradiction(a, b);
         if (verdict.reason === "__unparsable__") {

@@ -29,4 +29,11 @@ describe("parseEnvelope", () => {
   test("wraps JSON parse errors with context", () => {
     expect(() => parseEnvelope("{bad")).toThrow(/invalid envelope JSON/);
   });
+
+  test("non-object JSON is rejected cleanly", () => {
+    expect(() => parseEnvelope("null")).toThrow(/invalid envelope JSON/);
+    expect(() => parseEnvelope("123")).toThrow(/invalid envelope JSON/);
+    expect(() => parseEnvelope('["a"]')).toThrow(/invalid envelope JSON/);
+    expect(() => parseEnvelope('"str"')).toThrow(/invalid envelope JSON/);
+  });
 });

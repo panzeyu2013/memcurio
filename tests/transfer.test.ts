@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { indexDb, nsDir } from "../src/core/paths.js";
@@ -98,6 +99,7 @@ describe("planMerge", () => {
 
 let dir: string;
 let prevRoot: string | undefined;
+let prevLang: string | undefined;
 
 function dirPath(): string {
   return dir;
@@ -107,6 +109,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "xf-"));
   prevRoot = process.env.MEMCORE_ROOT;
   process.env.MEMCORE_ROOT = dir;
+  prevLang = process.env.MEMCORE_LANG;
+  process.env.MEMCORE_LANG = "en";
 });
 
 afterEach(() => {
@@ -115,22 +119,17 @@ afterEach(() => {
   } else {
     process.env.MEMCORE_ROOT = prevRoot;
   }
+  if (prevLang === undefined) {
+    delete process.env.MEMCORE_LANG;
+  } else {
+    process.env.MEMCORE_LANG = prevLang;
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
-  const lines: string[] = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  try {
-    const code = await main(argv);
-    return { code, out: lines.join("\n") };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
-  }
+  const r = await runCli(...argv);
+  return { code: r.code, out: r.out + "\n" + r.err };
 }
 
 describe("export / import / merge cli", () => {

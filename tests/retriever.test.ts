@@ -120,6 +120,12 @@ describe("buildFtsQuery", () => {
     expect(q).not.toContain('"应该怎"');
   });
 
+  test("a window that is only a stopword prefix survives when content remains", () => {
+    // Regression: "怎么设计" must not be dropped, or every 4-char question
+    // starting with a stopword silently degrades to the LIKE path.
+    expect(buildFtsQuery("怎么设计")).toContain('"怎么设计"');
+  });
+
   test("caps terms at 12", () => {
     const words = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未".repeat(3);
     const q = buildFtsQuery(words);

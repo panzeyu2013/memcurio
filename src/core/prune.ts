@@ -16,7 +16,11 @@ export interface Transition {
 }
 
 function daysBetween(now: Date, d: Date): number {
-  return (now.getTime() - d.getTime()) / 86_400_000;
+  const t = d.getTime();
+  if (Number.isNaN(t)) {
+    return Infinity;
+  }
+  return (now.getTime() - t) / 86_400_000;
 }
 
 export function computeTransitions(entries: Entry[], now: Date, cfg: PruneConfig): Transition[] {

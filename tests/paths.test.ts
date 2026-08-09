@@ -32,15 +32,24 @@ describe("assertValidNs", () => {
 });
 
 describe("namespaceFor", () => {
-  test("maps workdir basename to a slug", () => {
-    expect(namespaceFor("/tmp/My Project")).toBe("My-Project");
+  test("maps workdir to a slug+hash namespace", () => {
+    const ns1 = namespaceFor("/tmp/My Project");
+    expect(ns1).toMatch(/^My-Project-[0-9a-f]{12}$/);
     expect(namespaceFor("")).toBe("default");
     expect(namespaceFor("/tmp/.hidden")).toBe("default");
   });
 
-  test("truncates long names to 40 chars", () => {
+  test("same basename in different parents never collides", () => {
+    const a = namespaceFor("/work/a/proj");
+    const b = namespaceFor("/work/b/proj");
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^proj-[0-9a-f]{12}$/);
+    expect(b).toMatch(/^proj-[0-9a-f]{12}$/);
+  });
+
+  test("caps slug and hash to 37 chars", () => {
     const ns = namespaceFor(`/tmp/${"a".repeat(50)}`);
-    expect(ns.length).toBe(40);
+    expect(ns.length).toBe(37);
   });
 });
 

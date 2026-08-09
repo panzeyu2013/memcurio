@@ -22,10 +22,6 @@ export interface Retriever {
   search(params: SearchParams): Hit[];
 }
 
-function escapeFts(q: string): string {
-  return q.replaceAll('"', '""');
-}
-
 const STOPWORDS = new Set([
   "如何", "怎么", "什么", "为什么", "请问", "一下", "这个", "那个", "我们", "你们", "他们",
   "是否", "需要", "可以", "进行", "关于", "或者", "以及", "不是", "没有", "应该", "能够",
@@ -43,7 +39,13 @@ function cjkWindows(word: string): string[] {
 }
 
 function stopwordDominated(window: string): boolean {
-  return STOPWORD_LIST.some((s) => window === s || window.startsWith(s));
+  for (const s of STOPWORD_LIST) {
+    if (window.startsWith(s)) {
+      // Drop the window only when the stopword leaves no meaningful content.
+      return window.slice(s.length).trim().length < 2;
+    }
+  }
+  return false;
 }
 
 export function buildFtsQuery(query: string): string {
@@ -71,7 +73,7 @@ export function buildFtsQuery(query: string): string {
   if (!list.length) {
     return "";
   }
-  return list.map((t) => `"${escapeFts(t)}"`).join(" OR ");
+  return list.map((t) => `"${t}"`).join(" OR ");
 }
 
 export class TrigramRetriever implements Retriever {
@@ -131,10 +133,13 @@ export class LikeRetriever implements Retriever {
     if (!q) {
       return [];
     }
+    // Case-insensitive substring match, bounded: scan at most 4× topK rows,
+    // then rank the survivors in memory.
     const sql =
-      "SELECT entry_id, ns, kind, content FROM entries WHERE status NOT IN ('deleted', 'archived') AND instr(content, ?) > 0" +
+      "SELECT entry_id, ns, kind, content FROM entries WHERE status NOT IN ('deleted', 'archived') AND instr(lower(content), lower(?)) > 0" +
       (ns ? " AND ns = ?" : "") +
-      (kinds?.length ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "");
+      (kinds?.length ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "") +
+      " LIMIT ?";
     const args: unknown[] = [q];
     if (ns) {
       args.push(ns);
@@ -142,10 +147,12 @@ export class LikeRetriever implements Retriever {
     if (kinds?.length) {
       args.push(...kinds);
     }
+    args.push(Math.max(1, topK * 4));
+    const needle = q.toLowerCase();
     const hits: Hit[] = [];
     for (const r of this.index.rawAll<Record<string, unknown>>(sql, args)) {
       const content = String(r.content);
-      const occurrences = content.split(q).length - 1;
+      const occurrences = content.toLowerCase().split(needle).length - 1;
       hits.push({
         entryId: String(r.entry_id),
         content,

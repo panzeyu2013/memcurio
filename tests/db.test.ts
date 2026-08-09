@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Index } from "../src/core/db.js";
 import { openDb } from "../src/core/sqlite.js";
+import { getRetriever } from "../src/core/retriever.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -133,19 +134,98 @@ describe("Index", () => {
     idx.close();
   });
 
-  test("fts backfill repairs a silently empty fts table", async () => {
+  test("fts mirror stays consistent after a silently empty table", async () => {
     const idx = await Index.create(dbPath);
-    if (idx.backend !== "trigram") {
-      idx.close();
-      return;
-    }
     idx.add(makeEntry());
-    idx.driver.run("DELETE FROM fts");
+    if (idx.backend === "trigram") {
+      idx.driver.run("DELETE FROM fts");
+    }
     idx.close();
     const idx2 = await Index.create(dbPath);
-    const row = idx2.driver.get<{ c: number }>("SELECT count(*) AS c FROM fts");
-    expect(row?.c).toBe(1);
+    // Must hold on both backends: the observable contract is that search
+    // still finds the entry after the mirror was emptied.
+    const hits = getRetriever(idx2).search({ query: "记忆系统", topK: 5 });
+    expect(hits.some((h) => h.entryId === "a1b2c3d4")).toBe(true);
     idx2.close();
+  });
+
+  test("touch never lowers a curated value_score", async () => {
+    const idx = await Index.create(dbPath);
+    // LLM curated the entry up to 1.9; a low-use touch formula (1.05) must not
+    // drag it back down.
+    idx.add(makeEntry({ valueScore: 1.9 }));
+    idx.touch(["a1b2c3d4"]);
+    const e = idx.get("a1b2c3d4");
+    expect(e?.useCount).toBe(1);
+    expect(e?.valueScore).toBe(1.9);
+    idx.close();
+  });
+
+  test("top orders by value score with stale penalty and respects limit", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry({ entryId: "aa000001", valueScore: 1.0 }));
+    idx.add(makeEntry({ entryId: "bb000002", valueScore: 1.5 }));
+    idx.add(makeEntry({ entryId: "cc000003", valueScore: 1.8, status: "stale" }));
+    idx.add(makeEntry({ entryId: "dd000004", valueScore: 2.0, status: "archived" }));
+    idx.add(makeEntry({ entryId: "ee000005", valueScore: 2.0, status: "deleted" }));
+    const top = idx.top({ limit: 2 });
+    // stale 1.8*0.5=0.9 loses to active 1.5; archived/deleted excluded.
+    expect(top.map((e) => e.entryId)).toEqual(["bb000002", "aa000001"]);
+    const withArchived = idx.top({ limit: 10, includeArchived: true });
+    expect(withArchived.map((e) => e.entryId)).toContain("dd000004");
+    expect(withArchived.map((e) => e.entryId)).not.toContain("ee000005");
+    const onlyKinds = idx.top({ limit: 10, kinds: ["MEMORY"] });
+    expect(onlyKinds.every((e) => e.kind === "MEMORY")).toBe(true);
+    idx.close();
+  });
+
+  test("migrates v1 schema to v2 (entries.pinned)", async () => {
+    const driver = await openDb(dbPath);
+    driver.exec(`
+      CREATE TABLE entries(entry_id TEXT PRIMARY KEY, ns TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, use_count INTEGER NOT NULL DEFAULT 0, value_score REAL NOT NULL DEFAULT 1.0, status TEXT NOT NULL DEFAULT 'active');
+      CREATE TABLE sessions(session_id TEXT PRIMARY KEY, host TEXT NOT NULL, workdir TEXT, started_at TEXT NOT NULL, ended_at TEXT, summary TEXT);
+      CREATE TABLE contradictions(entry_a TEXT, entry_b TEXT, detected_at TEXT, resolved INTEGER DEFAULT 0);
+      CREATE TABLE audit(ts TEXT, action TEXT, ns TEXT, detail TEXT);
+      CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+    `);
+    driver.close();
+    const idx = await Index.create(dbPath);
+    const cols = idx.driver.all<{ name: string }>("PRAGMA table_info(entries)");
+    expect(cols.some((c) => c.name === "pinned")).toBe(true);
+    const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+    expect(v?.value).toBe("3");
+    idx.close();
+  });
+
+  test("a corrupt schema_version falls back to v1 and is healed", async () => {
+    const driver = await openDb(dbPath);
+    driver.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta(key, value) VALUES ('schema_version', 'NaN')");
+    driver.close();
+    const idx = await Index.create(dbPath);
+    const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+    expect(v?.value).toBe("3");
+    idx.close();
+  });
+
+  test("closeAllSessions closes every open row", async () => {
+    const idx = await Index.create(dbPath);
+    idx.recordSession("s1", "codex", "/tmp/a", "2026-08-08T00:00:00.000Z");
+    idx.recordSession("s2", "codex", "/tmp/b", "2026-08-08T00:00:00.000Z");
+    idx.closeAllSessions("2026-08-08T02:00:00.000Z");
+    const open = idx.driver.all<{ session_id: string }>("SELECT session_id FROM sessions WHERE ended_at IS NULL");
+    expect(open).toHaveLength(0);
+    idx.close();
+  });
+
+  test("rebuild keeps first of duplicate entryIds and audits the warning", async () => {
+    const idx = await Index.create(dbPath);
+    idx.rebuild([makeEntry({ entryId: "dup00001", content: "first copy" }), makeEntry({ entryId: "dup00001", content: "second copy" })]);
+    const e = idx.get("dup00001");
+    expect(e?.content).toBe("first copy");
+    const audits = idx.auditRecent(5).map((r) => String(r.action));
+    expect(audits).toContain("warn.duplicate");
+    idx.close();
   });
 
   test("counts groups by ns and status", async () => {

@@ -95,36 +95,47 @@ const ENTRY_COLS = "entry_id, ns, kind, content, created_at, last_used_at, use_c
 
 export class Index {
   readonly backend: "trigram" | "like";
+  /** Exposed for tests and direct SQL access; treat as internal otherwise. */
+  readonly driver: DbDriver;
   private constructor(
-    private readonly driver: DbDriver,
+    driver: DbDriver,
     readonly path: string,
     backend: "trigram" | "like",
   ) {
+    this.driver = driver;
     this.backend = backend;
   }
 
   static async create(path: string): Promise<Index> {
     const driver = await openDb(path);
-    driver.exec(BASE);
-    migrate(driver);
-    let backend: "trigram" | "like" = "trigram";
     try {
-      driver.exec(FTS_TRIGRAM);
-    } catch {
-      backend = "like";
-    }
-    if (backend === "trigram") {
+      driver.exec(BASE);
+      migrate(driver);
+      let backend: "trigram" | "like" = "trigram";
       try {
-        driver.run(
-          "INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries WHERE NOT EXISTS (SELECT 1 FROM fts f WHERE f.entry_id = entries.entry_id)",
-        );
-        driver.get("SELECT count(*) AS c FROM fts");
+        driver.exec(FTS_TRIGRAM);
       } catch {
         backend = "like";
       }
+      if (backend === "trigram") {
+        try {
+          // Backfill only when the FTS mirror is empty: triggers keep it in sync,
+          // and this correlated-subquery scan is O(n²) on a full table.
+          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts");
+          if ((ftsCount?.c ?? 0) === 0) {
+            driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+          }
+          driver.get("SELECT count(*) AS c FROM fts");
+        } catch {
+          backend = "like";
+        }
+      }
+      driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_backend', ?)", [backend]);
+      return new Index(driver, path, backend);
+    } catch (err) {
+      driver.close();
+      throw err;
     }
-    driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_backend', ?)", [backend]);
-    return new Index(driver, path, backend);
   }
 
   private inTxn = false;
@@ -225,7 +236,7 @@ export class Index {
     const ts = new Date().toISOString();
     const placeholders = ids.map(() => "?").join(",");
     this.driver.run(
-      `UPDATE entries SET value_score = 1 + 0.05 * min(use_count + 1, 20), use_count = use_count + 1, last_used_at = ? WHERE entry_id IN (${placeholders})`,
+      `UPDATE entries SET value_score = max(value_score, 1 + 0.05 * min(use_count + 1, 20)), use_count = use_count + 1, last_used_at = ? WHERE entry_id IN (${placeholders})`,
       [ts, ...ids],
     );
   }
@@ -249,9 +260,23 @@ export class Index {
         .all<EntryRow>(`SELECT ${ENTRY_COLS} FROM entries`)
         .map((r) => [r.entry_id, rowToEntry(r)]),
     );
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    const unique: Entry[] = [];
+    for (const e of entries) {
+      if (seen.has(e.entryId)) {
+        duplicates.add(e.entryId);
+        continue;
+      }
+      seen.add(e.entryId);
+      unique.push(e);
+    }
+    if (duplicates.size) {
+      this.audit("warn.duplicate", "-", `duplicate entryId across md files, kept first: ${[...duplicates].join(",")}`);
+    }
     this.withTransaction(() => {
       this.driver.run("DELETE FROM entries");
-      for (const e of entries) {
+      for (const e of unique) {
         const prev = existing.get(e.entryId);
         this.add(
           prev
@@ -265,6 +290,11 @@ export class Index {
         );
       }
     });
+  }
+
+  /** Close any session rows left open by a crashed/terminated daemon process. */
+  closeAllSessions(ts: string): void {
+    this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL", [ts]);
   }
 
   recordSession(sessionId: string, host: string, workdir: string, ts: string): void {
@@ -295,10 +325,6 @@ export class Index {
     return this.driver.all<T>(sql, params);
   }
 
-  rawGet<T = SqlRow>(sql: string, params?: unknown[]): T | undefined {
-    return this.driver.get<T>(sql, params);
-  }
-
   audit(action: string, ns: string, detail: string): void {
     this.driver.run("INSERT INTO audit(ts, action, ns, detail) VALUES (?,?,?,?)", [
       new Date().toISOString(),
@@ -327,7 +353,7 @@ export class Index {
 
 function migrate(driver: DbDriver): void {
   const version = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
-  let current = version ? Number(version) : 1;
+  let current = typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1;
   if (current < 2) {
     const cols = driver.all<{ name: string }>("PRAGMA table_info(entries)");
     if (!cols.some((c) => c.name === "pinned")) {
@@ -346,7 +372,7 @@ function migrate(driver: DbDriver): void {
     driver.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b)");
     current = 3;
   }
-  if (current !== Number(version ?? 1)) {
+  if (current !== (typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1)) {
     driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", [String(current)]);
   }
 }

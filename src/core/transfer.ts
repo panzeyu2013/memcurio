@@ -114,12 +114,11 @@ export interface ImportPlan {
 
 export function planImport(parsed: Entry[], idx: Index, nsOverride?: string): ImportPlan {
   const plan: ImportPlan = { added: [], skippedExisting: 0, skippedDuplicate: 0, conflicts: [] };
+  // Only load content for namespaces that the import actually touches.
   const contentByNs = new Map<string, Set<string>>();
-  for (const e of idx.list({ allStatus: true })) {
-    if (!contentByNs.has(e.ns)) {
-      contentByNs.set(e.ns, new Set());
-    }
-    contentByNs.get(e.ns)!.add(e.content);
+  const relevantNs = new Set(parsed.map((e) => (nsOverride ? assertValidNs(nsOverride) : e.ns)));
+  for (const ns of relevantNs) {
+    contentByNs.set(ns, new Set(idx.list({ ns, allStatus: true }).map((e) => e.content)));
   }
   for (const e of parsed) {
     const ns = nsOverride ? assertValidNs(nsOverride) : e.ns;

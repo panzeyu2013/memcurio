@@ -1,9 +1,11 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 export function rootDir(): string {
-  return process.env.MEMCORE_ROOT ?? join(homedir(), ".memcore");
+  const env = process.env.MEMCORE_ROOT;
+  return env && env.trim() ? env.trim() : join(homedir(), ".memcore");
 }
 
 export function ensureLayout(root: string): void {
@@ -76,9 +78,14 @@ export function namespaceFor(workdir: string): string {
   if (!workdir) {
     return "default";
   }
-  const name = workdir.split("/").filter(Boolean).at(-1) ?? workdir;
-  const slug = name.replace(/[^A-Za-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "");
-  const ns = slug.slice(0, 40) || "default";
+  // Basename-only slugs collide across parents (/work/a/proj vs /work/b/proj).
+  // Use a readable basename slug + a short hash of the full resolved path so
+  // different projects never silently share a namespace.
+  const resolved = resolve(workdir);
+  const name = resolved.split("/").filter(Boolean).at(-1) ?? resolved;
+  const slug = name.replace(/[^A-Za-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+  const hash = createHash("sha1").update(resolved).digest("hex").slice(0, 12);
+  const ns = `${slug || "ns"}-${hash}`;
   if (ns === "." || ns === ".." || ns.startsWith(".") || ns.endsWith(".")) {
     return "default";
   }

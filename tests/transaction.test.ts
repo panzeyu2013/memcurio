@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, atomicWrite, isStaleLock, rotateLog } from "../src/core/transaction.js";
+import { Transaction, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
@@ -57,6 +57,41 @@ describe("Transaction", () => {
     appendRaw(log, JSON.stringify({ op: "BEGIN", txn: "orphan2", action: "a", ns: "default", detail: "x", ts: "2026-01-01T00:00:02.000Z" }));
     expect(txn.pending().map((r) => r.txn)).toEqual(["orphan2"]);
   });
+
+  test("torn lines are counted as corrupt, not reported as pending", () => {
+    const txn = new Transaction(log);
+    txn.run("remember", "default", "abc", () => {});
+    appendRaw(log, '{"op":"BEGIN","txn":"orphan1","ts":"2026-01-01T00:00:00.000Z"}');
+    appendRaw(log, '{"op":"BEGIN","txn":"torn'); // truncated write
+    expect(txn.pending().map((r) => r.txn)).toEqual(["orphan1"]);
+    expect(txn.corruptLines()).toBe(1);
+  });
+
+  test("truncateLog clears records but never a live append", () => {
+    const txn = new Transaction(log);
+    txn.run("remember", "default", "abc", () => {});
+    truncateLog(log);
+    expect(readRecords(log)).toHaveLength(0);
+    // Appends after truncation are still recorded and visible.
+    txn.run("remember", "default", "def", () => {});
+    expect(txn.pending()).toHaveLength(0);
+    expect(readRecords(log).map((r) => r.op)).toEqual(["BEGIN", "COMMIT"]);
+  });
+
+  test("withFileLock serializes concurrent critical sections via the same lock", () => {
+    const lockPath = join(dir, "locks", "x.lock");
+    const seen: number[] = [];
+    const worker = (i: number): void => {
+      withFileLock(lockPath, () => {
+        const before = seen.length;
+        seen.push(i);
+        expect(seen.length).toBe(before + 1);
+      });
+    };
+    worker(1);
+    worker(2);
+    expect(seen).toEqual([1, 2]);
+  });
 });
 
 describe("isStaleLock", () => {
@@ -83,6 +118,13 @@ describe("isStaleLock", () => {
   test("lock held by a live pid is not stale", () => {
     const lock = join(dir, "x.lock");
     writeFileSync(lock, `${process.pid}|${Date.now()}`);
+    expect(isStaleLock(lock)).toBe(false);
+  });
+
+  test("lock held by a live pid is never stolen, regardless of age", () => {
+    const lock = join(dir, "x.lock");
+    // Same live pid with a very old timestamp: the holder may simply be slow.
+    writeFileSync(lock, `${process.pid}|2020-01-01T00:00:00.000Z`);
     expect(isStaleLock(lock)).toBe(false);
   });
 });

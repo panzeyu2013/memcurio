@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import { loadConfig } from "./config.js";
 import { fitLines, renderBudgetNotice } from "./budget.js";
+import type { FitResult } from "./budget.js";
 import { Index } from "./db.js";
 import type { Entry } from "./mdStore.js";
 import { indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "./paths.js";
@@ -56,13 +57,17 @@ export async function renderIndexMarkdown(idx: Index): Promise<string> {
   return lines.join("\n");
 }
 
+export function baselineEntryLines(topEntries: Entry[], maxTokens: number): FitResult {
+  return fitLines(
+    topEntries.filter((e) => sanitizeForInjection(e.content).safe).map(entryLine),
+    maxTokens,
+  );
+}
+
 export function renderBaselineSection(ns: string, topEntries: Entry[], maxTokens?: number): string {
   const root = rootDir();
-  const lines = topEntries
-    .filter((e) => sanitizeForInjection(e.content).safe)
-    .map(entryLine);
-  const fitted = fitLines(lines, maxTokens ?? 1500);
-  const body = [
+  const fitted: FitResult = baselineEntryLines(topEntries, maxTokens ?? 1500);
+  const lines = [
     START_MARKER,
     "## Memory system (memcore)",
     "",
@@ -80,7 +85,7 @@ export function renderBaselineSection(ns: string, topEntries: Entry[], maxTokens
     "Memory tools (MCP): memory_search / memory_remember / memory_forget / memory_status.",
     END_MARKER,
   ];
-  return body.filter((l) => l !== "").join("\n") + "\n";
+  return lines.filter((l) => l !== "").join("\n") + "\n";
 }
 
 export function updateAgentsMd(workdir: string, section: string): void {
@@ -97,6 +102,9 @@ export function updateAgentsMd(workdir: string, section: string): void {
     const end = existing.indexOf(END_MARKER);
     let next: string;
     if (start >= 0 && end >= 0) {
+      if (end < start) {
+        throw new Error("AGENTS.md contains mismatched memcore markers (END before START)");
+      }
       next = existing.slice(0, start) + section + existing.slice(end + END_MARKER.length).replace(/^\n/, "");
     } else if (start >= 0 || end >= 0) {
       throw new Error("AGENTS.md contains unmatched memcore marker");
@@ -129,8 +137,7 @@ export async function injectBaseline(workdir: string, topN?: number): Promise<nu
     const n = topN ?? config.budget.topKStatic;
     const top = selectStatic(idx, { ns, kinds: ["MEMORY", "USER"], topN: n });
     const blocked = top.filter((e) => !sanitizeForInjection(e.content).safe).length;
-    const safe = top.filter((e) => sanitizeForInjection(e.content).safe);
-    const fitted = fitLines(safe.map(entryLine), config.budget.maxInjectTokens);
+    const fitted = baselineEntryLines(top, config.budget.maxInjectTokens);
     updateAgentsMd(workdir, renderBaselineSection(ns, top, config.budget.maxInjectTokens));
     idx.audit("baseline", ns, `${workdir} -> ${fitted.lines.length} injected of ${top.length}${blocked ? ` (${blocked} blocked by injection scan)` : ""}`);
     return fitted.lines.length;

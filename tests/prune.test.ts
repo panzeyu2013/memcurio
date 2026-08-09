@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
 import { addEntry } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
@@ -69,6 +70,14 @@ describe("computeTransitions", () => {
     expect(computeTransitions([e1, e2], NOW, CFG)).toHaveLength(0);
   });
 
+  test("invalid dates are treated as prune-eligible, not stuck forever", () => {
+    const e = makeEntry({ createdAt: "garbage-date", lastUsedAt: "garbage-date" });
+    const t = computeTransitions([e], NOW, CFG);
+    expect(t).toHaveLength(1);
+    expect(t[0].from).toBe("active");
+    expect(t[0].to).toBe("stale");
+  });
+
   test("formatTransition renders report line", () => {
     const t = computeTransitions([makeEntry()], NOW, CFG)[0];
     expect(formatTransition(t)).toContain("-> stale");
@@ -95,18 +104,8 @@ afterEach(() => {
 });
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
-  const lines: string[] = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  try {
-    const code = await main(argv);
-    return { code, out: lines.join("\n") };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
-  }
+  const r = await runCli(...argv);
+  return { code: r.code, out: r.out + "\n" + r.err };
 }
 
 async function seedOldEntry(entry: Entry): Promise<void> {

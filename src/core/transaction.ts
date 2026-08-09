@@ -1,13 +1,17 @@
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 export const LOCK_TIMEOUT_MS = 5_000;
 export const STALE_LOCK_MS = 60_000;
 
+function logLockPath(logPath: string): string {
+  return `${logPath}.lock`;
+}
+
 export function atomicWrite(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}.md`);
+  const tmp = join(dirname(path), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}${extname(path) || ".md"}`);
   let mode = 0o600;
   try {
     mode = statSync(path).mode & 0o777;
@@ -118,17 +122,16 @@ export function isStaleLock(lockPath: string): boolean {
     }
     return true;
   }
-  const ts = Number(parts[1]);
-  if (!Number.isFinite(ts)) {
-    return false;
-  }
-  return Date.now() - ts > STALE_LOCK_MS;
+  // The holder process is alive: never steal its lock, no matter how old it is.
+  return false;
 }
 
 export function truncateLog(logPath: string): void {
   mkdirSync(dirname(logPath), { recursive: true });
-  rotateLog(logPath);
-  writeFileSync(logPath, "");
+  withFileLock(logLockPath(logPath), () => {
+    rotateLog(logPath);
+    writeFileSync(logPath, "");
+  });
 }
 
 export function rotateLog(logPath: string, maxBytes = 1_048_576): void {
@@ -158,7 +161,9 @@ export class Transaction {
 
   private append(record: TxnRecord): void {
     mkdirSync(dirname(this.logPath), { recursive: true });
-    appendFileSync(this.logPath, JSON.stringify(record) + "\n", { encoding: "utf-8", mode: 0o600 });
+    withFileLock(logLockPath(this.logPath), () => {
+      appendFileSync(this.logPath, JSON.stringify(record) + "\n", { encoding: "utf-8", mode: 0o600 });
+    });
   }
 
   run(action: string, ns: string, detail: string, work: () => void): void {
@@ -175,19 +180,25 @@ export class Transaction {
   }
 
   pending(): TxnRecord[] {
-    const records = this.readAll();
+    const { records } = this.readAll();
     const begins = records.filter((r) => r.op === "BEGIN");
     const closed = new Set(records.filter((r) => r.op === "COMMIT" || r.op === "ROLLBACK").map((r) => r.txn));
     return begins.filter((r) => !closed.has(r.txn));
   }
 
-  private readAll(): TxnRecord[] {
+  /** Number of unparsable (torn/corrupt) lines across the log and rotated logs. */
+  corruptLines(): number {
+    return this.readAll().corrupt;
+  }
+
+  private readAll(): { records: TxnRecord[]; corrupt: number } {
     const records: TxnRecord[] = [];
+    let corrupt = 0;
     let names: string[] = [];
     try {
       const base = basename(this.logPath);
       names = readdirSync(dirname(this.logPath))
-        .filter((n) => n === base || n.startsWith(`${base}.`))
+        .filter((n) => !n.endsWith(".lock") && (n === base || n.startsWith(`${base}.`)))
         .sort();
     } catch {
       names = [];
@@ -195,21 +206,20 @@ export class Transaction {
     for (const name of names) {
       try {
         const text = readFileSync(join(dirname(this.logPath), name), "utf-8");
-        text
-          .split("\n")
-          .filter((l) => l.trim())
-          .map((l, i) => {
-            try {
-              return JSON.parse(l) as TxnRecord;
-            } catch {
-              return { op: "BEGIN", txn: `unparsable-line-${i}`, ts: "" } as TxnRecord;
-            }
-          })
-          .forEach((r) => records.push(r));
+        for (const line of text.split("\n")) {
+          if (!line.trim()) {
+            continue;
+          }
+          try {
+            records.push(JSON.parse(line) as TxnRecord);
+          } catch {
+            corrupt += 1;
+          }
+        }
       } catch {
         void 0;
       }
     }
-    return records;
+    return { records, corrupt };
   }
 }

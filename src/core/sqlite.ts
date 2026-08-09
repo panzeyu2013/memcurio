@@ -35,8 +35,9 @@ class BunDriver implements DbDriver {
   constructor(db: BunDatabase) {
     this.db = db;
     this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec("PRAGMA busy_timeout = 20000");
     this.db.exec("PRAGMA synchronous = NORMAL");
+    this.db.exec("PRAGMA journal_size_limit = 67108864");
   }
 
   run(sql: string, params: unknown[] = []): void {
@@ -67,8 +68,9 @@ class NodeDriver implements DbDriver {
   constructor(db: NodeDatabase) {
     this.db = db;
     this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 5000");
+    this.db.exec("PRAGMA busy_timeout = 20000");
     this.db.exec("PRAGMA synchronous = NORMAL");
+    this.db.exec("PRAGMA journal_size_limit = 67108864");
   }
 
   run(sql: string, params: unknown[] = []): void {

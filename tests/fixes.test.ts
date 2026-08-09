@@ -8,7 +8,7 @@ import { createServer } from "../src/mcp/index.js";
 import { Index } from "../src/core/db.js";
 import { addEntry, parseFile } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
-import { assertValidNs, indexDb, nsDir } from "../src/core/paths.js";
+import { assertValidNs, indexDb, namespaceFor, nsDir } from "../src/core/paths.js";
 import { scanInjection, sanitizeForInjection } from "../src/core/sanitize.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
@@ -223,6 +223,20 @@ describe("A2 reindex 保留统计 / repair", () => {
     expect((await run("search", "第一条")).out).toContain("第一条");
   });
 
+  test("repair 报告损坏事务行", async () => {
+    await run("init");
+    const { Transaction } = await import("../src/core/transaction.js");
+    const { txnLog } = await import("../src/core/paths.js");
+    const { appendFileSync } = await import("node:fs");
+    const logPath = txnLog(dir);
+    appendFileSync(logPath, '{"op":"BEGIN","txn":"torn' + "\n");
+    const txn = new Transaction(logPath);
+    expect(txn.pending()).toHaveLength(0);
+    expect(txn.corruptLines()).toBe(1);
+    const report = await run("repair");
+    expect(report.out).toContain("无法解析");
+  });
+
   test("repair --execute 清理事务日志", async () => {
     await run("init");
     const { Transaction } = await import("../src/core/transaction.js");
@@ -286,11 +300,12 @@ describe("A6 archived 排除（静态注入）", () => {
     await run("init");
     const { MemcoreAdapter } = await import("../src/adapters/shared/engine.js");
     const { addEntry } = await import("../src/core/mdStore.js");
+    const projNs = namespaceFor("/tmp/ProjA");
     const idx = await Index.create(indexDb(dir));
-    addEntry(nsDir(dir, "ProjA"), makeEntry({ ns: "ProjA", entryId: "e5f6a7b8", status: "archived", content: "已退役记忆" }));
-    idx.add(makeEntry({ ns: "ProjA", entryId: "e5f6a7b8", status: "archived", content: "已退役记忆" }));
-    addEntry(nsDir(dir, "ProjA"), makeEntry({ ns: "ProjA", content: "活跃记忆" }));
-    idx.add(makeEntry({ ns: "ProjA", content: "活跃记忆" }));
+    addEntry(nsDir(dir, projNs), makeEntry({ ns: projNs, entryId: "e5f6a7b8", status: "archived", content: "已退役记忆" }));
+    idx.add(makeEntry({ ns: projNs, entryId: "e5f6a7b8", status: "archived", content: "已退役记忆" }));
+    addEntry(nsDir(dir, projNs), makeEntry({ ns: projNs, content: "活跃记忆" }));
+    idx.add(makeEntry({ ns: projNs, content: "活跃记忆" }));
     idx.close();
     const adapter = new MemcoreAdapter();
     const ctx = await adapter.buildStaticContext("/tmp/ProjA");
@@ -356,7 +371,7 @@ describe("C3 import 内容去重", () => {
     await run("forget", (await run("list")).out.split("\n")[0].split(" ")[0]);
     await run("import", backup);
     const again = await run("import", backup);
-    expect(again.out).toContain("0 entries");
+    expect(again.out).toContain("0 条");
     const { out } = await run("search", "唯一内容条目");
     expect(out.split("\n").filter((l) => l.includes("MEMORY")).length).toBe(1);
   });

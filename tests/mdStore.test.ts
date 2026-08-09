@@ -115,6 +115,53 @@ describe("addEntry / updateEntries", () => {
     const parsed = parseFile(readFileSync(kindFile(dir, "MEMORY"), "utf-8"), "default");
     expect(parsed.map((e) => e.entryId)).toEqual(["a1b2c3d4"]);
   });
+
+  test("updateKind preserves hand-written prose outside the § blocks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const path = kindFile(dir, "MEMORY");
+    const handwritten = [
+      "# 我的项目笔记",
+      "",
+      "这是手写说明，不应被工具删除。",
+      "",
+      renderEntry(makeEntry()).trimEnd(),
+      "",
+      "尾部备注：保留。",
+    ].join("\n") + "\n";
+    writeFileSync(path, handwritten);
+    updateKind(dir, "MEMORY", (entries) => entries.map((e) => ({ ...e, status: "stale" as const })));
+    const text = readFileSync(path, "utf-8");
+    expect(text).toContain("# 我的项目笔记");
+    expect(text).toContain("这是手写说明，不应被工具删除。");
+    expect(text).toContain("尾部备注：保留。");
+    expect(text).toContain("| stale");
+    // No-op mutation leaves the file byte-identical.
+    const before = readFileSync(path, "utf-8");
+    updateKind(dir, "MEMORY", (entries) => entries);
+    expect(readFileSync(path, "utf-8")).toBe(before);
+  });
+
+  test("updateKind removes entries but keeps prose; addEntry appends to prose files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const path = kindFile(dir, "MEMORY");
+    writeFileSync(path, "# 标题\n\n" + renderEntry(makeEntry()).trimEnd() + "\n");
+    updateKind(dir, "MEMORY", () => []);
+    let text = readFileSync(path, "utf-8");
+    expect(text).toContain("# 标题");
+    expect(text).not.toContain("§ ");
+    addEntry(dir, makeEntry({ entryId: "e5f6a7b8", content: "新条目" }));
+    text = readFileSync(path, "utf-8");
+    expect(text).toContain("# 标题");
+    expect(parseFile(text, "default").map((e) => e.entryId)).toEqual(["e5f6a7b8"]);
+  });
+
+  test("addEntry rethrows non-ENOENT read errors instead of wiping the store", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a dir");
+    expect(() => addEntry(join(blocker, "nested"), makeEntry())).toThrow();
+    expect(readFileSync(blocker, "utf-8")).toBe("not a dir");
+  });
 });
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";

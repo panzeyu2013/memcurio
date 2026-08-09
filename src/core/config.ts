@@ -31,7 +31,8 @@ export function loadConfig(root: string): Config {
   let parsed: Partial<Config>;
   try {
     parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<Config>;
-  } catch {
+  } catch (err) {
+    console.warn(`memcore: ignoring unparsable config at ${path} (${String(err)}); using defaults`);
     return { ...DEFAULT_CONFIG };
   }
   return {

@@ -16,6 +16,20 @@ const SECRET_PATTERNS: RegExp[] = [
   /(?<![A-Za-z0-9])(?:api[_-]?key|apikey|secret|token|password|passwd|bearer)\s+["']?[\p{L}\p{N}_\-./]{16,}["']?/giu,
 ];
 
+const HOMOGLYPH_MAP: Record<string, string> = {
+  а: "a", е: "e", і: "i", о: "o", ѕ: "s", р: "p", с: "c", у: "y", х: "x", ё: "e", һ: "h", ј: "j", ї: "i",
+  А: "A", Е: "E", І: "I", О: "O", Ѕ: "S", Р: "P", С: "C", У: "Y", Х: "X", Ё: "E", Н: "H", Ј: "J", Ї: "I",
+  "’": "'", "‘": "'", "“": '"', "”": '"', "‑": "-", "–": "-", "—": "-", "…": "...", "　": " ",
+};
+
+/** Zero-width stripping + transliteration of Cyrillic/fullwidth homoglyphs so that
+ *  obfuscated injection text ("ignore prevіous instructions") is detected. */
+export function normalizeText(text: string): string {
+  return text
+    .replace(/[\u200b-\u200f\u2060-\u206f\ufeff]/g, "")
+    .replace(/[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g, (c) => HOMOGLYPH_MAP[c] ?? c);
+}
+
 export function redactSecrets(text: string): SanitizeResult {
   let redacted = false;
   let out = normalizeText(text);
@@ -27,10 +41,6 @@ export function redactSecrets(text: string): SanitizeResult {
     out = next;
   }
   return { text: out, redacted };
-}
-
-export function normalizeText(text: string): string {
-  return text.replace(/[\u200b-\u200f\u2060-\u206f\ufeff]/g, "");
 }
 
 const INJECTION_PATTERNS: RegExp[] = [
