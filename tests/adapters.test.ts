@@ -65,8 +65,9 @@ describe("MemcurioAdapter", () => {
     await adapter.messageSeen("s1", "p1");
     await adapter.messageSeen("s1", "p1");
     await adapter.messageSeen("s1", "p2");
-    const state = adapter.state("s1")!;
-    expect(state.seenParts.size).toBe(2);
+    const state = adapter.state("s1");
+    expect(state).toBeDefined();
+    expect(state?.seenParts.size).toBe(2);
 
     await adapter.sessionIdle("s1");
     const mdPath = join(nsDir(dir, ns), "SESSION.md");
@@ -74,10 +75,10 @@ describe("MemcurioAdapter", () => {
     const md = readFileSync(mdPath, "utf-8");
     expect(md).toContain("Session review s1");
     expect(md).toContain("messages: 2 parts");
-    expect(state.writtenCount).toBe(1);
+    expect(state?.writtenCount).toBe(1);
 
     await adapter.sessionIdle("s1");
-    expect(state.writtenCount).toBe(2);
+    expect(state?.writtenCount).toBe(2);
   });
 
   test("idle within interval does not duplicate", async () => {
@@ -96,9 +97,10 @@ describe("MemcurioAdapter", () => {
     await adapter.sessionCreated("s1", PROJ, "opencode");
     await adapter.toolExecuted("s1", "bash", { filePath: "src/a.ts" });
     await adapter.toolExecuted("s1", "read", { filePath: "src/b.ts" });
-    const state = adapter.state("s1")!;
-    expect(state.toolUsage.get("bash")).toBe(1);
-    expect(state.touchedFiles.has("src/a.ts")).toBe(true);
+    const state = adapter.state("s1");
+    expect(state).toBeDefined();
+    expect(state?.toolUsage.get("bash")).toBe(1);
+    expect(state?.touchedFiles.has("src/a.ts")).toBe(true);
   });
 
   test("reading a memory md file touches its entries", async () => {

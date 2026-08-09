@@ -119,7 +119,7 @@ describe("MemcurioPlugin event handling", () => {
 
   test("compaction reflection uses the harness model via a temp session", async () => {
     const prompts: string[] = [];
-    let deleted: string[] = [];
+    const deleted: string[] = [];
     const fakeClient = {
       app: { log: async () => ({}) },
       session: {
@@ -145,7 +145,7 @@ describe("MemcurioPlugin event handling", () => {
         },
         create: async () => ({ data: { id: "temp1" } }),
         prompt: async ({ body }: { body: { parts: Array<{ text: string }> } }) => {
-          prompts.push(body.parts[0].text);
+          prompts.push(body.parts[0]?.text ?? "");
           return {};
         },
         delete: async ({ path }: { path: { id: string } }) => {
@@ -162,8 +162,8 @@ describe("MemcurioPlugin event handling", () => {
     const idx = await Index.create(indexDb(dir));
     const entry = idx.list({ ns, kind: "COMPACT", allStatus: true })[0];
     expect(entry).toBeDefined();
-    expect(entry.content).toContain("harness model prompt reflection");
-    expect(entry.content).toContain("harness model memory reflection");
+    expect(entry?.content).toContain("harness model prompt reflection");
+    expect(entry?.content).toContain("harness model memory reflection");
     idx.close();
     expect(prompts.length).toBe(1);
     expect(prompts[0]).toContain("compacted summary");
@@ -199,7 +199,7 @@ describe("MemcurioPlugin event handling", () => {
         },
         create: async () => ({ data: { id: "temp1" } }),
         prompt: async ({ body }: { body: { parts: Array<{ text: string }> } }) => {
-          prompts.push(body.parts[0].text);
+          prompts.push(body.parts[0]?.text ?? "");
           return {};
         },
         delete: async () => ({ data: {} }),
@@ -220,7 +220,9 @@ describe("MemcurioPlugin event handling", () => {
     await plugin.event({
       event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
     });
-    await plugin["tool.execute.after"]!({ sessionID: "s1", tool: "read", args: { filePath: "src/a.ts" } });
+    const onToolExecuted = plugin["tool.execute.after"];
+    expect(onToolExecuted).toBeDefined();
+    await onToolExecuted?.({ sessionID: "s1", tool: "read", args: { filePath: "src/a.ts" } });
     await plugin.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
     const { readFileSync } = await import("node:fs");
     const { nsDir } = await import("../src/core/paths.js");
@@ -238,7 +240,9 @@ describe("MemcurioPlugin event handling", () => {
       event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
     });
     const output = { prompt: "original", context: [] as unknown[] };
-    await plugin["experimental.session.compacting"]!({ sessionID: "s1" }, output);
+    const onCompacting = plugin["experimental.session.compacting"];
+    expect(onCompacting).toBeDefined();
+    await onCompacting?.({ sessionID: "s1" }, output);
     expect(output.context.length).toBeGreaterThan(0);
     expect(String(output.context[0])).toContain("memcurio memory context");
   });

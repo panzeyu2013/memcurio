@@ -115,7 +115,14 @@ export class MemcurioAdapter {
     } catch {
       return;
     }
-    if (!resolved.startsWith(realpathSync(memRoot) + "/") || !resolved.endsWith(".md")) {
+    let memRootResolved: string;
+    try {
+      memRootResolved = realpathSync(memRoot);
+    } catch {
+      // The memory root was deleted concurrently; nothing to touch.
+      return;
+    }
+    if (!resolved.startsWith(`${memRootResolved}/`) || !resolved.endsWith(".md")) {
       return;
     }
     if (resolved.endsWith("INDEX.md")) {
@@ -177,28 +184,36 @@ export class MemcurioAdapter {
 
   async #reflectOnCompaction(s: SessionState, summary?: string): Promise<void> {
     const root = coreRoot();
+    // Snapshot the current strategy, then close the index before the (up to
+    // minutes-long) LLM call. The strategy only informs the reflection; the
+    // entry we append to is re-read under the file lock below, so concurrent
+    // reflections never overwrite each other.
+    const strategySnapshot = await (async () => {
+      const idx = await Index.create(indexDb(root));
+      try {
+        const all = idx
+          .list({ ns: s.ns, kind: "COMPACT", allStatus: true })
+          .filter((e) => e.status !== "deleted")
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return all[0]?.content;
+      } finally {
+        idx.close();
+      }
+    })();
+    const reflection = await reflectOnCompaction({
+      summary: (summary ?? this.#sessionSummaryText(s)).slice(0, 2000),
+      strategy: strategySnapshot,
+      chat: this.reflect,
+    });
+    // Re-redact the model's reply: it may echo secrets from the summary.
+    const safePrompt = redactSecrets(reflection.prompt);
+    const safeMemory = redactSecrets(reflection.memory);
+    const section = formatReflection(
+      { prompt: safePrompt.text, memory: safeMemory.text },
+      new Date().toISOString(),
+    );
     const idx = await Index.create(indexDb(root));
     try {
-      // The strategy passed to the LLM may be a pre-lock snapshot (it only
-      // informs the reflection); the entry we append to is re-read under the
-      // file lock below so concurrent reflections never overwrite each other.
-      const all = idx
-        .list({ ns: s.ns, kind: "COMPACT", allStatus: true })
-        .filter((e) => e.status !== "deleted")
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      const prev = all[0];
-      const reflection = await reflectOnCompaction({
-        summary: (summary ?? this.#sessionSummaryText(s)).slice(0, 2000),
-        strategy: prev?.content,
-        chat: this.reflect,
-      });
-      // Re-redact the model's reply: it may echo secrets from the summary.
-      const safePrompt = redactSecrets(reflection.prompt);
-      const safeMemory = redactSecrets(reflection.memory);
-      const section = formatReflection(
-        { prompt: safePrompt.text, memory: safeMemory.text },
-        new Date().toISOString(),
-      );
       const txn = new Transaction(txnLog(root));
       let reflected: Entry | undefined;
       let isNewEntry = false;
@@ -218,9 +233,10 @@ export class MemcurioAdapter {
                 .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
               const latest = current[0];
               isNewEntry = !latest;
-              reflected = latest
+              const next: Entry = latest
                 ? { ...latest, content: appendReflection(latest.content, section) }
                 : newEntry(s.ns, "COMPACT", appendReflection("", section));
+              reflected = next;
               // COMPACT entries are exempt from auto-pruning, so cap their
               // count: archive all but the most recent 8.
               const toArchive = current.slice(8).filter((e) => e.status === "active");
@@ -230,20 +246,24 @@ export class MemcurioAdapter {
               }
               const updated = entries.map((e) => {
                 if (latest && e.entryId === latest.entryId) {
-                  return reflected!;
+                  return next;
                 }
                 return archiveIds.has(e.entryId) ? { ...e, status: "archived" as Status } : e;
               });
-              return latest ? updated : [...updated, reflected!];
+              return latest ? updated : [...updated, next];
             },
           }],
           () => idx.withTransaction(() => {
             // Patch content/stats separately so a concurrent touch keeps its
             // use_count/last_used_at (a full snapshot write would regress them).
+            const ref = reflected;
+            if (ref === undefined) {
+              throw new Error("reflection entry was not produced by the mutation");
+            }
             if (isNewEntry) {
-              idx.add(reflected!);
+              idx.add(ref);
             } else {
-              idx.patch(reflected!.entryId, { content: reflected!.content });
+              idx.patch(ref.entryId, { content: ref.content });
             }
             for (const id of archiveIds) {
               idx.patch(id, { status: "archived" });
@@ -254,7 +274,7 @@ export class MemcurioAdapter {
             if (archiveIds.size) {
               idx.audit("adapter.compact_cap", s.ns, `archived ${archiveIds.size} old COMPACT entries`);
             }
-            idx.audit("adapter.compact_reflect", s.ns, `reflection stored (entry ${reflected!.entryId})`);
+            idx.audit("adapter.compact_reflect", s.ns, `reflection stored (entry ${ref.entryId})`);
           }),
         );
       });
