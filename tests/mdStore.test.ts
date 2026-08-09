@@ -1,7 +1,24 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import { addEntry, kindFile, parseFile, renderEntry, updateKind } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const d of tmpDirs.splice(0)) {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
+function mkTmp(): string {
+  const dir = mkdtempSync(join(tmpdir(), "md-"));
+  tmpDirs.push(dir);
+  return dir;
+}
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -72,7 +89,7 @@ describe("parseFile", () => {
   });
 
   test("updateKind skips no-op rewrites", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     addEntry(dir, makeEntry());
     addEntry(dir, makeEntry({ entryId: "e5f6a7b8" }));
     const path = kindFile(dir, "MEMORY");
@@ -82,15 +99,18 @@ describe("parseFile", () => {
     expect(after).toBe(before);
   });
 
-  test("updateKind coerces hand-edited headers back to the file kind", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+  test("updateKind treats hand-edited header kinds as prose, never coerces them", () => {
+    const dir = mkTmp();
     addEntry(dir, makeEntry());
     const path = kindFile(dir, "MEMORY");
     writeFileSync(path, readFileSync(path, "utf-8").replace("| MEMORY |", "| USER |"));
+    // The mismatched header is not an entry header any more, so no mutation
+    // applies and the file is left byte-for-byte untouched (no silent kind
+    // rewrite).
     updateKind(dir, "MEMORY", (entries) => entries.map((e) => ({ ...e, status: "stale" as const })));
     const text = readFileSync(path, "utf-8");
-    expect(text).toContain("| MEMORY |");
-    expect(text).toContain("| stale");
+    expect(text).toContain("| USER |");
+    expect(text).not.toContain("| stale");
   });
 
   test("empty text yields no entries", () => {
@@ -100,7 +120,7 @@ describe("parseFile", () => {
 
 describe("addEntry / updateEntries", () => {
   test("addEntry appends and parseFile reads back", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     addEntry(dir, makeEntry());
     addEntry(dir, makeEntry({ entryId: "e5f6a7b8", content: "第二条" }));
     const parsed = parseFile(readFileSync(kindFile(dir, "MEMORY"), "utf-8"), "default");
@@ -108,7 +128,7 @@ describe("addEntry / updateEntries", () => {
   });
 
   test("updateKind rewrites a kind file under lock", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     addEntry(dir, makeEntry());
     addEntry(dir, makeEntry({ entryId: "e5f6a7b8" }));
     updateKind(dir, "MEMORY", (entries) => entries.filter((e) => e.entryId === "a1b2c3d4"));
@@ -117,7 +137,7 @@ describe("addEntry / updateEntries", () => {
   });
 
   test("updateKind preserves hand-written prose outside the § blocks", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     const path = kindFile(dir, "MEMORY");
     const handwritten = [
       "# 我的项目笔记",
@@ -142,7 +162,7 @@ describe("addEntry / updateEntries", () => {
   });
 
   test("updateKind removes entries but keeps prose; addEntry appends to prose files", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     const path = kindFile(dir, "MEMORY");
     writeFileSync(path, "# 标题\n\n" + renderEntry(makeEntry()).trimEnd() + "\n");
     updateKind(dir, "MEMORY", () => []);
@@ -156,7 +176,7 @@ describe("addEntry / updateEntries", () => {
   });
 
   test("addEntry rethrows non-ENOENT read errors instead of wiping the store", () => {
-    const dir = mkdtempSync(join(tmpdir(), "md-"));
+    const dir = mkTmp();
     const blocker = join(dir, "blocker");
     writeFileSync(blocker, "not a dir");
     expect(() => addEntry(join(blocker, "nested"), makeEntry())).toThrow();
@@ -164,6 +184,4 @@ describe("addEntry / updateEntries", () => {
   });
 });
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";

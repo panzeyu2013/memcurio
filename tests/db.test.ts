@@ -212,6 +212,23 @@ describe("Index", () => {
     idx.close();
   });
 
+  test("top tie-breaks by last_used_at desc then entry_id, stable across pages", async () => {
+    const idx = await Index.create(dbPath);
+    const ts = (s: string): string => s;
+    idx.add(makeEntry({ entryId: "aa000001", valueScore: 1.0, lastUsedAt: ts("2026-01-03T00:00:00.000Z") }));
+    idx.add(makeEntry({ entryId: "bb000002", valueScore: 1.0, lastUsedAt: ts("2026-01-01T00:00:00.000Z") }));
+    idx.add(makeEntry({ entryId: "cc000003", valueScore: 1.0, lastUsedAt: ts("2026-01-02T00:00:00.000Z") }));
+    const p1 = idx.top({ limit: 2 });
+    const p2 = idx.top({ limit: 2, offset: 2 });
+    expect(p1.map((e) => e.entryId)).toEqual(["aa000001", "cc000003"]);
+    expect(p2.map((e) => e.entryId)).toEqual(["bb000002"]);
+    // Same valueScore and same lastUsedAt: entry_id is the deterministic key.
+    idx.add(makeEntry({ entryId: "dd000004", valueScore: 1.0, lastUsedAt: ts("2026-01-01T00:00:00.000Z") }));
+    const all = idx.top({ limit: 10 });
+    expect(all.map((e) => e.entryId).slice(-2)).toEqual(["bb000002", "dd000004"]);
+    idx.close();
+  });
+
   test("migrates v1 schema to v2 (entries.pinned)", async () => {
     const driver = await openDb(dbPath);
     driver.exec(`
@@ -249,6 +266,36 @@ describe("Index", () => {
     const open = idx.driver.all<{ session_id: string }>("SELECT session_id FROM sessions WHERE ended_at IS NULL");
     expect(open).toHaveLength(0);
     idx.close();
+  });
+
+  test("closeAllSessions with a host only closes that host's rows", async () => {
+    const idx = await Index.create(dbPath);
+    idx.recordSession("s1", "codex", "/tmp/a", "2026-08-08T00:00:00.000Z");
+    idx.recordSession("s2", "opencode", "/tmp/b", "2026-08-08T00:00:00.000Z");
+    idx.closeAllSessions("2026-08-08T02:00:00.000Z", "codex");
+    const open = idx.driver.all<{ session_id: string; host: string }>(
+      "SELECT session_id, host FROM sessions WHERE ended_at IS NULL ORDER BY session_id",
+    );
+    expect(open).toEqual([{ session_id: "s2", host: "opencode" }]);
+    idx.close();
+  });
+
+  test("index.sqlite and its WAL sidecars are private (0600)", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry());
+    idx.close();
+    const { statSync } = await import("node:fs");
+    expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+    const wal = `${dbPath}-wal`;
+    const shm = `${dbPath}-shm`;
+    for (const p of [wal, shm]) {
+      try {
+        expect(statSync(p).mode & 0o777).toBe(0o600);
+      } catch {
+        // sidecar may have been checkpointed away after close; the main file
+        // assertion above is the load-bearing check
+      }
+    }
   });
 
   test("rebuild keeps first of duplicate entryIds and audits the warning", async () => {

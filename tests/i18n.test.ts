@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { currentLang, t } from "../src/cli/i18n.js";
-import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,22 +37,6 @@ afterEach(() => {
   }
   rmSync(dir, { recursive: true, force: true });
 });
-
-async function capture(argv: string[]): Promise<{ code: number; out: string; err: string }> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const origLog = console.log;
-  const origErr = console.error;
-  console.log = (...a: unknown[]) => out.push(a.map(String).join(" "));
-  console.error = (...a: unknown[]) => err.push(a.map(String).join(" "));
-  try {
-    const code = await main(argv);
-    return { code, out: out.join("\n"), err: err.join("\n") };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
-  }
-}
 
 describe("currentLang", () => {
   test("defaults to Chinese", () => {
@@ -94,13 +78,13 @@ describe("dictionary parity", () => {
 
   test("success messages are localized in both languages", async () => {
     process.env.MEMCORE_LANG = "en";
-    const en = await capture(["init"]);
+    const en = await runCli("init")
     expect(en.code).toBe(0);
     expect(en.out).toContain("initialized");
     expect(en.out).toContain("index backend");
 
     delete process.env.MEMCORE_LANG;
-    const zh = await capture(["init"]);
+    const zh = await runCli("init")
     expect(zh.out).toContain("已初始化");
     expect(zh.out).toContain("索引后端");
   });
@@ -109,41 +93,41 @@ describe("dictionary parity", () => {
 describe("localized CLI output", () => {
   test("help follows MEMCORE_LANG", async () => {
     process.env.MEMCORE_LANG = "en";
-    const en = await capture(["help"]);
+    const en = await runCli("help")
     expect(en.code).toBe(0);
     expect(en.out).toContain("Usage: memcore");
     expect(en.out).not.toContain("用法:");
 
     delete process.env.MEMCORE_LANG;
-    const zh = await capture(["help"]);
+    const zh = await runCli("help")
     expect(zh.out).toContain("用法: memcore");
   });
 
   test("per-command help is localized", async () => {
     process.env.MEMCORE_LANG = "en";
-    const en = await capture(["help", "search"]);
+    const en = await runCli("help", "search")
     expect(en.out).toContain("Search memories");
     delete process.env.MEMCORE_LANG;
-    const zh = await capture(["help", "search"]);
+    const zh = await runCli("help", "search")
     expect(zh.out).toContain("检索记忆");
   });
 
   test("error messages are localized", async () => {
     process.env.MEMCORE_LANG = "en";
-    const en = await capture(["search"]);
+    const en = await runCli("search")
     expect(en.code).toBe(2);
     expect(en.err).toContain("missing query");
     delete process.env.MEMCORE_LANG;
-    const zh = await capture(["search"]);
+    const zh = await runCli("search")
     expect(zh.err).toContain("关键词");
   });
 
   test("unknown command hint is localized", async () => {
     process.env.MEMCORE_LANG = "en";
-    const en = await capture(["bogus"]);
+    const en = await runCli("bogus")
     expect(en.err).toContain("Run memcore help");
     delete process.env.MEMCORE_LANG;
-    const zh = await capture(["bogus"]);
+    const zh = await runCli("bogus")
     expect(zh.err).toContain("运行 memcore help");
   });
 });

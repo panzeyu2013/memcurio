@@ -204,12 +204,15 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     expect(entries[0].content).toContain("Reflection");
   });
 
-  test("distinct PostCompact timestamps in one turn are both reflected", async () => {
+  test("PostCompact events in distinct turns are both reflected", async () => {
     const handle = createCodexHandler();
-    const base = { cwd: "/tmp/MyProject", session_id: "distinct-compactions", turn_id: "t1" };
-    await handle({ ...base, hook_event_name: "SessionStart" });
-    await handle({ ...base, hook_event_name: "PostCompact", compacted_at: "2026-08-08T00:00:00.000Z" });
-    await handle({ ...base, hook_event_name: "PostCompact", compacted_at: "2026-08-08T00:00:01.000Z" });
+    const base = { cwd: "/tmp/MyProject", session_id: "distinct-compactions" };
+    // Real codex PostCompact carries a unique turn_id per compaction; the
+    // dedupe identity is turn_id + transcript_path + trigger (compacted_at is
+    // not part of the codex schema).
+    await handle({ ...base, hook_event_name: "SessionStart", source: "startup" });
+    await handle({ ...base, hook_event_name: "PostCompact", turn_id: "t1" });
+    await handle({ ...base, hook_event_name: "PostCompact", turn_id: "t2" });
     const idx = await Index.create(indexDb(dir));
     const entry = idx.list({ kind: "COMPACT", allStatus: true }).find((e) => e.ns === ns);
     expect(entry?.content.match(/## Reflection/g)).toHaveLength(2);
@@ -235,6 +238,20 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     const idx = await Index.create(indexDb(dir));
     expect(idx.get("a1b2c3d4")?.useCount).toBe(1);
     idx.close();
+  });
+
+  test("SessionStart(source=compact) after a startup is NOT deduped (re-injection)", async () => {
+    await seed([makeEntry({ ns })]);
+    const handle = createCodexHandler();
+    const base = { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s-recompact" };
+    // codex re-fires SessionStart with source=compact after compression; the
+    // dedupe key includes the source so the re-start re-injects context.
+    await handle({ ...base, source: "startup" });
+    const recompact = await handle({ ...base, source: "compact" });
+    expect((recompact.hookSpecificOutput as { additionalContext?: string }).additionalContext).toContain(ns);
+    // A duplicate of the same (session, source) is still deduped.
+    const dup = await handle({ ...base, source: "compact" });
+    expect(dup).toEqual({ continue: true });
   });
 
   test("a failed delivery remains retryable with the same dedupe key", async () => {
@@ -380,9 +397,11 @@ describe("codex plugin generation", () => {
     ]);
     for (const groups of Object.values(plugin.hooks)) {
       const command = groups[0].hooks[0].command;
-      // Absolute bun binary + single-quoted hook path (spaces safe, no shell injection).
-      expect(command.startsWith("/")).toBe(true);
+      // Both the bun binary and the hook path are single-quoted (spaces safe,
+      // no shell injection), so the command starts with an opening quote.
+      expect(command.startsWith("'")).toBe(true);
       expect(command.endsWith(`'${generated.hookPath}'`)).toBe(true);
+      expect(command).toContain(`'${process.execPath}'`);
     }
     expect(existsSync(generated.daemonPath)).toBe(true);
     expect(existsSync(generated.hookPath)).toBe(true);
@@ -396,6 +415,7 @@ describe("codex plugin generation", () => {
     const { renameSync } = await import("node:fs");
     const distDir = join(import.meta.dir, "..", "dist");
     if (!existsSync(distDir)) {
+      console.warn("SKIP: dist/ missing on this checkout, negative case not exercised");
       return; // nothing to hide
     }
     const hidden = join(dir, "dist-hidden");

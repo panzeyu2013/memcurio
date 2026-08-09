@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { main } from "../src/cli/index.js";
 import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
 import type { Entry } from "../src/core/mdStore.js";
@@ -40,7 +39,12 @@ describe("serialize / parse", () => {
   });
 
   test("rejects invalid lines", () => {
-    expect(() => parseExport('{"foo": 1}\n')).toThrow();
+    expect(() => parseExport('{"foo": 1}\n')).toThrow(/entryId/);
+  });
+
+  test("rejects status deleted on import (no zombie rows)", () => {
+    const base = '{"entryId":"a1b2c3d4","ns":"default","kind":"MEMORY","content":"x","createdAt":"2026-01-01T00:00:00.000Z","status":"deleted"}';
+    expect(() => parseExport(`${base}\n`)).toThrow(/not importable/);
   });
 
   test("rejects bad field types", () => {
@@ -254,7 +258,12 @@ describe("export / import / merge cli", () => {
 });
 
 function extractId(r: { out: string }): string {
-  return r.out.split("\n").find((l) => l.includes("/MEMORY"))?.split(" ")[0] ?? "";
+  // 32-hex (or legacy 8-hex) entry ids, robust to display-format changes.
+  const m = r.out.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/);
+  if (!m) {
+    throw new Error(`no entry id found in list output: ${JSON.stringify(r.out.slice(0, 120))}`);
+  }
+  return m[1];
 }
 
 function addEntryDirect(entry: Entry): void {

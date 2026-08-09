@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
+import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
@@ -30,7 +30,7 @@ describe("Transaction", () => {
     expect(txn.pending()).toHaveLength(0);
   });
 
-  test("records ROLLBACK on failure and keeps it repair-visible", () => {
+  test("records ROLLBACK on failure; rolled-back txns are not pending", () => {
     const txn = new Transaction(log);
     expect(() =>
       txn.run("remember", "default", "abc", () => {
@@ -40,7 +40,9 @@ describe("Transaction", () => {
     const records = readRecords(log);
     expect(records.map((r) => r.op)).toEqual(["BEGIN", "ROLLBACK"]);
     expect(records[1].error).toContain("boom");
-    expect(txn.pending().map((r) => r.action)).toEqual(["remember"]);
+    // ROLLBACK marks the transaction as resolved: the synchronous md/SQLite
+    // writes were already undone, so it must not show up as pending work.
+    expect(txn.pending()).toHaveLength(0);
   });
 
   test("pending reports unfinished transactions", () => {
@@ -105,6 +107,63 @@ describe("Transaction", () => {
     expect(seen).toEqual([1, 2]);
   });
 
+  test("withFileLock waits for a live foreign process to release, then acquires", async () => {
+    const lockPath = join(dir, "cross.lock");
+    const child = Bun.spawn({
+      cmd: [
+        "bun",
+        "-e",
+        `import { writeFileSync, rmSync } from "node:fs";
+         writeFileSync(${JSON.stringify(lockPath)}, process.pid + "|" + Date.now(), { flag: "wx", mode: 0o600 });
+         await new Promise((r) => setTimeout(r, 400));
+         rmSync(${JSON.stringify(lockPath)});`,
+      ],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      // Wait until the child actually holds the lock.
+      for (let i = 0; i < 100 && !existsSync(lockPath); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(existsSync(lockPath)).toBe(true);
+      const t0 = Date.now();
+      let ran = false;
+      withFileLock(lockPath, () => {
+        ran = true;
+      }, { timeoutMs: 5_000 });
+      expect(ran).toBe(true);
+      // The parent really waited for the holder instead of stealing/re-trying.
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("withFileLock times out when a live holder never releases", async () => {
+    const lockPath = join(dir, "hold.lock");
+    const child = Bun.spawn({
+      cmd: [
+        "bun",
+        "-e",
+        `import { writeFileSync } from "node:fs";
+         writeFileSync(${JSON.stringify(lockPath)}, process.pid + "|" + Date.now(), { flag: "wx", mode: 0o600 });
+         await new Promise(() => {});`,
+      ],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      for (let i = 0; i < 100 && !existsSync(lockPath); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(existsSync(lockPath)).toBe(true);
+      expect(() => withFileLock(lockPath, () => {}, { timeoutMs: 150 })).toThrow(/file lock timeout/);
+    } finally {
+      child.kill();
+    }
+  });
+
   test("does not retry a protected callback that itself throws EEXIST", () => {
     const lockPath = join(dir, "locks", "callback.lock");
     let calls = 0;
@@ -128,7 +187,7 @@ describe("isStaleLock", () => {
   test("empty lock file older than threshold is stale", () => {
     const lock = join(dir, "x.lock");
     writeFileSync(lock, "");
-    const old = new Date(Date.now() - 2 * 60_000);
+    const old = new Date(Date.now() - 2 * STALE_LOCK_MS);
     utimesSync(lock, old, old);
     expect(isStaleLock(lock)).toBe(true);
   });
@@ -139,17 +198,20 @@ describe("isStaleLock", () => {
     expect(isStaleLock(lock)).toBe(true);
   });
 
-  test("lock held by a live pid is not stale", () => {
+  test("lock held by a live pid is not stale while fresh", () => {
     const lock = join(dir, "x.lock");
     writeFileSync(lock, `${process.pid}|${Date.now()}`);
     expect(isStaleLock(lock)).toBe(false);
   });
 
-  test("lock held by a live pid is never stolen, regardless of age", () => {
+  test("lock held by a live pid but far older than any legit hold is reclaimed (pid-reuse guard)", () => {
     const lock = join(dir, "x.lock");
-    // Same live pid with a very old timestamp: the holder may simply be slow.
-    writeFileSync(lock, `${process.pid}|2020-01-01T00:00:00.000Z`);
-    expect(isStaleLock(lock)).toBe(false);
+    // pid 1 (launchd/init) is always alive on POSIX, standing in for a pid
+    // that got reused by an unrelated live process.
+    writeFileSync(lock, "1|2020-01-01T00:00:00.000Z");
+    const old = new Date(Date.now() - 2 * STALE_LOCK_MS);
+    utimesSync(lock, old, old);
+    expect(isStaleLock(lock)).toBe(true);
   });
 });
 

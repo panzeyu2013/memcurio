@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { main } from "../src/cli/index.js";
 import { runCli } from "./helpers.js";
 import { configPath, indexDb, nsDir } from "../src/core/paths.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -59,7 +58,10 @@ describe("memcore cli", () => {
     await run("init");
     const { code, out } = await run("status");
     expect(code).toBe(0);
-    expect(out).toContain("index");
+    expect(out).toContain("root      :");
+    expect(out).toContain("index     : sqlite +");
+    expect(out).toContain("audit     :");
+    expect(out).toContain("pending   : 0");
   });
 
   test("remember writes md truth source and index", async () => {
@@ -94,8 +96,9 @@ describe("memcore cli", () => {
     await run("init");
     await run("remember", "要删除的内容");
     const { out: list } = await run("list");
-    const id = list.split(" ")[0];
-    const { code } = await run("forget", id);
+    const id = list.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/)?.[1];
+    expect(id).toBeTruthy();
+    const { code } = await run("forget", id!);
     expect(code).toBe(0);
     const { out: search } = await run("search", "要删除的内容");
     expect(search).not.toContain(id);
@@ -139,14 +142,14 @@ describe("memcore cli", () => {
     idx.close();
   });
 
-  test("unknown host rejected", async () => {
+  test("unknown host rejected as a data error (exit 1)", async () => {
     await run("init");
     const { code } = await run(
       "event",
       "--json",
       JSON.stringify({ host: "nope", event: "session_start", sessionId: "s1", workdir: "/" }),
     );
-    expect(code).toBe(2);
+    expect(code).toBe(1);
   });
 
   test("invalid command rejected", async () => {

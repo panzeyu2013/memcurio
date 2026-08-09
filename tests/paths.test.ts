@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { assertValidNs, ensureLayout, namespaceFor, namespaces, nsDir } from "../src/core/paths.js";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,5 +65,31 @@ describe("layout", () => {
     const d = nsDir(dir, "proj-a");
     expect(statSync(d).mode & 0o777).toBe(0o700);
     expect(namespaces(dir)).toEqual(["proj-a"]);
+  });
+
+  test("ensureLayout keeps fresh .tmp-* files and removes stale ones", () => {
+    const ns = nsDir(dir, "p");
+    const fresh = join(ns, ".tmp-12345-abcdabcdabcdabcd.md");
+    const stale = join(ns, `.tmp-${Date.now() - 60_000}-1234123412341234.md`);
+    writeFileSync(fresh, "x");
+    writeFileSync(stale, "x");
+    // An `atomicWrite`-in-progress temp file must survive its process's sweep.
+    utimesSync(stale, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    ensureLayout(dir);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+  });
+
+  test("ensureLayout never unlinks a symlinked .tmp-* file", () => {
+    const ns = nsDir(dir, "p");
+    const outside = join(tmpdir(), `paths-outside-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(outside, "x");
+    try {
+      symlinkSync(outside, join(ns, ".tmp-99999-9999999999999999.md"));
+      ensureLayout(dir);
+      expect(existsSync(outside)).toBe(true);
+    } finally {
+      rmSync(outside, { force: true });
+    }
   });
 });

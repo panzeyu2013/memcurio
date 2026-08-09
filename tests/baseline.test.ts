@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { main } from "../src/cli/index.js";
 import { runCli } from "./helpers.js";
 import { memoryRoot, namespaceFor } from "../src/core/paths.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";

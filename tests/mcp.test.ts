@@ -4,6 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createServer } from "../src/mcp/index.js";
+import { Index } from "../src/core/db.js";
+import { indexDb } from "../src/core/paths.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +35,15 @@ interface CallResult {
 
 function parseText(result: CallResult): unknown {
   return JSON.parse(result.content?.[0]?.text ?? "");
+}
+
+async function readAudit(): Promise<Array<{ action: string; detail: string }>> {
+  const idx = await Index.create(indexDb(dir));
+  try {
+    return idx.auditRecent(100).map((r) => ({ action: String(r.action), detail: String(r.detail) }));
+  } finally {
+    idx.close();
+  }
 }
 
 describe("memcore MCP server", () => {
@@ -79,6 +90,12 @@ describe("memcore MCP server", () => {
     expect(status.namespaces).toContain("proj-a");
     expect(status.counts["proj-a"].active).toBe(1);
     expect(["trigram", "like"]).toContain(status.backend);
+
+    // Audit side effects: remember/search must leave traces (this is the MCP
+    // entry point's injection-observability contract).
+    const audit = await readAudit();
+    expect(audit.some((r) => r.action === "mcp.remember" && r.detail.includes(remembered.entryId))).toBe(true);
+    expect(audit.some((r) => r.action === "mcp.search")).toBe(true);
 
     const forgotten = parseText(
       (await client.callTool({

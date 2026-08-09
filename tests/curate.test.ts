@@ -158,25 +158,38 @@ describe("buildCuratePlan", () => {
     idx.close();
   });
 
-  test("maxChecks caps LLM pair evaluations", async () => {
+  test("maxChecks caps LLM reevaluations and flags exhaustion", async () => {
     const idx = await Index.create(indexDb(dir));
     for (let i = 0; i < 10; i++) {
-      idx.add(makeEntry({ entryId: `e${String(i).padStart(8, "0")}`, content: `项目使用 SQLite FTS5 trigram 做检索（变体${i}）` }));
+      idx.add(makeEntry({ entryId: `e${String(i).padStart(8, "0")}`, useCount: 9, content: `高使用率条目 ${i} 内容互不相同以避免合并` }));
     }
-    let calls = 0;
+    let reevalCalls = 0;
     const provider = new FakeProvider({
-      checkContradiction: async () => {
-        calls += 1;
-        return { contradictory: false, reason: "" };
-      },
-      suggestUmbrella: async () => {
-        calls += 1;
-        return null;
+      reevaluate: async () => {
+        reevalCalls += 1;
+        return 1.5;
       },
     });
     const plan = await buildCuratePlan(idx, provider, { maxChecks: 5 });
-    expect(calls).toBeLessThanOrEqual(5);
-    expect(plan.umbrellas.length).toBeLessThanOrEqual(5);
+    expect(reevalCalls).toBe(5);
+    expect(plan.reevaluations).toHaveLength(5);
+    expect(plan.checksExhausted).toBe(true);
+    idx.close();
+  });
+
+  test("unparsable LLM replies are counted at the plan level", async () => {
+    const idx = await Index.create(indexDb(dir));
+    // Shared rare bigram pairs the entries, overlap stays below the union
+    // threshold, and minOverlap admits the pair: the contradiction check runs
+    // and its unparsable verdict must surface on the plan.
+    idx.add(makeEntry({ entryId: "a1b2c3d4", content: "甲乙丙丁" }));
+    idx.add(makeEntry({ entryId: "e5f6a7b8", content: "甲乙戊己" }));
+    const provider = new FakeProvider({
+      checkContradiction: async () => ({ contradictory: false, reason: "__unparsable__" }),
+    });
+    const plan = await buildCuratePlan(idx, provider, { maxChecks: 50, minOverlap: 0.3 });
+    expect(plan.unparsable).toBe(1);
+    expect(plan.contradictions).toHaveLength(0);
     idx.close();
   });
 });
@@ -259,7 +272,10 @@ describe("curate cli", () => {
     const origLog = console.log;
     const origFetch = globalThis.fetch;
     const savedKey = process.env.MEMCORE_LLM_API_KEY;
+    const savedLang = process.env.MEMCORE_LANG;
     process.env.MEMCORE_LLM_API_KEY = "test-key";
+    // The plan output is asserted in English, so pin the language.
+    process.env.MEMCORE_LANG = "en";
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: "0.5" } }] }), {
         status: 200,
@@ -289,6 +305,11 @@ describe("curate cli", () => {
       } else {
         process.env.MEMCORE_LLM_API_KEY = savedKey;
       }
+      if (savedLang === undefined) {
+        delete process.env.MEMCORE_LANG;
+      } else {
+        process.env.MEMCORE_LANG = savedLang;
+      }
     }
   });
 
@@ -298,7 +319,7 @@ describe("curate cli", () => {
     try {
       await main(["init"]);
       const code = await main(["curate", "--execute"]);
-      expect(code).toBe(2);
+      expect(code).toBe(1);
     } finally {
       console.error = origErr;
     }

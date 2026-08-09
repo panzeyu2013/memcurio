@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { makeEnvelope, parseEnvelope } from "../src/core/events.js";
+import type { EventEnvelope } from "../src/core/events.js";
 
 describe("makeEnvelope", () => {
   test("fills defaults for missing fields", () => {
@@ -12,8 +13,14 @@ describe("makeEnvelope", () => {
   });
 
   test("rejects unknown host and event", () => {
-    expect(() => makeEnvelope({ host: "nope", event: "use" })).toThrow(/unknown host/);
-    expect(() => makeEnvelope({ host: "cli", event: "nope" })).toThrow(/unknown event/);
+    // Invalid values must survive the (now strict) Host/EventName types, so
+    // exercise the runtime validation through untyped input.
+    expect(() =>
+      makeEnvelope({ host: "nope" as unknown as Partial<EventEnvelope>["host"], event: "use" }),
+    ).toThrow(/unknown host/);
+    expect(() =>
+      makeEnvelope({ host: "cli", event: "nope" as unknown as Partial<EventEnvelope>["event"] }),
+    ).toThrow(/unknown event/);
   });
 });
 

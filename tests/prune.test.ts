@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { main } from "../src/cli/index.js";
 import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
 import { addEntry } from "../src/core/mdStore.js";
