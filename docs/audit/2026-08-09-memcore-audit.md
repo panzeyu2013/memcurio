@@ -308,7 +308,7 @@ memcore 的工程基础非常扎实：md 真源 + 原子写 + 全序文件锁 + 
 | 严重度 | 文件:行号 | 问题描述 | 影响 | 建议修复 |
 |--------|-----------|----------|------|----------|
 | 🟠 | src/core/events.ts:1 | `HOSTS` 在 core 中硬编码 harness 名单（opencode/codex/pi/claude），其中 pi/claude 无对应适配器（src/adapters/ 下不存在）；`makeEnvelope`（events.ts:39-41）对未知 host 直接 throw | 新增 harness 必须改 core 代码；core 不再"harness 无关"；未实现 harness 仍占校验名单 | HOSTS 移入 adapters 层注册，core 仅校验 `/[a-z][a-z0-9_-]{0,31}/` 这类通用格式，未知 host 降级警告而非抛错 |
-| 🟠 | src/core/events.ts:19-27 + src/cli/index.ts:399-432 vs src/adapters/opencode/plugin.ts:146-175、src/adapters/codex/daemon.ts:117-154 | "统一事件模型 EventEnvelope"（architecture.md:23 声称 EV 是核心入口）实际仅被 CLI `event` 命令消费（纯透传+审计），两个真实适配器全部绕过它直接调 MemcoreAdapter 的定制方法；`payload` 字段（events.ts:25,36）全仓库无任何读取 | 两套事件模型并存，统一模型名存实亡；EVENTS 中 compacting/injection/use 等事件名（events.ts:3-14）无任何语义消费 | 二选一：让适配器产 Envelope 供 core 消费，或承认 MemcoreAdapter 为事实事件入口、从架构文档删除 EV 声明并裁剪 events.ts 死事件 |
+| 🟠 | src/core/events.ts:19-27 + src/cli/index.ts:399-432 vs src/adapters/opencode/plugin.ts:146-175、src/adapters/codex/daemon.ts:117-154 | "统一事件模型 EventEnvelope"（architecture.md:23 声称 EV 是核心入口）实际仅被 CLI `event` 命令消费（纯透传+审计），两个真实适配器全部绕过它直接调 MemcurioAdapter 的定制方法；`payload` 字段（events.ts:25,36）全仓库无任何读取 | 两套事件模型并存，统一模型名存实亡；EVENTS 中 compacting/injection/use 等事件名（events.ts:3-14）无任何语义消费 | 二选一：让适配器产 Envelope 供 core 消费，或承认 MemcurioAdapter 为事实事件入口、从架构文档删除 EV 声明并裁剪 events.ts 死事件 |
 | 🟠 | src/core/curate.ts:395-398 | `formatCuratePlan` 在 core 中硬编码中文 UI 文本（"LLM 输出无法解析，需人工复核"/"LLM 调用预算已用尽…"），仓库专门建有 zh/en 词典 src/cli/i18n.ts:106-230 却被绕过 | CLI 输出语言与 i18n 架构不一致，en 模式下仍出中文；core 产 UI 文案违反分层 | core 返回结构化数据（unparsable/checksExhausted 计数），文案移入 cli/i18n.ts 与现有词典合并 |
 | 🟡 | src/core/events.ts:16,20 | 定义了 `Host` 联合类型但 `EventEnvelope.host: string`，校验处 `as Host` 强转（events.ts:39） | 类型系统对 host 无约束，强转掩盖错误 | `host: Host` 直接使用联合类型 |
 | 🟡 | src/core/curate.ts:81,97,110 | 三个 LLM 系统提示用中文硬编码（价值评估/矛盾判断/伞合并），与 reflect.ts:83 的英文提示风格相反 | 多语言记忆库中 LLM 输出语言偏向中文，评估口径不一致 | 提示词抽为 provider 可配置模板或双语模板，与 reflect.ts 统一风格 |
@@ -317,8 +317,8 @@ memcore 的工程基础非常扎实：md 真源 + 原子写 + 全序文件锁 + 
 | 🟡 | src/core/mdStore.ts:184,304、src/core/paths.ts:86 | 用 `"/"` 手动切路径推导 ns/basename，而同文件其他位置已用 node:path 的 `join`（mdStore.ts:2,158） | Windows 下 ns 推导静默错误（`C:\x` 切不开），跨平台声明不成立 | 统一用 `basename`/`dirname` 提取，删除手写 split |
 | 🟡 | docs/architecture.md:83-99,114 | 模块地图缺失 core 新增的 ids.ts、reflect.ts、safeSearch.ts（实际 18 个文件，文档只列 15 个）；未提 cli/i18n.ts；"tests/ 225+ 用例（21 文件）" 实际为 289 用例、22 个文件（21 测试 + helpers.ts） | 文档与代码失步，新成员按文档找不到 reflect/safeSearch 职责 | 补 3 个文件条目并更新测试统计，标注快照日期 |
 | 🟡 | src/core/safeSearch.ts:21-38 vs src/core/baseline.ts:146-161 vs src/adapters/shared/engine.ts:360-376 | "分页 + 注入过滤直到凑满 topN" 循环在 3 处重复实现 | 过滤/分页逻辑漂移风险（如 blocked 计数口径、批大小 32 的魔数） | 抽公共 helper（如 `collectSafe(select, topN)`）供三处复用 |
-| 🟡 | src/adapters/shared/engine.ts:60 | 共享适配器 MemcoreAdapter 的 `sessionCreated` 默认 `host = "opencode"`，把 harness 名写进 shared 层（opencode/plugin.ts:147 依赖此默认值） | shared 层被 opencode 特定值污染，新 harness 复用需警惕隐式默认 | 默认值改为必填参数或 "unknown"，由各适配器显式传 host |
-| 🔵 | src/mcp/index.ts:32-191（对照清单第 3 条） | 清单中 "MemcoreAdapter（src/mcp/index.ts）" 引用有误：src/mcp/index.ts 是 MCP server（4 工具：memory_search/remember/forget/status），MemcoreAdapter 实际在 src/adapters/shared/engine.ts:44 | 评审依据路径偏差，不影响结论：MCP 工具与 core 接口（safeSearch、updateKindsAtomically、Transaction）使用一致 | 更正清单引用路径 |
+| 🟡 | src/adapters/shared/engine.ts:60 | 共享适配器 MemcurioAdapter 的 `sessionCreated` 默认 `host = "opencode"`，把 harness 名写进 shared 层（opencode/plugin.ts:147 依赖此默认值） | shared 层被 opencode 特定值污染，新 harness 复用需警惕隐式默认 | 默认值改为必填参数或 "unknown"，由各适配器显式传 host |
+| 🔵 | src/mcp/index.ts:32-191（对照清单第 3 条） | 清单中 "MemcurioAdapter（src/mcp/index.ts）" 引用有误：src/mcp/index.ts 是 MCP server（4 工具：memory_search/remember/forget/status），MemcurioAdapter 实际在 src/adapters/shared/engine.ts:44 | 评审依据路径偏差，不影响结论：MCP 工具与 core 接口（safeSearch、updateKindsAtomically、Transaction）使用一致 | 更正清单引用路径 |
 | 🔵 | src/core/baseline.ts:55,87 | 注入 AGENTS.md 的文本硬编码 MCP 工具名列表（memory_search/remember/forget/status） | MCP 工具增删需同步改 core 注入文案，否则 AGENTS.md 指引失真 | 工具名列表集中常量或从 mcp 层注入 |
 | 🔵 | src/core/db.ts:100-410、src/cli/index.ts:940（行） | 上帝模块：Index 类兼 schema/迁移/FTS 校验重建/session/矛盾/审计/统计多职责（410 行）；CLI 25 命令单文件（940 行，命令数 25 与 docs:101 一致） | 可维护性压力，测试需 mock 庞大 Index | 可将 FTS 校验/迁移拆出；CLI 按命令组拆分（docs 已声明"25 命令"，属可接受的 app 壳） |
 | 🔵 | src/core/events.ts:3-14 | EVENTS 中 tool_use/compacting/injection/use/idle 等事件仅被 cli/index.ts:427 作为 `event.<name>` 字符串透传审计，无处理语义 | 校验白名单制造"支持"假象 | 与上表第 2 行合并处理，裁剪或实现 |
@@ -420,7 +420,7 @@ memcore 的工程基础非常扎实：md 真源 + 原子写 + 全序文件锁 + 
 | 🟠 | src/cli/index.ts:327-339、371-381；src/core/db.ts:289-325 | `cmdReindex`/`cmdRepair` 从 md 读取快照后执行 `rebuild()`（`DELETE FROM entries` + 全量重插，db.ts:309-324），与 daemon/MCP 并发写入**无任何协调**；快照之后另一进程提交的条目被抹掉。`verifyFts` 只比对 `entries` vs `fts`（db.ts:129-137），不比对 md vs 索引，漂移不会被自动发现，`fts_verified_version` 已写入后校验不再触发 | 影子索引静默丢失并发写入的条目（md 真源保留，但检索/注入不可见，需手动 reindex 修复） | rebuild 前获取所有 ns×kind 的 md 锁（复用 `updateKindsAtomically` 的锁序），或将 rebuild 改为按 lock+重读+对比的合并式重建 |
 | 🟠 | src/core/transaction.ts:63；src/core/sqlite.ts:38,71 | 文件锁超时 `LOCK_TIMEOUT_MS=5000` < SQLite `busy_timeout=20000`，且 SQLite busy 等待发生在**持有 md 锁期间**（mdStore.ts:272 → commit → db.ts:170-173）：竞争者 5s 抛 `file lock timeout`，持有者自身最多同步阻塞 20s 事件循环 | 高并发（CLI+MCP+daemon）下假性锁超时错误、hook 响应延迟；虽非死锁但持续可见 | 锁超时 ≥ busy_timeout（或二者同为 20s）；把 SQLite commit 移出文件锁内，改为锁内只写 md + 锁外重试式 commit |
 | 🟠 | src/adapters/codex/daemon.ts:564-580；src/core/db.ts:328-330 | 每次 daemon 启动执行 `closeAllSessions`：`UPDATE sessions SET ended_at=? WHERE ended_at IS NULL` 关闭**所有 host**（含 opencode 插件进程）的活跃 session 行 | 与另一进程的 `recordSession` 并发时，活跃会话被误标 ended（会话元数据错误、统计失真）；daemon 接受连接后才执行（daemon.ts:475→564），同 daemon 自身刚记录的会话也有极小窗口 | 按 host 过滤（仅收 codex 自己）或携带 daemon 启动时间戳只清理更早的 session |
-| 🟠 | src/adapters/codex/daemon.ts:365-375、475-498 | 单实例探测仅靠 `isListening` 试探式 connect：daemon 事件循环被长同步 SQL（FTS 校验、20s busy 等待）阻塞时 accept 队列占满/未 accept，探测 connect 失败（ECONNREFUSED）→ `rmSync` 删除**存活 daemon 的 socket** → 新 daemon bind 成功 | 双 daemon 同时存活，各自持有独立 `MemcoreAdapter` 会话状态，hook 流量分裂、会话统计重复/分叉（SQLite/md 锁兜底无损坏，但行为错误） | 增加 pid 锁文件（bind 成功后写入，探测时校验 pid 存活）替代纯 socket 探测；或 bind 用 SO_REUSEPORT 语义 + 持有期心跳 |
+| 🟠 | src/adapters/codex/daemon.ts:365-375、475-498 | 单实例探测仅靠 `isListening` 试探式 connect：daemon 事件循环被长同步 SQL（FTS 校验、20s busy 等待）阻塞时 accept 队列占满/未 accept，探测 connect 失败（ECONNREFUSED）→ `rmSync` 删除**存活 daemon 的 socket** → 新 daemon bind 成功 | 双 daemon 同时存活，各自持有独立 `MemcurioAdapter` 会话状态，hook 流量分裂、会话统计重复/分叉（SQLite/md 锁兜底无损坏，但行为错误） | 增加 pid 锁文件（bind 成功后写入，探测时校验 pid 存活）替代纯 socket 探测；或 bind 用 SO_REUSEPORT 语义 + 持有期心跳 |
 | 🟡 | src/core/transaction.ts:121-128 | `isStaleLock` 用 `process.kill(pid,0)` 判定持有者存活：pid 被 OS 复用给无关进程时返回"存活"，锁**永不回收**（128-130 行刻意不抢活锁），所有竞争者持续 5s 超时失败直至无关进程退出 | 孤儿锁长期阻塞写路径（有超时兜底，非死锁，但功能持续不可用） | 记录 pid+启动时间戳/主机随机串，stale 判定增加"锁龄 > STALE_LOCK_MS 且持有者非本机已知进程"的降级路径 |
 | 🟡 | src/core/transaction.ts:155-165 | `rotateLog` 的 `renameSync` **不经过 logLock**，与 `Transaction.append`（182-185 行持锁追加）并发时，append 打开的旧 fd 落入 `.old` 文件，顺序跨文件错乱（readAll 会读到，但时序被打乱） | 当前生产代码未调用（仅测试），风险为潜在死代码陷阱 | 旋转逻辑纳入 logLock 临界区，或删除未使用的 rotateLog |
 | 🟡 | src/core/transaction.ts:215-245 | `readAll`/`pending()` **不加锁**读取 jsonl，与并发 append 竞争可读到半行（计入 corrupt）；`repair --execute`（cli/index.ts:371-381）可能把 in-flight 事务判为 pending 并 `truncateLog`，另一进程随后才追加 COMMIT（BEGIN 丢失） | 误报 pending/污点统计；依赖 md 真源重建自愈，无损坏但误导修复流程 | 读取时获取 logLock 或以 append 粒度（按行长度+mmap 偏移）读；truncate 前再次确认无 in-flight |
@@ -486,7 +486,7 @@ memcore 的检索链路整体设计扎实：FTS5 trigram 在 Bun 1.3.14 实测�
 
 ### 摘要
 
-总体集成质量高：两个适配器复用同一 `MemcoreAdapter`（无重复实现，差异全部收敛在传输层）；opencode 事件形状与 `@opencode-ai/sdk` 类型逐一吻合（含 `message.part.removed` 顶层 `sessionID` 这种易错点）；codex 侧事件名/输入字段/输出通道与 codex 源码 schema 核实一致，鉴权（token + 600/700 权限）、去重、薄壳+常驻 daemon 架构设计扎实；产物 bundle 自包含（64KB，仅动态依赖 `bun:sqlite`/`node:sqlite` 内建），50 项适配器测试全绿。
+总体集成质量高：两个适配器复用同一 `MemcurioAdapter`（无重复实现，差异全部收敛在传输层）；opencode 事件形状与 `@opencode-ai/sdk` 类型逐一吻合（含 `message.part.removed` 顶层 `sessionID` 这种易错点）；codex 侧事件名/输入字段/输出通道与 codex 源码 schema 核实一致，鉴权（token + 600/700 权限）、去重、薄壳+常驻 daemon 架构设计扎实；产物 bundle 自包含（64KB，仅动态依赖 `bun:sqlite`/`node:sqlite` 内建），50 项适配器测试全绿。
 
 但发现 1 个由 **codex 源码证实** 的 🔴 Critical：SessionStart 的 10 分钟去重窗口会吞掉压缩后 codex 再次触发的 `SessionStart(source=compact)`，使文档承诺的"压缩后重新注入"在常见时间窗内静默失效。另有 codex 反思子进程递归触发 hooks 造成记账污染等 🟠 Major 问题。
 
@@ -506,7 +506,7 @@ memcore 的检索链路整体设计扎实：FTS5 trigram 在 Bun 1.3.14 实测�
 | 🟡 | src/adapters/codex/generate.ts:68 | plugin.json `version: "0.1.0"` 硬编码，与 package.json 版本脱钩 | 包升级后插件版本陈旧 | 从 package.json 读取 |
 | 🟡 | docs/integration-codex.md:14-15,26 | 文档称"codex-hook.js（薄壳）"而产物名为 `hook.js`（generate.ts:54）；去重仅提到 PostToolUse/UserPromptSubmit，未提 SessionStart（10min）与 PostCompact（30s）两处去重 | 排障时认知偏差 | 同步文档（尤其补 SessionStart 去重与 🔴 项的关系） |
 | 🟡 | src/adapters/codex/hook.ts:16-19 | 环境变量 `MEMCORE_CODEX_DAEMON`/`BUN_BIN`/`MEMCORE_LANG` 均未在 docs/integration-codex.md 记载（文档只列了 SOCKET/REFLECT/BIN/ROOT） | 环境变量面不完整 | 补文档 |
-| 🔵 | src/adapters/shared/engine.ts（全文件） | 复用性良好：两适配器共享 `MemcoreAdapter`，会话记账/注入/复盘/touch 无重复实现。行为分叉仅存在于有意的传输层差异：codex 用统计摘要反思（hook.ts 无摘要通道）、opencode 用真实压缩摘要；codex 无压缩前注入通道（docs 已如实记录）、opencode 走 `experimental.session.compacting` | 无 | — |
+| 🔵 | src/adapters/shared/engine.ts（全文件） | 复用性良好：两适配器共享 `MemcurioAdapter`，会话记账/注入/复盘/touch 无重复实现。行为分叉仅存在于有意的传输层差异：codex 用统计摘要反思（hook.ts 无摘要通道）、opencode 用真实压缩摘要；codex 无压缩前注入通道（docs 已如实记录）、opencode 走 `experimental.session.compacting` | 无 | — |
 | 🔵 | src/adapters/opencode/plugin.ts:170-175 | 事件翻译完整性：`session.created/idle/compacted/deleted`、`message.part.*` 全覆盖；未处理的 `session.updated/status/diff/error`、`message.updated/removed`、`file.edited`、`todo.updated`、`command.executed`、`permission.*` 均确认无功能损失（`session.error` 会话后续仍会走 deleted） | 无 | 可在文档补一张"忽略事件"清单便于排障 |
 | 🔵 | scripts/bundle-opencode-plugin.ts:7-12 + dist/opencode-memcore-plugin.js | 打包一致性验证：产物含全部核心逻辑（sqlite 动态回退 bun→node，sqlite.ts:97-119），@modelcontextprotocol/sdk 与 zod 被 tree-shake 掉，仅剩运行时内建，无缺失模块；命名与 docs/integration-opencode.md:32 一致；dist（11:27）晚于 src（11:02），无陈旧产物 | 无 | — |
 | 🔵 | src/adapters/codex/hook.ts:31-52,429-450 | socket 协议（单行 JSON `{token,input}` → 单行 JSON 响应）hook 与 daemon 完全对账；token 文件 `wx` 原子创建 + 重读竞态处理（daemon.ts:314-363）、socket 目录 700 + 文件 600 权限链完整；EADDRINUSE 兜底（daemon.ts:475-498） | 无 | — |
@@ -514,7 +514,7 @@ memcore 的检索链路整体设计扎实：FTS5 trigram 在 Bun 1.3.14 实测�
 
 ### 亮点
 
-- **共享 engine 设计干净**：记账/注入/复盘/读侧 touch 全部收敛在 `MemcoreAdapter`，两个适配器零复制；差异（摘要来源、reflect 后端、去重策略）全部是传输层有意为之，且均有注释说明。
+- **共享 engine 设计干净**：记账/注入/复盘/读侧 touch 全部收敛在 `MemcurioAdapter`，两个适配器零复制；差异（摘要来源、reflect 后端、去重策略）全部是传输层有意为之，且均有注释说明。
 - **事件形状逐一核实正确**：`session.idle/compacted` 用顶层 `sessionID`、`message.part.updated` 用 `part.sessionID`、`message.part.removed` 用顶层 `sessionID`（plugin.ts:12-37）——与 SDK `EventSession*` 类型精确匹配，这是最易翻车的点。
 - **codex 侧协议诚实且扎实**：PreCompact"无注入通道"被如实记录为占位（generate.ts 片段注释 + docs §5 修正表）；去重键按 `tool_use_id`/`turn_id` 设计并配合 inFlight 合并并发重发；反思输出解析（daemon.ts:179-234）对 JSONL 事件流、非 JSON 兜底、turn.failed 降级都做了处理。
 - **安全基线良好**：unix socket + 随机 token 握手 + `chmod 600/700`、日志 `0o600`、注入内容一律过 `sanitizeForInjection`/`redactSecrets`，反思提示词对模型输出二次脱敏（engine.ts:194-195）。
