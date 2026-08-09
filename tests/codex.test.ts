@@ -201,7 +201,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     await handle({ hook_event_name: "PostCompact", cwd: "/tmp/MyProject", session_id: "s1", turn_id: "t1", compacted_at: "2026-08-08T00:00:00Z" });
     await handle({ hook_event_name: "PostCompact", cwd: "/tmp/MyProject", session_id: "s1", turn_id: "t1", compacted_at: "2026-08-08T00:00:00Z" });
     const entries = await waitForCompactEntry(1);
-    expect(entries[0].content).toContain("Reflection");
+    expect(entries[0]?.content).toContain("Reflection");
   });
 
   test("PostCompact events in distinct turns are both reflected", async () => {
@@ -340,7 +340,8 @@ describe("codex hook child process", () => {
         resolve(stdout);
       });
       child.stdin.write(
-        JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" }) + "\n",
+        `${JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" })}
+`,
       );
       child.stdin.end();
     });
@@ -370,16 +371,23 @@ describe("codex hook child process", () => {
       child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
       child.on("error", reject);
       child.on("close", (code) => resolve({ code, stderr }));
-      child.stdin.write(JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1" }) + "\n");
+      child.stdin.write(`${JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1" })}
+`);
       child.stdin.end();
     });
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("daemon");
-  });
+    // The hook polls until its deadline (10s for non-PostCompact events)
+    // before giving up, so the default 5s test timeout must be raised.
+  }, 15_000);
 });
 
 describe("codex plugin generation", () => {
-  test("generateCodexPlugin emits shell-escaped hook commands and bundle outputs", async () => {
+  // Both plugin tests exercise the built bundle (dist/), so they can only run
+  // after `bun run build`; on a fresh checkout they are skipped, not silently
+  // passed or failed.
+  const hasDist = existsSync(join(import.meta.dir, "..", "dist"));
+  test.skipIf(!hasDist)("generateCodexPlugin emits shell-escaped hook commands and bundle outputs", async () => {
     const { generateCodexPlugin } = await import("../src/adapters/codex/generate.js");
     const outDir = join(dir, "plugin");
     const generated = await generateCodexPlugin(outDir);
@@ -396,11 +404,11 @@ describe("codex plugin generation", () => {
       "SessionEnd",
     ]);
     for (const groups of Object.values(plugin.hooks)) {
-      const command = groups[0].hooks[0].command;
+      const command = groups[0]?.hooks[0]?.command;
       // Both the bun binary and the hook path are single-quoted (spaces safe,
       // no shell injection), so the command starts with an opening quote.
-      expect(command.startsWith("'")).toBe(true);
-      expect(command.endsWith(`'${generated.hookPath}'`)).toBe(true);
+      expect(command?.startsWith("'")).toBe(true);
+      expect(command?.endsWith(`'${generated.hookPath}'`)).toBe(true);
       expect(command).toContain(`'${process.execPath}'`);
     }
     expect(existsSync(generated.daemonPath)).toBe(true);
@@ -410,21 +418,15 @@ describe("codex plugin generation", () => {
     expect(snippet).toContain("[hooks.events.session_start]");
   });
 
-  test("generateCodexPlugin fails loudly on missing dist output", async () => {
+  test.skipIf(!hasDist)("generateCodexPlugin fails loudly on missing dist output", async () => {
     const { generateCodexPlugin } = await import("../src/adapters/codex/generate.js");
-    const { renameSync } = await import("node:fs");
-    const distDir = join(import.meta.dir, "..", "dist");
-    if (!existsSync(distDir)) {
-      console.warn("SKIP: dist/ missing on this checkout, negative case not exercised");
-      return; // nothing to hide
-    }
-    const hidden = join(dir, "dist-hidden");
-    renameSync(distDir, hidden);
-    try {
-      await expect(generateCodexPlugin(join(dir, "p2"))).rejects.toThrow(/missing build output/);
-    } finally {
-      renameSync(hidden, distDir);
-    }
+    const { cpSync, rmSync: rm } = await import("node:fs");
+    // Work on a disposable copy of dist/ so the real build output is never
+    // touched, even if the test is interrupted.
+    const distCopy = join(dir, "dist-copy");
+    cpSync(join(import.meta.dir, "..", "dist"), distCopy, { recursive: true });
+    rm(join(distCopy, "adapters", "codex", "daemon.js"), { force: true });
+    await expect(generateCodexPlugin(join(dir, "p2"), { distDir: distCopy })).rejects.toThrow(/missing build output/);
   });
 });
 
@@ -485,10 +487,10 @@ describe("codex daemon socket", () => {
       sock.on("error", reject);
       sock.on("close", () => resolve(out));
       sock.write(
-        JSON.stringify({
+        `${JSON.stringify({
           token,
           input: { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" },
-        }) + "\n",
+        })}\n`,
       );
     });
     const parsed = JSON.parse(resp) as { continue: boolean; hookSpecificOutput?: { additionalContext?: string | null } };
@@ -507,7 +509,8 @@ describe("codex daemon socket", () => {
       sock.on("data", (d) => (out += d.toString()));
       sock.on("error", reject);
       sock.on("close", () => resolve(out));
-      sock.write(JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1" }) + "\n");
+      sock.write(`${JSON.stringify({ hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1" })}
+`);
     });
     expect(JSON.parse(resp).systemMessage).toContain("unauthorized");
     await stopDaemon(daemon, socketPath);
@@ -545,7 +548,8 @@ describe("codex daemon socket", () => {
     await waitForSocket(socketPath);
     const token = readFileSync(join(dir, "state", "codex.token"), "utf-8").trim();
     const sock = connect(socketPath);
-    sock.write(JSON.stringify({ token, input: { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" } }) + "\n");
+    sock.write(`${JSON.stringify({ token, input: { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" } })}
+`);
     sock.destroy();
     await new Promise((r) => setTimeout(r, 50));
     const alive = await new Promise<boolean>((resolve) => {
@@ -575,6 +579,17 @@ describe("codex daemon socket", () => {
     const daemon = trackDaemon(runCodexDaemon({ socketPath }));
     await waitForSocket(socketPath);
     await expect(runCodexDaemon({ socketPath })).rejects.toThrow(/already running/);
+    await stopDaemon(daemon, socketPath);
+  });
+
+  test("a stale pid file (dead owner) is reclaimed on start", async () => {
+    const socketPath = join(dir, "state", "codex.sock");
+    mkdirSync(join(dir, "state"), { recursive: true });
+    // A pid that cannot be alive (PID 2**22-1 is far beyond the system's
+    // default pid_max of 4194304) marks the previous daemon as crashed.
+    writeFileSync(`${socketPath}.pid`, "4194303|2026-01-01T00:00:00.000Z\n", { mode: 0o600 });
+    const daemon = trackDaemon(runCodexDaemon({ socketPath }));
+    await waitForSocket(socketPath);
     await stopDaemon(daemon, socketPath);
   });
 });

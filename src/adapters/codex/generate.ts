@@ -42,9 +42,14 @@ function tomlQuote(s: string): string {
   return JSON.stringify(s);
 }
 
-export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlugin> {
+export async function generateCodexPlugin(
+  outDir: string,
+  opts: { distDir?: string } = {},
+): Promise<GeneratedPlugin> {
   mkdirSync(outDir, { recursive: true });
-  const distDir = join(import.meta.dir, "..", "..", "..", "dist");
+  // Overridable so tests can point at a disposable copy instead of the real
+  // build output (and so alternate layouts can be supported later).
+  const distDir = opts.distDir ?? join(import.meta.dir, "..", "..", "..", "dist");
   const daemonSrc = join(distDir, "adapters", "codex", "daemon.js");
   const hookSrc = join(distDir, "adapters", "codex", "hook.js");
   const mcpSrc = join(distDir, "mcp", "index.js");
@@ -87,7 +92,7 @@ export async function generateCodexPlugin(outDir: string): Promise<GeneratedPlug
     },
   };
   const pluginJsonPath = join(outDir, "plugin.json");
-  writeFileSync(pluginJsonPath, JSON.stringify(plugin, null, 2) + "\n", { mode: 0o600 });
+  writeFileSync(pluginJsonPath, `${JSON.stringify(plugin, null, 2)}\n`, { mode: 0o600 });
 
   const eventNames: Array<[string, string]> = [
     ["session_start", "SessionStart"],

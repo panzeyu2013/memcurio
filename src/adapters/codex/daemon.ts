@@ -13,7 +13,7 @@ import type { AdapterLog } from "../shared/engine.js";
 import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
 import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
 import { Index } from "../../core/db.js";
-import { indexDb } from "../../core/paths.js";
+import { ensureLayout, indexDb } from "../../core/paths.js";
 import { isStaleLock } from "../../core/transaction.js";
 
 export interface CodexEventInput {
@@ -31,13 +31,16 @@ export interface CodexEventInput {
   source?: string;
 }
 
-export { type AdapterLog };
+export type { AdapterLog };
 
 const DEDUPE_WINDOW_MS = 10 * 60_000;
 // PostCompact processing (reflection) can run up to 120s, so its dedupe window
 // must cover a hook-client retry after that timeout.
 const POST_COMPACT_DEDUPE_MS = 130_000;
 const IDLE_EXIT_MS = 6 * 60 * 60_000;
+// A single request line from the hook client; legit payloads are a few KB,
+// this only guards against an unbounded accumulation in the socket buffer.
+const MAX_REQUEST_LINE_BYTES = 16 * 1024 * 1024;
 
 function filePathFromToolInput(toolInput: unknown): string | undefined {
   if (toolInput && typeof toolInput === "object") {
@@ -238,6 +241,11 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
   }
 }
 
+// A sanity cap on reflection stdout: legit JSONL streams are a few KB, so this
+// only guards against a runaway child. Unlike stderr it must stay generous —
+// truncating mid-event would silently discard a valid reflection.
+const REFLECT_STDOUT_MAX_BYTES = 1024 * 1024;
+
 export function codexExecReflect(opts: {
   log?: AdapterLog;
   timeoutMs?: number;
@@ -283,7 +291,9 @@ export function codexExecReflect(opts: {
         settle(null);
       }, timeoutMs);
       child.stdout.on("data", (d: Buffer) => {
-        stdout += d.toString();
+        if (stdout.length < REFLECT_STDOUT_MAX_BYTES) {
+          stdout += d.toString().slice(0, REFLECT_STDOUT_MAX_BYTES - stdout.length);
+        }
       });
       child.stderr.on("data", (d: Buffer) => {
         if (stderr.length < 4096) {
@@ -328,7 +338,7 @@ function sleepSync(ms: number): void {
 
 export function ensureToken(root: string): string {
   const path = tokenPath(root);
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const existing = readFileSync(path, "utf-8").trim();
@@ -347,7 +357,7 @@ export function ensureToken(root: string): string {
     let fd: number | null = null;
     try {
       fd = openSync(path, "wx", 0o600);
-      writeFileSync(fd, token + "\n");
+      writeFileSync(fd, `${token}\n`);
     } catch {
       // another process won the race; read theirs below
     } finally {
@@ -419,7 +429,7 @@ export async function runCodexDaemon(opts: {
   root?: string;
   log?: AdapterLog;
 }): Promise<CodexDaemonHandle> {
-  mkdirSync(dirname(opts.socketPath), { recursive: true });
+  mkdirSync(dirname(opts.socketPath), { recursive: true, mode: 0o700 });
   const root = opts.root ?? (process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio"));
   const token = ensureToken(root);
   const handle = createCodexHandler(opts.log);
@@ -497,6 +507,16 @@ export async function runCodexDaemon(opts: {
         return;
       }
       buf += decoder.write(chunk);
+      // A request line that never arrives would grow buf without bound; the
+      // 15s idle timeout below covers slow senders, this caps memory for fast
+      // ones. Legit hook payloads are a few KB.
+      if (buf.length > MAX_REQUEST_LINE_BYTES) {
+        if (opts.log) {
+          opts.log("warn", "codex request line too large, dropping connection");
+        }
+        socket.destroy();
+        return;
+      }
       const nl = buf.indexOf("\n");
       if (nl < 0) {
         return;
@@ -514,21 +534,21 @@ export async function runCodexDaemon(opts: {
       try {
         parsed = JSON.parse(line) as { token?: string; input?: unknown };
       } catch {
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error: invalid request" }) + "\n");
+        sock.end(`${JSON.stringify({ continue: true, systemMessage: "memcurio error: invalid request" })}\n`);
         return;
       }
       if (parsed.token !== token) {
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error: unauthorized" }) + "\n");
+        sock.end(`${JSON.stringify({ continue: true, systemMessage: "memcurio error: unauthorized" })}\n`);
         return;
       }
       try {
         const out = await handle(parsed.input);
-        sock.end(JSON.stringify(out) + "\n");
+        sock.end(`${JSON.stringify(out)}\n`);
       } catch (err) {
         if (opts.log) {
           opts.log("error", `handleEvent failed: ${String(err)}`);
         }
-        sock.end(JSON.stringify({ continue: true, systemMessage: "memcurio error" }) + "\n");
+        sock.end(`${JSON.stringify({ continue: true, systemMessage: "memcurio error" })}\n`);
       }
     }
   });
@@ -689,7 +709,7 @@ async function closeStaleSessions(root: string, host: string): Promise<void> {
 
 const isMain = (() => {
   try {
-    return pathToFileURL(process.argv[1]).href === import.meta.url;
+    return pathToFileURL(process.argv[1] ?? "").href === import.meta.url;
   } catch {
     return false;
   }
@@ -697,6 +717,9 @@ const isMain = (() => {
 if (isMain) {
   const root = process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio");
   const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
+  // Create the full layout (0700 dirs) before anything else so the root is
+  // never left world-readable in the window before the first SessionStart.
+  ensureLayout(root);
   const daemon = await runCodexDaemon({ socketPath, root });
   await daemon.closed;
 }

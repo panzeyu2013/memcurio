@@ -6,7 +6,16 @@ import { join } from "node:path";
 
 import { redactSecrets } from "../../core/sanitize.js";
 
-const stdin = readFileSync(0, "utf-8").trim();
+// Guard against a runaway/abused stdin: legit codex hook payloads are a few
+// KB; anything near this cap is not a real event.
+const MAX_STDIN_BYTES = 10 * 1024 * 1024;
+
+let stdin = readFileSync(0, "utf-8");
+if (stdin.length > MAX_STDIN_BYTES) {
+  process.stderr.write("memcurio: hook input exceeds the size limit\n");
+  process.exit(1);
+}
+stdin = stdin.trim();
 if (!stdin) {
   process.exit(0);
 }
@@ -49,7 +58,7 @@ function request(line: string, timeoutMs: number): Promise<string> {
       clearTimeout(timer);
       resolve(out);
     });
-    sock.write(line + "\n");
+    sock.write(`${line}\n`);
   });
 }
 
@@ -156,7 +165,10 @@ function spawnDaemon(): void {
 let resp = await tryRequest();
 if (resp === null) {
   spawnDaemon();
-  for (let i = 0; i < 20 && Date.now() < deadline; i++) {
+  // Poll until the deadline, not a fixed retry count: a cold daemon start on
+  // a slow machine can exceed 20 quick attempts, and the deadline is the
+  // real bound the hook must respect anyway.
+  while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, deadline - Date.now()))));
     resp = await tryRequest();
     if (resp !== null) {
