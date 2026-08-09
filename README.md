@@ -19,8 +19,8 @@ bun run src/cli/index.ts init
 memcore remember "项目 A 使用 SQLite FTS5 trigram 做检索" --ns proj-a
 memcore remember "用户偏好简洁回答" --kind USER
 
-# 3. 检索（自然语言提问可直接命中）
-memcore search "怎么设计记忆检索的索引？"
+# 3. 检索（建议直接使用内容中的连续片段）
+memcore search "SQLite FTS5 trigram"
 
 # 4. 项目内基线注入（AGENTS.md 记忆区块，读侧自动注入）
 memcore baseline .
@@ -61,12 +61,14 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 全部用例（当前 289）
+bun test          # 全部用例（当前 320）
 bun run typecheck # 类型检查（覆盖 src/tests/scripts）
 bun run bundle:plugin
 ```
 
-CLI 用户文案支持 i18n：默认中文（无 `LANG` 时）；`MEMCORE_LANG=zh` / `en` 显式指定，`LANG=zh*` 中文、其余语言环境（en/fr/de/ja…）英文；注入 AI 上下文的记忆内容统一为英文。
+CLI 用户文案支持 i18n：默认中文（无 `LANG` 时）；`MEMCORE_LANG=zh` / `en` 显式指定，`LANG=zh*` 中文、其余语言环境（en/fr/de/ja…）英文；注入模板与反思输出统一为英文，记忆内容按原样注入（不翻译、不统一语言）。
+
+退出码约定：`0` 成功；`1` 数据/运行时错误（如条目不存在、导入冲突、repair 干跑发现待修复项）；`2` 用法错误（未知命令/选项、缺少必填参数、无效 ns/kind）。`doctor` 健康时 `0`、发现问题时 `1`。
 
 ### 环境变量
 

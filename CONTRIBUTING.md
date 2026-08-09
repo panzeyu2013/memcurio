@@ -14,7 +14,7 @@
 - TypeScript strict 模式，`tsc --noEmit` 必须零错误；**禁止 `any`**（确需放宽用显式类型断言并说明理由）。
 - **不加注释**（除非解释不可自明的安全/并发语义）；用自描述命名代替注释。
 - ESM，本地导入一律带 `.js` 扩展名；模块职责单一，禁止跨层 import（CLI 可调 core/adapters/mcp，core 不得反向依赖）。
-- 新增文件或改动核心路径后运行：`bun test` 全绿 + `bunx tsc --noEmit` + `bun run build` + `bun run bundle:plugin`。
+- 新增文件或改动核心路径后运行：`bun test` 全绿 + `bun run typecheck`（覆盖 src/tests/scripts）+ `bun run build` + `bun run bundle:plugin`。
 - 并发安全：md 写一律经 `addEntry`/`updateKind`（锁内读改写）；SQLite 依赖 WAL + busy_timeout，不得绕过 `withTransaction`。
 - 安全基线：ns 参数必须过 `assertValidNs`；任何注入路径必须过 `sanitizeForInjection`；任何写入路径必须过 `redactSecrets`；审计记录中的查询文本须脱敏。
 

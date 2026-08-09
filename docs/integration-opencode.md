@@ -36,8 +36,9 @@ mkdir -p ~/.config/opencode/plugins
 cp dist/opencode-memcore-plugin.js ~/.config/opencode/plugins/memcore.js
 
 # 3.（可选）启用 MCP 工具面
-# opencode.json 添加：
-# { "mcp": { "memcore": { "type": "local", "command": ["bun", "run", "<repo>/src/mcp/index.ts"] } } }
+# opencode.json 添加（安装 memcore 后推荐用 bin；源码路径仅开发时可用）：
+# { "mcp": { "memcore": { "type": "local", "command": ["memcore", "mcp"] } } }
+# 开发时：{ "mcp": { "memcore": { "type": "local", "command": ["bun", "run", "<repo>/src/mcp/index.ts"] } } }
 
 # 4.（可选）项目级基线注入（读侧自动注入）
 memcore baseline .           # 在项目根目录生成/更新 AGENTS.md 记忆区块

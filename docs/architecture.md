@@ -1,6 +1,6 @@
 # Memcore 架构现状图
 
-> 2026-08-08 快照：M0–M4 代码完成（真实 harness 验证待启用），LLM 策展骨架就绪。
+> 2026-08-09 快照：M0–M4 代码完成（真实 harness 验证待启用），LLM 策展骨架就绪。
 > 设计文档见 [design.md](./memory-harness-design.md)。
 
 ## 1. 分层架构
@@ -32,7 +32,7 @@ flowchart TB
     CUR["LLM 策展<br/>矛盾检测 / 伞合并 / 价值重评<br/>provider 可插拔"]
   end
 
-  MCP["MCP server（stdio）<br/>memory_search / remember / forget / status"]
+  MCP["MCP server（stdio）<br/>memory_search / memory_remember / memory_forget / memory_status"]
   CLI["CLI（25 命令，含 help/doctor/repair/compact）"]
 
   OC -->|事件/工具调用| AOC
@@ -84,26 +84,32 @@ src/
 │   ├── events.ts       事件模型（host/event 校验）
 │   ├── paths.ts        布局（0700）+ ns 白名单（防穿越）
 │   ├── config.ts       config.json（budget/prune/namespace）
-│   ├── transaction.ts  原子写（0600+O_EXCL+目录fsync）+ 文件锁（pid/残留回收，存活持有者不抢）+ 事务日志
+│   ├── transaction.ts  原子写（0600+O_EXCL+目录fsync）+ 文件锁（pid/残留回收，存活持有者不抢，超时=busy_timeout）+ 事务日志（自动轮转）
 │   ├── mdStore.ts      真源解析/渲染（§ id | kind | created | status | pinned；重写保留非条目内容）
-│   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（WAL+busy_timeout）
+│   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（WAL+busy_timeout+0600）
 │   ├── db.ts           影子索引（entries/sessions/contradictions/audit/meta + FTS5）
 │   │                   rebuild 保留统计 + schema_version 迁移 + withTransaction（嵌套防护）
+│   ├── ids.ts          条目 id（UUIDv4 32hex + 内容派生 id 防冲突）
+│   ├── llm.ts          共享 OpenAI 兼容客户端 + JSON 提取（curate/reflect 复用）
 │   ├── retriever.ts    Retriever 接口 + trigram/like 后端 + CJK 窗口 OR 查询
 │   ├── select.ts       静态 top-N（SQL 排序，排除 archived）
+│   ├── safeSearch.ts   检索注入过滤（分页直到凑满 topN）
 │   ├── prune.ts        剪枝状态机（纯函数）
-│   ├── transfer.ts     export/import/merge（ns 校验 + 内容去重 + 脱敏）
+│   ├── transfer.ts     export/import/merge（ns 校验 + 内容去重 + 脱敏；拒绝 deleted 状态导入）
 │   ├── baseline.ts     INDEX.md + AGENTS.md 区块（预算+消毒+审计）
-│   ├── budget.ts       token 估算（CJK=1，其余 0.25）+ 裁剪
-│   ├── sanitize.ts     注入扫描（Unicode/中文等价/零宽）+ 密钥脱敏
+│   ├── budget.ts       token 估算（CJK/假名/谚文=1，其余 0.25）+ 裁剪 + 截断标注
+│   ├── sanitize.ts     注入扫描（Unicode/双向符/控制符/全角等价/零宽）+ 密钥脱敏（高熵兜底）
+│   ├── reflect.ts      压缩反思（chat→http→fallback 降级链）
 │   └── curate.ts       LLM 策展（provider 抽象：矛盾/伞合并/重评 + 超时）
 ├── mcp/index.ts        MCP server（4 工具：检索消毒 + config 默认 ns）
-├── cli/index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
+├── cli/
+│   ├── index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
+│   └── i18n.ts         zh/en 词典（103 键对称）
 └── adapters/
     ├── shared/engine.ts  MemcoreAdapter（会话记账/注入/复盘/读侧 touch）
     ├── opencode/plugin.ts opencode 插件（打包单文件）
     └── codex/
-        ├── daemon.ts    unix socket daemon（token 首写者胜 + 单实例探测 + chmod600）
+        ├── daemon.ts    unix socket daemon（token 首写者胜 + pid 单实例锁 + chmod600）
         ├── hook.ts      薄壳（token 转发 + stderr/hook.log 诊断）
         └── generate.ts  plugin.json + 全事件 snippet + MCP bundle（dist 入口）
 docs/
@@ -111,7 +117,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          225+ 用例（21 文件）
+tests/                          320 用例（22 文件）
 ```
 
 ## 4. 存储布局
@@ -128,13 +134,15 @@ tests/                          225+ 用例（21 文件）
 ├── index.sqlite           # 影子索引（FTS5 trigram，可重建）
 ├── config.json            # budget / prune 阈值 / namespace
 ├── state/
-│   ├── transactions.jsonl # 事务日志
-│   ├── codex.sock         # codex daemon socket（运行时）
+│   ├── transactions.jsonl # 事务日志（>1MB 自动轮转为 .1/.2）
+│   ├── codex.sock         # codex daemon socket（运行时，附 .pid 单实例锁）
 │   ├── codex.token        # socket 鉴权 token（0600）
-│   ├── daemon.log         # daemon stderr（hook 自拉起时重定向）
+│   ├── daemon.log         # daemon stderr（hook 自拉起时重定向，0600）
 │   └── hook.log           # hook 诊断日志
 └── codex-plugin/          # memcore codex-plugin 默认输出
 ```
+
+> 一致性边界：单文件写是原子的（tmp+fsync+rename）；跨文件批量写（import/merge/prune/curate）在全部文件锁内完成并有同步失败回滚，但若进程在批量写中途被强杀（SIGKILL/断电），部分 md 已更新而索引未更新属预期内边界——事务日志会留下 BEGIN 记录，`memcore repair --execute` 从 md 真源重建索引即可收敛；md 真源自身不会损坏。
 
 ## 5. 里程碑状态
 
