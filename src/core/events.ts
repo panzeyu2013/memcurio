@@ -17,31 +17,33 @@ export type Host = (typeof HOSTS)[number];
 export type EventName = (typeof EVENTS)[number];
 
 export interface EventEnvelope {
-  host: string;
+  host: Host;
   actor: string;
   sessionId: string;
   workdir: string;
-  event: string;
+  event: EventName;
   payload: Record<string, unknown>;
   ts: string;
 }
 
 export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
+  const host = (input.host ?? "cli") as Host;
+  const event = (input.event ?? "") as EventName;
+  if (!HOSTS.includes(host)) {
+    throw new Error(`unknown host: ${String(host)}`);
+  }
+  if (!EVENTS.includes(event)) {
+    throw new Error(`unknown event: ${String(event)}`);
+  }
   const env: EventEnvelope = {
-    host: input.host ?? "cli",
+    host,
     actor: input.actor ?? "agent",
     sessionId: input.sessionId ?? "",
     workdir: input.workdir ?? "",
-    event: input.event ?? "",
+    event,
     payload: input.payload ?? {},
     ts: input.ts ?? new Date().toISOString(),
   };
-  if (!HOSTS.includes(env.host as Host)) {
-    throw new Error(`unknown host: ${env.host}`);
-  }
-  if (!EVENTS.includes(env.event as EventName)) {
-    throw new Error(`unknown event: ${env.event}`);
-  }
   return env;
 }
 

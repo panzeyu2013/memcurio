@@ -1,6 +1,8 @@
 import type { Entry, Kind } from "./mdStore.js";
+import { isKnownKind, isKnownStatus } from "./mdStore.js";
 import type { DbDriver, SqlRow } from "./sqlite.js";
 import { openDb } from "./sqlite.js";
+import { HOSTS } from "./events.js";
 
 const BASE = `
 CREATE TABLE IF NOT EXISTS entries(
@@ -80,13 +82,16 @@ function rowToEntry(r: EntryRow): Entry {
   return {
     entryId: r.entry_id,
     ns: r.ns,
-    kind: r.kind as Kind,
+    // Guard against stale/foreign rows entering the type system unchecked:
+    // unknown values fall back to the least surprising defaults instead of
+    // silently poisoning filtering/ranking logic.
+    kind: isKnownKind(r.kind) ? (r.kind as Kind) : "MEMORY",
     content: r.content,
     createdAt: r.created_at,
     lastUsedAt: r.last_used_at,
     useCount: r.use_count,
     valueScore: r.value_score,
-    status: r.status as Entry["status"],
+    status: isKnownStatus(r.status) ? (r.status as Entry["status"]) : "archived",
     pinned: r.pinned === 1,
   };
 }
@@ -117,6 +122,7 @@ export class Index {
       migrate(driver);
       const schemaVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value ?? "1";
       const verifiedVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_verified_version'")?.value;
+      const previousBackend = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_backend'")?.value;
       let backend: "trigram" | "like" = "trigram";
       try {
         driver.exec(FTS_TRIGRAM);
@@ -134,6 +140,12 @@ export class Index {
                EXCEPT
                SELECT entry_id, content FROM fts
              ) LIMIT 1`,
+          ) || !!driver.get<{ bad: number }>(
+            `SELECT 1 AS bad FROM (
+               SELECT entry_id FROM fts
+               EXCEPT
+               SELECT entry_id FROM entries
+             ) LIMIT 1`,
           );
           if (inconsistent) {
             driver.exec("BEGIN");
@@ -146,8 +158,44 @@ export class Index {
               throw err;
             }
           }
-          driver.get("SELECT count(*) AS c FROM fts");
           driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_verified_version', ?)", [schemaVersion]);
+        } catch {
+          backend = "like";
+        }
+      } else if (
+        backend === "trigram" &&
+        // Cheap row-count sanity check on every open: catches an externally
+        // emptied/damaged fts table that the one-time version gate would miss.
+        // Doctor (verifyFts:false) skips it on purpose so drift stays visible
+        // to the diagnostic instead of being silently healed.
+        previousBackend === "trigram" &&
+        opts.verifyFts !== false
+      ) {
+        try {
+          const entriesCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM entries")?.c ?? 0;
+          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
+          if (entriesCount !== ftsCount) {
+            driver.exec("BEGIN");
+            try {
+              driver.run("DELETE FROM fts");
+              driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+              driver.exec("COMMIT");
+            } catch (err) {
+              driver.exec("ROLLBACK");
+              throw err;
+            }
+          }
+        } catch {
+          backend = "like";
+        }
+      }
+      if (backend !== previousBackend && previousBackend !== undefined && backend === "trigram" && opts.verifyFts !== false) {
+        // Backend switched like -> trigram: the fts shadow table may be stale
+        // or absent, so rebuild it from scratch. Doctor (verifyFts:false)
+        // skips this too so the drift stays visible to the diagnostic.
+        try {
+          driver.exec("DELETE FROM fts");
+          driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
         } catch {
           backend = "like";
         }
@@ -184,6 +232,28 @@ export class Index {
   }
 
   add(entry: Entry): void {
+    // Skip the content column when it did not change: the fts_update trigger
+    // fires on every UPDATE OF content, and re-indexing an unchanged body is
+    // pure write amplification (repeated add() of the same entry is common in
+    // status/stat updates).
+    const prev = this.get(entry.entryId);
+    if (prev && prev.content === entry.content) {
+      this.driver.run(
+        `UPDATE entries SET ns=?, kind=?, created_at=?, last_used_at=?, use_count=?, value_score=?, status=?, pinned=? WHERE entry_id=?`,
+        [
+          entry.ns,
+          entry.kind,
+          entry.createdAt,
+          entry.lastUsedAt,
+          entry.useCount,
+          entry.valueScore,
+          entry.status,
+          entry.pinned ? 1 : 0,
+          entry.entryId,
+        ],
+      );
+      return;
+    }
     this.driver.run(
       `INSERT INTO entries(${ENTRY_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(entry_id) DO UPDATE SET
@@ -209,6 +279,18 @@ export class Index {
         entry.pinned ? 1 : 0,
       ],
     );
+  }
+
+  /** Update only the given fields of an existing entry, preserving everything
+   *  else (including concurrent use_count/last_used_at touches). No-op when
+   *  the entry does not exist. Use from inside commit callbacks so index rows
+   *  never regress to a pre-lock snapshot. */
+  patch(entryId: string, fields: Partial<Entry>): void {
+    const current = this.get(entryId);
+    if (!current) {
+      return;
+    }
+    this.add({ ...current, ...fields });
   }
 
   delete(entryId: string): void {
@@ -303,10 +385,7 @@ export class Index {
       seen.add(e.entryId);
       unique.push(e);
     }
-    if (duplicates.size) {
-      this.audit("warn.duplicate", "-", `duplicate entryId across md files, kept first: ${[...duplicates].join(",")}`);
-    }
-    this.withTransaction(() => {
+    const work = (): void => {
       this.driver.run("DELETE FROM entries");
       for (const e of unique) {
         const prev = existing.get(e.entryId);
@@ -321,12 +400,33 @@ export class Index {
             : e,
         );
       }
-    });
+    };
+    if (duplicates.size) {
+      this.audit("warn.duplicate", "-", `duplicate entryId across md files, kept first: ${[...duplicates].join(",")}`);
+    }
+    // Joining an outer transaction keeps the rebuild atomic with the caller's
+    // post-rebuild audit writes: a failure then rolls back the whole index
+    // rebuild instead of leaving a rebuilt index next to rolled-back md truth.
+    if (this.inTxn) {
+      work();
+    } else {
+      this.withTransaction(work);
+    }
   }
 
-  /** Close any session rows left open by a crashed/terminated daemon process. */
-  closeAllSessions(ts: string): void {
-    this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL", [ts]);
+  /** Close session rows left open by a crashed/terminated process. When `host`
+   *  is given, only that host's sessions are closed, so one adapter never
+   *  marks another adapter's live sessions as ended. A misspelled host would
+   *  silently close nothing (and leak the crashed sessions), so it is rejected. */
+  closeAllSessions(ts: string, host?: string): void {
+    if (host) {
+      if (!HOSTS.includes(host as (typeof HOSTS)[number])) {
+        throw new Error(`closeAllSessions: unknown host ${JSON.stringify(host)} (expected one of ${HOSTS.join("|")})`);
+      }
+      this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL AND host = ?", [ts, host]);
+    } else {
+      this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL", [ts]);
+    }
   }
 
   recordSession(sessionId: string, host: string, workdir: string, ts: string): void {

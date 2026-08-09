@@ -4,17 +4,47 @@ export interface SanitizeResult {
 }
 
 const SECRET_PATTERNS: RegExp[] = [
-  /(?<![A-Za-z0-9])(?:sk|pk|api[_-]?key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{12,}["']?/giu,
-  /sk-[\p{L}\p{N}_\-]{16,}/gu,
+  // key=value / key: value with optional spaces inside the key name ("API Key")
+  // and around the separator.
+  /(?<![A-Za-z0-9])(?:sk|pk|api[\s_-]*key|apikey|secret|token|password|passwd|bearer)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{12,}["']?/giu,
+  /sk-[\p{L}\p{N}_\-]{16,}/giu,
   /(?:sk|rk)_(?:live|test)_[\p{L}\p{N}]{16,}/gu,
   /AKIA[0-9A-Z]{16}\b/g,
   /gh[pousr]_[A-Za-z0-9]{20,}\b/g,
   /github_pat_[A-Za-z0-9_]{20,}\b/g,
   /AIza[0-9A-Za-z_\-]{30,}\b/g,
-  /(?<![A-Za-z0-9])(?:Bearer|bearer|BEARER)\s+[\p{L}\p{N}._\-]{20,}/gu,
+  /(?<![A-Za-z0-9])(?:Bearer|bearer|BEARER)\s+["']?[\p{L}\p{N}._\-]{20,}["']?/gu,
   /(?<![A-Za-z0-9])-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/g,
-  /(?<![A-Za-z0-9])(?:api[_-]?key|apikey|secret|token|password|passwd|bearer)\s+["']?[\p{L}\p{N}_\-./]{16,}["']?/giu,
+  // name<whitespace>value
+  /(?<![A-Za-z0-9])(?:api[\s_-]*key|apikey|secret|token|password|passwd|bearer)\s+["']?[\p{L}\p{N}_\-./]{16,}["']?/giu,
+  // Short secrets (8-11 chars) under strong-signal key names; >=12 is covered
+  // by the first pattern.
+  /(?<![A-Za-z0-9])(?:password|passwd|secret)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{8,11}["']?(?![A-Za-z0-9])/giu,
+  // Bare JWT without a "Bearer" prefix ("eyJ" is base64 of the "{" header).
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
 ];
+
+// Standalone high-entropy tokens: >=24 chars with at least one uppercase, one
+// lowercase and one digit (base64/url-safe secrets with no key name). A token
+// must additionally score >=4.5 bits/char of Shannon entropy, which excludes
+// prose identifiers (branch/version names, mixed-case hex digests score 4.0).
+const HIGH_ENTROPY = /(?<![A-Za-z0-9])([A-Za-z0-9+/_=-]{24,})(?![A-Za-z0-9])/g;
+
+/** Shannon entropy in bits/char. Near-uniform base64/url-safe secrets score
+ *  >=4.5; hex digests (16-symbol alphabet) score exactly 4.0; prose
+ *  identifiers with repeated letters score well below that. */
+function shannonEntropy(tok: string): number {
+  const counts = new Map<string, number>();
+  for (const ch of tok) {
+    counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  }
+  let h = 0;
+  for (const n of counts.values()) {
+    const p = n / tok.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
 
 const HOMOGLYPH_MAP: Record<string, string> = {
   а: "a", е: "e", і: "i", о: "o", ѕ: "s", р: "p", с: "c", у: "y", х: "x", ё: "e", һ: "h", ј: "j", ї: "i",
@@ -22,12 +52,21 @@ const HOMOGLYPH_MAP: Record<string, string> = {
   "’": "'", "‘": "'", "“": '"', "”": '"', "‑": "-", "–": "-", "—": "-", "…": "...", "　": " ",
 };
 
-/** Zero-width stripping + transliteration of Cyrillic/fullwidth homoglyphs so that
- *  obfuscated injection text ("ignore prevіous instructions") is detected. */
+/** Zero-width/bidi-marker/control-character stripping + transliteration of
+ *  Cyrillic/fullwidth homoglyphs so that obfuscated injection text
+ *  ("ignore prevіous instructions", "ｉｇｎｏｒｅ …") is detected. */
 export function normalizeText(text: string): string {
   return text
-    .replace(/[\u200b-\u200f\u2060-\u206f\ufeff]/g, "")
-    .replace(/[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g, (c) => HOMOGLYPH_MAP[c] ?? c);
+    .replace(
+      // zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/PDI),
+      // Arabic letter mark, soft hyphen, Mongolian vowel separator, combining
+      // grapheme joiner, and C0 control characters
+      /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g,
+      "",
+    )
+    .replace(/[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g, (c) => HOMOGLYPH_MAP[c] ?? c)
+    // fullwidth latin letters/digits/punctuation -> ASCII
+    .replace(/[\uff01-\uff5e]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 }
 
 export function redactSecrets(text: string): SanitizeResult {
@@ -40,6 +79,16 @@ export function redactSecrets(text: string): SanitizeResult {
     });
     out = next;
   }
+  out = out.replace(HIGH_ENTROPY, (m, tok: string) => {
+    const upper = /[A-Z]/.test(tok);
+    const lower = /[a-z]/.test(tok);
+    const digit = /\d/.test(tok);
+    if ((upper ? 1 : 0) + (lower ? 1 : 0) + (digit ? 1 : 0) >= 3 && shannonEntropy(tok) >= 4.5) {
+      redacted = true;
+      return "[REDACTED]";
+    }
+    return m;
+  });
   return { text: out, redacted };
 }
 
@@ -69,9 +118,14 @@ const INJECTION_PATTERNS: RegExp[] = [
 
 export function scanInjection(text: string): string[] {
   const normalized = normalizeText(text);
+  // Space-split obfuscation ("忽 略 之 前 的 指 令"): collapse whitespace
+  // between letters for matching. Every injection pattern uses \s* between
+  // words, so a letter-space-letter collapse never changes which patterns
+  // match English text — it only defeats the space-padded variants.
+  const compacted = normalized.replace(/(?<=\p{L})\s+(?=\p{L})/gu, "");
   const flags: string[] = [];
   for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(normalized)) {
+    if (pattern.test(compacted)) {
       flags.push(pattern.source.slice(0, 60));
     }
   }

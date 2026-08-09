@@ -1,3 +1,6 @@
+import { chmodSync } from "node:fs";
+import type { Database as BunDatabase, SQLQueryBindings } from "bun:sqlite";
+
 export interface SqlRow {
   [key: string]: unknown;
 }
@@ -11,13 +14,6 @@ export interface DbDriver {
   close(): void;
 }
 
-interface BunDatabase {
-  run(sql: string, ...params: unknown[]): unknown;
-  query(sql: string): { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[] };
-  exec(sql: string): unknown;
-  close(): void;
-}
-
 interface NodeDatabase {
   prepare(sql: string): {
     run(...params: unknown[]): unknown;
@@ -27,6 +23,7 @@ interface NodeDatabase {
   exec(sql: string): unknown;
   close(): void;
 }
+
 
 class BunDriver implements DbDriver {
   readonly name = "bun:sqlite";
@@ -41,15 +38,15 @@ class BunDriver implements DbDriver {
   }
 
   run(sql: string, params: unknown[] = []): void {
-    this.db.run(sql, ...params);
+    this.db.run(sql, params as SQLQueryBindings[]);
   }
 
   get<T>(sql: string, params: unknown[] = []): T | undefined {
-    return this.db.query(sql).get(...params) as T | undefined;
+    return this.db.query(sql).get(...(params as SQLQueryBindings[])) as T | undefined;
   }
 
   all<T>(sql: string, params: unknown[] = []): T[] {
-    return this.db.query(sql).all(...params) as T[];
+    return this.db.query(sql).all(...(params as SQLQueryBindings[])) as T[];
   }
 
   exec(sql: string): void {
@@ -94,6 +91,18 @@ class NodeDriver implements DbDriver {
   }
 }
 
+/** Keep the database (and its WAL/SHM sidecars) private; the file is created
+ *  by the driver with umask-derived permissions, so tighten it after open. */
+function chmodDbFiles(path: string): void {
+  for (const p of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      chmodSync(p, 0o600);
+    } catch {
+      // sidecar files may not exist yet
+    }
+  }
+}
+
 export async function openDb(path: string): Promise<DbDriver> {
   let bunModule: { Database: new (path: string) => BunDatabase } | undefined;
   try {
@@ -102,7 +111,9 @@ export async function openDb(path: string): Promise<DbDriver> {
     bunModule = undefined;
   }
   if (bunModule) {
-    return new BunDriver(new bunModule.Database(path));
+    const driver = new BunDriver(new bunModule.Database(path));
+    chmodDbFiles(path);
+    return driver;
   }
   let nodeModule: { DatabaseSync: new (path: string) => NodeDatabase } | undefined;
   try {
@@ -111,7 +122,9 @@ export async function openDb(path: string): Promise<DbDriver> {
     nodeModule = undefined;
   }
   if (nodeModule) {
-    return new NodeDriver(new nodeModule.DatabaseSync(path));
+    const driver = new NodeDriver(new nodeModule.DatabaseSync(path));
+    chmodDbFiles(path);
+    return driver;
   }
   throw new Error(
     "no sqlite driver available: need bun:sqlite (bun) or node:sqlite (node >= 23.4)",

@@ -17,7 +17,10 @@ export function safeSearch(
   const retriever = getRetriever(index, opts.onError);
   const hits: Hit[] = [];
   let blocked = 0;
-  const pageSize = Math.max(params.topK, 16);
+  // Fetch a generous window per round-trip: a full re-sort happens per page,
+  // so fewer, bigger pages beat many small ones when promptware hits are
+  // common.
+  const pageSize = Math.max(params.topK * 4, 64);
   for (let offset = 0; hits.length < params.topK; offset += pageSize) {
     const page = retriever.search({ ...params, topK: pageSize, offset });
     for (const hit of page) {

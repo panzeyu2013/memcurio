@@ -47,7 +47,13 @@ export function toExportRow(e: Entry): ExportRow {
 }
 
 export function serializeExport(entries: Entry[]): string {
-  return entries.map((e) => JSON.stringify(toExportRow(e))).join("\n") + "\n";
+  // "deleted" rows are physical-removal markers, never real state (forget
+  // removes from truth; parseExport rejects them), so they must not enter an
+  // export stream or export -> import round-trips would fail on them.
+  return entries
+    .filter((e) => e.status !== "deleted")
+    .map((e) => JSON.stringify(toExportRow(e)))
+    .join("\n") + "\n";
 }
 
 export function parseExport(text: string): Entry[] {
@@ -80,6 +86,11 @@ export function parseExport(text: string): Entry[] {
     const status = (r.status ?? "active") as Status;
     if (!["active", "stale", "archived", "deleted"].includes(status)) {
       throw new Error(`invalid export line ${lineNo}: status ${JSON.stringify(status)}`);
+    }
+    if (status === "deleted") {
+      // Nothing in the system writes "deleted" rows (forget physically
+      // removes); accepting them on import would create unprunable zombies.
+      throw new Error(`invalid export line ${lineNo}: status "deleted" is not importable`);
     }
     if (r.pinned !== undefined && typeof r.pinned !== "boolean") {
       throw new Error(`invalid export line ${lineNo}: pinned must be a boolean`);

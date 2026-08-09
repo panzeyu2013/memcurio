@@ -7,8 +7,8 @@ import { estimateTokens, fitLines, renderBudgetNotice } from "./budget.js";
 import type { FitResult } from "./budget.js";
 import { Index } from "./db.js";
 import type { Entry } from "./mdStore.js";
-import { indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "./paths.js";
-import { sanitizeForInjection } from "./sanitize.js";
+import { indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir } from "./paths.js";
+import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { selectStatic } from "./select.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
 
@@ -21,7 +21,10 @@ function oneLine(content: string, max = 80): string {
 }
 
 function entryLine(e: Entry): string {
-  return `- [${e.entryId}] ${oneLine(e.content)} (${e.kind.toLowerCase()}, use=${e.useCount}, score=${e.valueScore.toFixed(2)})`;
+  // Redact at render time (defense in depth: never let a missed write-path
+  // redaction reach a model-facing file).
+  const red = redactSecrets(e.content);
+  return `- [${e.entryId}] ${oneLine(red.text)} (${e.kind.toLowerCase()}, use=${e.useCount}, score=${e.valueScore.toFixed(2)})`;
 }
 
 export async function renderIndexMarkdown(idx: Index): Promise<string> {
@@ -39,7 +42,7 @@ export async function renderIndexMarkdown(idx: Index): Promise<string> {
   }
   for (const ns of nss) {
     const counts = idx.counts()[ns] ?? {};
-    const top = selectStatic(idx, { ns, topN: 5 });
+    const top = selectStatic(idx, { ns, topN: 5 }).filter((e) => sanitizeForInjection(e.content).safe);
     lines.push(`## ${ns}`, "");
     lines.push(`- Path: \`${nsDir(root, ns)}\``);
     const stats = Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ");
@@ -125,7 +128,17 @@ export async function generateIndex(): Promise<string> {
   const idx = await Index.create(indexDb(root));
   try {
     const content = await renderIndexMarkdown(idx);
-    atomicWrite(join(memoryRoot(root), "INDEX.md"), content);
+    // Same-directory writes must be locked like every other truth-adjacent
+    // file; rename atomicity alone leaves concurrent generations racing.
+    const lockPath = join(
+      root,
+      "state",
+      "locks",
+      `${createHash("sha1").update(resolve(join(memoryRoot(root), "INDEX.md"))).digest("hex")}.lock`,
+    );
+    withFileLock(lockPath, () => {
+      atomicWrite(join(memoryRoot(root), "INDEX.md"), content);
+    });
     idx.audit("index", "-", `regenerated INDEX.md`);
     return content;
   } finally {
@@ -161,7 +174,9 @@ export async function injectBaseline(workdir: string, topN?: number): Promise<nu
     }
     const section = renderBaselineSection(ns, top, config.budget.maxInjectTokens);
     updateAgentsMd(workdir, section);
-    const injected = top.filter((entry) => section.includes(`[${entry.entryId}]`)).length;
+    // Count injections by the rendered marker (with trailing space), so an id
+    // that happens to appear inside another entry's content is not miscounted.
+    const injected = top.filter((entry) => section.includes(`[${entry.entryId}] `)).length;
     idx.audit("baseline", ns, `${workdir} -> ${injected} injected of ${top.length}${blocked ? ` (${blocked} blocked by injection scan)` : ""}`);
     return injected;
   } finally {

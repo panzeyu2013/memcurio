@@ -1,15 +1,34 @@
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 
-export const LOCK_TIMEOUT_MS = 5_000;
-export const STALE_LOCK_MS = 60_000;
+// >= SQLite's busy_timeout (20000) so a competitor holding the md lock while
+// committing to SQLite never trips a false lock timeout.
+export const LOCK_TIMEOUT_MS = 20_000;
+// A lock older than this is reclaimed even if its pid appears alive: a crash
+// leaves the pid dead (reclaimed immediately, see isStaleLock), so an old
+// lock whose pid is alive is a crashed holder whose pid got reused. The
+// threshold must sit far above any legitimate hold (SQLite busy_timeout of
+// 20s per statement + bulk reindex/import inside the lock), or a slow writer
+// loses mutual exclusion to a contender.
+export const STALE_LOCK_MS = 300_000;
+
+// Rotate the transaction log once it exceeds this many bytes (two rotated
+// segments are kept: <log>.1 and <log>.2).
+export const LOG_ROTATE_BYTES = 1_048_576;
 
 function logLockPath(logPath: string): string {
   return `${logPath}.lock`;
 }
 
 export function atomicWrite(path: string, content: string): void {
+  // A symlinked target must keep receiving updates: rename() would replace
+  // the link itself with a regular file, severing the external target.
+  try {
+    path = realpathSync(path);
+  } catch {
+    // not yet existing or a broken link: write at the given path
+  }
   mkdirSync(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}${extname(path) || ".md"}`);
   let mode = 0o600;
@@ -49,8 +68,14 @@ export function atomicWrite(path: string, content: string): void {
   }
 }
 
-export function withFileLock<T>(lockPath: string, fn: () => T): T {
+export interface LockOptions {
+  /** Override LOCK_TIMEOUT_MS (used by tests to exercise the timeout path). */
+  timeoutMs?: number;
+}
+
+export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
   mkdirSync(dirname(lockPath), { recursive: true });
+  const timeoutMs = opts.timeoutMs ?? LOCK_TIMEOUT_MS;
   const start = Date.now();
   const holder = `${process.pid}|${Date.now()}`;
   for (;;) {
@@ -60,7 +85,7 @@ export function withFileLock<T>(lockPath: string, fn: () => T): T {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         throw err;
       }
-      if (Date.now() - start > LOCK_TIMEOUT_MS) {
+      if (Date.now() - start > timeoutMs) {
         throw new Error(`file lock timeout: ${lockPath}`);
       }
       if (isStaleLock(lockPath)) {
@@ -118,16 +143,19 @@ export function isStaleLock(lockPath: string): boolean {
   if (pid === process.pid) {
     return false;
   }
+  const age = Date.now() - mtimeMs;
+  // A crash leaves the pid dead (ESRCH): reclaim immediately. EPERM means the
+  // pid belongs to another user (still alive). If the pid is alive but the
+  // lock is far older than any legitimate hold time, the pid was almost
+  // certainly reused by an unrelated process: reclaim too.
+  let alive = false;
   try {
     process.kill(pid, 0);
+    alive = true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
-      return false;
-    }
-    return true;
+    alive = (err as NodeJS.ErrnoException).code !== "ESRCH";
   }
-  // The holder process is alive: never steal its lock, no matter how old it is.
-  return false;
+  return !alive || age > STALE_LOCK_MS;
 }
 
 export function truncateLog(logPath: string): void {
@@ -137,7 +165,11 @@ export function truncateLog(logPath: string): void {
     const base = basename(logPath);
     try {
       for (const name of readdirSync(dir)) {
-        if (name === base || (name.startsWith(`${base}.`) && name !== `${base}.lock`)) {
+        // Only memcore's own rotated segments (<base>.1/.2, legacy <base>.<ts>.old)
+        // are removed; unrelated files sharing the prefix are left alone.
+        const suffix = name.startsWith(`${base}.`) ? name.slice(base.length + 1) : "";
+        const isLog = name === base || (suffix !== "" && /^(?:\d+|old|\d+\.old)$/.test(suffix));
+        if (isLog) {
           try {
             unlinkSync(join(dir, name));
           } catch {
@@ -152,15 +184,30 @@ export function truncateLog(logPath: string): void {
   });
 }
 
-export function rotateLog(logPath: string, maxBytes = 1_048_576): void {
+/** Rename a log larger than maxBytes to <log>.1, keeping one older segment.
+ *  Callers must hold the log lock (Transaction.append does). */
+export function rotateLog(logPath: string, maxBytes = LOG_ROTATE_BYTES): void {
   try {
-    const size = statSync(logPath).size;
-    if (size <= maxBytes) {
+    if (statSync(logPath).size <= maxBytes) {
       return;
     }
-    renameSync(logPath, `${logPath}.${Date.now()}.old`);
   } catch {
-    // no log yet
+    return; // no log yet
+  }
+  try {
+    unlinkSync(`${logPath}.2`);
+  } catch {
+    void 0;
+  }
+  try {
+    renameSync(`${logPath}.1`, `${logPath}.2`);
+  } catch {
+    void 0;
+  }
+  try {
+    renameSync(logPath, `${logPath}.1`);
+  } catch {
+    void 0;
   }
 }
 
@@ -180,6 +227,7 @@ export class Transaction {
   private append(record: TxnRecord): void {
     mkdirSync(dirname(this.logPath), { recursive: true });
     withFileLock(logLockPath(this.logPath), () => {
+      rotateLog(this.logPath);
       appendFileSync(this.logPath, JSON.stringify(record) + "\n", { encoding: "utf-8", mode: 0o600 });
     });
   }
@@ -200,11 +248,11 @@ export class Transaction {
   pending(): TxnRecord[] {
     const { records } = this.readAll();
     const begins = records.filter((r) => r.op === "BEGIN");
-    // ROLLBACK is only a failure marker: Transaction cannot undo writes that
-    // already reached Markdown or SQLite. Keep failed transactions visible so
-    // `repair --execute` can rebuild the shadow index from the truth source.
     const committed = new Set(records.filter((r) => r.op === "COMMIT").map((r) => r.txn));
-    return begins.filter((r) => !committed.has(r.txn));
+    // ROLLBACK marks a transaction whose synchronous md/SQLite writes were
+    // already rolled back, so it is resolved and must not count as pending.
+    const rolledBack = new Set(records.filter((r) => r.op === "ROLLBACK").map((r) => r.txn));
+    return begins.filter((r) => !committed.has(r.txn) && !rolledBack.has(r.txn));
   }
 
   /** Number of unparsable (torn/corrupt) lines across the log and rotated logs. */
@@ -213,34 +261,38 @@ export class Transaction {
   }
 
   private readAll(): { records: TxnRecord[]; corrupt: number } {
-    const records: TxnRecord[] = [];
-    let corrupt = 0;
-    let names: string[] = [];
-    try {
-      const base = basename(this.logPath);
-      names = readdirSync(dirname(this.logPath))
-        .filter((n) => !n.endsWith(".lock") && (n === base || n.startsWith(`${base}.`)))
-        .sort();
-    } catch {
-      names = [];
-    }
-    for (const name of names) {
+    return withFileLock(logLockPath(this.logPath), () => {
+      const records: TxnRecord[] = [];
+      let corrupt = 0;
+      let names: string[] = [];
       try {
-        const text = readFileSync(join(dirname(this.logPath), name), "utf-8");
-        for (const line of text.split("\n")) {
-          if (!line.trim()) {
-            continue;
-          }
-          try {
-            records.push(JSON.parse(line) as TxnRecord);
-          } catch {
-            corrupt += 1;
-          }
-        }
+        const base = basename(this.logPath);
+        names = readdirSync(dirname(this.logPath))
+          .filter((n) => !n.endsWith(".lock") && (n === base || n.startsWith(`${base}.`)))
+          .sort();
       } catch {
-        void 0;
+        names = [];
       }
-    }
-    return { records, corrupt };
+      for (const name of names) {
+        try {
+          const text = readFileSync(join(dirname(this.logPath), name), "utf-8");
+          for (const line of text.split("\n")) {
+            if (!line.trim()) {
+              continue;
+            }
+            try {
+              records.push(JSON.parse(line) as TxnRecord);
+            } catch {
+              corrupt += 1;
+            }
+          }
+        } catch {
+          // A segment that vanished mid-read is a concurrent truncate; a real
+          // read failure is treated as corruption so it is not silently lost.
+          corrupt += 1;
+        }
+      }
+      return { records, corrupt };
+    });
   }
 }

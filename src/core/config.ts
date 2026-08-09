@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { configPath } from "./paths.js";
 
@@ -68,6 +68,12 @@ export function loadConfig(root: string): Config {
   if (!existsSync(path)) {
     writeFileSync(path, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n", { mode: 0o600 });
     return { ...DEFAULT_CONFIG };
+  }
+  // Converge permissions even when the file pre-existed with looser ones.
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    void 0;
   }
   let parsed: unknown;
   try {

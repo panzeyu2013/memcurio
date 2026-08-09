@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { atomicWrite, withFileLock } from "./transaction.js";
-import { ENTRY_ID_RE } from "./ids.js";
+import { ENTRY_ID_RE, newEntryId } from "./ids.js";
+import { nsName } from "./paths.js";
 
 export const KINDS = ["MEMORY", "USER", "SESSION", "COMPACT"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -25,15 +26,15 @@ export interface Entry {
 
 const SEP = new RegExp(`^§ (${ENTRY_ID_RE.source.slice(1, -1)}) \\| ([A-Z_]+) \\| (\\S+) \\| (\\S+)(?: \\| ([01]))?$`);
 
-function isKnownKind(kind: string): boolean {
+export function isKnownKind(kind: string): boolean {
   return (KINDS as readonly string[]).includes(kind);
 }
 
-function isKnownStatus(status: string): boolean {
+export function isKnownStatus(status: string): boolean {
   return (STATUSES as readonly string[]).includes(status);
 }
 
-function isHeader(lines: string[], idx: number): boolean {
+function isHeader(lines: string[], idx: number, expectedKind?: Kind): boolean {
   if (idx > 0 && lines[idx - 1].trim() !== "") {
     return false;
   }
@@ -44,7 +45,14 @@ function isHeader(lines: string[], idx: number): boolean {
     return false;
   }
   const m = SEP.exec(lines[idx]);
-  return !!m && isKnownKind(m[2]) && isKnownStatus(m[4]);
+  if (!m || !isKnownKind(m[2]) || !isKnownStatus(m[4])) {
+    return false;
+  }
+  // When the file kind is known (from the file name), a header declaring a
+  // different kind is prose, not an entry header. This also guarantees the
+  // header kind always matches the file kind, so writing back never silently
+  // rewrites a header's declared kind.
+  return expectedKind === undefined || m[2] === expectedKind;
 }
 
 export function renderEntry(e: Entry): string {
@@ -58,13 +66,13 @@ export function parseFile(text: string, ns: string, expectedKind?: Kind): Entry[
   const lines = text.split("\n");
   let i = 0;
   while (i < lines.length) {
-    if (isHeader(lines, i)) {
+    if (isHeader(lines, i, expectedKind)) {
       const m = SEP.exec(lines[i]);
       if (m) {
         const [, entryId, kind, createdAt, status, pinned] = m;
         const body: string[] = [];
         i += 1;
-        while (i < lines.length && !isHeader(lines, i)) {
+        while (i < lines.length && !isHeader(lines, i, expectedKind)) {
           body.push(lines[i]);
           i += 1;
         }
@@ -100,7 +108,7 @@ function parseBlocks(text: string, ns: string, kind: Kind): Block[] {
   let textBuf: string[] = [];
   let i = 0;
   while (i < lines.length) {
-    if (isHeader(lines, i)) {
+    if (isHeader(lines, i, kind)) {
       if (textBuf.length) {
         blocks.push({ type: "text", raw: textBuf.join("\n") });
         textBuf = [];
@@ -113,7 +121,7 @@ function parseBlocks(text: string, ns: string, kind: Kind): Block[] {
       const [, entryId, , createdAt, status, pinned] = m;
       const body: string[] = [];
       i += 1;
-      while (i < lines.length && !isHeader(lines, i)) {
+      while (i < lines.length && !isHeader(lines, i, kind)) {
         body.push(lines[i]);
         i += 1;
       }
@@ -155,8 +163,25 @@ function entryEquals(a: Entry, b: Entry): boolean {
   );
 }
 
-export function kindFile(nsDir_: string, kind: Kind): string {
-  return join(nsDir_, `${kind}.md`);
+export function kindFile(dir: string, kind: Kind): string {
+  return join(dir, `${kind}.md`);
+}
+
+/** Factory for new entries so defaults never drift across call sites. */
+export function newEntry(ns: string, kind: Kind, content: string, extra?: Partial<Entry>): Entry {
+  return {
+    entryId: newEntryId(),
+    ns,
+    kind,
+    content,
+    createdAt: new Date().toISOString(),
+    status: "active",
+    pinned: false,
+    lastUsedAt: null,
+    useCount: 0,
+    valueScore: 1,
+    ...extra,
+  };
 }
 
 function readText(path: string): string {
@@ -170,19 +195,19 @@ function readText(path: string): string {
   }
 }
 
-export function addEntry(nsDir_: string, entry: Entry): void {
-  const path = kindFile(nsDir_, entry.kind);
-  withFileLock(`${nsDir_}/.lock-${entry.kind}.md`, () => {
+export function addEntry(dir: string, entry: Entry): void {
+  const path = kindFile(dir, entry.kind);
+  withFileLock(`${dir}/.lock-${entry.kind}.md`, () => {
     const text = readText(path);
     const next = text.trim() ? text.trimEnd() + "\n\n" + renderEntry(entry) : renderEntry(entry);
     atomicWrite(path, next);
   });
 }
 
-export function updateKind(nsDir_: string, kind: Kind, mutate: (entries: Entry[]) => Entry[]): void {
-  const path = kindFile(nsDir_, kind);
-  const ns = nsDir_.split("/").filter(Boolean).at(-1) ?? "";
-  withFileLock(`${nsDir_}/.lock-${kind}.md`, () => {
+export function updateKind(dir: string, kind: Kind, mutate: (entries: Entry[]) => Entry[]): void {
+  const path = kindFile(dir, kind);
+  const ns = nsName(dir);
+  withFileLock(`${dir}/.lock-${kind}.md`, () => {
     const text = readText(path);
     const rendered = renderMutation(text, ns, kind, mutate);
     if (rendered === text.trimEnd() + "\n") {
@@ -227,11 +252,13 @@ function renderMutation(text: string, ns: string, kind: Kind, mutate: KindMutati
 
 /**
  * Apply mutations spanning several truth files while holding every file lock.
- * Markdown is written first, then `commit` updates the shadow index in one DB
- * transaction. Any synchronous failure restores every file before releasing
- * the locks, so callers never observe a partially applied batch.
+ * Markdown is written first, then `commit` is called with the final entries as
+ * parsed from the (possibly rewritten) files, so index updates can be derived
+ * from the post-lock truth rather than a pre-lock snapshot. Any synchronous
+ * failure restores every file before releasing the locks, so callers never
+ * observe a partially applied batch.
  */
-export function updateKindsAtomically(mutations: KindMutation[], commit: () => void): void {
+export function updateKindsAtomically(mutations: KindMutation[], commit: (entries: Entry[]) => void): void {
   const grouped = new Map<string, { nsDir: string; kind: Kind; mutates: KindMutation["mutate"][] }>();
   for (const mutation of mutations) {
     const path = kindFile(mutation.nsDir, mutation.kind);
@@ -255,7 +282,7 @@ export function updateKindsAtomically(mutations: KindMutation[], commit: () => v
     for (const [path, group] of groups) {
       const text = readText(path);
       originals.set(path, { existed: existsSync(path), text });
-      const ns = group.nsDir.split("/").filter(Boolean).at(-1) ?? "";
+      const ns = nsName(group.nsDir);
       rendered.set(
         path,
         renderMutation(text, ns, group.kind, (entries) => group.mutates.reduce((current, mutate) => mutate(current), entries)),
@@ -269,7 +296,11 @@ export function updateKindsAtomically(mutations: KindMutation[], commit: () => v
           written.push(path);
         }
       }
-      commit();
+      const finalEntries: Entry[] = [];
+      for (const [path, group] of groups) {
+        finalEntries.push(...parseFile(rendered.get(path)!, nsName(group.nsDir), group.kind));
+      }
+      commit(finalEntries);
     } catch (err) {
       const rollbackErrors: unknown[] = [];
       for (const path of written.reverse()) {
@@ -292,16 +323,16 @@ export function updateKindsAtomically(mutations: KindMutation[], commit: () => v
   });
 }
 
-export function readAll(nsDir_: string): Entry[] {
+export function readAll(dir: string): Entry[] {
   const entries: Entry[] = [];
-  for (const name of readdirSync(nsDir_).sort()) {
+  for (const name of readdirSync(dir).sort()) {
     if (!name.endsWith(".md") || name.startsWith(".")) {
       continue;
     }
-    const text = readFileSync(join(nsDir_, name), "utf-8");
+    const text = readFileSync(join(dir, name), "utf-8");
     const fileKind = name.slice(0, -3) as Kind;
     const expectedKind = KINDS.includes(fileKind) ? fileKind : undefined;
-    entries.push(...parseFile(text, nsDir_.split("/").filter(Boolean).at(-1) ?? "", expectedKind));
+    entries.push(...parseFile(text, nsName(dir), expectedKind));
   }
   return entries;
 }
