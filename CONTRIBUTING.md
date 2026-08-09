@@ -27,9 +27,11 @@ This document defines the contribution guidelines for memcurio. All commits, rev
 
 ## 4. Commit conventions
 
-- Format: `<type>(<scope>): <subject>`, subject is a concise summary, ≤ 50 characters.
+- **All commit messages must be written in English** (subject and body). The public repository is English-first; Chinese content belongs in code/docs, never in commit messages.
+- Format: `<type>(<scope>): <subject>`, subject is a concise English summary, ≤ 50 characters.
   - `type`: `feat` / `fix` / `refactor` / `docs` / `test` / `chore` / `security`
   - `scope`: `core` / `mcp` / `cli` / `adapter` / `docs` / `test`, etc.
+- Example: `fix(core): fix cross-kind write-back pollution, atomic read-modify-write in updateKind under lock`
 - One commit does one thing; no unrelated files, secrets, or debug artifacts.
 - Before committing, self-check with `git status` / `git diff`; `.gitignore` already excludes `node_modules/ dist/ .memcurio/`.
 
