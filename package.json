@@ -5,7 +5,8 @@
   "license": "MIT",
   "author": "memcore contributors",
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.0.0",
+    "node": ">=23.4"
   },
   "files": [
     "dist"
@@ -16,10 +17,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "bun run build",
-    "prepack": "bun run build",
+    "prepare": "bun run build && bun run bundle:plugin",
+    "prepack": "bun run build && bun run bundle:plugin",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "dev": "bun run src/cli/index.ts",
     "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts"
   },
