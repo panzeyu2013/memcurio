@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { memoryRoot, namespaceFor } from "../src/core/paths.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const origLog = console.log;
-const origErr = console.error;
 
 let dir: string;
 let workdir: string;
@@ -34,16 +33,8 @@ afterEach(() => {
 });
 
 async function run(...argv: string[]): Promise<{ code: number; out: string }> {
-  const lines: string[] = [];
-  console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-  try {
-    const code = await main(argv);
-    return { code, out: lines.join("\n") };
-  } finally {
-    console.log = origLog;
-    console.error = origErr;
-  }
+  const r = await runCli(...argv);
+  return { code: r.code, out: r.out + "\n" + r.err };
 }
 
 describe("baseline injection", () => {
@@ -104,6 +95,20 @@ describe("baseline injection", () => {
     const { code, out } = await run("baseline", workdir);
     expect(code).toBe(1);
     expect(out).toContain("unmatched memcore marker");
+  });
+
+  test("swapped markers (END before START) are rejected, not interleaved", async () => {
+    await run("init");
+    writeFileSync(
+      join(workdir, "AGENTS.md"),
+      "前面\n<!-- memcore:end -->\n中间\n<!-- memcore:start -->\n后面\n",
+    );
+    const { code, out } = await run("baseline", workdir);
+    expect(code).toBe(1);
+    expect(out).toContain("mismatched memcore markers");
+    const agents = readFileSync(join(workdir, "AGENTS.md"), "utf-8");
+    expect(agents).toContain("前面");
+    expect(agents).toContain("后面");
   });
 
   test("promptware-flagged entries are excluded from the injected section", async () => {

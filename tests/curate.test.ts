@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { main } from "../src/cli/index.js";
 import { Index } from "../src/core/db.js";
 import { applyCuratePlan, bigramOverlap, buildCuratePlan, HttpProvider, NoopProvider, parseJsonFromText } from "../src/core/curate.js";
-import type { CurateProvider } from "../src/core/curate.js";
+import type { CuratePlan, CurateProvider } from "../src/core/curate.js";
 import { addEntry } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
 import { indexDb, nsDir } from "../src/core/paths.js";
@@ -178,11 +178,12 @@ describe("applyCuratePlan", () => {
     addEntry(nsDir(dir, "default"), e2);
     idx.add(e1);
     idx.add(e2);
-    const plan = {
+    const plan: CuratePlan = {
       reevaluations: [{ entry: e1, score: 0.5 }],
       contradictions: [{ a: e1, b: e2, reason: "x" }],
       umbrellas: [{ group: [e1, e2], content: "伞条目：项目使用 SQLite FTS5 trigram 做检索及补充" }],
       checksExhausted: false,
+      unparsable: 0,
     };
     await applyCuratePlan(idx, dir, plan);
     expect(idx.get("a1b2c3d4")?.valueScore).toBe(0.5);
@@ -210,7 +211,7 @@ describe("HttpProvider", () => {
   });
 
   test("reevaluate parses score from LLM text", async () => {
-    globalThis.fetch = (async () => okResponse("1.75")) as typeof fetch;
+    globalThis.fetch = (async () => okResponse("1.75")) as unknown as typeof fetch;
     const provider = new HttpProvider({
       baseUrl: "https://api.openai.com/v1",
       apiKey: "test-key",
@@ -221,7 +222,7 @@ describe("HttpProvider", () => {
 
   test("checkContradiction parses JSON from prose", async () => {
     globalThis.fetch = (async () =>
-      okResponse('判断如下：\n{"contradictory": false, "reason": "一致"}')) as typeof fetch;
+      okResponse('判断如下：\n{"contradictory": false, "reason": "一致"}')) as unknown as typeof fetch;
     const provider = new HttpProvider({ baseUrl: "x", apiKey: "k", model: "m" });
     const v = await provider.checkContradiction(makeEntry(), makeEntry());
     expect(v.contradictory).toBe(false);
@@ -229,7 +230,7 @@ describe("HttpProvider", () => {
   });
 
   test("checkContradiction marks unparseable LLM output", async () => {
-    globalThis.fetch = (async () => okResponse("看起来差不多，无法判断")) as typeof fetch;
+    globalThis.fetch = (async () => okResponse("看起来差不多，无法判断")) as unknown as typeof fetch;
     const provider = new HttpProvider({ baseUrl: "x", apiKey: "k", model: "m" });
     const v = await provider.checkContradiction(makeEntry(), makeEntry());
     expect(v.reason).toBe("__unparsable__");
@@ -241,11 +242,19 @@ describe("HttpProvider", () => {
 });
 
 describe("curate cli", () => {
-  test("dry-run reports plan without applying", async () => {
+  test("dry-run reports a real plan without applying it", async () => {
     const lines: string[] = [];
     const origLog = console.log;
-    console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
+    const origFetch = globalThis.fetch;
+    const savedKey = process.env.MEMCORE_LLM_API_KEY;
+    process.env.MEMCORE_LLM_API_KEY = "test-key";
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "0.5" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
     try {
+      console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
       await main(["init"]);
       await main(["remember", "项目使用 SQLite FTS5 trigram 做检索"]);
       const idx = await Index.create(indexDb(dir));
@@ -254,12 +263,20 @@ describe("curate cli", () => {
       idx.close();
       const code = await main(["curate", "--min-use", "1"]);
       expect(code).toBe(0);
+      expect(lines.join("\n")).toContain("revalue");
       expect(lines.join("\n")).toContain("dry-run");
+      // The plan was reported but nothing was applied.
       const idx2 = await Index.create(indexDb(dir));
       expect(idx2.list()[0].valueScore).toBeCloseTo(1.05, 5);
       idx2.close();
     } finally {
       console.log = origLog;
+      globalThis.fetch = origFetch;
+      if (savedKey === undefined) {
+        delete process.env.MEMCORE_LLM_API_KEY;
+      } else {
+        process.env.MEMCORE_LLM_API_KEY = savedKey;
+      }
     }
   });
 
