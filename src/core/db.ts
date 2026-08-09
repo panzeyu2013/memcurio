@@ -92,6 +92,10 @@ function rowToEntry(r: EntryRow): Entry {
 }
 
 const ENTRY_COLS = "entry_id, ns, kind, content, created_at, last_used_at, use_count, value_score, status, pinned";
+export interface IndexCreateOptions {
+  /** true forces, false skips, undefined verifies once per database schema version. */
+  verifyFts?: boolean;
+}
 
 export class Index {
   readonly backend: "trigram" | "like";
@@ -106,26 +110,44 @@ export class Index {
     this.backend = backend;
   }
 
-  static async create(path: string): Promise<Index> {
+  static async create(path: string, opts: IndexCreateOptions = {}): Promise<Index> {
     const driver = await openDb(path);
     try {
       driver.exec(BASE);
       migrate(driver);
+      const schemaVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value ?? "1";
+      const verifiedVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_verified_version'")?.value;
       let backend: "trigram" | "like" = "trigram";
       try {
         driver.exec(FTS_TRIGRAM);
       } catch {
         backend = "like";
       }
-      if (backend === "trigram") {
+      const shouldVerifyFts = opts.verifyFts === true || (opts.verifyFts === undefined && verifiedVersion !== schemaVersion);
+      if (backend === "trigram" && shouldVerifyFts) {
         try {
-          // Backfill only when the FTS mirror is empty: triggers keep it in sync,
-          // and this correlated-subquery scan is O(n²) on a full table.
-          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts");
-          if ((ftsCount?.c ?? 0) === 0) {
-            driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+          const entriesCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM entries")?.c ?? 0;
+          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
+          const inconsistent = entriesCount !== ftsCount || !!driver.get<{ bad: number }>(
+            `SELECT 1 AS bad FROM (
+               SELECT entry_id, content FROM entries
+               EXCEPT
+               SELECT entry_id, content FROM fts
+             ) LIMIT 1`,
+          );
+          if (inconsistent) {
+            driver.exec("BEGIN");
+            try {
+              driver.run("DELETE FROM fts");
+              driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+              driver.exec("COMMIT");
+            } catch (err) {
+              driver.exec("ROLLBACK");
+              throw err;
+            }
           }
           driver.get("SELECT count(*) AS c FROM fts");
+          driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_verified_version', ?)", [schemaVersion]);
         } catch {
           backend = "like";
         }
@@ -163,7 +185,17 @@ export class Index {
 
   add(entry: Entry): void {
     this.driver.run(
-      `INSERT OR REPLACE INTO entries(${ENTRY_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO entries(${ENTRY_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(entry_id) DO UPDATE SET
+         ns=excluded.ns,
+         kind=excluded.kind,
+         content=excluded.content,
+         created_at=excluded.created_at,
+         last_used_at=excluded.last_used_at,
+         use_count=excluded.use_count,
+         value_score=excluded.value_score,
+         status=excluded.status,
+         pinned=excluded.pinned`,
       [
         entry.entryId,
         entry.ns,
@@ -209,7 +241,7 @@ export class Index {
     return this.driver.all<EntryRow>(sql, args).map(rowToEntry);
   }
 
-  top(params: { ns?: string; kinds?: Kind[]; limit: number; includeArchived?: boolean }): Entry[] {
+  top(params: { ns?: string; kinds?: Kind[]; limit: number; offset?: number; includeArchived?: boolean }): Entry[] {
     const where: string[] = ["status != 'deleted'"];
     const args: unknown[] = [];
     if (params.ns) {
@@ -223,8 +255,8 @@ export class Index {
     if (!params.includeArchived) {
       where.push("status != 'archived'");
     }
-    const sql = `SELECT ${ENTRY_COLS} FROM entries WHERE ${where.join(" AND ")} ORDER BY (CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC LIMIT ?`;
-    args.push(params.limit);
+    const sql = `SELECT ${ENTRY_COLS} FROM entries WHERE ${where.join(" AND ")} ORDER BY (CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC, entry_id LIMIT ? OFFSET ?`;
+    args.push(params.limit, params.offset ?? 0);
     return this.driver.all<EntryRow>(sql, args).map(rowToEntry);
   }
 

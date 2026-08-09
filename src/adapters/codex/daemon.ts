@@ -22,6 +22,9 @@ export interface CodexEventInput {
   prompt?: string;
   turn_id?: string;
   tool_use_id?: string;
+  transcript_path?: string;
+  trigger?: string;
+  compacted_at?: string;
 }
 
 export type AdapterLog = (
@@ -50,6 +53,7 @@ export function createCodexHandler(log?: AdapterLog) {
     reflect: process.env.MEMCORE_CODEX_REFLECT === "0" ? undefined : codexExecReflect({ log }),
   });
   const recent = new Map<string, number>();
+  const inFlight = new Map<string, Promise<Record<string, unknown>>>();
 
   function dedupeKey(input: CodexEventInput): string | null {
     switch (input.hook_event_name) {
@@ -61,6 +65,18 @@ export function createCodexHandler(log?: AdapterLog) {
       // and re-send; without a key the in-memory session stats get reset twice.
       case "SessionStart":
         return input.session_id ? `SessionStart:${input.session_id}` : null;
+      case "PostCompact": {
+        if (!input.session_id) {
+          return null;
+        }
+        const identity = JSON.stringify([
+          input.turn_id ?? "",
+          input.compacted_at ?? "",
+          input.transcript_path ?? "",
+          input.trigger ?? "",
+        ]);
+        return `PostCompact:${input.session_id}:${identity}`;
+      }
       default:
         return null;
     }
@@ -69,14 +85,14 @@ export function createCodexHandler(log?: AdapterLog) {
   function isDuplicate(key: string): boolean {
     const now = Date.now();
     for (const [k, t] of recent) {
-      if (now - t > DEDUPE_WINDOW_MS) {
+      const window = k.startsWith("PostCompact:") ? 30_000 : DEDUPE_WINDOW_MS;
+      if (now - t > window) {
         recent.delete(k);
       }
     }
     if (recent.has(key)) {
       return true;
     }
-    recent.set(key, now);
     return false;
   }
 
@@ -84,57 +100,79 @@ export function createCodexHandler(log?: AdapterLog) {
     const input = (raw ?? {}) as CodexEventInput;
     const event = input.hook_event_name ?? "";
     const key = dedupeKey(input);
-    if (key && isDuplicate(key)) {
-      return { continue: true };
+    if (key) {
+      const pending = inFlight.get(key);
+      if (pending) {
+        return pending;
+      }
+      if (isDuplicate(key)) {
+        return { continue: true };
+      }
     }
     const cwd = input.cwd ?? "";
     const sessionId = input.session_id ?? "";
-    switch (event) {
-      case "SessionStart": {
-        if (sessionId) {
-          await adapter.sessionCreated(sessionId, cwd, "codex");
-        }
-        const context = await adapter.buildStaticContext(cwd);
-        return {
-          continue: true,
-          hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context || null },
-        };
-      }
-      case "UserPromptSubmit": {
-        await adapter.messageSeen(sessionId, `turn:${input.turn_id ?? ""}`);
-        const context = await adapter.buildDynamicContext(cwd, input.prompt ?? "");
-        return {
-          continue: true,
-          hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context || null },
-        };
-      }
-      case "PostToolUse": {
-        await adapter.toolExecuted(sessionId, input.tool_name ?? "", {
-          filePath: filePathFromToolInput(input.tool_input),
-        });
-        return { continue: true };
-      }
-      case "PreCompact":
-        return { continue: true };
-      case "PostCompact": {
-        void adapter.sessionCompacted(sessionId).catch((err) => {
-          if (log) {
-            log("error", `sessionCompacted failed: ${String(err)}`);
+    const delivery = (async (): Promise<Record<string, unknown>> => {
+      try {
+        const output = await (async (): Promise<Record<string, unknown>> => {
+          switch (event) {
+            case "SessionStart": {
+              if (sessionId) {
+                await adapter.sessionCreated(sessionId, cwd, "codex");
+              }
+              const context = await adapter.buildStaticContext(cwd);
+              return {
+                continue: true,
+                hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context || null },
+              };
+            }
+            case "UserPromptSubmit": {
+              await adapter.messageSeen(sessionId, `turn:${input.turn_id ?? ""}`);
+              const context = await adapter.buildDynamicContext(cwd, input.prompt ?? "");
+              return {
+                continue: true,
+                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context || null },
+              };
+            }
+            case "PostToolUse": {
+              await adapter.toolExecuted(sessionId, input.tool_name ?? "", {
+                filePath: filePathFromToolInput(input.tool_input),
+              });
+              return { continue: true };
+            }
+            case "PreCompact":
+              return { continue: true };
+            case "PostCompact": {
+              await adapter.sessionCompacted(sessionId);
+              return { continue: true };
+            }
+            case "Stop": {
+              await adapter.sessionIdle(sessionId);
+              return { continue: true };
+            }
+            case "SessionEnd": {
+              await adapter.sessionEnded(sessionId);
+              return { continue: true };
+            }
+            default:
+              return { continue: true };
           }
-        });
-        return { continue: true };
+        })();
+        // Only successful deliveries become dedupe hits. A transient failure must
+        // remain retryable by the hook client.
+        if (key) {
+          recent.set(key, Date.now());
+        }
+        return output;
+      } finally {
+        if (key) {
+          inFlight.delete(key);
+        }
       }
-      case "Stop": {
-        await adapter.sessionIdle(sessionId);
-        return { continue: true };
-      }
-      case "SessionEnd": {
-        await adapter.sessionEnded(sessionId);
-        return { continue: true };
-      }
-      default:
-        return { continue: true };
+    })();
+    if (key) {
+      inFlight.set(key, delivery);
     }
+    return delivery;
   };
 }
 
@@ -161,7 +199,13 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
       if (item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
         // Prefer the message that actually parses as our reflection JSON; the
         // last agent_message may be an intermediate "let me check…" stub.
-        if (parseReflectionResponse(item.text)) {
+        let parsed: CompactionReflection | null = null;
+        try {
+          parsed = parseReflectionResponse(item.text);
+        } catch {
+          parsed = null;
+        }
+        if (parsed) {
           finalReply = item.text;
         } else if (finalReply === undefined) {
           finalReply = item.text;
@@ -182,7 +226,11 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
   if (failed || !finalReply) {
     return null;
   }
-  return parseReflectionResponse(finalReply);
+  try {
+    return parseReflectionResponse(finalReply);
+  } catch {
+    return null;
+  }
 }
 
 export function codexExecReflect(opts: {
@@ -245,7 +293,12 @@ export function codexExecReflect(opts: {
           settle(null);
           return;
         }
-        settle(parseCodexExecOutput(stdout));
+        try {
+          settle(parseCodexExecOutput(stdout));
+        } catch (err) {
+          log("warn", `failed to parse codex exec output: ${String(err)}`);
+          settle(null);
+        }
       });
     });
 }

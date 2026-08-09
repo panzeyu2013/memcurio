@@ -42,6 +42,11 @@ describe("Index", () => {
     expect(["trigram", "like"]).toContain(idx.backend);
     const meta = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_backend'");
     expect(meta?.value).toBe(idx.backend);
+    if (idx.backend === "trigram") {
+      const verified = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_verified_version'");
+      const schema = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+      expect(verified?.value).toBe(schema?.value);
+    }
     idx.close();
   });
 
@@ -141,9 +146,37 @@ describe("Index", () => {
       idx.driver.run("DELETE FROM fts");
     }
     idx.close();
-    const idx2 = await Index.create(dbPath);
+    const idx2 = await Index.create(dbPath, { verifyFts: true });
     // Must hold on both backends: the observable contract is that search
     // still finds the entry after the mirror was emptied.
+    const hits = getRetriever(idx2).search({ query: "记忆系统", topK: 5 });
+    expect(hits.some((h) => h.entryId === "a1b2c3d4")).toBe(true);
+    idx2.close();
+  });
+
+  test("updating an entry replaces its FTS content instead of leaving a stale row", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry({ content: "legacyneedle only old content" }));
+    idx.add(makeEntry({ content: "freshneedle only new content" }));
+    const retriever = getRetriever(idx);
+    expect(retriever.search({ query: "freshneedle", topK: 10 }).map((h) => h.entryId)).toEqual(["a1b2c3d4"]);
+    expect(retriever.search({ query: "legacyneedle", topK: 10 })).toHaveLength(0);
+    if (idx.backend === "trigram") {
+      const row = idx.driver.get<{ c: number }>("SELECT count(*) AS c FROM fts WHERE entry_id = ?", ["a1b2c3d4"]);
+      expect(row?.c).toBe(1);
+    }
+    idx.close();
+  });
+
+  test("repairs a partially missing FTS mirror", async () => {
+    const idx = await Index.create(dbPath);
+    idx.add(makeEntry());
+    idx.add(makeEntry({ entryId: "e5f6a7b8", content: "另一条完全不同的搜索内容" }));
+    if (idx.backend === "trigram") {
+      idx.driver.run("DELETE FROM fts WHERE entry_id = ?", ["a1b2c3d4"]);
+    }
+    idx.close();
+    const idx2 = await Index.create(dbPath, { verifyFts: true });
     const hits = getRetriever(idx2).search({ query: "记忆系统", topK: 5 });
     expect(hits.some((h) => h.entryId === "a1b2c3d4")).toBe(true);
     idx2.close();

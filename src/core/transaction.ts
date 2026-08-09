@@ -55,12 +55,7 @@ export function withFileLock<T>(lockPath: string, fn: () => T): T {
   const holder = `${process.pid}|${Date.now()}`;
   for (;;) {
     try {
-      writeFileSync(lockPath, holder, { flag: "wx" });
-      try {
-        return fn();
-      } finally {
-        unlinkSync(lockPath);
-      }
+      writeFileSync(lockPath, holder, { flag: "wx", mode: 0o600 });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         throw err;
@@ -80,6 +75,15 @@ export function withFileLock<T>(lockPath: string, fn: () => T): T {
         throw new Error(`re-entrant file lock: ${lockPath}`);
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      continue;
+    }
+    // Keep callback errors outside the acquisition catch. In particular, an
+    // EEXIST raised by the protected operation must not be mistaken for lock
+    // contention and cause the callback to run a second time.
+    try {
+      return fn();
+    } finally {
+      unlinkSync(lockPath);
     }
   }
 }
@@ -129,8 +133,22 @@ export function isStaleLock(lockPath: string): boolean {
 export function truncateLog(logPath: string): void {
   mkdirSync(dirname(logPath), { recursive: true });
   withFileLock(logLockPath(logPath), () => {
-    rotateLog(logPath);
-    writeFileSync(logPath, "");
+    const dir = dirname(logPath);
+    const base = basename(logPath);
+    try {
+      for (const name of readdirSync(dir)) {
+        if (name === base || (name.startsWith(`${base}.`) && name !== `${base}.lock`)) {
+          try {
+            unlinkSync(join(dir, name));
+          } catch {
+            void 0;
+          }
+        }
+      }
+    } catch {
+      void 0;
+    }
+    writeFileSync(logPath, "", { mode: 0o600 });
   });
 }
 
@@ -182,8 +200,11 @@ export class Transaction {
   pending(): TxnRecord[] {
     const { records } = this.readAll();
     const begins = records.filter((r) => r.op === "BEGIN");
-    const closed = new Set(records.filter((r) => r.op === "COMMIT" || r.op === "ROLLBACK").map((r) => r.txn));
-    return begins.filter((r) => !closed.has(r.txn));
+    // ROLLBACK is only a failure marker: Transaction cannot undo writes that
+    // already reached Markdown or SQLite. Keep failed transactions visible so
+    // `repair --execute` can rebuild the shadow index from the truth source.
+    const committed = new Set(records.filter((r) => r.op === "COMMIT").map((r) => r.txn));
+    return begins.filter((r) => !committed.has(r.txn));
   }
 
   /** Number of unparsable (torn/corrupt) lines across the log and rotated logs. */

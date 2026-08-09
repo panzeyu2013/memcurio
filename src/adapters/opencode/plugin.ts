@@ -78,7 +78,7 @@ interface SessionClient {
   delete(options: { path: { id: string } }): Promise<unknown>;
 }
 
-function harnessReflect(client: { session: SessionClient }, directory: string): ReflectChat {
+function harnessReflect(client: { session: SessionClient }, directory: string, internalSessions: Set<string>): ReflectChat {
   return async ({ summary, strategy }) => {
     try {
       if (!summary) {
@@ -86,6 +86,7 @@ function harnessReflect(client: { session: SessionClient }, directory: string): 
       }
       const created = await client.session.create({ query: { directory }, body: { title: "memcore-reflection" } });
       const id = created.data.id;
+      internalSessions.add(id);
       try {
         await client.session.prompt({
           path: { id },
@@ -98,7 +99,7 @@ function harnessReflect(client: { session: SessionClient }, directory: string): 
         }
         return parseReflectionResponse(raw);
       } finally {
-        void client.session.delete({ path: { id } }).catch(() => {});
+        void client.session.delete({ path: { id } }).catch(() => {}).finally(() => internalSessions.delete(id));
       }
     } catch (err) {
       console.error(`memcore harness reflection failed: ${String(err)}`);
@@ -108,13 +109,15 @@ function harnessReflect(client: { session: SessionClient }, directory: string): 
 }
 
 export const MemcorePlugin: Plugin = async ({ directory, client }) => {
+  const internalSessions = new Set<string>();
+  const recentCompactions = new Map<string, { summary: string; ts: number }>();
   const adapter = new MemcoreAdapter({
     log: (level, message, extra) => {
       void client.app
         .log({ body: { service: "memcore", level, message, extra } })
         .catch(() => {});
     },
-    reflect: harnessReflect(client as unknown as { session: SessionClient }, directory),
+    reflect: harnessReflect(client as unknown as { session: SessionClient }, directory, internalSessions),
   });
   const report = (err: unknown): void => {
     void client.app
@@ -129,6 +132,17 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
         return;
       }
       try {
+        const info = properties(event).info as { title?: unknown } | undefined;
+        if (type === "session.created" && info?.title === "memcore-reflection") {
+          internalSessions.add(id);
+          return;
+        }
+        if (internalSessions.has(id)) {
+          if (type === "session.deleted") {
+            internalSessions.delete(id);
+          }
+          return;
+        }
         if (type === "session.created") {
           await adapter.sessionCreated(id, directory);
         } else if (type === "session.idle") {
@@ -143,9 +157,16 @@ export const MemcorePlugin: Plugin = async ({ directory, client }) => {
           } catch {
             summary = undefined;
           }
+          const fingerprint = summary ?? "<no-summary>";
+          const prior = recentCompactions.get(id);
+          if (prior && prior.summary === fingerprint && Date.now() - prior.ts < 30_000) {
+            return;
+          }
           await adapter.sessionCompacted(id, summary);
+          recentCompactions.set(id, { summary: fingerprint, ts: Date.now() });
         } else if (type === "session.deleted") {
           await adapter.sessionEnded(id);
+          recentCompactions.delete(id);
         } else if (type.startsWith("message.part")) {
           const partId = partIdFor(event);
           if (partId) {

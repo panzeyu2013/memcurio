@@ -71,20 +71,33 @@ function withToken(input: string): string | null {
   }
 }
 
+let isPostCompact = false;
+try {
+  isPostCompact = (JSON.parse(stdin) as { hook_event_name?: unknown }).hook_event_name === "PostCompact";
+} catch {
+  // withToken reports malformed input consistently below.
+}
+const deadline = Date.now() + (isPostCompact ? 130_000 : 10_000);
+
 async function tryRequest(): Promise<string | null> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const maxAttempts = isPostCompact ? 1 : 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return null;
+    }
     const wrapped = withToken(stdin);
     if (wrapped === null) {
       return null;
     }
     try {
-      const resp = await request(wrapped, 1500);
+      const resp = await request(wrapped, Math.min(isPostCompact ? 125_000 : 1500, remaining));
       const trimmed = resp.trim();
       if (trimmed) {
         try {
           const parsed = JSON.parse(trimmed) as { systemMessage?: string };
           if (typeof parsed.systemMessage === "string" && parsed.systemMessage.startsWith("memcore error")) {
-            if (attempt < 2) {
+            if (attempt < maxAttempts - 1) {
               continue;
             }
             return null;
@@ -96,7 +109,7 @@ async function tryRequest(): Promise<string | null> {
       }
       return null;
     } catch {
-      if (attempt < 2) {
+      if (attempt < maxAttempts - 1) {
         continue;
       }
       return null;
@@ -136,8 +149,8 @@ function spawnDaemon(): void {
 let resp = await tryRequest();
 if (resp === null) {
   spawnDaemon();
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 20 && Date.now() < deadline; i++) {
+    await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, deadline - Date.now()))));
     resp = await tryRequest();
     if (resp !== null) {
       break;

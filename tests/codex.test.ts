@@ -31,6 +31,7 @@ function makeEntry(overrides: Partial<Entry> = {}): Entry {
 
 let dir: string;
 let prevRoot: string | undefined;
+let prevReflect: string | undefined;
 const ns = namespaceFor("/tmp/MyProject");
 // Track daemons so a failing test never leaks SIGINT/SIGTERM handlers or a
 // live socket into later tests in this file.
@@ -40,6 +41,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cx-"));
   prevRoot = process.env.MEMCORE_ROOT;
   process.env.MEMCORE_ROOT = dir;
+  prevReflect = process.env.MEMCORE_CODEX_REFLECT;
+  process.env.MEMCORE_CODEX_REFLECT = "0";
 });
 
 afterEach(async () => {
@@ -56,6 +59,11 @@ afterEach(async () => {
     delete process.env.MEMCORE_ROOT;
   } else {
     process.env.MEMCORE_ROOT = prevRoot;
+  }
+  if (prevReflect === undefined) {
+    delete process.env.MEMCORE_CODEX_REFLECT;
+  } else {
+    process.env.MEMCORE_CODEX_REFLECT = prevReflect;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -196,6 +204,18 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     expect(entries[0].content).toContain("Reflection");
   });
 
+  test("distinct PostCompact timestamps in one turn are both reflected", async () => {
+    const handle = createCodexHandler();
+    const base = { cwd: "/tmp/MyProject", session_id: "distinct-compactions", turn_id: "t1" };
+    await handle({ ...base, hook_event_name: "SessionStart" });
+    await handle({ ...base, hook_event_name: "PostCompact", compacted_at: "2026-08-08T00:00:00.000Z" });
+    await handle({ ...base, hook_event_name: "PostCompact", compacted_at: "2026-08-08T00:00:01.000Z" });
+    const idx = await Index.create(indexDb(dir));
+    const entry = idx.list({ kind: "COMPACT", allStatus: true }).find((e) => e.ns === ns);
+    expect(entry?.content.match(/## Reflection/g)).toHaveLength(2);
+    idx.close();
+  });
+
   test("duplicate SessionStart does not reset in-memory session stats", async () => {
     await seed([makeEntry({ ns })]);
     const handle = createCodexHandler();
@@ -215,6 +235,43 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     const idx = await Index.create(indexDb(dir));
     expect(idx.get("a1b2c3d4")?.useCount).toBe(1);
     idx.close();
+  });
+
+  test("a failed delivery remains retryable with the same dedupe key", async () => {
+    const blockedRoot = join(dir, "blocked-root");
+    writeFileSync(blockedRoot, "not a directory");
+    process.env.MEMCORE_ROOT = blockedRoot;
+    const handle = createCodexHandler();
+    const payload = {
+      hook_event_name: "SessionStart",
+      cwd: "/tmp/MyProject",
+      session_id: "retry-session",
+      source: "startup",
+    };
+    await expect(handle(payload)).rejects.toThrow();
+    process.env.MEMCORE_ROOT = dir;
+    const retried = await handle(payload);
+    expect(retried.continue).toBe(true);
+    expect((retried.hookSpecificOutput as { additionalContext?: string }).additionalContext).toContain(
+      "memcore memory context",
+    );
+  });
+
+  test("concurrent duplicate deliveries share the same failure instead of acknowledging one", async () => {
+    const blockedRoot = join(dir, "blocked-concurrent-root");
+    writeFileSync(blockedRoot, "not a directory");
+    process.env.MEMCORE_ROOT = blockedRoot;
+    const handle = createCodexHandler();
+    const payload = {
+      hook_event_name: "SessionStart",
+      cwd: "/tmp/MyProject",
+      session_id: "concurrent-retry-session",
+      source: "startup",
+    };
+    const results = await Promise.allSettled([handle(payload), handle(payload)]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    process.env.MEMCORE_ROOT = dir;
+    expect((await handle(payload)).continue).toBe(true);
   });
 
   test("codexExecReflect parses a JSONL stream from a child process", async () => {
@@ -391,6 +448,7 @@ describe("codex exec reflection output parsing", () => {
   test("returns null on malformed or empty output", () => {
     expect(parseCodexExecOutput("not json at all")).toBeNull();
     expect(parseCodexExecOutput("")).toBeNull();
+    expect(parseCodexExecOutput(agentMessage("analysis {not json}"))).toBeNull();
   });
 });
 

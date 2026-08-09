@@ -167,7 +167,8 @@ describe("MemcorePlugin event handling", () => {
     idx.close();
     expect(prompts.length).toBe(1);
     expect(prompts[0]).toContain("compacted summary");
-    expect(prompts[0]).toContain("Current strategy");
+    expect(prompts[0]).toContain('"currentStrategy"');
+    expect(prompts[0]).toContain("untrusted session data");
     expect(deleted).toEqual(["temp1"]);
   });
 

@@ -61,7 +61,7 @@ memcore audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 全部用例（当前 225+）
+bun test          # 全部用例（当前 289）
 bun run typecheck # 类型检查（覆盖 src/tests/scripts）
 bun run bundle:plugin
 ```

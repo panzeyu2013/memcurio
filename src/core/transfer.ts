@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import { Index } from "./db.js";
-import { KINDS, addEntry } from "./mdStore.js";
+import { KINDS, updateKindsAtomically } from "./mdStore.js";
 import type { Entry, Kind, Status } from "./mdStore.js";
 import { assertValidNs, nsDir } from "./paths.js";
 import { redactSecrets, scanInjection } from "./sanitize.js";
 import { atomicWrite } from "./transaction.js";
+import { derivedEntryId, ENTRY_ID_RE } from "./ids.js";
 
 export interface ExportRow {
   entryId: string;
@@ -18,6 +19,16 @@ export interface ExportRow {
   lastUsedAt: string | null;
   useCount: number;
   valueScore: number;
+}
+
+export const MAX_MEMORY_CONTENT_CHARS = 100_000;
+
+function validTimestamp(value: string): boolean {
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
 }
 
 export function toExportRow(e: Entry): ExportRow {
@@ -53,14 +64,14 @@ export function parseExport(text: string): Entry[] {
     } catch {
       throw new Error(`invalid export line ${lineNo}: not valid JSON`);
     }
-    if (!r.entryId || typeof r.entryId !== "string" || !/^[0-9a-f]{8}$/.test(r.entryId)) {
-      throw new Error(`invalid export line ${lineNo}: entryId must be 8-hex`);
+    if (!r.entryId || typeof r.entryId !== "string" || !ENTRY_ID_RE.test(r.entryId)) {
+      throw new Error(`invalid export line ${lineNo}: entryId must be legacy 8-hex or new 32-hex`);
     }
-    if (typeof r.content !== "string" || !r.content) {
-      throw new Error(`invalid export line ${lineNo}: content must be a non-empty string`);
+    if (typeof r.content !== "string" || !r.content.trim() || r.content.length > MAX_MEMORY_CONTENT_CHARS) {
+      throw new Error(`invalid export line ${lineNo}: content must be 1-${MAX_MEMORY_CONTENT_CHARS} characters`);
     }
-    if (typeof r.createdAt !== "string" || !r.createdAt) {
-      throw new Error(`invalid export line ${lineNo}: createdAt missing`);
+    if (typeof r.createdAt !== "string" || !validTimestamp(r.createdAt)) {
+      throw new Error(`invalid export line ${lineNo}: createdAt must be a valid timestamp`);
     }
     const kind = r.kind ?? "MEMORY";
     if (!KINDS.includes(kind)) {
@@ -82,8 +93,8 @@ export function parseExport(text: string): Entry[] {
     ) {
       throw new Error(`invalid export line ${lineNo}: valueScore must be a number in [0, 2]`);
     }
-    if (r.lastUsedAt !== undefined && r.lastUsedAt !== null && typeof r.lastUsedAt !== "string") {
-      throw new Error(`invalid export line ${lineNo}: lastUsedAt must be a string or null`);
+    if (r.lastUsedAt !== undefined && r.lastUsedAt !== null && (typeof r.lastUsedAt !== "string" || !validTimestamp(r.lastUsedAt))) {
+      throw new Error(`invalid export line ${lineNo}: lastUsedAt must be a valid timestamp or null`);
     }
     out.push({
       entryId: r.entryId,
@@ -114,6 +125,8 @@ export interface ImportPlan {
 
 export function planImport(parsed: Entry[], idx: Index, nsOverride?: string): ImportPlan {
   const plan: ImportPlan = { added: [], skippedExisting: 0, skippedDuplicate: 0, conflicts: [] };
+  const plannedById = new Map<string, Entry>();
+  const reservedIds = new Set([...idx.list({ allStatus: true }), ...parsed].map((e) => e.entryId));
   // Only load content for namespaces that the import actually touches.
   const contentByNs = new Map<string, Set<string>>();
   const relevantNs = new Set(parsed.map((e) => (nsOverride ? assertValidNs(nsOverride) : e.ns)));
@@ -122,20 +135,45 @@ export function planImport(parsed: Entry[], idx: Index, nsOverride?: string): Im
   }
   for (const e of parsed) {
     const ns = nsOverride ? assertValidNs(nsOverride) : e.ns;
-    const existing = idx.get(e.entryId);
-    if (existing) {
-      if (existing.content === e.content) {
-        plan.skippedExisting += 1;
+    const normalized = { ...e, ns, content: redactSecrets(e.content).text };
+    const planned = plannedById.get(normalized.entryId);
+    if (planned) {
+      if (planned.content === normalized.content && planned.ns === ns) {
+        plan.skippedDuplicate += 1;
       } else {
-        plan.conflicts.push({ entryId: e.entryId, ns });
+        plan.conflicts.push({ entryId: normalized.entryId, ns });
+      }
+      continue;
+    }
+    const existing = idx.get(normalized.entryId);
+    if (existing) {
+      if (existing.ns === ns && existing.content === normalized.content) {
+        plan.skippedExisting += 1;
+      } else if (nsOverride && existing.ns !== ns) {
+        const bucket = contentByNs.get(ns) ?? new Set();
+        if (bucket.has(normalized.content)) {
+          plan.skippedDuplicate += 1;
+        } else {
+          bucket.add(normalized.content);
+          const added = {
+            ...normalized,
+            entryId: derivedEntryId(`import|${ns}|${normalized.entryId}|${normalized.content}`, reservedIds),
+          };
+          plan.added.push(added);
+          plannedById.set(normalized.entryId, added);
+        }
+      } else {
+        plan.conflicts.push({ entryId: normalized.entryId, ns });
       }
     } else {
       const bucket = contentByNs.get(ns) ?? new Set();
-      if (bucket.has(e.content)) {
+      if (bucket.has(normalized.content)) {
         plan.skippedDuplicate += 1;
       } else {
-        bucket.add(e.content);
-        plan.added.push({ ...e, ns });
+        bucket.add(normalized.content);
+        const added = normalized;
+        plan.added.push(added);
+        plannedById.set(normalized.entryId, added);
       }
     }
   }
@@ -148,7 +186,16 @@ export interface MergePlan {
   dupsByContent: Array<{ entryId: string; content: string }>;
 }
 
-export function planMerge(src: Entry[], dst: Entry[], dstNs: string): MergePlan {
+function copyEntryId(entry: Entry, dstNs: string, reserved: Set<string>): string {
+  return derivedEntryId(`${dstNs}|${entry.entryId}|${entry.content}`, reserved);
+}
+
+export function planMerge(
+  src: Entry[],
+  dst: Entry[],
+  dstNs: string,
+  reservedIds: Set<string> = new Set([...src, ...dst].map((e) => e.entryId)),
+): MergePlan {
   const plan: MergePlan = { toCopy: [], conflicts: [], dupsByContent: [] };
   const dstById = new Map(dst.map((e) => [e.entryId, e]));
   const dstByContent = new Map(dst.map((e) => [e.content, e]));
@@ -165,7 +212,7 @@ export function planMerge(src: Entry[], dst: Entry[], dstNs: string): MergePlan 
       plan.dupsByContent.push({ entryId: e.entryId, content: e.content.slice(0, 60) });
       continue;
     }
-    plan.toCopy.push({ ...e, ns: dstNs });
+    plan.toCopy.push({ ...e, entryId: copyEntryId(e, dstNs, reservedIds), ns: dstNs });
   }
   return plan;
 }
@@ -178,29 +225,49 @@ function auditWriteWarnings(idx: Index, entry: Entry): void {
 }
 
 export function applyImport(plan: ImportPlan, idx: Index, root: string): void {
-  for (const e of plan.added) {
+  const entries = plan.added.map((e) => {
     const redacted = redactSecrets(e.content);
-    const entry = redacted.redacted ? { ...e, content: redacted.text } : e;
-    addEntry(nsDir(root, entry.ns), entry);
-    idx.add(entry);
-    if (redacted.redacted) {
-      idx.audit("warn.redacted", entry.ns, `secret redacted in ${entry.entryId}`);
-    }
-    auditWriteWarnings(idx, entry);
-  }
+    return { entry: redacted.redacted ? { ...e, content: redacted.text } : e, redacted: redacted.redacted };
+  });
+  updateKindsAtomically(
+    entries.map(({ entry }) => ({
+      nsDir: nsDir(root, entry.ns),
+      kind: entry.kind,
+      mutate: (current) => [...current, entry],
+    })),
+    () => idx.withTransaction(() => {
+      for (const { entry, redacted } of entries) {
+        idx.add(entry);
+        if (redacted) {
+          idx.audit("warn.redacted", entry.ns, `secret redacted in ${entry.entryId}`);
+        }
+        auditWriteWarnings(idx, entry);
+      }
+    }),
+  );
 }
 
 export function applyMerge(plan: MergePlan, idx: Index, root: string): void {
-  for (const e of plan.toCopy) {
+  const entries = plan.toCopy.map((e) => {
     const redacted = redactSecrets(e.content);
-    const entry = redacted.redacted ? { ...e, content: redacted.text } : e;
-    addEntry(nsDir(root, entry.ns), entry);
-    idx.add(entry);
-    if (redacted.redacted) {
-      idx.audit("warn.redacted", entry.ns, `secret redacted in ${entry.entryId}`);
-    }
-    auditWriteWarnings(idx, entry);
-  }
+    return { entry: redacted.redacted ? { ...e, content: redacted.text } : e, redacted: redacted.redacted };
+  });
+  updateKindsAtomically(
+    entries.map(({ entry }) => ({
+      nsDir: nsDir(root, entry.ns),
+      kind: entry.kind,
+      mutate: (current) => [...current, entry],
+    })),
+    () => idx.withTransaction(() => {
+      for (const { entry, redacted } of entries) {
+        idx.add(entry);
+        if (redacted) {
+          idx.audit("warn.redacted", entry.ns, `secret redacted in ${entry.entryId}`);
+        }
+        auditWriteWarnings(idx, entry);
+      }
+    }),
+  );
 }
 
 export function readExportFile(path: string): Entry[] {

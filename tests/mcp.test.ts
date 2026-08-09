@@ -61,7 +61,7 @@ describe("memcore MCP server", () => {
       })) as CallResult,
     ) as { entryId: string; ns: string };
     expect(remembered.ns).toBe("proj-a");
-    expect(remembered.entryId).toHaveLength(8);
+    expect(remembered.entryId).toHaveLength(32);
 
     const search = parseText(
       (await client.callTool({

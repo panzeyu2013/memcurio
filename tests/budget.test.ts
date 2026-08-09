@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { estimateTokens, fitLines, renderBudgetNotice } from "../src/core/budget.js";
+import { estimateTokens, fitContext, fitLines, renderBudgetNotice } from "../src/core/budget.js";
 
 describe("estimateTokens", () => {
   test("CJK counts 1 token per char, others 0.25", () => {
@@ -44,5 +44,12 @@ describe("fitLines", () => {
       expect(r.truncated).toBe(1);
       expect(r.usedTokens).toBe(0);
     }
+  });
+});
+
+describe("fitContext", () => {
+  test("accounts for headers and notices in the same global budget", () => {
+    const rendered = fitContext(["HEADER " + "x".repeat(80), "body " + "y".repeat(200), "tail"], 25);
+    expect(estimateTokens(rendered)).toBeLessThanOrEqual(25);
   });
 });

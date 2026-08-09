@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -7,12 +6,14 @@ import { z } from "zod";
 
 import { loadConfig } from "../core/config.js";
 import { Index } from "../core/db.js";
-import { KINDS, addEntry, updateKind } from "../core/mdStore.js";
+import { KINDS, updateKindsAtomically } from "../core/mdStore.js";
 import type { Entry, Kind } from "../core/mdStore.js";
 import { assertValidNs, indexDb, ensureLayout, namespaces, nsDir, rootDir, txnLog } from "../core/paths.js";
-import { getRetriever } from "../core/retriever.js";
 import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
+import { safeSearch } from "../core/safeSearch.js";
 import { Transaction } from "../core/transaction.js";
+import { newEntryId } from "../core/ids.js";
+import { MAX_MEMORY_CONTENT_CHARS } from "../core/transfer.js";
 
 const VERSION = "0.1.0";
 
@@ -38,7 +39,7 @@ export function createServer(): McpServer {
       description:
         "跨会话长期记忆中检索条目，返回匹配的 memory 条目（内容 + 命名空间 + 相关度分）。记忆来自本项目与其他项目的历史会话沉淀。命中即计入使用次数（价值分）。",
       inputSchema: {
-        query: z.string().describe("检索关键词，中文/英文均可"),
+        query: z.string().trim().min(1).max(10_000).describe("检索关键词，中文/英文均可"),
         topK: z.number().int().min(1).max(50).default(10).describe("返回条数上限"),
         ns: z.string().optional().describe("命名空间过滤（默认全部）"),
         kind: z.enum(MODEL_KINDS).optional().describe("条目类型：MEMORY=事实/决策/约束，USER=用户偏好"),
@@ -47,26 +48,18 @@ export function createServer(): McpServer {
     async (args) => {
       const idx = await openIndex();
       try {
-        const retriever = getRetriever(idx, (err) =>
-          console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
-        );
-        const hits = retriever.search({
+        const result = safeSearch(idx, {
           query: args.query,
           topK: args.topK,
           ns: args.ns,
           kinds: args.kind ? [args.kind as Kind] : MODEL_KINDS,
+        }, {
+          onError: (err) => console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
+          onBlocked: (h, flag) => idx.audit("warn.promptware", h.ns, `blocked from mcp result: ${h.entryId} (${flag})`),
         });
-        const filtered: typeof hits = [];
-        for (const h of hits) {
-          const verdict = sanitizeForInjection(h.content);
-          if (verdict.safe) {
-            filtered.push(h);
-          } else {
-            idx.audit("warn.promptware", h.ns, `blocked from mcp result: ${h.entryId} (${verdict.flags[0]})`);
-          }
-        }
+        const filtered = result.hits;
         idx.touch(filtered.map((h) => h.entryId));
-        idx.audit("mcp.search", args.ns ?? "-", `${redactSecrets(args.query).text} -> ${filtered.length} hits${hits.length !== filtered.length ? ` (${hits.length - filtered.length} filtered)` : ""}`);
+        idx.audit("mcp.search", args.ns ?? "-", `${redactSecrets(args.query).text} -> ${filtered.length} hits${result.blocked ? ` (${result.blocked} filtered)` : ""}`);
         return text({
           hits: filtered.map((h) => ({
             entryId: h.entryId,
@@ -90,7 +83,7 @@ export function createServer(): McpServer {
       description:
         "把一条长期记忆写入跨会话记忆库（事实、决策、约束、用户偏好）。写入后未来所有 harness 的会话都能检索到。内容将自动脱敏（密钥 → [REDACTED]）。",
       inputSchema: {
-        content: z.string().describe("记忆内容，自包含、简洁、可作为独立条目"),
+        content: z.string().trim().min(1).max(MAX_MEMORY_CONTENT_CHARS).describe("记忆内容，自包含、简洁、可作为独立条目"),
         kind: z.enum(MODEL_KINDS).default("MEMORY").describe("MEMORY=事实/决策/约束，USER=用户偏好"),
         ns: z.string().optional().describe("命名空间（默认取配置 namespace.default，通常等于项目目录名）"),
       },
@@ -104,7 +97,7 @@ export function createServer(): McpServer {
         const redacted = redactSecrets(args.content);
         const flags = sanitizeForInjection(redacted.text);
         const ts = new Date().toISOString();
-        const entryId = createHash("sha1").update(`${ts}|${redacted.text}`).digest("hex").slice(0, 8);
+        const entryId = newEntryId();
         const entry: Entry = {
           entryId,
           ns,
@@ -119,15 +112,15 @@ export function createServer(): McpServer {
         };
         const txn = new Transaction(txnLog(root));
         txn.run("mcp.remember", entry.ns, entryId, () => {
-          addEntry(nsDir(root, entry.ns), entry);
-          idx.add(entry);
-          idx.audit("mcp.remember", entry.ns, entryId);
-          if (redacted.redacted) {
-            idx.audit("warn.redacted", entry.ns, `secret redacted in ${entryId}`);
-          }
-          if (!flags.safe) {
-            idx.audit("warn.promptware", entry.ns, `injection pattern on write: ${entryId} (${flags.flags[0]})`);
-          }
+          updateKindsAtomically(
+            [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) => [...entries, entry] }],
+            () => idx.withTransaction(() => {
+              idx.add(entry);
+              idx.audit("mcp.remember", entry.ns, entryId);
+              if (redacted.redacted) idx.audit("warn.redacted", entry.ns, `secret redacted in ${entryId}`);
+              if (!flags.safe) idx.audit("warn.promptware", entry.ns, `injection pattern on write: ${entryId} (${flags.flags[0]})`);
+            }),
+          );
         });
         return text({ entryId, ns: entry.ns, kind: entry.kind, redacted: redacted.redacted });
       } finally {
@@ -142,7 +135,7 @@ export function createServer(): McpServer {
       title: "Forget a memory",
       description: "按 entry_id 删除一条记忆（同时从 Markdown 真源与索引移除，留审计）。",
       inputSchema: {
-        entryId: z.string().describe("memory_search 返回的 entryId"),
+        entryId: z.string().regex(/^[0-9a-f]{8}(?:[0-9a-f]{24})?$/).describe("memory_search 返回的 entryId"),
       },
     },
     async (args) => {
@@ -155,10 +148,13 @@ export function createServer(): McpServer {
         }
         const txn = new Transaction(txnLog(root));
         txn.run("mcp.forget", entry.ns, args.entryId, () => {
-          const nsd = nsDir(root, entry.ns);
-          updateKind(nsd, entry.kind, (entries) => entries.filter((e) => e.entryId !== args.entryId));
-          idx.delete(args.entryId);
-          idx.audit("mcp.forget", entry.ns, args.entryId);
+          updateKindsAtomically(
+            [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) => entries.filter((e) => e.entryId !== args.entryId) }],
+            () => idx.withTransaction(() => {
+              idx.delete(args.entryId);
+              idx.audit("mcp.forget", entry.ns, args.entryId);
+            }),
+          );
         });
         return text({ removed: true, entryId: args.entryId });
       } finally {

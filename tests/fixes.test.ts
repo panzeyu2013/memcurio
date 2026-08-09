@@ -213,6 +213,36 @@ describe("A2 reindex 保留统计 / repair", () => {
     idx2.close();
   });
 
+  test("reindex 以文件名为 kind，forget 后不会复活手改错 kind 的条目", async () => {
+    await run("init");
+    await run("remember", "手工修改 kind", "--ns", "proj");
+    const file = join(nsDir(dir, "proj"), "MEMORY.md");
+    writeFileSync(file, readFileSync(file, "utf-8").replace("| MEMORY |", "| USER |"));
+    await run("reindex");
+    const idx = await Index.create(indexDb(dir));
+    const entry = idx.list({ ns: "proj", allStatus: true })[0];
+    expect(entry.kind).toBe("MEMORY");
+    idx.close();
+    expect((await run("forget", entry.entryId)).code).toBe(0);
+    await run("reindex");
+    const rebuilt = await Index.create(indexDb(dir));
+    expect(rebuilt.get(entry.entryId)).toBeUndefined();
+    rebuilt.close();
+  });
+
+  test("reindex 把脱敏结果写回 Markdown 真源", async () => {
+    await run("init");
+    const file = join(nsDir(dir, "proj"), "MEMORY.md");
+    writeFileSync(
+      file,
+      "§ deadbeef | MEMORY | 2026-08-09T00:00:00.000Z | active\n\napi_key=abcdefghijklmnop12345678\n",
+    );
+    await run("reindex");
+    const truth = readFileSync(file, "utf-8");
+    expect(truth).toContain("[REDACTED]");
+    expect(truth).not.toContain("abcdefghijklmnop12345678");
+  });
+
   test("repair 报告并重建", async () => {
     await run("init");
     await run("remember", "第一条");
@@ -235,6 +265,8 @@ describe("A2 reindex 保留统计 / repair", () => {
     expect(txn.corruptLines()).toBe(1);
     const report = await run("repair");
     expect(report.out).toContain("无法解析");
+    expect((await run("repair", "--execute")).code).toBe(0);
+    expect(txn.corruptLines()).toBe(0);
   });
 
   test("repair --execute 清理事务日志", async () => {
@@ -353,6 +385,26 @@ describe("C1 CLI 体验", () => {
     await run("init");
     const ok = await run("doctor");
     expect(ok.out).toContain("全部正常");
+    writeFileSync(join(dir, "config.json"), "{broken");
+    const broken = await run("doctor");
+    expect(broken.code).toBe(1);
+    expect(broken.out).toContain("✗ config");
+    expect(broken.out).not.toContain("全部正常");
+  });
+
+  test("doctor reports FTS drift instead of silently repairing it during open", async () => {
+    await run("init");
+    await run("remember", "用于检测 FTS 漂移的内容");
+    const idx = await Index.create(indexDb(dir));
+    if (idx.backend !== "trigram") {
+      idx.close();
+      return;
+    }
+    idx.driver.run("DELETE FROM fts");
+    idx.close();
+    const result = await run("doctor");
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("✗ fts mirror");
   });
 
   test("search 零命中提示", async () => {

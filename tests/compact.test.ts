@@ -195,6 +195,26 @@ describe("compaction strategy loop", () => {
     idx.close();
   });
 
+  test("reflects each distinct compaction in the same session", async () => {
+    await capture(["init"]);
+    let calls = 0;
+    const adapter = new MemcoreAdapter({
+      reflect: async ({ summary }) => {
+        calls += 1;
+        return { prompt: `prompt ${calls}`, memory: summary ?? "none" };
+      },
+    });
+    await adapter.sessionCreated("s1", "/tmp/MyProject");
+    await adapter.sessionCompacted("s1", "first compaction");
+    await adapter.sessionCompacted("s1", "second compaction");
+    expect(calls).toBe(2);
+    const idx = await Index.create(indexDb(dir));
+    const entry = idx.list({ ns, kind: "COMPACT", allStatus: true })[0];
+    expect(entry.content).toContain("first compaction");
+    expect(entry.content).toContain("second compaction");
+    idx.close();
+  });
+
   test("LLM reflection is parsed and stored when a provider is configured", async () => {
     await capture(["init"]);
     await capture(["compact", "keep context under 8k tokens", "--ns", ns]);
@@ -337,5 +357,28 @@ describe("reflectOnCompaction fallback", () => {
       },
     });
     expect(r.memory).toContain("Compaction summary captured");
+  });
+
+  test("HTTP reflection puts the timeout signal on fetch options", async () => {
+    process.env.MEMCORE_LLM_API_KEY = "test-key";
+    const originalFetch = globalThis.fetch;
+    let captured: RequestInit | undefined;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      captured = init;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"prompt":"keep paths","memory":"remember decisions"}' } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      const result = await reflectOnCompaction({ summary: "summary" });
+      expect(result.prompt).toBe("keep paths");
+      expect(captured?.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(String(captured?.body))).not.toHaveProperty("signal");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

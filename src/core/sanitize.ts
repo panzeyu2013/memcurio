@@ -63,6 +63,8 @@ const INJECTION_PATTERNS: RegExp[] = [
   /忽略\s*(?:所有|全部)?\s*(?:之前的)?\s*系统提示/,
   /透露\s*(?:所有|全部)?\s*(?:秘密|密钥|敏感信息|凭据)/,
   /告诉我\s*(?:所有|全部)?\s*(?:秘密|密钥|密码)/,
+  /(?:read|open|access|print|show|copy|读取|打开|访问|显示|复制)[\s\S]{0,80}(?:\.ssh|id_rsa|id_ed25519|credentials|private\s*key|私钥|凭据)/i,
+  /(?:send|upload|post|transmit|exfiltrat|发送|上传|外传)[\s\S]{0,100}(?:secret|token|password|credential|private\s*key|\.ssh|密钥|密码|凭据|私钥)/i,
 ];
 
 export function scanInjection(text: string): string[] {

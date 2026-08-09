@@ -13,6 +13,7 @@ export interface Hit {
 export interface SearchParams {
   query: string;
   topK: number;
+  offset?: number;
   ns?: string;
   kinds?: Kind[];
 }
@@ -84,11 +85,11 @@ export class TrigramRetriever implements Retriever {
     private readonly onError?: (err: unknown) => void,
   ) {}
 
-  search({ query, topK, ns, kinds }: SearchParams): Hit[] {
+  search({ query, topK, offset = 0, ns, kinds }: SearchParams): Hit[] {
     const q = query.trim();
     const fts = buildFtsQuery(q);
     if (q.length < 3 || !fts) {
-      return new LikeRetriever(this.index).search({ query: q, topK, ns, kinds });
+      return new LikeRetriever(this.index).search({ query: q, topK, offset, ns, kinds });
     }
     let sql =
       "SELECT fts.entry_id AS entry_id, fts.content AS content, e.ns AS ns, e.kind AS kind, bm25(fts) AS score" +
@@ -103,8 +104,8 @@ export class TrigramRetriever implements Retriever {
       sql += ` AND e.kind IN (${kinds.map(() => "?").join(",")})`;
       args.push(...kinds);
     }
-    sql += " ORDER BY score LIMIT ?";
-    args.push(topK);
+    sql += " ORDER BY score, fts.entry_id LIMIT ? OFFSET ?";
+    args.push(topK, offset);
     try {
       return this.index
         .rawAll<Record<string, unknown>>(sql, args)
@@ -118,7 +119,7 @@ export class TrigramRetriever implements Retriever {
         }));
     } catch (err) {
       this.onError?.(err);
-      return new LikeRetriever(this.index).search({ query: q, topK, ns, kinds });
+      return new LikeRetriever(this.index).search({ query: q, topK, offset, ns, kinds });
     }
   }
 }
@@ -128,18 +129,18 @@ export class LikeRetriever implements Retriever {
 
   constructor(private readonly index: Index) {}
 
-  search({ query, topK, ns, kinds }: SearchParams): Hit[] {
+  search({ query, topK, offset = 0, ns, kinds }: SearchParams): Hit[] {
     const q = query.trim();
     if (!q) {
       return [];
     }
-    // Case-insensitive substring match, bounded: scan at most 4× topK rows,
-    // then rank the survivors in memory.
+    // Rank in SQL before pagination so a later-inserted stronger match cannot
+    // be excluded by an arbitrary pre-ranking LIMIT.
     const sql =
       "SELECT entry_id, ns, kind, content FROM entries WHERE status NOT IN ('deleted', 'archived') AND instr(lower(content), lower(?)) > 0" +
       (ns ? " AND ns = ?" : "") +
       (kinds?.length ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "") +
-      " LIMIT ?";
+      " ORDER BY ((length(lower(content)) - length(replace(lower(content), lower(?), ''))) / max(1, length(?))) DESC, entry_id LIMIT ? OFFSET ?";
     const args: unknown[] = [q];
     if (ns) {
       args.push(ns);
@@ -147,7 +148,7 @@ export class LikeRetriever implements Retriever {
     if (kinds?.length) {
       args.push(...kinds);
     }
-    args.push(Math.max(1, topK * 4));
+    args.push(q, q, topK, offset);
     const needle = q.toLowerCase();
     const hits: Hit[] = [];
     for (const r of this.index.rawAll<Record<string, unknown>>(sql, args)) {
@@ -162,8 +163,7 @@ export class LikeRetriever implements Retriever {
         reason: "substring",
       });
     }
-    hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, topK);
+    return hits;
   }
 }
 

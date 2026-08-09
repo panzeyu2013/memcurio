@@ -31,3 +31,13 @@ export function fitLines(lines: string[], budgetTokens: number): FitResult {
 export function renderBudgetNotice(truncated: number): string {
   return truncated > 0 ? `(${truncated} more not injected: over token budget)` : "";
 }
+
+export function fitContext(lines: string[], budgetTokens: number): string {
+  const clean = lines.filter((line) => line !== "");
+  const fitted = fitLines(clean, budgetTokens);
+  if (fitted.truncated === 0) {
+    return fitted.lines.join("\n");
+  }
+  const notice = renderBudgetNotice(fitted.truncated);
+  return fitLines([...fitted.lines, notice], budgetTokens).lines.join("\n");
+}

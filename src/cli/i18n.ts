@@ -71,6 +71,7 @@ const zh: Record<string, Entry> = {
   "help.help": "memcore help [cmd]\n  命令帮助",
 
   "remember.missing": 'remember: missing content (memcore remember "内容")',
+  "remember.tooLong": (n: string) => `remember: 内容超过 ${n} 字符上限`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${cur}'，如需注入请加 --ns ${cur} 或设置 config.namespace.default`,
   "search.missing": 'search: missing query (memcore search "关键词")',
@@ -80,6 +81,7 @@ const zh: Record<string, Entry> = {
   "forget.missing": "forget: missing entry_id (从 memcore list 获取)",
   "forget.done": (id: string) => `已删除 ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "策略内容")',
+  "compact.tooLong": (n: string) => `compact: 内容超过 ${n} 字符上限`,
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条）`,
   "repair.none": "no pending transactions (事务日志健康)",
   "repair.pendingHeader": (n: string) => `${n} 个未完成事务：`,
@@ -104,6 +106,7 @@ const zh: Record<string, Entry> = {
   "import.done": (a: string, e: string, d: string, c: string) =>
     `已导入 ${a} 条（${e} 已存在，${d} 内容重复，${c} 冲突）`,
   "import.conflict": (id: string, ns: string) => `冲突 ${id} 已存在但内容不同（跳过，ns=${ns}）`,
+  "import.conflictFail": (n: string) => `import: ${n} 条冲突条目 ID；未导入任何内容`,
   "merge.done": (n: string, dst: string) => `已合并 ${n} 条到 ${dst}`,
   "prune.none": "没有可剪枝的条目",
   "prune.applied": (n: string) => `已应用 ${n} 条状态转换`,
@@ -189,6 +192,7 @@ Commands:
   "help.help": "memcore help [cmd]\n  Command help",
 
   "remember.missing": 'remember: missing content (memcore remember "content")',
+  "remember.tooLong": (n: string) => `remember: content exceeds ${n} characters`,
   "remember.nsNote": (ns: string, cur: string) =>
     `note: memory saved to namespace '${ns}'; current directory sessions inject from '${cur}' — use --ns ${cur} or set config.namespace.default to inject here`,
   "search.missing": 'search: missing query (memcore search "keyword")',
@@ -198,6 +202,7 @@ Commands:
   "forget.missing": "forget: missing entry_id (get it from memcore list)",
   "forget.done": (id: string) => `forgot ${id}`,
   "compact.missing": 'compact: missing content (memcore compact "strategy")',
+  "compact.tooLong": (n: string) => `compact: content exceeds ${n} characters`,
   "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries)`,
   "repair.none": "no pending transactions (transaction log healthy)",
   "repair.pendingHeader": (n: string) => `${n} unfinished transactions:`,
@@ -222,6 +227,7 @@ Commands:
   "import.done": (a: string, e: string, d: string, c: string) =>
     `imported ${a} entries (${e} existing, ${d} content-dup, ${c} conflicts)`,
   "import.conflict": (id: string, ns: string) => `conflict ${id} exists with different content (skipped, ns=${ns})`,
+  "import.conflictFail": (n: string) => `import: ${n} conflicting entry id(s); nothing imported`,
   "merge.done": (n: string, dst: string) => `merged ${n} entries into ${dst}`,
   "prune.none": "nothing to prune",
   "prune.applied": (n: string) => `applied ${n} transitions`,

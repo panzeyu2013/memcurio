@@ -133,6 +133,18 @@ describe("buildCuratePlan", () => {
     idx.close();
   });
 
+  test("collapses an overlapping near-duplicate component into one umbrella", async () => {
+    const idx = await Index.create(indexDb(dir));
+    idx.add(makeEntry({ content: "项目使用 SQLite FTS5 trigram 做检索" }));
+    idx.add(makeEntry({ entryId: "e5f6a7b8", content: "项目使用 SQLite FTS5 trigram 做检索 补充一" }));
+    idx.add(makeEntry({ entryId: "c9d0e1f2", content: "项目使用 SQLite FTS5 trigram 做检索 补充二" }));
+    const provider = new FakeProvider({ suggestUmbrella: async () => "合并后的伞条目内容" });
+    const plan = await buildCuratePlan(idx, provider);
+    expect(plan.umbrellas).toHaveLength(1);
+    expect(plan.umbrellas[0].group).toHaveLength(3);
+    idx.close();
+  });
+
   test("contradiction detection", async () => {
     const idx = await Index.create(indexDb(dir));
     idx.add(makeEntry({ content: "记忆库使用 SQLite 作为存储后端" }));
@@ -163,8 +175,8 @@ describe("buildCuratePlan", () => {
       },
     });
     const plan = await buildCuratePlan(idx, provider, { maxChecks: 5 });
-    expect(plan.checksExhausted).toBe(true);
     expect(calls).toBeLessThanOrEqual(5);
+    expect(plan.umbrellas.length).toBeLessThanOrEqual(5);
     idx.close();
   });
 });

@@ -1,7 +1,8 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { atomicWrite, withFileLock } from "./transaction.js";
+import { ENTRY_ID_RE } from "./ids.js";
 
 export const KINDS = ["MEMORY", "USER", "SESSION", "COMPACT"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -22,7 +23,7 @@ export interface Entry {
   valueScore: number;
 }
 
-const SEP = /^§ ([0-9a-f]{8}) \| ([A-Z_]+) \| (\S+) \| (\S+)(?: \| ([01]))?$/;
+const SEP = new RegExp(`^§ (${ENTRY_ID_RE.source.slice(1, -1)}) \\| ([A-Z_]+) \\| (\\S+) \\| (\\S+)(?: \\| ([01]))?$`);
 
 function isKnownKind(kind: string): boolean {
   return (KINDS as readonly string[]).includes(kind);
@@ -183,34 +184,111 @@ export function updateKind(nsDir_: string, kind: Kind, mutate: (entries: Entry[]
   const ns = nsDir_.split("/").filter(Boolean).at(-1) ?? "";
   withFileLock(`${nsDir_}/.lock-${kind}.md`, () => {
     const text = readText(path);
-    const parsed = parseBlocks(text, ns, kind);
-    const next = mutate(parsed.filter((b) => b.type === "entry").map((b) => b.entry!));
-    const nextById = new Map(next.map((e) => [e.entryId, e]));
-    const used = new Set<string>();
-    const out: string[] = [];
-    for (const b of parsed) {
-      if (b.type === "text") {
-        out.push(b.raw);
-        continue;
-      }
-      const e = nextById.get(b.entry!.entryId);
-      if (!e || used.has(e.entryId)) {
-        continue;
-      }
-      used.add(e.entryId);
-      out.push(entryEquals(b.entry!, e) ? b.raw : renderEntry(e));
-    }
-    for (const e of next) {
-      if (!used.has(e.entryId)) {
-        used.add(e.entryId);
-        out.push(renderEntry(e));
-      }
-    }
-    const rendered = out.join("\n").trimEnd() + "\n";
+    const rendered = renderMutation(text, ns, kind, mutate);
     if (rendered === text.trimEnd() + "\n") {
       return;
     }
     atomicWrite(path, rendered);
+  });
+}
+
+export interface KindMutation {
+  nsDir: string;
+  kind: Kind;
+  mutate: (entries: Entry[]) => Entry[];
+}
+
+function renderMutation(text: string, ns: string, kind: Kind, mutate: KindMutation["mutate"]): string {
+  const parsed = parseBlocks(text, ns, kind);
+  const next = mutate(parsed.filter((b) => b.type === "entry").map((b) => b.entry!));
+  const nextById = new Map(next.map((e) => [e.entryId, e]));
+  const used = new Set<string>();
+  const out: string[] = [];
+  for (const b of parsed) {
+    if (b.type === "text") {
+      out.push(b.raw);
+      continue;
+    }
+    const e = nextById.get(b.entry!.entryId);
+    if (!e || used.has(e.entryId)) {
+      continue;
+    }
+    used.add(e.entryId);
+    out.push(entryEquals(b.entry!, e) ? b.raw : renderEntry(e));
+  }
+  for (const e of next) {
+    if (!used.has(e.entryId)) {
+      used.add(e.entryId);
+      out.push(renderEntry(e));
+    }
+  }
+  return out.join("\n").trimEnd() + "\n";
+}
+
+/**
+ * Apply mutations spanning several truth files while holding every file lock.
+ * Markdown is written first, then `commit` updates the shadow index in one DB
+ * transaction. Any synchronous failure restores every file before releasing
+ * the locks, so callers never observe a partially applied batch.
+ */
+export function updateKindsAtomically(mutations: KindMutation[], commit: () => void): void {
+  const grouped = new Map<string, { nsDir: string; kind: Kind; mutates: KindMutation["mutate"][] }>();
+  for (const mutation of mutations) {
+    const path = kindFile(mutation.nsDir, mutation.kind);
+    const group = grouped.get(path) ?? { nsDir: mutation.nsDir, kind: mutation.kind, mutates: [] };
+    group.mutates.push(mutation.mutate);
+    grouped.set(path, group);
+  }
+  const groups = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const lockAll = (index: number, work: () => void): void => {
+    if (index >= groups.length) {
+      work();
+      return;
+    }
+    const [, group] = groups[index];
+    withFileLock(`${group.nsDir}/.lock-${group.kind}.md`, () => lockAll(index + 1, work));
+  };
+
+  lockAll(0, () => {
+    const originals = new Map<string, { existed: boolean; text: string }>();
+    const rendered = new Map<string, string>();
+    for (const [path, group] of groups) {
+      const text = readText(path);
+      originals.set(path, { existed: existsSync(path), text });
+      const ns = group.nsDir.split("/").filter(Boolean).at(-1) ?? "";
+      rendered.set(
+        path,
+        renderMutation(text, ns, group.kind, (entries) => group.mutates.reduce((current, mutate) => mutate(current), entries)),
+      );
+    }
+    const written: string[] = [];
+    try {
+      for (const [path, text] of rendered) {
+        if (text !== originals.get(path)!.text.trimEnd() + "\n") {
+          atomicWrite(path, text);
+          written.push(path);
+        }
+      }
+      commit();
+    } catch (err) {
+      const rollbackErrors: unknown[] = [];
+      for (const path of written.reverse()) {
+        const original = originals.get(path)!;
+        try {
+          if (original.existed) {
+            atomicWrite(path, original.text);
+          } else if (existsSync(path)) {
+            unlinkSync(path);
+          }
+        } catch (rollbackErr) {
+          rollbackErrors.push(rollbackErr);
+        }
+      }
+      if (rollbackErrors.length) {
+        throw new AggregateError([err, ...rollbackErrors], "batch failed and Markdown rollback was incomplete");
+      }
+      throw err;
+    }
   });
 }
 
@@ -221,7 +299,9 @@ export function readAll(nsDir_: string): Entry[] {
       continue;
     }
     const text = readFileSync(join(nsDir_, name), "utf-8");
-    entries.push(...parseFile(text, nsDir_.split("/").filter(Boolean).at(-1) ?? ""));
+    const fileKind = name.slice(0, -3) as Kind;
+    const expectedKind = KINDS.includes(fileKind) ? fileKind : undefined;
+    entries.push(...parseFile(text, nsDir_.split("/").filter(Boolean).at(-1) ?? "", expectedKind));
   }
   return entries;
 }

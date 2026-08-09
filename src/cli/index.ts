@@ -1,24 +1,24 @@
 #!/usr/bin/env bun
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { generateIndex, injectBaseline } from "../core/baseline.js";
-import { loadConfig } from "../core/config.js";
+import { loadConfig, validateConfig } from "../core/config.js";
 import { applyCuratePlan, buildCuratePlan, formatCuratePlan, HttpProvider, NoopProvider } from "../core/curate.js";
 import type { CurateProvider } from "../core/curate.js";
 import { Index } from "../core/db.js";
 import { makeEnvelope, parseEnvelope } from "../core/events.js";
-import { KINDS, addEntry, readAll, updateKind } from "../core/mdStore.js";
+import { KINDS, readAll, updateKind, updateKindsAtomically } from "../core/mdStore.js";
 import type { Entry, Kind, Status } from "../core/mdStore.js";
 import { assertValidNs, configPath, ensureLayout, indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "../core/paths.js";
 import { computeTransitions, formatTransition } from "../core/prune.js";
-import { getRetriever } from "../core/retriever.js";
 import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
-import { applyImport, applyMerge, planImport, planMerge, readExportFile, serializeExport, writeExport } from "../core/transfer.js";
+import { safeSearch } from "../core/safeSearch.js";
+import { applyImport, applyMerge, MAX_MEMORY_CONTENT_CHARS, planImport, planMerge, readExportFile, serializeExport, writeExport } from "../core/transfer.js";
 import { Transaction, truncateLog } from "../core/transaction.js";
+import { newEntryId } from "../core/ids.js";
 import { generateCodexPlugin } from "../adapters/codex/generate.js";
 import { defaultSocketPath, runCodexDaemon } from "../adapters/codex/daemon.js";
 import { runServer } from "../mcp/index.js";
@@ -38,9 +38,41 @@ async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   }
 }
 
-function positiveInt(value: string | undefined, fallback: number): number {
+function positiveInt(value: string | undefined, fallback: number, max = 1000): number {
   const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+  return Number.isFinite(n) && n > 0 ? Math.min(max, Math.round(n)) : fallback;
+}
+
+function loadTruthEntries(root: string): { entries: Entry[]; redacted: number } {
+  const entries: Entry[] = [];
+  let redacted = 0;
+  for (const ns of namespaces(root)) {
+    const dir = nsDir(root, ns);
+    const loaded = readAll(dir);
+    const redactedByKind = new Map<Kind, Map<string, string>>();
+    for (const entry of loaded) {
+      const result = redactSecrets(entry.content);
+      if (result.redacted) {
+        redacted += 1;
+        entry.content = result.text;
+        const byId = redactedByKind.get(entry.kind) ?? new Map<string, string>();
+        byId.set(entry.entryId, result.text);
+        redactedByKind.set(entry.kind, byId);
+      }
+      entries.push(entry);
+    }
+    // Markdown is the source of truth, so sanitization performed during a
+    // rebuild must be persisted there rather than only reflected in SQLite.
+    for (const [kind, byId] of redactedByKind) {
+      updateKind(dir, kind, (current) =>
+        current.map((entry) => {
+          const content = byId.get(entry.entryId);
+          return content === undefined ? entry : { ...entry, content };
+        }),
+      );
+    }
+  }
+  return { entries, redacted };
 }
 
 async function cmdInit(): Promise<number> {
@@ -82,10 +114,6 @@ async function cmdStatus(): Promise<number> {
   });
 }
 
-function makeEntryId(content: string, ts: string): string {
-  return createHash("sha1").update(`${ts}|${content}`).digest("hex").slice(0, 8);
-}
-
 async function cmdRemember(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -95,6 +123,9 @@ async function cmdRemember(rest: string[]): Promise<number> {
   const content = positionals[0];
   if (!content) {
     return fail(t("remember.missing"));
+  }
+  if (content.length > MAX_MEMORY_CONTENT_CHARS) {
+    return fail(t("remember.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
   }
   const root = rootDir();
   ensureLayout(root);
@@ -117,7 +148,7 @@ async function cmdRemember(rest: string[]): Promise<number> {
   const flags = sanitizeForInjection(redacted.text);
   const ts = new Date().toISOString();
   const entry: Entry = {
-    entryId: makeEntryId(redacted.text, ts),
+    entryId: newEntryId(),
     ns,
     kind,
     content: redacted.text,
@@ -131,15 +162,15 @@ async function cmdRemember(rest: string[]): Promise<number> {
   return withIndex(async (idx) => {
     const txn = new Transaction(txnLog(root));
     txn.run("remember", ns, entry.entryId, () => {
-      addEntry(nsDir(root, ns), entry);
-      idx.add(entry);
-      idx.audit("remember", ns, entry.entryId);
-      if (redacted.redacted) {
-        idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
-      }
-      if (!flags.safe) {
-        idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
-      }
+      updateKindsAtomically(
+        [{ nsDir: nsDir(root, ns), kind, mutate: (entries) => [...entries, entry] }],
+        () => idx.withTransaction(() => {
+          idx.add(entry);
+          idx.audit("remember", ns, entry.entryId);
+          if (redacted.redacted) idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
+          if (!flags.safe) idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
+        }),
+      );
     });
     console.log(`${entry.entryId} ${ns}/${kind}${redacted.redacted ? " [secrets redacted]" : ""}`);
     return 0;
@@ -179,22 +210,22 @@ async function cmdSearch(rest: string[]): Promise<number> {
   const kind = values.kind ? ((values.kind as string).toUpperCase() as Kind) : undefined;
   const topK = positiveInt(values["top-k"], 10);
   return withIndex(async (idx) => {
-    const retriever = getRetriever(idx, (err) =>
-      console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
-    );
-    const hits = retriever.search({
+    const result = safeSearch(idx, {
       query,
       topK,
       ns: values.ns as string | undefined,
       kinds: kind ? [kind] : (["MEMORY", "USER"] as Kind[]),
+    }, {
+      onError: (err) => console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
+      onBlocked: (h, flag) => idx.audit("warn.promptware", h.ns, `blocked from cli result: ${h.entryId} (${flag})`),
     });
-    const safeHits = hits.filter((h) => sanitizeForInjection(h.content).safe);
+    const safeHits = result.hits;
     for (const h of safeHits) {
       const preview = h.content.replaceAll("\n", " ").slice(0, 80);
       console.log(`${h.score.toFixed(2).padStart(7)} ${h.reason.padEnd(12)} ${h.entryId} ${h.ns}/${h.kind} ${preview}`);
     }
     idx.touch(safeHits.map((h) => h.entryId));
-    const filtered = hits.length - safeHits.length;
+    const filtered = result.blocked;
     idx.audit("search", values.ns as string | undefined ?? "-", `${JSON.stringify(redactSecrets(query).text)} -> ${safeHits.length} hits${filtered > 0 ? ` (${filtered} filtered)` : ""}`);
     if (!safeHits.length && !filtered) {
       console.error(t("search.note", values.ns ?? "all"));
@@ -219,9 +250,13 @@ async function cmdForget(rest: string[]): Promise<number> {
     }
     const txn = new Transaction(txnLog(root));
     txn.run("forget", entry.ns, entryId, () => {
-      updateKind(nsDir(root, entry.ns), entry.kind, (entries) => entries.filter((e) => e.entryId !== entryId));
-      idx.delete(entryId);
-      idx.audit("forget", entry.ns, entryId);
+      updateKindsAtomically(
+        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) => entries.filter((e) => e.entryId !== entryId) }],
+        () => idx.withTransaction(() => {
+          idx.delete(entryId);
+          idx.audit("forget", entry.ns, entryId);
+        }),
+      );
     });
     console.log(t("forget.done", entryId));
     return 0;
@@ -238,6 +273,9 @@ async function cmdCompact(rest: string[]): Promise<number> {
   if (!content) {
     return fail(t("compact.missing"));
   }
+  if (content.length > MAX_MEMORY_CONTENT_CHARS) {
+    return fail(t("compact.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
+  }
   const root = rootDir();
   ensureLayout(root);
   const config = loadConfig(root);
@@ -252,7 +290,7 @@ async function cmdCompact(rest: string[]): Promise<number> {
   const flags = sanitizeForInjection(redacted.text);
   const ts = new Date().toISOString();
   const entry: Entry = {
-    entryId: makeEntryId(redacted.text, ts),
+    entryId: newEntryId(),
     ns,
     kind: "COMPACT",
     content: redacted.text,
@@ -267,19 +305,19 @@ async function cmdCompact(rest: string[]): Promise<number> {
     const old = idx.list({ ns, kind: "COMPACT", allStatus: true });
     const txn = new Transaction(txnLog(root));
     txn.run("compact", ns, entry.entryId, () => {
-      for (const e of old) {
-        updateKind(nsDir(root, e.ns), e.kind, (entries) => entries.filter((x) => x.entryId !== e.entryId));
-        idx.delete(e.entryId);
-      }
-      addEntry(nsDir(root, ns), entry);
-      idx.add(entry);
-      idx.audit("compact", ns, `${entry.entryId} replaced ${old.length} old strategy entries`);
-      if (redacted.redacted) {
-        idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
-      }
-      if (!flags.safe) {
-        idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
-      }
+      const oldIds = new Set(old.map((e) => e.entryId));
+      updateKindsAtomically(
+        [{ nsDir: nsDir(root, ns), kind: "COMPACT", mutate: (entries) => [
+          ...entries.filter((e) => !oldIds.has(e.entryId)), entry,
+        ] }],
+        () => idx.withTransaction(() => {
+          for (const e of old) idx.delete(e.entryId);
+          idx.add(entry);
+          idx.audit("compact", ns, `${entry.entryId} replaced ${old.length} old strategy entries`);
+          if (redacted.redacted) idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
+          if (!flags.safe) idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
+        }),
+      );
     });
     console.log(t("compact.written", entry.entryId, ns, String(old.length)));
     return 0;
@@ -289,18 +327,7 @@ async function cmdCompact(rest: string[]): Promise<number> {
 async function cmdReindex(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
-    const entries: Entry[] = [];
-    let redacted = 0;
-    for (const ns of namespaces(root)) {
-      for (const e of readAll(nsDir(root, ns))) {
-        const r = redactSecrets(e.content);
-        if (r.redacted) {
-          redacted += 1;
-          e.content = r.text;
-        }
-        entries.push(e);
-      }
-    }
+    const { entries, redacted } = loadTruthEntries(root);
     idx.rebuild(entries);
     idx.audit("reindex", "-", `${entries.length} entries${redacted ? ` (${redacted} redacted)` : ""}`);
     if (redacted) {
@@ -321,38 +348,28 @@ async function cmdRepair(rest: string[]): Promise<number> {
   const txnLogObj = new Transaction(txnLog(root));
   const pending = txnLogObj.pending();
   const corrupt = txnLogObj.corruptLines();
-  if (!pending.length) {
+  if (!pending.length && corrupt === 0) {
     console.log(t("repair.none"));
-    if (corrupt > 0) {
-      console.log(t("repair.corrupt", String(corrupt)));
-    }
     return 0;
   }
-  console.log(t("repair.pendingHeader", String(pending.length)));
+  if (pending.length) {
+    console.log(t("repair.pendingHeader", String(pending.length)));
+  }
   if (corrupt > 0) {
     console.log(t("repair.corrupt", String(corrupt)));
   }
   for (const p of pending) {
     console.log(`  ${p.txn} ${p.action ?? "?"} ns=${p.ns ?? "-"} ${p.detail ?? ""}`);
   }
-  console.log(t("repair.truth"));
+  if (pending.length) {
+    console.log(t("repair.truth"));
+  }
   if (!values.execute) {
     console.log(t("repair.fix"));
     return 0;
   }
   return withIndex(async (idx) => {
-    const entries: Entry[] = [];
-    let redacted = 0;
-    for (const ns of namespaces(root)) {
-      for (const e of readAll(nsDir(root, ns))) {
-        const r = redactSecrets(e.content);
-        if (r.redacted) {
-          redacted += 1;
-          e.content = r.text;
-        }
-        entries.push(e);
-      }
-    }
+    const { entries, redacted } = loadTruthEntries(root);
     idx.rebuild(entries);
     idx.audit("repair", "-", `rebuilt from md: ${entries.length} entries, cleared ${pending.length} pending txns${redacted ? ` (${redacted} redacted)` : ""}`);
     if (redacted) {
@@ -439,21 +456,26 @@ async function cmdPrune(rest: string[]): Promise<number> {
     }
     const txn = new Transaction(txnLog(root));
     txn.run("prune", ns ?? "-", `${transitions.length} transitions`, () => {
-      for (const t of transitions) {
-        const e = idx.get(t.entryId);
-        if (!e) {
-          continue;
-        }
-        e.status = t.to as Status;
-        idx.add(e);
-        updateKind(nsDir(root, e.ns), e.kind, (entries) =>
-          entries.map((x) => (x.entryId === e.entryId ? { ...x, status: t.to as Status } : x)),
-        );
-      }
-      idx.audit(
-        "prune",
-        ns ?? "-",
-        transitions.map((t) => `${t.entryId}:${t.from}->${t.to}`).join(","),
+      const updates = transitions.flatMap((transition) => {
+        const entry = idx.get(transition.entryId);
+        return entry ? [{ entry: { ...entry, status: transition.to as Status }, transition }] : [];
+      });
+      updateKindsAtomically(
+        updates.map(({ entry }) => ({
+          nsDir: nsDir(root, entry.ns),
+          kind: entry.kind,
+          mutate: (entries) => entries.map((x) => (x.entryId === entry.entryId ? { ...x, status: entry.status } : x)),
+        })),
+        () => idx.withTransaction(() => {
+          for (const { entry } of updates) {
+            idx.add(entry);
+          }
+          idx.audit(
+            "prune",
+            ns ?? "-",
+            updates.map(({ transition }) => `${transition.entryId}:${transition.from}->${transition.to}`).join(","),
+          );
+        }),
       );
     });
     console.log(t("prune.applied", String(transitions.length)));
@@ -480,12 +502,15 @@ async function cmdPin(rest: string[]): Promise<number> {
     }
     const txn = new Transaction(txnLog(root));
     txn.run(pinned ? "pin" : "unpin", entry.ns, entryId, () => {
-      entry.pinned = pinned;
-      idx.add(entry);
-      updateKind(nsDir(root, entry.ns), entry.kind, (entries) =>
-        entries.map((x) => (x.entryId === entryId ? { ...x, pinned } : x)),
+      const updated = { ...entry, pinned };
+      updateKindsAtomically(
+        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) =>
+          entries.map((x) => (x.entryId === entryId ? { ...x, pinned } : x)) }],
+        () => idx.withTransaction(() => {
+          idx.add(updated);
+          idx.audit(pinned ? "pin" : "unpin", entry.ns, entryId);
+        }),
       );
-      idx.audit(pinned ? "pin" : "unpin", entry.ns, entryId);
     });
     console.log(`${entryId} ${pinned ? "pinned" : "unpinned"}`);
     return 0;
@@ -506,13 +531,15 @@ async function cmdRevive(rest: string[]): Promise<number> {
     }
     const txn = new Transaction(txnLog(root));
     txn.run("revive", entry.ns, entryId, () => {
-      entry.status = "active";
-      entry.lastUsedAt = new Date().toISOString();
-      idx.add(entry);
-      updateKind(nsDir(root, entry.ns), entry.kind, (entries) =>
-        entries.map((x) => (x.entryId === entryId ? { ...x, status: "active" as Status } : x)),
+      const updated = { ...entry, status: "active" as Status, lastUsedAt: new Date().toISOString() };
+      updateKindsAtomically(
+        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) =>
+          entries.map((x) => (x.entryId === entryId ? { ...x, status: "active" as Status } : x)) }],
+        () => idx.withTransaction(() => {
+          idx.add(updated);
+          idx.audit("revive", entry.ns, entryId);
+        }),
       );
-      idx.audit("revive", entry.ns, entryId);
     });
     console.log(`${entryId} revived`);
     return 0;
@@ -564,6 +591,9 @@ async function cmdImport(rest: string[]): Promise<number> {
     for (const c of plan.conflicts) {
       console.log(t("import.conflict", c.entryId, c.ns));
     }
+    if (plan.conflicts.length) {
+      return fail(t("import.conflictFail", String(plan.conflicts.length)));
+    }
     const txn = new Transaction(txnLog(root));
     txn.run("import", nsOverride ?? "-", path, () => {
       applyImport(plan, idx, root);
@@ -595,7 +625,8 @@ async function cmdMerge(rest: string[]): Promise<number> {
   return withIndex(async (idx) => {
     const src = idx.list({ ns: srcNs, allStatus: true });
     const dst = idx.list({ ns: dstNs, allStatus: true });
-    const plan = planMerge(src, dst, dstNs);
+    const reservedIds = new Set(idx.list({ allStatus: true }).map((e) => e.entryId));
+    const plan = planMerge(src, dst, dstNs, reservedIds);
     for (const e of plan.toCopy) {
       console.log(`copy ${e.entryId} ${e.ns}/${e.kind} ${e.content.replaceAll("\n", " ").slice(0, 60)}`);
     }
@@ -647,8 +678,8 @@ async function cmdCurate(rest: string[]): Promise<number> {
   return withIndex(async (idx) => {
     const plan = await buildCuratePlan(idx, provider, {
       ns: values.ns as string | undefined,
-      minUseForReeval: values["min-use"] ? Math.max(1, Number(values["min-use"]) || 5) : undefined,
-      maxChecks: values["max-checks"] ? Math.max(1, Number(values["max-checks"]) || 100) : undefined,
+      minUseForReeval: values["min-use"] ? positiveInt(values["min-use"], 5, 1_000_000) : undefined,
+      maxChecks: values["max-checks"] ? positiveInt(values["max-checks"], 100, 1000) : undefined,
     });
     for (const line of formatCuratePlan(plan)) {
       console.log(line);
@@ -738,16 +769,41 @@ async function cmdDoctor(): Promise<number> {
   };
   check(t("doctor.layout"), existsSync(join(root, "memory")) && existsSync(join(root, "state")), root);
   try {
-    loadConfig(root);
+    validateConfig(root);
     check("config", true, t("doctor.parsable"));
   } catch (err) {
     check("config", false, String(err));
   }
   try {
-    const idx = await Index.create(indexDb(root));
+    // Doctor performs its own read-only mirror comparison below; do not heal
+    // the mismatch during open or the diagnostic would become false-green.
+    const idx = await Index.create(indexDb(root), { verifyFts: false });
     const counts = idx.counts();
     const total = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
     check(t("doctor.index"), true, `backend=${idx.backend}, entries=${total}`);
+    const truth = namespaces(root).flatMap((ns) => readAll(nsDir(root, ns)));
+    const indexed = idx.list({ allStatus: true });
+    const indexedById = new Map(indexed.map((e) => [e.entryId, e]));
+    const truthIds = new Set(truth.map((e) => e.entryId));
+    const duplicateIds = truth.length - truthIds.size;
+    check("truth ids", duplicateIds === 0, duplicateIds ? `${duplicateIds} duplicate entry id(s)` : "unique");
+    const drift = truth.filter((e) => {
+      const row = indexedById.get(e.entryId);
+      return !row || row.ns !== e.ns || row.kind !== e.kind || row.content !== e.content ||
+        row.createdAt !== e.createdAt || row.status !== e.status || row.pinned !== e.pinned;
+    }).length + indexed.filter((e) => !truthIds.has(e.entryId)).length;
+    check("truth/index", drift === 0, drift ? `${drift} mismatched or missing entries (memcore reindex)` : `${truth.length} aligned`);
+    if (idx.backend === "trigram") {
+      const ftsCount = idx.driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
+      const bad = idx.driver.get<{ bad: number }>(
+        `SELECT 1 AS bad FROM (
+          SELECT entry_id, content FROM entries
+          EXCEPT
+          SELECT entry_id, content FROM fts
+        ) LIMIT 1`,
+      );
+      check("fts mirror", ftsCount === indexed.length && !bad, `${ftsCount}/${indexed.length} rows${ftsCount !== indexed.length || bad ? " (memcore reindex)" : ""}`);
+    }
     const pending = new Transaction(txnLog(root)).pending();
     check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcore repair)` : t("doctor.noPending"));
     idx.close();

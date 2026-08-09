@@ -5,11 +5,13 @@
   "license": "MIT",
   "author": "memcore contributors",
   "engines": {
-    "bun": ">=1.0.0",
-    "node": ">=23.4"
+    "bun": ">=1.0.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "bin": {

@@ -73,6 +73,29 @@ describe("planImport", () => {
     expect(plan.added[0].ns).toBe("other");
     idx.close();
   });
+
+  test("ns override derives a fresh id when the source entry still exists", async () => {
+    const idx = await Index.create(join(dirPath(), "i.sqlite"));
+    idx.add(makeEntry({ ns: "source" }));
+    const plan = planImport([makeEntry({ ns: "source" })], idx, "target");
+    expect(plan.added).toHaveLength(1);
+    expect(plan.added[0].ns).toBe("target");
+    expect(plan.added[0].entryId).toMatch(/^[0-9a-f]{32}$/);
+    expect(plan.added[0].entryId).not.toBe("a1b2c3d4");
+    expect(plan.skippedExisting).toBe(0);
+    idx.close();
+  });
+
+  test("detects duplicate ids within one import batch", async () => {
+    const idx = await Index.create(join(dirPath(), "i.sqlite"));
+    const plan = planImport([
+      makeEntry({ entryId: "deadbeef", content: "first body" }),
+      makeEntry({ entryId: "deadbeef", content: "second body" }),
+    ], idx);
+    expect(plan.added).toHaveLength(1);
+    expect(plan.conflicts).toEqual([{ entryId: "deadbeef", ns: "default" }]);
+    idx.close();
+  });
 });
 
 describe("planMerge", () => {
@@ -90,7 +113,8 @@ describe("planMerge", () => {
       makeEntry({ entryId: "deadbeef", content: "无关" }),
     ];
     const plan = planMerge(src, dst, "dst-ns");
-    expect(plan.toCopy.map((e) => e.entryId)).toEqual(["a1b2c3d4"]);
+    expect(plan.toCopy.map((e) => e.entryId)).not.toEqual(["a1b2c3d4"]);
+    expect(plan.toCopy[0].entryId).toMatch(/^[0-9a-f]{32}$/);
     expect(plan.toCopy[0].ns).toBe("dst-ns");
     expect(plan.conflicts.map((c) => c.entryId)).toEqual(["11112222"]);
     expect(plan.dupsByContent.map((d) => d.entryId)).toEqual(["c9d0e1f2"]);
@@ -174,6 +198,21 @@ describe("export / import / merge cli", () => {
     expect(list.out).toContain("仅此一条");
   });
 
+  test("import into a different namespace keeps the still-existing source", async () => {
+    await run("init");
+    await run("remember", "需要复制的条目", "--ns", "source");
+    const outFile = join(dir, "copy.jsonl");
+    await run("export", "--ns", "source", "--output", outFile);
+    const imported = await run("import", outFile, "--ns", "target");
+    expect(imported.code).toBe(0);
+    expect(imported.out).toContain("imported 1 entries");
+    const source = await run("list", "--ns", "source");
+    const target = await run("list", "--ns", "target");
+    expect(source.out).toContain("需要复制的条目");
+    expect(target.out).toContain("需要复制的条目");
+    expect(extractId(source)).not.toBe(extractId(target));
+  });
+
   test("merge copies with dedup, dry-run by default", async () => {
     await run("init");
     await run("remember", "共享的事实", "--ns", "src-a");
@@ -188,6 +227,12 @@ describe("export / import / merge cli", () => {
     const dst = await run("list", "--ns", "dst-b");
     expect(dst.out).toContain("src 独有条目");
     expect(dst.out.split("\n").filter((l) => l.includes("dst-b/MEMORY"))).toHaveLength(2);
+    const src = await run("list", "--ns", "src-a");
+    expect(src.out).toContain("src 独有条目");
+    const srcId = src.out.split("\n").find((l) => l.includes("src 独有条目"))?.split(" ")[0];
+    const dstId = dst.out.split("\n").find((l) => l.includes("src 独有条目"))?.split(" ")[0];
+    expect(dstId).toBeTruthy();
+    expect(dstId).not.toBe(srcId);
     const md = readFileSync(join(nsDir(dir, "dst-b"), "MEMORY.md"), "utf-8");
     expect(md).toContain("src 独有条目");
   });
