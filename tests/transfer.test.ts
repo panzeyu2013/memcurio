@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { extractId, makeEntry as baseEntry } from "./fixtures.js";
 
 import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
@@ -11,19 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统",
+  return baseEntry({content: "跨会话记忆系统",
     createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
     useCount: 3,
     valueScore: 1.15,
-    ...overrides,
-  };
+    ...overrides});
 }
 
 describe("serialize / parse", () => {
@@ -40,6 +33,12 @@ describe("serialize / parse", () => {
 
   test("rejects invalid lines", () => {
     expect(() => parseExport('{"foo": 1}\n')).toThrow(/entryId/);
+  });
+
+  test("rejects non-canonical timestamps", () => {
+    const base = '{"entryId":"a1b2c3d4","ns":"default","kind":"MEMORY","content":"x","status":"active"';
+    expect(() => parseExport(`${base},"createdAt":"January 1, 2026"}\n`)).toThrow(/createdAt/);
+    expect(() => parseExport(`${base},"createdAt":"2026-01-01T00:00:00.000Z","lastUsedAt":"yesterday"}\n`)).toThrow(/lastUsedAt/);
   });
 
   test("rejects status deleted on import (no zombie rows)", () => {
@@ -262,16 +261,6 @@ describe("export / import / merge cli", () => {
   });
 });
 
-function extractId(r: { out: string }): string {
-  // 32-hex (or legacy 8-hex) entry ids, robust to display-format changes.
-  const m = r.out.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/);
-  if (!m) {
-    throw new Error(`no entry id found in list output: ${JSON.stringify(r.out.slice(0, 120))}`);
-  }
-  const id = m[1];
-  if (id === undefined) throw new Error("no entry id found in list output");
-  return id;
-}
 
 function addEntryDirect(entry: Entry): void {
   const file = join(nsDir(dir, entry.ns), "MEMORY.md");

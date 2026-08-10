@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Index } from "../src/core/db.js";
 import { openDb } from "../src/core/sqlite.js";
 import { getRetriever } from "../src/core/retriever.js";
-import type { Entry } from "../src/core/mdStore.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeEntry } from "./fixtures.js";
 
 let dir: string;
 let dbPath: string;
@@ -20,21 +20,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统剪枝策略",
-    createdAt: "2026-08-08T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
-}
+
 
 describe("Index", () => {
   test("create probes backend and persists meta", async () => {
@@ -120,7 +106,7 @@ describe("Index", () => {
     idx.close();
   });
 
-  test("migrates v2 schema to v3 (contradictions.reason)", async () => {
+  test("migrates v2 schema to v4 (contradictions.reason)", async () => {
     const driver = await openDb(dbPath);
     driver.exec(`
       CREATE TABLE entries(entry_id TEXT PRIMARY KEY, ns TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, use_count INTEGER NOT NULL DEFAULT 0, value_score REAL NOT NULL DEFAULT 1.0, status TEXT NOT NULL DEFAULT 'active', pinned INTEGER NOT NULL DEFAULT 0);
@@ -135,7 +121,7 @@ describe("Index", () => {
     const cols = idx.driver.all<{ name: string }>("PRAGMA table_info(contradictions)");
     expect(cols.some((c) => c.name === "reason")).toBe(true);
     const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
-    expect(v?.value).toBe("3");
+    expect(v?.value).toBe("4");
     idx.close();
   });
 
@@ -229,7 +215,7 @@ describe("Index", () => {
     idx.close();
   });
 
-  test("migrates v1 schema to v2 (entries.pinned)", async () => {
+  test("migrates v1 schema to v4 (entries.pinned)", async () => {
     const driver = await openDb(dbPath);
     driver.exec(`
       CREATE TABLE entries(entry_id TEXT PRIMARY KEY, ns TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, use_count INTEGER NOT NULL DEFAULT 0, value_score REAL NOT NULL DEFAULT 1.0, status TEXT NOT NULL DEFAULT 'active');
@@ -244,7 +230,7 @@ describe("Index", () => {
     const cols = idx.driver.all<{ name: string }>("PRAGMA table_info(entries)");
     expect(cols.some((c) => c.name === "pinned")).toBe(true);
     const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
-    expect(v?.value).toBe("3");
+    expect(v?.value).toBe("4");
     idx.close();
   });
 
@@ -254,7 +240,7 @@ describe("Index", () => {
     driver.close();
     const idx = await Index.create(dbPath);
     const v = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
-    expect(v?.value).toBe("3");
+    expect(v?.value).toBe("4");
     idx.close();
   });
 
@@ -283,19 +269,21 @@ describe("Index", () => {
   test("index.sqlite and its WAL sidecars are private (0600)", async () => {
     const idx = await Index.create(dbPath);
     idx.add(makeEntry());
-    idx.close();
     const { statSync } = await import("node:fs");
     expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+    // Assert the sidecars while the database is still open: SQLite deletes a
+    // checkpointed/empty -wal/-shm on clean close, so post-close assertions
+    // are vacuous. A write in WAL mode guarantees both files exist now.
     const wal = `${dbPath}-wal`;
     const shm = `${dbPath}-shm`;
-    for (const p of [wal, shm]) {
-      try {
-        expect(statSync(p).mode & 0o777).toBe(0o600);
-      } catch {
-        // sidecar may have been checkpointed away after close; the main file
-        // assertion above is the load-bearing check
-      }
+    const walStat = statSync(wal, { throwIfNoEntry: false });
+    const shmStat = statSync(shm, { throwIfNoEntry: false });
+    if (walStat === undefined || shmStat === undefined) {
+      throw new Error("WAL sidecars missing while the db is open");
     }
+    expect(walStat.mode & 0o777).toBe(0o600);
+    expect(shmStat.mode & 0o777).toBe(0o600);
+    idx.close();
   });
 
   test("rebuild keeps first of duplicate entryIds and audits the warning", async () => {

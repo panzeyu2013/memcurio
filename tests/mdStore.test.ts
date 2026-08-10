@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { makeEntry as baseEntry } from "./fixtures.js";
 
 import { addEntry, kindFile, parseFile, renderEntry, updateKind } from "../src/core/mdStore.js";
 import type { Entry } from "../src/core/mdStore.js";
@@ -21,19 +23,8 @@ function mkTmp(): string {
 }
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统",
-    createdAt: "2026-08-08T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+  return baseEntry({content: "跨会话记忆系统",
+    ...overrides});
 }
 
 describe("renderEntry", () => {
@@ -185,4 +176,3 @@ describe("addEntry / updateEntries", () => {
   });
 });
 
-import { readFileSync, writeFileSync } from "node:fs";

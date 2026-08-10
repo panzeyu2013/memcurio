@@ -109,13 +109,16 @@ describe("Transaction", () => {
 
   test("withFileLock waits for a live foreign process to release, then acquires", async () => {
     const lockPath = join(dir, "cross.lock");
+    // Child holds the lock for HOLD_MS; the parent must observe a wait of at
+    // least HOLD_MS - slack before running.
+    const HOLD_MS = 900;
     const child = Bun.spawn({
       cmd: [
         "bun",
         "-e",
         `import { writeFileSync, rmSync } from "node:fs";
          writeFileSync(${JSON.stringify(lockPath)}, process.pid + "|" + Date.now(), { flag: "wx", mode: 0o600 });
-         await new Promise((r) => setTimeout(r, 400));
+         await new Promise((r) => setTimeout(r, ${HOLD_MS}));
          rmSync(${JSON.stringify(lockPath)});`,
       ],
       stdout: "ignore",
@@ -135,7 +138,7 @@ describe("Transaction", () => {
       }, { timeoutMs: 5_000 });
       expect(ran).toBe(true);
       // The parent really waited for the holder instead of stealing/re-trying.
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(Math.max(0, HOLD_MS - 150));
     } finally {
       child.kill();
     }

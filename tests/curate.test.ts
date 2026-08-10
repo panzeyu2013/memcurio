@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { makeEntry as baseEntry, restoreEnv, saveEnv } from "./fixtures.js";
 
-import { main } from "../src/cli/index.js";
+import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
 import { applyCuratePlan, bigramOverlap, buildCuratePlan, HttpProvider, NoopProvider } from "../src/core/curate.js";
 import type { CuratePlan, CurateProvider } from "../src/core/curate.js";
@@ -14,19 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "项目使用 SQLite FTS5 trigram 做检索",
+  return baseEntry({content: "项目使用 SQLite FTS5 trigram 做检索",
     createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+    ...overrides});
 }
 
 describe("bigramOverlap", () => {
@@ -159,10 +150,17 @@ describe("buildCuratePlan", () => {
     idx.close();
   });
 
-  test("maxChecks caps LLM reevaluations and flags exhaustion", async () => {
+  test("reevaluation gets a capped share of maxChecks and exhaustion is flagged", async () => {
     const idx = await Index.create(indexDb(dir));
+    const labels = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"];
+    // Entries share exactly the bigrams {目标, 方案}: candidate pairs are
+    // generated, never unioned (overlap 0.5 < 0.85), and every pair passes
+    // minOverlap 0, so the contradiction pass deterministically consumes the
+    // remaining budget.
     for (let i = 0; i < 10; i++) {
-      idx.add(makeEntry({ entryId: `e${String(i).padStart(8, "0")}`, useCount: 9, content: `高使用率条目 ${i} 内容互不相同以避免合并` }));
+      const label = labels[i];
+      if (label === undefined) throw new Error("labels exhausted");
+      idx.add(makeEntry({ entryId: `e${String(i).padStart(8, "0")}`, useCount: 9, content: `目标${label}方案` }));
     }
     let reevalCalls = 0;
     const provider = new FakeProvider({
@@ -171,10 +169,15 @@ describe("buildCuratePlan", () => {
         return 1.5;
       },
     });
-    const plan = await buildCuratePlan(idx, provider, { maxChecks: 5 });
-    expect(reevalCalls).toBe(5);
-    expect(plan.reevaluations).toHaveLength(5);
+    const plan = await buildCuratePlan(idx, provider, { maxChecks: 5, minOverlap: 0 });
+    // Reevaluation never starves the other passes: it is capped at a third of
+    // the budget instead of taking it all.
+    expect(reevalCalls).toBe(1);
+    expect(plan.reevaluations).toHaveLength(1);
     expect(plan.checksExhausted).toBe(true);
+    // The contradiction pass did not finish: "no contradictions" must not be
+    // read as a verdict.
+    expect(plan.contradictionsSkipped).toBe(true);
     idx.close();
   });
 
@@ -209,6 +212,7 @@ describe("applyCuratePlan", () => {
       contradictions: [{ a: e1, b: e2, reason: "x" }],
       umbrellas: [{ group: [e1, e2], content: "伞条目：项目使用 SQLite FTS5 trigram 做检索及补充" }],
       checksExhausted: false,
+      contradictionsSkipped: false,
       unparsable: 0,
     };
     await applyCuratePlan(idx, dir, plan);
@@ -269,12 +273,8 @@ describe("HttpProvider", () => {
 
 describe("curate cli", () => {
   test("dry-run reports a real plan without applying it", async () => {
-    const lines: string[] = [];
-    const origLog = console.log;
-    const origWarn = console.warn;
     const origFetch = globalThis.fetch;
-    const savedKey = process.env.MEMCURIO_LLM_API_KEY;
-    const savedLang = process.env.MEMCURIO_LANG;
+    const saved = saveEnv(["MEMCURIO_LLM_API_KEY", "MEMCURIO_LANG"] as const);
     process.env.MEMCURIO_LLM_API_KEY = "test-key";
     // The plan output is asserted in English, so pin the language.
     process.env.MEMCURIO_LANG = "en";
@@ -284,52 +284,33 @@ describe("curate cli", () => {
         headers: { "Content-Type": "application/json" },
       })) as unknown as typeof fetch;
     try {
-      console.log = (...a: unknown[]) => lines.push(a.map(String).join(" "));
-      // LLM failure paths warn on console.warn; silence them so the suite
-      // output stays clean.
-      console.warn = () => {};
-      await main(["init"]);
-      await main(["remember", "项目使用 SQLite FTS5 trigram 做检索"]);
+      const { code: initCode } = await runCli("init");
+      expect(initCode).toBe(0);
+      const { code: rememberCode } = await runCli("remember", "项目使用 SQLite FTS5 trigram 做检索");
+      expect(rememberCode).toBe(0);
       const idx = await Index.create(indexDb(dir));
       const entry = idx.list()[0];
       if (entry === undefined) throw new Error("expected an entry");
       const entryId = entry.entryId;
       idx.touch([entryId]);
       idx.close();
-      const code = await main(["curate", "--min-use", "1"]);
-      expect(code).toBe(0);
-      expect(lines.join("\n")).toContain("revalue");
-      expect(lines.join("\n")).toContain("dry-run");
+      const curate = await runCli("curate", "--min-use", "1");
+      expect(curate.code).toBe(0);
+      expect(curate.out).toContain("reevaluations");
+      expect(curate.out).toContain("dry-run");
       // The plan was reported but nothing was applied.
       const idx2 = await Index.create(indexDb(dir));
       expect(idx2.list()[0]?.valueScore).toBeCloseTo(1.05, 5);
       idx2.close();
     } finally {
-      console.log = origLog;
-      console.warn = origWarn;
       globalThis.fetch = origFetch;
-      if (savedKey === undefined) {
-        delete process.env.MEMCURIO_LLM_API_KEY;
-      } else {
-        process.env.MEMCURIO_LLM_API_KEY = savedKey;
-      }
-      if (savedLang === undefined) {
-        delete process.env.MEMCURIO_LANG;
-      } else {
-        process.env.MEMCURIO_LANG = savedLang;
-      }
+      restoreEnv(saved);
     }
   });
 
   test("--execute without provider errors", async () => {
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      await main(["init"]);
-      const code = await main(["curate", "--execute"]);
-      expect(code).toBe(1);
-    } finally {
-      console.error = origErr;
-    }
+    await runCli("init");
+    const res = await runCli("curate", "--execute");
+    expect(res.code).toBe(1);
   });
 });

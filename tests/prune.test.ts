@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { makeEntry as baseEntry } from "./fixtures.js";
 
 import { runCli } from "./helpers.js";
 import { Index } from "../src/core/db.js";
@@ -16,19 +17,9 @@ const CFG: PruneConfig = { staleDays: 30, archivedDays: 90, graceDays: 3 };
 const NOW = new Date("2026-08-08T00:00:00.000Z");
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "剪枝测试条目",
+  return baseEntry({content: "剪枝测试条目",
     createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+    ...overrides});
 }
 
 describe("computeTransitions", () => {
@@ -69,12 +60,11 @@ describe("computeTransitions", () => {
     expect(computeTransitions([e1, e2], NOW, CFG)).toHaveLength(0);
   });
 
-  test("invalid dates are treated as prune-eligible, not stuck forever", () => {
+  test("invalid dates are treated as brand-new, never prune-eligible", () => {
+    // A corrupt date must not read as "infinitely old" (which would instantly
+    // downgrade the entry); it is protected instead of demoted.
     const e = makeEntry({ createdAt: "garbage-date", lastUsedAt: "garbage-date" });
-    const t = computeTransitions([e], NOW, CFG);
-    expect(t).toHaveLength(1);
-    expect(t[0]?.from).toBe("active");
-    expect(t[0]?.to).toBe("stale");
+    expect(computeTransitions([e], NOW, CFG)).toHaveLength(0);
   });
 
   test("formatTransition renders report line", () => {

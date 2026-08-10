@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { makeEntry as baseEntry } from "./fixtures.js";
 
 import { createCodexHandler, ensureToken, parseCodexExecOutput, runCodexDaemon } from "../src/adapters/codex/daemon.js";
 import type { CodexDaemonHandle } from "../src/adapters/codex/daemon.js";
@@ -14,19 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统剪枝策略",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+  return baseEntry({createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides});
 }
 
 let dir: string;
@@ -364,6 +354,9 @@ describe("codex hook child process", () => {
           MEMCURIO_CODEX_SOCKET: socketPath,
           MEMCURIO_CODEX_DAEMON: daemonSrc,
           BUN_BIN: "/nonexistent/bun",
+          // Shrink the 10s polling deadline so the failure path is not the
+          // slowest case in the whole suite.
+          MEMCURIO_CODEX_DEADLINE_MS: "800",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -377,22 +370,25 @@ describe("codex hook child process", () => {
     });
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("daemon");
-    // The hook polls until its deadline (10s for non-PostCompact events)
-    // before giving up, so the default 5s test timeout must be raised.
   }, 15_000);
 });
 
 describe("codex plugin generation", () => {
   // Both plugin tests exercise the built bundle (dist/), so they can only run
-  // after `bun run build`; on a fresh checkout they are skipped, not silently
-  // passed or failed.
+  // after `bun run build`; on a fresh checkout (no `bun install` -> no
+  // prepare -> no dist/) they are skipped — intentionally, but this also means
+  // generate.ts has zero coverage in that state. CI always builds before
+  // testing, so the skip only affects local ad-hoc `bun test` runs.
   const hasDist = existsSync(join(import.meta.dir, "..", "dist"));
+  if (!hasDist) {
+    console.warn("codex.test: dist/ missing — skipping plugin generation tests (run `bun run build` to cover them)");
+  }
   test.skipIf(!hasDist)("generateCodexPlugin emits shell-escaped hook commands and bundle outputs", async () => {
     const { generateCodexPlugin } = await import("../src/adapters/codex/generate.js");
     const outDir = join(dir, "plugin");
     const generated = await generateCodexPlugin(outDir);
     const plugin = JSON.parse(readFileSync(generated.pluginJsonPath, "utf-8")) as {
-      hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
+      hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>>;
     };
     expect(Object.keys(plugin.hooks)).toEqual([
       "SessionStart",
@@ -411,11 +407,21 @@ describe("codex plugin generation", () => {
       expect(command?.endsWith(`'${generated.hookPath}'`)).toBe(true);
       expect(command).toContain(`'${process.execPath}'`);
     }
+    // SessionEnd must request the 3s ceiling: codex's default 1s timeout
+    // would kill a cold daemon start before the session row closes.
+    expect(plugin.hooks.SessionEnd?.[0]?.hooks[0]?.timeout).toBe(3);
+    const nonEnd = plugin.hooks.Stop?.[0]?.hooks[0]?.timeout;
+    expect(nonEnd).toBeUndefined();
     expect(existsSync(generated.daemonPath)).toBe(true);
     expect(existsSync(generated.hookPath)).toBe(true);
     expect(existsSync(generated.snippetPath)).toBe(true);
     const snippet = readFileSync(generated.snippetPath, "utf-8");
-    expect(snippet).toContain("[hooks.events.session_start]");
+    // Event keys must be PascalCase: codex's serde rename ignores snake_case
+    // keys silently, so the fallback config would be a no-op otherwise.
+    expect(snippet).toContain("[hooks.events.SessionStart]");
+    expect(snippet).not.toContain("[hooks.events.session_start]");
+    expect(snippet).toContain("[hooks.events.SessionEnd]");
+    expect(snippet).toMatch(/SessionEnd\][\s\S]*timeout = 3/);
   });
 
   test.skipIf(!hasDist)("generateCodexPlugin fails loudly on missing dist output", async () => {
@@ -529,16 +535,7 @@ describe("codex daemon socket", () => {
       sock.write("not-json\n");
     });
     expect(JSON.parse(resp).systemMessage).toContain("invalid request");
-    const alive = await new Promise<boolean>((resolve) => {
-      const probe = new Socket();
-      probe.once("connect", () => {
-        probe.destroy();
-        resolve(true);
-      });
-      probe.once("error", () => resolve(false));
-      probe.connect(socketPath);
-    });
-    expect(alive).toBe(true);
+    expect(await pollAlive(socketPath, 3000)).toBe(true);
     await stopDaemon(daemon, socketPath);
   });
 
@@ -551,16 +548,10 @@ describe("codex daemon socket", () => {
     sock.write(`${JSON.stringify({ token, input: { hook_event_name: "SessionStart", cwd: "/tmp/MyProject", session_id: "s1", source: "startup" } })}
 `);
     sock.destroy();
+    // Give the daemon time to notice the disconnect; the probe below retries
+    // rather than trusting one fixed sleep.
     await new Promise((r) => setTimeout(r, 50));
-    const alive = await new Promise<boolean>((resolve) => {
-      const probe = new Socket();
-      probe.once("connect", () => {
-        probe.destroy();
-        resolve(true);
-      });
-      probe.once("error", () => resolve(false));
-      probe.connect(socketPath);
-    });
+    const alive = await pollAlive(socketPath, 3000);
     expect(alive).toBe(true);
     await stopDaemon(daemon, socketPath);
   });
@@ -632,4 +623,27 @@ async function stopDaemon(daemon: Promise<CodexDaemonHandle>, socketPath: string
   const handle = await daemon;
   await handle.close();
   expect(existsSync(socketPath)).toBe(false);
+}
+
+/** Poll (with retries) whether a unix socket accepts connections. */
+async function pollAlive(socketPath: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const alive = await new Promise<boolean>((resolve) => {
+      const probe = new Socket();
+      probe.once("connect", () => {
+        probe.destroy();
+        resolve(true);
+      });
+      probe.once("error", () => resolve(false));
+      probe.connect(socketPath);
+    });
+    if (alive) {
+      return true;
+    }
+    if (Date.now() > deadline) {
+      return false;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }

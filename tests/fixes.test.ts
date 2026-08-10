@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { extractId, makeEntry as baseEntry } from "./fixtures.js";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
@@ -64,19 +65,8 @@ afterEach(() => {
 });
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统剪枝策略",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+  return baseEntry({createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides});
 }
 
 describe("A1 跨 kind 写回污染回归", () => {
@@ -415,11 +405,7 @@ describe("C3 import 内容去重", () => {
     await runCli("remember", "唯一内容条目");
     const backup = join(dir, "backup.jsonl");
     await runCli("export", "--output", backup);
-    const listed = (await runCli("list")).out.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/)?.[1];
-    expect(listed).toBeTruthy();
-    if (listed === undefined) {
-      throw new Error("no entry id in list output");
-    }
+    const listed = extractId(await runCli("list"));
     await runCli("forget", listed);
     await runCli("import", backup);
     const again = await runCli("import", backup);

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { currentLang, t } from "../src/cli/i18n.js";
+import { currentLang, langKeys, t } from "../src/cli/i18n.js";
 import { runCli } from "./helpers.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -72,8 +72,37 @@ describe("currentLang", () => {
 
 describe("dictionary parity", () => {
   test("zh and en expose exactly the same key set", async () => {
-    const { langKeys } = await import("../src/cli/i18n.js");
     expect(langKeys("zh").sort()).toEqual(langKeys("en").sort());
+  });
+
+  test("every t() key referenced by the CLI exists in both dictionaries", () => {
+    // A key vanishing from BOTH dictionaries would not fail the parity test
+    // above; t() would silently fall back to the raw key string. Scan the CLI
+    // source for static t("key") calls and require each key to resolve.
+    const src = readFileSync(join(import.meta.dir, "..", "src", "cli", "index.ts"), "utf-8");
+    const keys = [...src.matchAll(/\bt\("([^"]+)"\s*[,)]/g)].map((m) => m[1] ?? "");
+    expect(keys.length).toBeGreaterThan(20);
+    for (const key of keys) {
+      expect(langKeys("zh"), `zh missing ${key}`).toContain(key);
+      expect(langKeys("en"), `en missing ${key}`).toContain(key);
+    }
+  });
+
+  test("every helpable command has a help.* dictionary entry", () => {
+    // The dynamic t(`help.${cmd}`) call is invisible to the static scan above;
+    // if a command is added to HELP_CMDS without its help.* keys, `memcurio
+    // help <cmd>` would silently print the raw key string. Parse the HELP_CMDS
+    // array literal itself (anchored between its brackets) so unrelated
+    // "-"/"-h"-style string literals elsewhere in the file do not match.
+    const src = readFileSync(join(import.meta.dir, "..", "src", "cli", "index.ts"), "utf-8");
+    const block = src.match(/const HELP_CMDS = new Set\(\[([\s\S]*?)\]\);/);
+    expect(block).not.toBeNull();
+    const cmds = [...(block?.[1] ?? "").matchAll(/"([a-z-]+)",/g)].map((m) => m[1] ?? "").filter((c) => c !== "help");
+    expect(cmds.length).toBeGreaterThan(20);
+    for (const cmd of cmds) {
+      expect(langKeys("zh"), `zh missing help.${cmd}`).toContain(`help.${cmd}`);
+      expect(langKeys("en"), `en missing help.${cmd}`).toContain(`help.${cmd}`);
+    }
   });
 
   test("success messages are localized in both languages", async () => {

@@ -115,6 +115,9 @@ describe("MemcurioPlugin event handling", () => {
       event: { type: "session.created", properties: { info: { id: "s1" } } },
     });
     expect(errors.length).toBeGreaterThan(0);
+    // The reported error should carry enough context to diagnose (the failing
+    // root path), not a bare "error".
+    expect(errors[0] ?? "").toContain("blocker");
   });
 
   test("compaction reflection uses the harness model via a temp session", async () => {

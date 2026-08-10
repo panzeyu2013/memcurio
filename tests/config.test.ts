@@ -60,11 +60,4 @@ describe("loadConfig", () => {
     expect(loadConfig(dir)).toEqual(DEFAULT_CONFIG);
     expect(() => validateConfig(dir)).toThrow(/namespace/);
   });
-
-  test("requires canonical UTC timestamps only in transfer data", async () => {
-    const { parseExport } = await import("../src/core/transfer.js");
-    const base = { entryId: "a1b2c3d4", ns: "default", kind: "MEMORY", content: "x", status: "active" };
-    expect(() => parseExport(JSON.stringify({ ...base, createdAt: "January 1, 2026" }))).toThrow(/createdAt/);
-    expect(() => parseExport(JSON.stringify({ ...base, createdAt: "2026-01-01T00:00:00.000Z", lastUsedAt: "yesterday" }))).toThrow(/lastUsedAt/);
-  });
 });

@@ -7,6 +7,7 @@ import { safeSearch } from "../src/core/safeSearch.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeEntry } from "./fixtures.js";
 
 let dir: string;
 let dbPath: string;
@@ -20,21 +21,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统剪枝策略",
-    createdAt: "2026-08-08T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
-}
+
 
 async function withEntries(entries: Entry[]) {
   const idx = await Index.create(dbPath);
@@ -118,9 +105,16 @@ describe("retriever", () => {
     }));
     entries.push(makeEntry({ entryId: "ffffffff", content: "memoryneedle safe durable fact" }));
     const idx = await withEntries(entries);
-    const result = safeSearch(idx, { query: "memoryneedle", topK: 1 });
+    const blocked: Array<{ entryId: string; flag: string }> = [];
+    const result = safeSearch(idx, { query: "memoryneedle", topK: 1 }, {
+      onBlocked: (h, flag) => blocked.push({ entryId: h.entryId, flag }),
+    });
     expect(result.hits.map((h) => h.entryId)).toEqual(["ffffffff"]);
     expect(result.blocked).toBeGreaterThanOrEqual(16);
+    // The callback receives the offending hit and the flag that tripped it.
+    expect(blocked.length).toBe(result.blocked);
+    expect(blocked.every((b) => b.entryId !== "ffffffff")).toBe(true);
+    expect(blocked.some((b) => b.flag.includes("ignore"))).toBe(true);
     idx.close();
   });
 

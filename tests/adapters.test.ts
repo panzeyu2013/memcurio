@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { makeEntry as baseEntry } from "./fixtures.js";
 
 import { MemcurioAdapter } from "../src/adapters/shared/engine.js";
 import { Index } from "../src/core/db.js";
@@ -32,19 +33,8 @@ afterEach(() => {
 });
 
 function makeEntry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    entryId: "a1b2c3d4",
-    ns: "default",
-    kind: "MEMORY",
-    content: "跨会话记忆系统剪枝策略",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    status: "active",
-    pinned: false,
-    lastUsedAt: null,
-    useCount: 0,
-    valueScore: 1,
-    ...overrides,
-  };
+  return baseEntry({createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides});
 }
 
 describe("MemcurioAdapter", () => {

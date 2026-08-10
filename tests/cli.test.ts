@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { runCli } from "./helpers.js";
+import { extractId } from "./fixtures.js";
 import { configPath, indexDb, nsDir } from "../src/core/paths.js";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
@@ -96,11 +97,7 @@ describe("memcurio cli", () => {
     await run("init");
     await run("remember", "要删除的内容");
     const { out: list } = await run("list");
-    const id = list.match(/\b([0-9a-f]{8}(?:[0-9a-f]{24})?)\b/)?.[1];
-    expect(id).toBeTruthy();
-    if (id === undefined) {
-      throw new Error("no entry id in list output");
-    }
+    const id = extractId({ out: list });
     const { code } = await run("forget", id);
     expect(code).toBe(0);
     const { out: search } = await run("search", "要删除的内容");
@@ -177,7 +174,7 @@ describe("memcurio cli", () => {
     await run("init");
     const bad = await run("search", "x", "--kind", "NOPE");
     expect(bad.code).toBe(2);
-    expect(bad.out).toContain("invalid kind");
+    expect(bad.out).toContain("无效类型");
   });
 
   test("--top-k 0 coerces to the default instead of returning nothing", async () => {
@@ -191,7 +188,11 @@ describe("memcurio cli", () => {
     const { code, out } = await run("help", "search");
     expect(code).toBe(0);
     expect(out).toContain("memcurio search");
+  });
+
+  test("help with an unknown command is a usage error (exit 2)", async () => {
     const unknown = await run("help", "no-such-cmd");
-    expect(unknown.out).toContain("用法: memcurio");
+    expect(unknown.code).toBe(2);
+    expect(unknown.out).toContain("未知命令");
   });
 });
