@@ -39,9 +39,8 @@
     "memcurio": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && bun run scripts/chmod-cli.ts",
     "prepare": "bun run build && bun run bundle:plugin",
-    "prepack": "bun run build && bun run bundle:plugin",
     "test": "bun test",
     "lint": "biome lint src tests scripts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
