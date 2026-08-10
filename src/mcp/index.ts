@@ -57,17 +57,18 @@ export function createServer(): McpServer {
       inputSchema: {
         query: z.string().trim().min(1).max(10_000).describe("检索关键词，中文/英文均可"),
         topK: z.number().int().min(1).max(50).default(10).describe("返回条数上限"),
-        ns: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/).refine((v) => v !== "." && v !== ".." && !v.endsWith("."), "invalid namespace").optional().describe("命名空间过滤（默认全部）"),
+        ns: z.string().max(40).optional().describe("命名空间过滤（默认全部；规则与 CLI 的 --ns 一致）"),
         kind: z.enum(SEARCH_KINDS).optional().describe("条目类型：MEMORY=事实/决策/约束，USER=用户偏好"),
       },
     },
     async (args) => {
       const idx = await openIndex();
       try {
+        const ns = args.ns === undefined ? undefined : assertValidNs(args.ns);
         const result = safeSearch(idx, {
           query: args.query,
           topK: args.topK,
-          ns: args.ns,
+          ns,
           kinds: args.kind ? [args.kind as Kind] : SEARCH_KINDS,
         }, {
           onError: (err) => console.error(`fts search failed, falling back to LIKE: ${String(err)}`),
@@ -81,7 +82,9 @@ export function createServer(): McpServer {
             entryId: h.entryId,
             ns: h.ns,
             kind: h.kind,
-            content: h.content,
+            // Re-redact at read time: historical/hand-written md may contain
+            // secrets that bypassed the write-path sanitizer.
+            content: redactSecrets(h.content).text,
             score: h.score,
             reason: h.reason,
           })),
@@ -149,6 +152,12 @@ export function createServer(): McpServer {
         if (!entry) {
           return text({ removed: false, reason: "not found" });
         }
+        // COMPACT strategy entries and SESSION reviews are maintained by the
+        // harness/adapters; letting a model delete them (e.g. prompted by a
+        // memory_search result) would erase instructions or forensics.
+        if (entry.kind === "COMPACT" || entry.kind === "SESSION") {
+          return text({ removed: false, reason: `kind ${entry.kind} is not removable` });
+        }
         const txn = new Transaction(txnLog(root));
         txn.run("mcp.forget", entry.ns, args.entryId, () => {
           updateKindsAtomically(
@@ -193,14 +202,15 @@ export function createServer(): McpServer {
   return server;
 }
 
-export async function runServer(): Promise<void> {
+export async function runServer(): Promise<boolean> {
   const server = createServer();
   const transport = new StdioServerTransport();
   try {
     await server.connect(transport);
+    return true;
   } catch (err) {
     console.error(`memcurio mcp server error: ${String(err)}`);
-    process.exitCode = 1;
+    return false;
   }
 }
 
@@ -212,5 +222,5 @@ const isMain = (() => {
   }
 })();
 if (isMain) {
-  await runServer();
+  process.exitCode = (await runServer()) ? 0 : 1;
 }
