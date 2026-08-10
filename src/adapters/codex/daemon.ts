@@ -1,10 +1,10 @@
 import { createServer, Socket } from "node:net";
 import type { Socket as SocketType } from "node:net";
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
@@ -51,6 +51,15 @@ function filePathFromToolInput(toolInput: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Resolve a tool file path against the event's cwd. The engine realpaths the
+ *  path relative to the daemon's own cwd, which codex may have launched with
+ *  anywhere — a relative path would silently miss (or worse, hit the wrong
+ *  file). Absolute paths pass through unchanged. */
+function resolvePostToolUseFile(toolInput: unknown, cwd: string): string | undefined {
+  const raw = filePathFromToolInput(toolInput);
+  return raw === undefined ? undefined : resolve(cwd || ".", raw);
 }
 
 export function createCodexHandler(log?: AdapterLog) {
@@ -143,7 +152,7 @@ export function createCodexHandler(log?: AdapterLog) {
             }
             case "PostToolUse": {
               await adapter.toolExecuted(sessionId, input.tool_name ?? "", {
-                filePath: filePathFromToolInput(input.tool_input),
+                filePath: resolvePostToolUseFile(input.tool_input, cwd),
               });
               return { continue: true };
             }
@@ -198,7 +207,11 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
     } catch {
       continue;
     }
-    if (ev.type === "turn.failed" || ev.type === "error") {
+    // Only turn.failed is terminal. A type:"error" event is NOT: codex emits
+    // it for transient conditions (e.g. "Reconnecting... (request timed
+    // out)") and then continues the turn; treating it as failure would
+    // discard a perfectly good reflection on every network blip.
+    if (ev.type === "turn.failed") {
       failed = true;
       break;
     }
@@ -246,6 +259,18 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
 // truncating mid-event would silently discard a valid reflection.
 const REFLECT_STDOUT_MAX_BYTES = 1024 * 1024;
 
+/** Hook events that memcurio registers; cleared for the reflection
+ *  sub-session so its events cannot echo back into this daemon. */
+const REFLECTION_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PostToolUse",
+  "PreCompact",
+  "PostCompact",
+  "Stop",
+  "SessionEnd",
+] as const;
+
 export function codexExecReflect(opts: {
   log?: AdapterLog;
   timeoutMs?: number;
@@ -260,17 +285,20 @@ export function codexExecReflect(opts: {
         resolve(null);
         return;
       }
+      // Never let the reflection sub-session fire hooks back at this daemon:
+      // its own SessionStart/UserPromptSubmit/Stop events would create fake
+      // sessions and pollute session accounting (and eat the PostCompact
+      // budget with nested round-trips). `hooks.disabled` is NOT a codex
+      // config key (verified against codex-rs source: the hooks schema only
+      // knows `events` and `state`, so the key is silently ignored), so each
+      // memcurio event is cleared explicitly instead. CLI overrides merge as
+      // the last layer, and an empty array replaces the user's handlers.
       const args = [
         "exec",
         "--json",
         "--ephemeral",
         "--skip-git-repo-check",
-        // Never let the reflection sub-session fire hooks back at this daemon:
-        // its own SessionStart/UserPromptSubmit/Stop events would create fake
-        // sessions and pollute session accounting (and eat the PostCompact
-        // budget with nested round-trips).
-        "-c",
-        "hooks.disabled=true",
+        ...REFLECTION_EVENTS.flatMap((event) => ["-c", `hooks.events.${event}=[]`]),
         reflectionUserPrompt(summary, strategy),
       ];
       const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -382,6 +410,15 @@ export function ensureToken(root: string): string {
       // An existing-but-empty file is a writer mid-flight, not garbage: give
       // it up to 500ms to finish before reclaiming (the previous behaviour of
       // unlink-on-empty could delete a token another process was writing).
+      // Remember which file we observed so a replaced empty file (a second
+      // writer racing in) is never unlinked out from under its writer.
+      let emptyStat: { dev: number; ino: number } | null = null;
+      try {
+        const st = statSync(path);
+        emptyStat = { dev: st.dev, ino: st.ino };
+      } catch {
+        // file vanished; loop retries
+      }
       let empty = true;
       for (let i = 0; i < 10; i++) {
         sleepSync(50);
@@ -396,7 +433,23 @@ export function ensureToken(root: string): string {
           return latest;
         }
       }
-      if (empty) {
+      if (empty && emptyStat) {
+        // Re-check before reclaiming: if the file has been replaced since we
+        // first observed it, another writer is mid-flight — leave it alone and
+        // retry from the top instead. The final read re-confirms emptiness so
+        // a writer that finished between the polls and the unlink is never
+        // deleted out from under a running daemon.
+        try {
+          const st = statSync(path);
+          if (st.dev !== emptyStat.dev || st.ino !== emptyStat.ino) {
+            continue;
+          }
+        } catch {
+          // gone; loop retries
+        }
+        if (readFileSync(path, "utf-8").trim()) {
+          continue;
+        }
         rmSync(path, { force: true });
       }
     } catch {
@@ -429,11 +482,14 @@ export async function runCodexDaemon(opts: {
   root?: string;
   log?: AdapterLog;
 }): Promise<CodexDaemonHandle> {
-  mkdirSync(dirname(opts.socketPath), { recursive: true, mode: 0o700 });
+  // Resolve a relative socket path against the daemon's own cwd so the socket
+  // does not silently drift between invocations launched from different cwds.
+  const socketPath = resolve(opts.socketPath);
+  mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
   const root = opts.root ?? (process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio"));
   const token = ensureToken(root);
   const handle = createCodexHandler(opts.log);
-  const pidPath = `${opts.socketPath}.pid`;
+  const pidPath = `${socketPath}.pid`;
 
   // Single-instance guard independent of the socket probe: while the daemon's
   // event loop is busy (long synchronous SQLite work), isListening() can
@@ -460,7 +516,7 @@ export async function runCodexDaemon(opts: {
         // Our own pid in the lock means another daemon instance in THIS
         // process already holds it (tests/embedded double start).
         if (pid === process.pid) {
-          throw new Error(`codex daemon already running on ${opts.socketPath}`);
+          throw new Error(`codex daemon already running on ${socketPath}`);
         }
         // Same convention as the md-file locks (transaction.ts isStaleLock):
         // a dead pid is reclaimed immediately, a live pid older than
@@ -468,7 +524,7 @@ export async function runCodexDaemon(opts: {
         // unrelated process — without this, a SIGKILLed daemon followed by
         // pid reuse would block every future daemon start forever.
         if (!isStaleLock(pidPath)) {
-          throw new Error(`codex daemon already running (pid ${pid}) on ${opts.socketPath}`);
+          throw new Error(`codex daemon already running (pid ${pid}) on ${socketPath}`);
         }
         try {
           rmSync(pidPath, { force: true });
@@ -557,16 +613,16 @@ export async function runCodexDaemon(opts: {
     // Lock the socket directory down so the socket file's temporary permissions
     // are irrelevant; chmod the socket itself again after bind.
     try {
-      chmodSync(dirname(opts.socketPath), 0o700);
+      chmodSync(dirname(socketPath), 0o700);
     } catch {
       void 0;
     }
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(opts.socketPath, () => {
+      server.listen(socketPath, () => {
         server.removeListener("error", reject);
         try {
-          chmodSync(opts.socketPath, 0o600);
+          chmodSync(socketPath, 0o600);
         } catch {
           void 0;
         }
@@ -580,17 +636,17 @@ export async function runCodexDaemon(opts: {
   acquirePidLock();
   // A live socket while we hold the pid lock can only mean a legacy
   // (pid-file-less) daemon: never steal its socket.
-  if (await isListening(opts.socketPath)) {
+  if (await isListening(socketPath)) {
     try {
       rmSync(pidPath, { force: true });
     } catch {
       void 0;
     }
-    throw new Error(`codex daemon already running on ${opts.socketPath}`);
+    throw new Error(`codex daemon already running on ${socketPath}`);
   }
   // We own the root now, so any leftover socket is stale.
   try {
-    rmSync(opts.socketPath, { force: true });
+    rmSync(socketPath, { force: true });
   } catch {
     void 0;
   }
@@ -599,6 +655,10 @@ export async function runCodexDaemon(opts: {
   // Run BEFORE listen(): the hook client polls right after spawn, and a
   // SessionStart arriving between bind and a post-bind cleanup would get its
   // freshly recorded session row closed.
+  // Note: this closes every session this host owns in this root. Two daemons
+  // sharing one root (e.g. via MEMCURIO_CODEX_SOCKET overrides in tests or
+  // multi-harness setups) must never run concurrently — the pid lock at the
+  // socket level only protects the socket path, not the root.
   await closeStaleSessions(root, "codex");
   try {
     await listen();
@@ -609,10 +669,10 @@ export async function runCodexDaemon(opts: {
     // A socket exists but we hold the pid lock: it can only belong to a
     // legacy (pid-file-less) daemon still running, or be truly stale.
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (await isListening(opts.socketPath)) {
-        throw new Error(`codex daemon already running on ${opts.socketPath}`);
+      if (await isListening(socketPath)) {
+        throw new Error(`codex daemon already running on ${socketPath}`);
       }
-      rmSync(opts.socketPath, { force: true });
+      rmSync(socketPath, { force: true });
       try {
         await listen();
         break;
@@ -621,18 +681,22 @@ export async function runCodexDaemon(opts: {
           throw retryErr;
         }
         if (attempt === 2) {
-          throw new Error(`codex daemon failed to bind ${opts.socketPath} after retries`);
+          throw new Error(`codex daemon failed to bind ${socketPath} after retries`);
         }
       }
     }
   }
 
   server.on("error", (err) => {
-    console.error(`memcurio codex daemon error: ${String(err)}`);
+    if (opts.log) {
+      opts.log("error", `codex daemon server error: ${String(err)}`);
+    } else {
+      console.error(`memcurio codex daemon error: ${String(err)}`);
+    }
   });
 
   const cleanup = (): void => {
-    for (const p of [opts.socketPath, pidPath]) {
+    for (const p of [socketPath, pidPath]) {
       try {
         rmSync(p, { force: true });
       } catch {
@@ -691,7 +755,7 @@ export async function runCodexDaemon(opts: {
     });
   }
 
-  return { socketPath: opts.socketPath, closed, close };
+  return { socketPath, closed, close };
 }
 
 async function closeStaleSessions(root: string, host: string): Promise<void> {

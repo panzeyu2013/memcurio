@@ -2,13 +2,23 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { redactSecrets } from "../../core/sanitize.js";
 
 // Guard against a runaway/abused stdin: legit codex hook payloads are a few
 // KB; anything near this cap is not a real event.
 const MAX_STDIN_BYTES = 10 * 1024 * 1024;
+// The daemon's responses are a few KB; this caps an unbounded socket
+// accumulation from a misbehaving peer.
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+// codex kills the SessionEnd hook process after 1s by default (max 3s), so a
+// cold daemon start cannot fit inside it: fail fast and let the daemon-side
+// stale-session recovery close the session row later.
+const SESSION_END_DEADLINE_MS = 2_500;
+// PostCompact reflection can legitimately run for a while before returning.
+const POST_COMPACT_DEADLINE_MS = 130_000;
+const REGULAR_DEADLINE_MS = 10_000;
 
 let stdin = readFileSync(0, "utf-8");
 if (stdin.length > MAX_STDIN_BYTES) {
@@ -21,13 +31,17 @@ if (!stdin) {
 }
 
 const root = process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio");
-const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? join(root, "state", "codex.sock");
+// Resolve a relative MEMCURIO_CODEX_SOCKET against this process's cwd so the
+// socket does not drift between invocations from different cwds.
+const socketPath = process.env.MEMCURIO_CODEX_SOCKET
+  ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
+  : join(root, "state", "codex.sock");
 // Default to the sibling bundle (dist layout); fall back to the TypeScript
 // source so `bun src/adapters/codex/hook.ts` works for development too.
 const daemonPath = process.env.MEMCURIO_CODEX_DAEMON ?? (existsSync(join(import.meta.dir, "daemon.js"))
   ? join(import.meta.dir, "daemon.js")
   : join(import.meta.dir, "daemon.ts"));
-const bunBin = process.env.BUN_BIN ?? "bun";
+const bunBin = process.env.BUN_BIN ?? process.execPath;
 const hookLog = join(root, "state", "hook.log");
 const daemonLog = join(root, "state", "daemon.log");
 
@@ -49,6 +63,11 @@ function request(line: string, timeoutMs: number): Promise<string> {
     }, timeoutMs);
     sock.on("data", (d) => {
       out += d.toString("utf-8");
+      if (out.length > MAX_RESPONSE_BYTES) {
+        clearTimeout(timer);
+        sock.destroy();
+        reject(new Error("response too large"));
+      }
     });
     sock.on("error", (e) => {
       clearTimeout(timer);
@@ -82,16 +101,30 @@ function withToken(input: string): string | null {
   }
 }
 
-let isPostCompact = false;
+let eventName = "";
 try {
-  isPostCompact = (JSON.parse(stdin) as { hook_event_name?: unknown }).hook_event_name === "PostCompact";
+  eventName = String((JSON.parse(stdin) as { hook_event_name?: unknown }).hook_event_name ?? "");
 } catch {
   // withToken reports malformed input consistently below.
 }
-const deadline = Date.now() + (isPostCompact ? 130_000 : 10_000);
+const isPostCompact = eventName === "PostCompact";
+const isSessionEnd = eventName === "SessionEnd";
+// Overridable so tests (and integrators) can shrink the wait without touching
+// the per-event defaults below.
+const envDeadline = Number(process.env.MEMCURIO_CODEX_DEADLINE_MS);
+// codex itself enforces a hard 1-3s cap on the SessionEnd hook process, so the
+// hook's own deadline must fit inside it (a longer deadline would just get the
+// process SIGKILLed mid-request).
+const deadline = Date.now() + (isPostCompact
+  ? POST_COMPACT_DEADLINE_MS
+  : isSessionEnd
+    ? SESSION_END_DEADLINE_MS
+    : envDeadline > 0
+      ? envDeadline
+      : REGULAR_DEADLINE_MS);
 
 async function tryRequest(): Promise<string | null> {
-  const maxAttempts = isPostCompact ? 1 : 3;
+  const maxAttempts = isPostCompact ? 1 : isSessionEnd ? 2 : 3;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -182,8 +215,8 @@ if (resp === null) {
   const isZh = /^zh/i.test(process.env.MEMCURIO_LANG ?? process.env.LANG ?? "");
   process.stderr.write(
     isZh
-      ? "memcurio: codex daemon 不可用，请检查 bun 是否在 PATH 或手动运行 memcurio codex-daemon（详见 ~/.memcurio/state/daemon.log）\n"
-      : "memcurio: codex daemon unavailable; check that bun is on PATH or run `memcurio codex-daemon` manually (see ~/.memcurio/state/daemon.log)\n",
+      ? "memcurio: codex daemon 不可用，请检查 bun 是否可用或手动运行 memcurio codex-daemon（详见 ~/.memcurio/state/daemon.log）\n"
+      : "memcurio: codex daemon unavailable; check that bun works or run `memcurio codex-daemon` manually (see ~/.memcurio/state/daemon.log)\n",
   );
   process.exit(1);
 }
