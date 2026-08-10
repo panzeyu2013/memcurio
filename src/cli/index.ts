@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -9,7 +9,7 @@ import { loadConfig, validateConfig } from "../core/config.js";
 import { applyCuratePlan, buildCuratePlan, formatCuratePlan, HttpProvider, NoopProvider } from "../core/curate.js";
 import type { CurateProvider } from "../core/curate.js";
 import { Index } from "../core/db.js";
-import { makeEnvelope, parseEnvelope } from "../core/events.js";
+import { makeEnvelope, parseEnvelope, MAX_ENVELOPE_BYTES } from "../core/events.js";
 import type { EventEnvelope } from "../core/events.js";
 import { KINDS, newEntry, readAll, updateKindsAtomically } from "../core/mdStore.js";
 import type { Entry, Kind, Status } from "../core/mdStore.js";
@@ -28,13 +28,21 @@ import { t } from "./i18n.js";
 // exit code convention: 2 = usage errors (unknown command/option, missing
 // required argument), 1 = data/runtime errors, 0 = success.
 function fail(msg: string): number {
-  console.error(`error: ${msg}`);
+  console.error(`${t("error.prefix")}${msg}`);
   return 1;
 }
 
 function failUsage(msg: string): number {
-  console.error(`error: ${msg}`);
+  console.error(`${t("error.prefix")}${msg}`);
   return 2;
+}
+
+/** Warn about positional arguments a command does not consume, so a typo
+ *  (`memcurio remember a b`) is not silently accepted. */
+function warnExtraArgs(cmd: string, positionals: string[], max: number): void {
+  if (positionals.length > max) {
+    console.warn(t("note.extraArgs", cmd, String(max)));
+  }
 }
 
 /** Thrown by CLI-level validation so the top-level handler can classify the
@@ -42,12 +50,27 @@ function failUsage(msg: string): number {
 export class UsageError extends Error {}
 
 async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
-  const idx = await Index.create(indexDb(rootDir()));
+  const root = rootDir();
+  // Some commands reach the index without initializing first (status/list on
+  // a fresh root); create the 0700 layout so Index.create does not fail with
+  // a bare sqlite "unable to open database file" error. Keep the user
+  // informed that a store was auto-created instead of silently pretending it
+  // was already there.
+  const freshRoot = !existsSync(indexDb(root));
+  if (freshRoot) {
+    console.error(t("init.autocreated"));
+  }
+  ensureLayout(root);
+  const idx = await Index.create(indexDb(root));
   try {
     return await fn(idx);
   } finally {
     idx.close();
   }
+}
+
+function countsTotal(counts: Record<string, Record<string, number>>): number {
+  return Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
 }
 
 function positiveInt(value: string | undefined, fallback: number, max = 1000, name?: string): number {
@@ -62,6 +85,9 @@ function positiveInt(value: string | undefined, fallback: number, max = 1000, na
   if (n > max) {
     console.warn(t("note.clamped", name ?? "value", value, String(max)));
     return max;
+  }
+  if (!Number.isInteger(n)) {
+    console.warn(t("note.nonInteger", name ?? "value", value));
   }
   return Math.round(n);
 }
@@ -87,7 +113,10 @@ function kindArg(raw: string | undefined, extra: Kind[] = []): Kind | undefined 
   }
   const kind = raw.toUpperCase() as Kind;
   if (!KINDS.includes(kind) || ![...WRITABLE_KINDS, ...extra].includes(kind)) {
-    throw new UsageError(`invalid kind '${kind}' (${KINDS.join("|")})`);
+    // List only the kinds the current command actually accepts: telling a
+    // writer that SESSION/COMPACT are "valid" would just send users into a
+    // second failure.
+    throw new UsageError(t("error.invalidKind", kind, [...WRITABLE_KINDS, ...extra].join("|")));
   }
   return kind;
 }
@@ -142,20 +171,20 @@ async function cmdStatus(): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
     console.log(t("status.root", root));
-    let configOk = false;
-    if (existsSync(configPath(root))) {
+    let configState: string;
+    if (!existsSync(configPath(root))) {
+      configState = t("status.configMissing");
+    } else {
       try {
         validateConfig(root);
-        configOk = true;
+        configState = t("status.configOk");
       } catch {
-        configOk = false;
+        configState = t("status.configBroken");
       }
     }
-    console.log(
-      t("status.config", configPath(root), configOk ? t("status.configOk") : existsSync(configPath(root)) ? t("status.configBroken") : t("status.configMissing")),
-    );
+    console.log(t("status.config", configPath(root), configState));
     const counts = idx.counts();
-    const indexedTotal = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
+    const indexedTotal = countsTotal(counts);
     if (!indexedTotal) {
       console.log(t("status.namespaces"));
     }
@@ -190,6 +219,7 @@ async function cmdRemember(rest: string[]): Promise<number> {
   if (!content) {
     return failUsage(t("remember.missing"));
   }
+  warnExtraArgs("remember", positionals, 1);
   if (content.length > MAX_MEMORY_CONTENT_CHARS) {
     return failUsage(t("remember.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
   }
@@ -238,11 +268,12 @@ async function cmdRemember(rest: string[]): Promise<number> {
 }
 
 async function cmdList(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { ns: { type: "string" }, kind: { type: "string" }, all: { type: "boolean" } },
   });
+  warnExtraArgs("list", positionals, 0);
   let ns: string | undefined;
   let kind: Kind | undefined;
   try {
@@ -274,6 +305,7 @@ async function cmdSearch(rest: string[]): Promise<number> {
   if (!query) {
     return failUsage(t("search.missing"));
   }
+  warnExtraArgs("search", positionals, 1);
   let ns: string | undefined;
   let kind: Kind | undefined;
   try {
@@ -316,11 +348,12 @@ async function cmdForget(rest: string[]): Promise<number> {
   if (!entryId) {
     return failUsage(t("forget.missing"));
   }
+  warnExtraArgs("forget", positionals, 1);
   const root = rootDir();
   return withIndex(async (idx) => {
     const entry = idx.get(entryId);
     if (!entry) {
-      return fail(`forget: no such entry ${entryId}`);
+      return fail(t("forget.notFound", entryId));
     }
     const txn = new Transaction(txnLog(root));
     txn.run("forget", entry.ns, entryId, () => {
@@ -347,6 +380,7 @@ async function cmdCompact(rest: string[]): Promise<number> {
   if (!content) {
     return failUsage(t("compact.missing"));
   }
+  warnExtraArgs("compact", positionals, 1);
   if (content.length > MAX_MEMORY_CONTENT_CHARS) {
     return failUsage(t("compact.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
   }
@@ -405,7 +439,8 @@ async function cmdCompact(rest: string[]): Promise<number> {
   });
 }
 
-async function cmdReindex(): Promise<number> {
+async function cmdReindex(rest: string[] = []): Promise<number> {
+  warnExtraArgs("reindex", rest, 0);
   const root = rootDir();
   return withIndex(async (idx) => {
     const txn = new Transaction(txnLog(root));
@@ -435,11 +470,12 @@ async function cmdReindex(): Promise<number> {
 }
 
 async function cmdRepair(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { execute: { type: "boolean" } },
   });
+  warnExtraArgs("repair", positionals, 0);
   const root = rootDir();
   const txnLogObj = new Transaction(txnLog(root));
   const pending = txnLogObj.pending();
@@ -492,11 +528,12 @@ async function cmdRepair(rest: string[]): Promise<number> {
 }
 
 async function cmdAudit(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { limit: { type: "string" } },
   });
+  warnExtraArgs("audit", positionals, 0);
   const limit = positiveInt(values.limit, 20, 1000, "limit");
   return withIndex(async (idx) => {
     for (const r of idx.auditRecent(limit)) {
@@ -507,11 +544,12 @@ async function cmdAudit(rest: string[]): Promise<number> {
 }
 
 async function cmdEvent(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { json: { type: "string" } },
   });
+  warnExtraArgs("event", positionals, 0);
   let env: EventEnvelope;
   try {
     if (values.json) {
@@ -520,10 +558,16 @@ async function cmdEvent(rest: string[]): Promise<number> {
       if (process.stdin.isTTY) {
         return fail(t("event.tty"));
       }
-      env = makeEnvelope(JSON.parse(readFileSync(0, "utf-8")));
+      const raw = readFileSync(0, "utf-8");
+      // Same bound as parseEnvelope: an untrusted pipe must not be able to
+      // force an unbounded allocation before the parse.
+      if (Buffer.byteLength(raw, "utf-8") > MAX_ENVELOPE_BYTES) {
+        return fail(t("event.invalid", "input exceeds the size limit"));
+      }
+      env = makeEnvelope(JSON.parse(raw));
     }
   } catch (err) {
-    return fail(`event: invalid envelope: ${String(err)}`);
+    return fail(t("event.invalid", String(err)));
   }
   return withIndex(async (idx) => {
     if (env.event === "session_start") {
@@ -541,11 +585,12 @@ async function cmdEvent(rest: string[]): Promise<number> {
 }
 
 async function cmdPrune(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { execute: { type: "boolean" }, ns: { type: "string" } },
   });
+  warnExtraArgs("prune", positionals, 0);
   const root = rootDir();
   const config = loadConfig(root);
   let ns: string | undefined;
@@ -612,14 +657,15 @@ async function cmdPin(rest: string[]): Promise<number> {
   });
   const entryId = positionals[0];
   if (!entryId) {
-    return failUsage("pin: missing entry_id");
+    return failUsage(t("pin.missing"));
   }
+  warnExtraArgs("pin", positionals, 1);
   const root = rootDir();
   const pinned = !values.unset;
   return withIndex(async (idx) => {
     const entry = idx.get(entryId);
     if (!entry) {
-      return fail(`pin: no such entry ${entryId}`);
+      return fail(t("pin.notFound", entryId));
     }
     const txn = new Transaction(txnLog(root));
     txn.run(pinned ? "pin" : "unpin", entry.ns, entryId, () => {
@@ -647,13 +693,14 @@ async function cmdRevive(rest: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: rest, allowPositionals: true });
   const entryId = positionals[0];
   if (!entryId) {
-    return failUsage("revive: missing entry_id");
+    return failUsage(t("revive.missing"));
   }
+  warnExtraArgs("revive", positionals, 1);
   const root = rootDir();
   return withIndex(async (idx) => {
     const entry = idx.get(entryId);
     if (!entry) {
-      return fail(`revive: no such entry ${entryId}`);
+      return fail(t("revive.notFound", entryId));
     }
     const txn = new Transaction(txnLog(root));
     txn.run("revive", entry.ns, entryId, () => {
@@ -673,11 +720,12 @@ async function cmdRevive(rest: string[]): Promise<number> {
 }
 
 async function cmdExport(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: { ns: { type: "string" }, kind: { type: "string" }, output: { type: "string" } },
   });
+  warnExtraArgs("export", positionals, 0);
   let ns: string | undefined;
   let kind: Kind | undefined;
   try {
@@ -708,8 +756,9 @@ async function cmdImport(rest: string[]): Promise<number> {
   });
   const path = positionals[0];
   if (!path) {
-    return failUsage("import: missing <file.jsonl>");
+    return failUsage(t("import.missing"));
   }
+  warnExtraArgs("import", positionals, 1);
   const nsOverride = values.ns as string | undefined;
   if (nsOverride) {
     try {
@@ -721,6 +770,9 @@ async function cmdImport(rest: string[]): Promise<number> {
   const root = rootDir();
   return withIndex(async (idx) => {
     const parsed = readExportFile(path);
+    if (!parsed.length) {
+      return fail(t("import.empty", path));
+    }
     const plan = planImport(parsed, idx, nsOverride);
     for (const c of plan.conflicts) {
       console.log(t("import.conflict", c.entryId, c.ns));
@@ -747,8 +799,9 @@ async function cmdMerge(rest: string[]): Promise<number> {
   const srcNs = positionals[0];
   const dstNs = positionals[1];
   if (!srcNs || !dstNs) {
-    return failUsage("merge: missing <src-ns> <dst-ns>");
+    return failUsage(t("merge.missing"));
   }
+  warnExtraArgs("merge", positionals, 2);
   try {
     assertValidNs(srcNs);
     assertValidNs(dstNs);
@@ -761,7 +814,12 @@ async function cmdMerge(rest: string[]): Promise<number> {
     // legitimately inconsistent (external edits, crashes) and should not
     // make merge fail or silently no-op.
     if (!namespaces(root).includes(srcNs)) {
-      return fail(`merge: source namespace ${srcNs} does not exist`);
+      return fail(t("merge.srcMissing", srcNs));
+    }
+    if (!namespaces(root).includes(dstNs)) {
+      // An explicit destination that does not exist is almost always a typo;
+      // refusing beats silently creating a namespace nobody expects.
+      return fail(t("merge.dstMissing", dstNs));
     }
     const src = idx.list({ ns: srcNs, allStatus: true });
     const dst = idx.list({ ns: dstNs, allStatus: true });
@@ -803,7 +861,7 @@ function resolveCurateProvider(): CurateProvider {
 }
 
 async function cmdCurate(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
     options: {
@@ -813,6 +871,7 @@ async function cmdCurate(rest: string[]): Promise<number> {
       "max-checks": { type: "string" },
     },
   });
+  warnExtraArgs("curate", positionals, 0);
   const root = rootDir();
   const provider = resolveCurateProvider();
   const maxChecks = values["max-checks"] ? positiveInt(values["max-checks"], 100, 1000, "max-checks") : undefined;
@@ -853,7 +912,9 @@ async function cmdCurate(rest: string[]): Promise<number> {
 async function cmdCodexDaemon(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
-  const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
+  const socketPath = process.env.MEMCURIO_CODEX_SOCKET
+    ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
+    : defaultSocketPath(root);
   // Announce only after the pid lock and socket are actually acquired, so a
   // double-start fails before printing a misleading "listening" line.
   const daemon = await runCodexDaemon({ socketPath, root });
@@ -864,6 +925,7 @@ async function cmdCodexDaemon(): Promise<number> {
 
 async function cmdCodexPlugin(rest: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: rest, allowPositionals: true });
+  warnExtraArgs("codex-plugin", positionals, 1);
   const root = rootDir();
   ensureLayout(root);
   const outDir = positionals[0] ?? join(root, "codex-plugin");
@@ -891,6 +953,7 @@ async function cmdBaseline(rest: string[]): Promise<number> {
     options: { "top-k": { type: "string" } },
   });
   const workdir = positionals[0] ?? process.cwd();
+  warnExtraArgs("baseline", positionals, 1);
   const topK = values["top-k"] ? positiveInt(values["top-k"], 10, 1000, "top-k") : undefined;
   const root = rootDir();
   ensureLayout(root);
@@ -903,8 +966,9 @@ async function cmdBaseline(rest: string[]): Promise<number> {
 }
 
 async function cmdMcp(): Promise<number> {
-  await runServer();
-  return 0;
+  // runServer reports transport/connect failures; surface them as a non-zero
+  // exit instead of being overwritten by the main() exit code.
+  return (await runServer()) ? 0 : 1;
 }
 
 async function cmdDoctor(): Promise<number> {
@@ -929,7 +993,7 @@ async function cmdDoctor(): Promise<number> {
     // the mismatch during open or the diagnostic would become false-green.
     idx = await Index.create(indexDb(root), { verifyFts: false });
     const counts = idx.counts();
-    const total = Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
+    const total = countsTotal(counts);
     check(t("doctor.index"), true, `backend=${idx.backend}, entries=${total}`);
     const truth = namespaces(root).flatMap((ns) => readAll(nsDir(root, ns)));
     const indexed = idx.list({ allStatus: true });
@@ -969,7 +1033,9 @@ async function cmdDoctor(): Promise<number> {
     // the open database handle.
     idx?.close();
   }
-  const socketPath = process.env.MEMCURIO_CODEX_SOCKET ?? defaultSocketPath(root);
+  const socketPath = process.env.MEMCURIO_CODEX_SOCKET
+    ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
+    : defaultSocketPath(root);
   const pluginDir = join(root, "codex-plugin");
   console.log(`· codex daemon${existsSync(socketPath) ? "" : t("doctor.daemonIdle")}: ${socketPath}`);
   console.log(`${t("doctor.pluginLabel")}${existsSync(join(pluginDir, "plugin.json")) ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);
@@ -1007,13 +1073,35 @@ const HELP_CMDS = new Set([
 
 async function cmdHelp(rest: string[]): Promise<number> {
   const cmd = rest[0];
+  // `help -h`/`help --help` are the same as `help` with no argument.
+  if (cmd && (cmd === "-h" || cmd === "--help")) {
+    console.log(t("usage.main"));
+    return 0;
+  }
   if (cmd && HELP_CMDS.has(cmd)) {
     console.log(t(`help.${cmd}`));
     return 0;
   }
+  if (cmd) {
+    console.error(`${t("error.prefix")}${t("help.unknown", cmd)}\n`);
+    return 2;
+  }
   console.log(t("usage.main"));
   return 0;
 }
+
+/** Keep the CLI version in lockstep with the package (resolves for both the
+ *  src/ and dist/ layouts). */
+const VERSION = (() => {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
+    ) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 export async function main(argv: string[]): Promise<number> {
   try {
@@ -1024,6 +1112,10 @@ export async function main(argv: string[]): Promise<number> {
       case "--help":
       case "help":
         return await cmdHelp(rest);
+      case "-v":
+      case "--version":
+        console.log(t("version", VERSION));
+        return 0;
       case "init":
         return await cmdInit();
       case "status":
@@ -1037,7 +1129,7 @@ export async function main(argv: string[]): Promise<number> {
       case "forget":
         return await cmdForget(rest);
       case "reindex":
-        return await cmdReindex();
+        return await cmdReindex(rest);
       case "compact":
         return await cmdCompact(rest);
       case "repair":
@@ -1073,12 +1165,12 @@ export async function main(argv: string[]): Promise<number> {
       case "doctor":
         return await cmdDoctor();
       default:
-        console.error(`error: unknown command: ${cmd}\n${t("unknownCommand")}`);
+        console.error(`${t("error.prefix")}${t("help.unknown", cmd)}`);
         return 2;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`error: ${msg}`);
+    console.error(`${t("error.prefix")}${msg}`);
     if (/unable to open database file/i.test(msg)) {
       console.error(t("init.hint"));
     }

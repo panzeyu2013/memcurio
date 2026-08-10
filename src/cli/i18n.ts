@@ -100,14 +100,14 @@ const zh: Record<string, Entry> = {
   "curate.plan": (p: string, r: string, c: string, u: string) =>
     `curate plan (provider=${p}): ${r} 条重评，${c} 条矛盾，${u} 条伞合并（干跑）。`,
   "curate.unparsable": (n: string) => `无法解析 ${n} 对（LLM 输出无法解析，需人工复核）`,
-  "curate.exhausted": (n: string) => `检查预算已用尽：LLM 调用达到上限，其余组合未评估（可增大 --max-checks ${n}）`,
+  "curate.exhausted": (n: string) =>
+    `检查预算已用尽：LLM 调用达到上限，其余组合未评估（「无矛盾」不代表已检查；可增大 --max-checks ${n}）`,
   "curate.applied": (r: string, c: string, u: string) =>
     `curate 已应用：${r} 个分数，${c} 条矛盾，${u} 条伞合并`,
   "codexPlugin.snippet": "（config.toml 合并备选）",
   "codexPlugin.hint": "提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcurio/，或将 snippet 合并进 ~/.codex/config.toml",
   "codexPlugin.generated": (d: string) => `codex 插件已生成于 ${d}`,
   "daemon.listening": (p: string) => `memcurio codex daemon 监听 ${p}`,
-  "unknownCommand": "运行 memcurio help 查看全部命令",
   "init.done": (root: string) => `已初始化 ${root}`,
   "init.backend": (b: string) => `索引后端: ${b}`,
   "reindex.done": (n: string, b: string) => `已重建索引 ${n} 条（backend=${b}）`,
@@ -139,6 +139,7 @@ const zh: Record<string, Entry> = {
   "status.drift": (truth: string, indexed: string) =>
     `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcurio reindex 修复`,
   "init.hint": "note: 未找到记忆库。请先运行 `memcurio init`（或用 MEMCURIO_ROOT 指定位置）。",
+  "init.autocreated": "note: 未找到记忆库，已自动创建存储目录（运行 `memcurio init` 可生成配置文件）。",
   "corruptIndex.hint":
     "note: 影子索引损坏（它是可从 Markdown 真源重建的缓存）：删除 index.sqlite 后运行 memcurio reindex",
   "doctor.layout": "布局",
@@ -163,6 +164,23 @@ const zh: Record<string, Entry> = {
   "note.invalidInt": (name: string, value: string, fallback: string) =>
     `note: 忽略无效的 --${name} '${value}'（使用 ${fallback}）`,
   "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} 超出上限 ${max}，已钳制`,
+  "note.nonInteger": (name: string, value: string) => `note: --${name} '${value}' 不是整数，已四舍五入`,
+  "note.extraArgs": (cmd: string, max: string) => `note: ${cmd}: 额外位置参数被忽略（最多 ${max} 个）`,
+  "version": (v: string) => `memcurio ${v}`,
+  "error.prefix": "error: ",
+  "error.invalidKind": (k: string, list: string) => `无效类型 '${k}'（可选: ${list}）`,
+  "forget.notFound": (id: string) => `forget: 无此条目 ${id}`,
+  "pin.missing": "pin: 缺少 entry_id",
+  "pin.notFound": (id: string) => `pin: 无此条目 ${id}`,
+  "revive.missing": "revive: 缺少 entry_id",
+  "revive.notFound": (id: string) => `revive: 无此条目 ${id}`,
+  "import.missing": "import: 缺少 <file.jsonl>",
+  "import.empty": (p: string) => `import: ${p} 为空或没有可导入的条目`,
+  "merge.missing": "merge: 缺少 <src-ns> <dst-ns>",
+  "merge.srcMissing": (ns: string) => `merge: 源命名空间 ${ns} 不存在`,
+  "merge.dstMissing": (ns: string) => `merge: 目标命名空间 ${ns} 不存在`,
+  "event.invalid": (err: string) => `event: 无效信封: ${err}`,
+  "help.unknown": (cmd: string) => `未知命令: ${cmd}（运行 memcurio help 查看全部命令）`,
 };
 
 const en: Record<string, Entry> = {
@@ -253,14 +271,14 @@ Commands:
   "curate.plan": (p: string, r: string, c: string, u: string) =>
     `curate plan (provider=${p}): ${r} reevaluations, ${c} contradictions, ${u} umbrellas (dry-run).`,
   "curate.unparsable": (n: string) => `unparsable ${n} pairs (LLM output unparsable, needs manual review)`,
-  "curate.exhausted": (n: string) => `checks exhausted: LLM call budget used up, remaining pairs unevaluated (raise --max-checks beyond ${n})`,
+  "curate.exhausted": (n: string) =>
+    `checks exhausted: LLM call budget used up, remaining pairs unevaluated ("no contradictions" is not a verdict; raise --max-checks beyond ${n})`,
   "curate.applied": (r: string, c: string, u: string) =>
     `curate applied: ${r} scores, ${c} contradictions, ${u} umbrellas`,
   "codexPlugin.snippet": "(fallback for merging into config.toml)",
   "codexPlugin.hint": "Note: if codex does not auto-load the plugin, copy the plugin.json directory to ~/.codex/plugins/memcurio/, or merge the snippet into ~/.codex/config.toml",
   "codexPlugin.generated": (d: string) => `codex plugin generated in ${d}`,
   "daemon.listening": (p: string) => `memcurio codex daemon listening on ${p}`,
-  "unknownCommand": "Run memcurio help to see all commands.",
   "init.done": (root: string) => `initialized ${root}`,
   "init.backend": (b: string) => `index backend: ${b}`,
   "reindex.done": (n: string, b: string) => `reindexed ${n} entries (backend=${b})`,
@@ -292,6 +310,7 @@ Commands:
   "status.drift": (truth: string, indexed: string) =>
     `note: md truth has ${truth} entries but the index has ${indexed}; run memcurio reindex to repair`,
   "init.hint": "note: no memory store found. Run `memcurio init` first (or point MEMCURIO_ROOT elsewhere).",
+  "init.autocreated": "note: no memory store found; created the storage layout automatically (run `memcurio init` to generate a config).",
   "corruptIndex.hint":
     "note: the shadow index is corrupted (it is a cache rebuildable from the Markdown truth): delete index.sqlite then run memcurio reindex",
   "doctor.layout": "layout",
@@ -316,6 +335,23 @@ Commands:
   "note.invalidInt": (name: string, value: string, fallback: string) =>
     `note: ignoring invalid --${name} '${value}' (using ${fallback})`,
   "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} exceeds ${max}; clamped`,
+  "note.nonInteger": (name: string, value: string) => `note: --${name} '${value}' is not an integer; rounded`,
+  "note.extraArgs": (cmd: string, max: string) => `note: ${cmd}: extra positional arguments ignored (at most ${max} allowed)`,
+  "version": (v: string) => `memcurio ${v}`,
+  "error.prefix": "error: ",
+  "error.invalidKind": (k: string, list: string) => `invalid kind '${k}' (choose from ${list})`,
+  "forget.notFound": (id: string) => `forget: no such entry ${id}`,
+  "pin.missing": "pin: missing entry_id",
+  "pin.notFound": (id: string) => `pin: no such entry ${id}`,
+  "revive.missing": "revive: missing entry_id",
+  "revive.notFound": (id: string) => `revive: no such entry ${id}`,
+  "import.missing": "import: missing <file.jsonl>",
+  "import.empty": (p: string) => `import: ${p} is empty or contains no importable entries`,
+  "merge.missing": "merge: missing <src-ns> <dst-ns>",
+  "merge.srcMissing": (ns: string) => `merge: source namespace ${ns} does not exist`,
+  "merge.dstMissing": (ns: string) => `merge: target namespace ${ns} does not exist`,
+  "event.invalid": (err: string) => `event: invalid envelope: ${err}`,
+  "help.unknown": (cmd: string) => `unknown command: ${cmd} (Run memcurio help to list commands)`,
 };
 
 const dicts: Record<Lang, Record<string, Entry>> = { zh, en };
