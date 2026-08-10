@@ -30,6 +30,8 @@ MemcurioAdapter（会话记账 / 注入 / 复盘）
 - daemon 无连接 6 小时自动退出（防孤儿残留）；下次 hook 调用自动拉起
 - 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续
 - 压缩反思：PostCompact 后经 `codex exec --json --ephemeral --skip-git-repo-check` 用 codex 自身模型生成反思（无需额外 API key）；输入为会话统计（摘要不可得时），失败依次降级 env LLM / 规则兜底；`MEMCURIO_CODEX_REFLECT=0` 关闭，`MEMCURIO_CODEX_BIN` 指定 codex 路径
+- 反思子会话不会把事件回打回本 daemon：`hooks.disabled` 不是 codex 配置键（会被静默忽略），因此对每个已注册事件显式传 `-c hooks.events.<Event>=[]` 清空（CLI override 层最后合并、空数组整体覆盖用户配置）。注意：该清空只作用于 config.toml 内联层——若 hooks 是通过 **hooks.json** 或 managed requirements 配置的，`-c` 无法覆盖，反思子会话仍会回打事件；此类用户请用 `MEMCURIO_CODEX_REFLECT=0` 关闭反思
+- SessionEnd 的 3s 上限是 codex 硬限制：hook 侧 2.5s 内部 deadline 不可通过 `MEMCURIO_CODEX_DEADLINE_MS` 放宽（该变量只作用于常规事件）；冷启动首个事件恰为 SessionEnd 时会丢弃该事件，会话行由下次 daemon 启动时的 `closeStaleSessions` 补关
 
 ## 2. 事件映射（协议按 codex 源码 `codex-rs/hooks/schema/generated/*.schema.json` 核实）
 
@@ -54,7 +56,8 @@ memcurio codex-plugin ~/.codex/plugins/memcurio
 #     ~/.codex/plugins/memcurio/plugin.json 已就位
 
 # 2b. 备选：合并 ~/.codex/plugins/memcurio/codex-config.toml.snippet 到 ~/.codex/config.toml
-#     （snippet 已包含全部 7 个事件，无需手写）
+#     （snippet 已包含全部 7 个主事件，无需手写；SubagentStart/Stop 协议透传）
+#     注：SessionEnd 已显式写 timeout = 3（codex 硬上限），否则冷启动时默认 1s 超时会杀掉 hook。
 
 # 3. 手动启动 daemon（hook 也会自动拉起，二选一）
 memcurio codex-daemon

@@ -104,7 +104,7 @@ src/
 ├── mcp/index.ts        MCP server（4 工具：检索消毒 + config 默认 ns）
 ├── cli/
 │   ├── index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
-│   └── i18n.ts         zh/en 词典（108 键对称）
+│   └── i18n.ts         zh/en 词典（126 键对称）
 └── adapters/
     ├── shared/engine.ts  MemcurioAdapter（会话记账/注入/复盘/读侧 touch）
     ├── opencode/plugin.ts opencode 插件（打包单文件）
@@ -117,7 +117,7 @@ docs/
 ├── architecture.md            本文档
 ├── integration-opencode.md    opencode 接入说明
 └── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          350 用例（23 文件）
+tests/                          350+ 用例（23 文件）
 ```
 
 ## 4. 存储布局

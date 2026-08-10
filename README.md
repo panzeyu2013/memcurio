@@ -100,6 +100,8 @@ memcurio help [cmd]         Command help
 | `BUN_BIN` | bun executable path for hooks/generated plugins (auto-detected) |
 | `MEMCURIO_REPLACE_COMPACTION` | opencode plugin: set to `1` to fully replace the compaction prompt (read at startup) |
 
+> **Note on the LLM variables**: the `MEMCURIO_LLM_*` variables configure memcurio's standalone HTTP channel only — used by `memcurio curate` (a CLI that runs outside any harness) and as a fallback for compaction reflection. Reflection always **prefers the harness's own configuration**: the opencode plugin runs it through an internal harness session (the harness's provider/model), and the codex adapter spawns `codex exec` (disable with `MEMCURIO_CODEX_REFLECT=0`). The full chain is: harness channel → `MEMCURIO_LLM_*` HTTP → built-in rule fallback (`src/core/reflect.ts`).
+
 ## i18n and exit codes
 
 - CLI copy supports i18n: Chinese by default (when `LANG` is unset); `MEMCURIO_LANG=zh`/`en` to force, `LANG=zh*` for Chinese, all other locales (en/fr/de/ja…) get English. Injection templates and reflection output are always English; memory content is injected verbatim (never translated or normalized).
@@ -114,6 +116,7 @@ memcurio help [cmd]         Command help
 | [docs/integration-opencode.md](docs/integration-opencode.md) | opencode plugin integration |
 | [docs/integration-codex.md](docs/integration-codex.md) | codex adapter integration (verified against protocol source) |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
+| [docs/audit/2026-08-09-memcore-audit.md](docs/audit/2026-08-09-memcore-audit.md) | 历史归档审计（superseded：使用旧命名 MEMCORE_*，仅作历史参考） |
 
 ## Development
 

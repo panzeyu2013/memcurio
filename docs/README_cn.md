@@ -61,7 +61,7 @@ memcurio audit            # 全部变更留痕
 ## 开发
 
 ```bash
-bun test          # 全部用例（当前 350，23 个文件）
+bun test          # 全部用例（当前 350+，23 个文件）
 bun run typecheck # 类型检查（覆盖 src/tests/scripts）
 bun run lint      # biome lint（零诊断）
 bun run bundle:plugin
@@ -86,5 +86,7 @@ CLI 用户文案支持 i18n：默认中文（无 `LANG` 时）；`MEMCURIO_LANG=
 | `MEMCURIO_CODEX_REFLECT` | 设为 `0` 禁用 codex exec 反思通道 |
 | `BUN_BIN` | hook/生成插件使用的 bun 可执行文件路径（默认自动探测） |
 | `MEMCURIO_REPLACE_COMPACTION` | opencode 插件：设为 `1` 时整体替换压缩提示词（启动时读取，改动需重启 opencode） |
+
+> **LLM 变量说明**：`MEMCURIO_LLM_*` 只配置 memcurio 独立的 HTTP 通道——用于 `memcurio curate`（独立 CLI，不在任何 harness 内）和压缩反思的兜底。反思**优先用 harness 自身的配置**：opencode 插件通过内部 harness 会话跑反思（用 harness 的 provider/模型）；codex 适配器 spawn `codex exec`（可用 `MEMCURIO_CODEX_REFLECT=0` 禁用）。完整链路：harness 通道 → `MEMCURIO_LLM_*` HTTP → 内置规则兜底（`src/core/reflect.ts`）。
 
 设计原则：接口通用、差异关进实现——引擎认识零种语言、零个 harness；检索后端（trigram/like/embedding）可插拔；语言与 harness 都是被隔离的实现细节。
