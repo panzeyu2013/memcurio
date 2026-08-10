@@ -1,9 +1,10 @@
-// Han (CJK Ext A + unified ideographs), hiragana, katakana (incl. halfwidth),
-// hangul syllables/Jamo and the CJK compatibility block all cost ~1 token/char
-// in mainstream tokenizers; plain ASCII-only estimation under-counts them.
-// (Explicit ranges: Bun's regex engine does not support \p{Han} style script
-// properties, only general categories.)
-const CJK = /[\u1100-\u11ff\u3040-\u309f\u30a0-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uff66-\uff9f\uac00-\ud7af]/;
+// Han (CJK Ext A + unified ideographs + Ext B/D/E/F/G + supplementary-plane
+// CJK), hiragana, katakana (incl. halfwidth), hangul syllables/Jamo and the
+// CJK compatibility block all cost ~1 token/char in mainstream tokenizers;
+// plain ASCII-only estimation under-counts them. (Explicit ranges: Bun's
+// regex engine does not support \p{Han} style script properties, only general
+// categories; \u{20000}-\u{2fa1f} covers CJK Ext B..F in ES2018+ escapes.)
+const CJK = /[\u1100-\u11ff\u3040-\u309f\u30a0-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uff66-\uff9f\uac00-\ud7af\u{20000}-\u{2fa1f}\u{30000}-\u{323af}]/u;
 
 export function estimateTokens(text: string): number {
   let cost = 0;

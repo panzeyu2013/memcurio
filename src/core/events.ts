@@ -41,13 +41,24 @@ export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
     sessionId: input.sessionId ?? "",
     workdir: input.workdir ?? "",
     event,
-    payload: input.payload ?? {},
+    // A non-object payload would crash downstream payload access; treat it as
+    // absent rather than propagating an untrusted shape.
+    payload: typeof input.payload === "object" && input.payload !== null && !Array.isArray(input.payload)
+      ? input.payload
+      : {},
     ts: input.ts ?? new Date().toISOString(),
   };
   return env;
 }
 
+/** Legit envelopes are a few KB; cap parse input so an untrusted socket or
+ *  pipeline cannot force a multi-hundred-MB allocation. */
+export const MAX_ENVELOPE_BYTES = 1024 * 1024;
+
 export function parseEnvelope(json: string): EventEnvelope {
+  if (json.length > MAX_ENVELOPE_BYTES) {
+    throw new Error("invalid envelope JSON: input exceeds the size limit");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);

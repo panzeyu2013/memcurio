@@ -8,6 +8,7 @@ import type { FitResult } from "./budget.js";
 import { Index } from "./db.js";
 import type { Entry } from "./mdStore.js";
 import { indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir } from "./paths.js";
+import { ensureLayout } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { selectStatic } from "./select.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
@@ -94,8 +95,14 @@ export function renderBaselineSection(ns: string, topEntries: Entry[], maxTokens
   const clean = lines.filter((l) => l !== "");
   // clean always contains the non-empty END_MARKER, so pop cannot fail.
   const end = clean.pop() as string;
-  const body = fitLines(clean, Math.max(0, budget - estimateTokens(end)));
-  return `${[...body.lines, end].join("\n")}\n`;
+  // Reserve budget for BOTH markers so an extreme budget cannot truncate the
+  // section into an unmatched START/END pair (which updateAgentsMd rejects).
+  // Note: with a budget below the two markers' cost (~12 tokens) the output
+  // necessarily exceeds the budget — the CLI's config floor (128) prevents
+  // this in practice; it only affects direct API callers.
+  const start = clean.shift() as string;
+  const body = fitLines(clean, Math.max(0, budget - estimateTokens(end) - estimateTokens(start)));
+  return `${[start, ...body.lines, end].join("\n")}\n`;
 }
 
 export function updateAgentsMd(workdir: string, section: string): void {
@@ -115,7 +122,16 @@ export function updateAgentsMd(workdir: string, section: string): void {
       if (end < start) {
         throw new Error("AGENTS.md contains mismatched memcurio markers (END before START)");
       }
-      next = existing.slice(0, start) + section + existing.slice(end + END_MARKER.length).replace(/^\n/, "");
+      // Only the first marker pair is managed; flag stray extra pairs (hand
+      // edits, historical duplicates) instead of silently leaving them to
+      // accumulate copies forever.
+      if (existing.indexOf(START_MARKER, start + START_MARKER.length) >= 0 || existing.indexOf(END_MARKER, end + END_MARKER.length) >= 0) {
+        console.warn("memcurio: AGENTS.md contains extra memcurio marker pairs; only the first is managed (remove the others to avoid duplicate sections)");
+      }
+      next = `${existing.slice(0, start)}${section}${existing
+        .slice(end + END_MARKER.length)
+        .replace(/^\n+/, "")
+        .replace(/^/, section.endsWith("\n") ? "" : "\n")}`;
     } else if (start >= 0 || end >= 0) {
       throw new Error("AGENTS.md contains unmatched memcurio marker");
     } else {
@@ -127,6 +143,10 @@ export function updateAgentsMd(workdir: string, section: string): void {
 
 export async function generateIndex(): Promise<string> {
   const root = rootDir();
+  // Commands may reach this entry point without having initialized the layout
+  // (e.g. `memcurio index` on a fresh root); create the 0700 dirs first so
+  // Index.create does not fail with a bare sqlite "unable to open" error.
+  ensureLayout(root);
   const idx = await Index.create(indexDb(root));
   try {
     const content = await renderIndexMarkdown(idx);
@@ -176,9 +196,11 @@ export async function injectBaseline(workdir: string, topN?: number): Promise<nu
     }
     const section = renderBaselineSection(ns, top, config.budget.maxInjectTokens);
     updateAgentsMd(workdir, section);
-    // Count injections by the rendered marker (with trailing space), so an id
-    // that happens to appear inside another entry's content is not miscounted.
-    const injected = top.filter((entry) => section.includes(`[${entry.entryId}] `)).length;
+    // Count only rendered lines that start with the entry's marker: an id that
+    // happens to appear inside another entry's content (or a truncated line)
+    // must not be miscounted.
+    const renderedLines = section.split("\n");
+    const injected = top.filter((entry) => renderedLines.some((l) => l.startsWith(`- [${entry.entryId}] `))).length;
     idx.audit("baseline", ns, `${workdir} -> ${injected} injected of ${top.length}${blocked ? ` (${blocked} blocked by injection scan)` : ""}`);
     return injected;
   } finally {

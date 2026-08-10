@@ -90,7 +90,6 @@ CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_entries_value ON entries(value_score DESC, last_used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_ns_status ON entries(ns, status);
 CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_rank ON entries((CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC);
@@ -226,8 +225,7 @@ export class Index {
         // or absent, so rebuild it from scratch. Doctor (verifyFts:false)
         // skips this too so the drift stays visible to the diagnostic.
         try {
-          driver.exec("DELETE FROM fts");
-          driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
+          rebuildFtsWithBusyRetry(driver);
         } catch {
           backend = "like";
         }
@@ -278,6 +276,7 @@ export class Index {
         continue;
       }
       let busy = false;
+      let busyErr: unknown;
       try {
         work();
         this.driver.exec("COMMIT");
@@ -289,6 +288,7 @@ export class Index {
         }
         if (isBusy(err)) {
           busy = true;
+          busyErr = err;
         } else {
           throw err;
         }
@@ -296,7 +296,9 @@ export class Index {
       if (busy) {
         const wait = busyRetryWaitMs(attempt);
         if (wait === null) {
-          throw new Error("database is locked");
+          // Keep the original busy error: it carries the sqlite context the
+          // caller needs to distinguish contention from corruption.
+          throw new Error("database is locked", { cause: busyErr });
         }
         sleep(wait);
         continue;
@@ -515,6 +517,11 @@ export class Index {
   }
 
   recordContradiction(entryA: string, entryB: string, reason: string): void {
+    // Normalize the pair ordering so the (entry_a, entry_b) unique index treats
+    // mirrored reports of the same contradiction as one record.
+    if (entryA > entryB) {
+      [entryA, entryB] = [entryB, entryA];
+    }
     this.driver.run(
       "INSERT OR IGNORE INTO contradictions(entry_a, entry_b, detected_at, resolved, reason) VALUES (?,?,?,0,?)",
       [entryA, entryB, new Date().toISOString(), reason],
@@ -591,6 +598,19 @@ function migrate(driver: DbDriver): void {
     );
     driver.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b)");
     current = 3;
+  }
+  if (current < 4) {
+    // idx_entries_value duplicates the ranking expression index; drop it to
+    // stop paying write amplification on every mutation.
+    driver.run("DROP INDEX IF EXISTS idx_entries_value");
+    // Normalize legacy mirrored pairs so the unique index can dedupe them.
+    driver.run(
+      "UPDATE contradictions SET entry_a = min(entry_a, entry_b), entry_b = max(entry_a, entry_b) WHERE entry_a > entry_b",
+    );
+    driver.run(
+      "DELETE FROM contradictions WHERE rowid NOT IN (SELECT MAX(rowid) FROM contradictions GROUP BY entry_a, entry_b)",
+    );
+    current = 4;
   }
   if (current !== (typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1)) {
     driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", [String(current)]);

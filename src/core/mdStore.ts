@@ -26,6 +26,25 @@ export interface Entry {
 
 const SEP = new RegExp(`^§ (${ENTRY_ID_RE.source.slice(1, -1)}) \\| ([A-Z_]+) \\| (\\S+) \\| (\\S+)(?: \\| ([01]))?$`);
 
+/** Canonical timestamp check shared by the md parser and the transfer/import
+ *  path: only well-formed ISO timestamps are accepted, so a corrupted header
+ *  can never enter the DB as a timestamp that later miscomputes age/prune. */
+export function validTimestamp(value: string): boolean {
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+/** Lenient variant for parsing hand-edited truth files: any date Date.parse
+ *  understands (incl. offsets like +08:00 or missing milliseconds) is kept —
+ *  the strict canonical check above would silently demote such entries to
+ *  unsearchable prose. Corrupt values ("garbage") still fail. */
+export function parseableTimestamp(value: string): boolean {
+  return !Number.isNaN(Date.parse(value));
+}
+
 export function isKnownKind(kind: string): boolean {
   return (KINDS as readonly string[]).includes(kind);
 }
@@ -48,8 +67,16 @@ function isHeader(lines: string[], idx: number, expectedKind?: Kind): boolean {
   if (!m) {
     return false;
   }
-  const [, , kind, , status] = m;
-  if (kind === undefined || status === undefined || !isKnownKind(kind) || !isKnownStatus(status)) {
+  const [, , kind, createdAt, status] = m;
+  if (kind === undefined || status === undefined || createdAt === undefined || !isKnownKind(kind) || !isKnownStatus(status)) {
+    return false;
+  }
+  // A header carrying an unparseable createdAt is prose, not an entry header:
+  // parsing it as an entry would put a broken timestamp into the DB, which the
+  // pruner would misread as "infinitely old" and immediately downgrade.
+  // Lenient parseability (not the strict canonical form): hand-edited files
+  // with offsets or missing milliseconds are still valid entries.
+  if (!parseableTimestamp(createdAt)) {
     return false;
   }
   // When the file kind is known (from the file name), a header declaring a

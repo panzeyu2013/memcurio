@@ -51,9 +51,13 @@ export function formatReflection(r: CompactionReflection, ts: string): string {
 
 export function appendReflection(strategy: string, section: string): string {
   const marker = "## Reflection ";
-  const idx = strategy.indexOf(marker);
-  const head = idx >= 0 ? strategy.slice(0, idx).trimEnd() : strategy.trimEnd();
-  const old = idx >= 0 ? strategy.slice(idx).split(marker).filter((s) => s.trim()) : [];
+  // Tolerate a hand-edited "## Reflection" header without the trailing space
+  // by normalizing it to the canonical marker before matching; otherwise the
+  // marker line would silently merge into the previous head.
+  const normalized = strategy.replace(/^## Reflection[ \t]*$/m, marker);
+  const idx = normalized.indexOf(marker);
+  const head = idx >= 0 ? normalized.slice(0, idx).trimEnd() : normalized.trimEnd();
+  const old = idx >= 0 ? normalized.slice(idx).split(marker).filter((s) => s.trim()) : [];
   const tail = [...old.slice(-2), section.trim()].join(`\n${marker}`);
   const body = `${marker}${tail}`;
   return head ? `${head}\n\n${body}` : body;

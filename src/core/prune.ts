@@ -18,7 +18,10 @@ export interface Transition {
 function daysBetween(now: Date, d: Date): number {
   const t = d.getTime();
   if (Number.isNaN(t)) {
-    return Infinity;
+    // A corrupt date must not read as "infinitely old" — that would instantly
+    // downgrade the entry to stale/archived on the next prune. Treat it as
+    // brand-new (0 days) so nothing is demoted on a data glitch.
+    return 0;
   }
   return (now.getTime() - t) / 86_400_000;
 }

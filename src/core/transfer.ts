@@ -1,7 +1,7 @@
-import { readFileSync, statSync } from "node:fs";
+import { openSync, readFileSync, fstatSync, closeSync } from "node:fs";
 
 import type { Index } from "./db.js";
-import { KINDS, updateKindsAtomically } from "./mdStore.js";
+import { KINDS, updateKindsAtomically, validTimestamp } from "./mdStore.js";
 import type { Entry, Kind, Status } from "./mdStore.js";
 import { assertValidNs, nsDir } from "./paths.js";
 import { redactSecrets, scanInjection } from "./sanitize.js";
@@ -22,14 +22,6 @@ export interface ExportRow {
 }
 
 export const MAX_MEMORY_CONTENT_CHARS = 100_000;
-
-function validTimestamp(value: string): boolean {
-  try {
-    return new Date(value).toISOString() === value;
-  } catch {
-    return false;
-  }
-}
 
 export function toExportRow(e: Entry): ExportRow {
   return {
@@ -286,13 +278,20 @@ export function applyMerge(plan: MergePlan, idx: Index, root: string): void {
 
 /** Refuse obviously pathological export files before reading them into
  *  memory; the content cap per entry is far smaller, so a healthy export is
- *  nowhere near this bound. */
+ *  nowhere near this bound. The size is checked via fstat on the open fd
+ *  (race-free), so a 10GB file is rejected BEFORE any allocation — a
+ *  stat-then-read or read-then-check sequence would still have to load it. */
 const MAX_EXPORT_FILE_BYTES = 512 * 1024 * 1024;
 
 export function readExportFile(path: string): Entry[] {
-  const size = statSync(path).size;
-  if (size > MAX_EXPORT_FILE_BYTES) {
-    throw new Error(`export file too large (${size} bytes > ${MAX_EXPORT_FILE_BYTES})`);
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size > MAX_EXPORT_FILE_BYTES) {
+      throw new Error(`export file too large (${size} bytes > ${MAX_EXPORT_FILE_BYTES})`);
+    }
+    return parseExport(readFileSync(fd, "utf-8"));
+  } finally {
+    closeSync(fd);
   }
-  return parseExport(readFileSync(path, "utf-8"));
 }

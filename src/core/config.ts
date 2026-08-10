@@ -63,6 +63,13 @@ function validString(v: unknown, def: string): string {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : def;
 }
 
+/** Fresh copy of the defaults: the returned object is shared with callers who
+ *  may mutate it, and the nested sections must never alias the module-level
+ *  DEFAULT_CONFIG (a caller's mutation would pollute every later default). */
+function defaultConfig(): Config {
+  return structuredClone(DEFAULT_CONFIG);
+}
+
 export function loadConfig(root: string): Config {
   const path = configPath(root);
   if (!existsSync(path)) {
@@ -73,7 +80,7 @@ export function loadConfig(root: string): Config {
     } catch {
       void 0;
     }
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
   // Converge permissions even when the file pre-existed with looser ones.
   try {
@@ -87,7 +94,7 @@ export function loadConfig(root: string): Config {
     return normalizeConfig(parsed, false);
   } catch (err) {
     console.warn(`[memcurio] ignoring unparsable config at ${path} (${String(err)}); using defaults`);
-    return { ...DEFAULT_CONFIG };
+    return defaultConfig();
   }
 }
 

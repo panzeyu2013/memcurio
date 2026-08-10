@@ -1,6 +1,6 @@
 import type { Index } from "./db.js";
 import { newEntry, updateKindsAtomically } from "./mdStore.js";
-import type { Entry, Kind, Status } from "./mdStore.js";
+import type { Entry, Status } from "./mdStore.js";
 import { nsDir, txnLog } from "./paths.js";
 import { redactSecrets, scanInjection } from "./sanitize.js";
 import { Transaction } from "./transaction.js";
@@ -75,7 +75,7 @@ export class HttpProvider implements CurateProvider {
       return { contradictory: parsed.contradictory === true, reason: parsed.reason ?? "" };
     } catch (err) {
       console.warn(`[memcurio] llm contradiction check failed: ${String(err)}`);
-      return { contradictory: false, reason: "__unparsable__" };
+      return { contradictory: false, reason: UNPARSABLE_REASON };
     }
   }
 
@@ -100,7 +100,15 @@ export interface CuratePlan {
   umbrellas: Array<{ group: Entry[]; content: string }>;
   unparsable: number;
   checksExhausted: boolean;
+  /** True when the LLM check budget ran out before contradiction detection
+   *  finished: consumers should not read "no contradictions" as a verdict. */
+  contradictionsSkipped: boolean;
 }
+
+/** Sentinel from HttpProvider when the LLM reply could not be parsed as a
+ *  contradiction verdict; counted in plan.unparsable instead of treated as a
+ *  contradiction. Kept in one place so producer and consumer stay in sync. */
+export const UNPARSABLE_REASON = "__unparsable__";
 
 export interface CurateOptions {
   ns?: string;
@@ -203,6 +211,7 @@ export async function buildCuratePlan(
     umbrellas: [],
     unparsable: 0,
     checksExhausted: false,
+    contradictionsSkipped: false,
   };
   const minUse = opts.minUseForReeval ?? 5;
   const minOverlap = opts.minOverlap ?? 0.5;
@@ -217,12 +226,16 @@ export async function buildCuratePlan(
     return true;
   };
 
-  // Reevaluation calls one LLM request per candidate (each up to 30s), so cap it
-  // at maxChecks candidates ordered by usage — the most-used entries first.
+  // Reevaluation calls one LLM request per candidate (each up to 30s), so cap
+  // it at a share of the budget — never the whole budget — ordered by usage
+  // (the most-used entries first). The remaining checks go to umbrella merging
+  // and contradiction detection; starving those would silently drop
+  // duplication/conflict maintenance on large stores.
+  const reevalBudget = Math.max(1, Math.floor(maxChecks / 3));
   const reevalCandidates = entries
     .filter((e) => e.useCount >= minUse)
     .sort((a, b) => b.useCount - a.useCount)
-    .slice(0, maxChecks);
+    .slice(0, reevalBudget);
   for (const e of reevalCandidates) {
     if (!nextCheck()) {
       break;
@@ -284,6 +297,7 @@ export async function buildCuratePlan(
       continue;
     }
     if (!nextCheck()) {
+      plan.contradictionsSkipped = true;
       return plan;
     }
     const content = await provider.suggestUmbrella(group);
@@ -304,10 +318,11 @@ export async function buildCuratePlan(
       continue;
     }
     if (!nextCheck()) {
+      plan.contradictionsSkipped = true;
       break;
     }
     const verdict = await provider.checkContradiction(a, b);
-    if (verdict.reason === "__unparsable__") {
+    if (verdict.reason === UNPARSABLE_REASON) {
       plan.unparsable += 1;
     } else if (verdict.contradictory) {
       plan.contradictions.push({ a, b, reason: verdict.reason });
@@ -330,7 +345,7 @@ export async function applyCuratePlan(idx: Index, root: string, plan: CuratePlan
         }
         const redacted = redactSecrets(u.content);
         const injectionFlags = scanInjection(redacted.text);
-        const entry = newEntry(first.ns, first.kind as Kind, redacted.text, {
+        const entry = newEntry(first.ns, first.kind, redacted.text, {
           valueScore: u.group.reduce((s, e) => s + e.valueScore, 0) / u.group.length,
         });
         return { ...u, entry, redacted: redacted.redacted, injectionFlags };
@@ -381,7 +396,10 @@ export async function applyCuratePlan(idx: Index, root: string, plan: CuratePlan
   );
 }
 
-/** Machine-readable summary lines; localized text lives in the CLI layer. */
+/** Machine-readable plan lines only (revalue/contradiction/umbrella). Status
+ *  flags (unparsable/exhausted/skipped) are state, not plan content, and are
+ *  printed by the CLI in the user's language — duplicating them here produced
+ *  three redundant near-identical lines. */
 export function formatCuratePlan(plan: CuratePlan): string[] {
   const lines: string[] = [];
   for (const r of plan.reevaluations) {
@@ -391,13 +409,7 @@ export function formatCuratePlan(plan: CuratePlan): string[] {
     lines.push(`contradiction ${c.a.entryId} vs ${c.b.entryId}  ${c.reason}`);
   }
   for (const u of plan.umbrellas) {
-    lines.push(`umbrella ${u.group.map((e) => e.entryId).join("+")} -> ${u.content.slice(0, 60)}`);
-  }
-  if (plan.unparsable > 0) {
-    lines.push(`unparsable ${plan.unparsable} pairs (LLM output unparsable, needs manual review)`);
-  }
-  if (plan.checksExhausted) {
-    lines.push("checks exhausted: LLM call budget used up, remaining pairs unevaluated (raise --max-checks)");
+    lines.push(`umbrella ${u.group.map((e) => e.entryId).join("+")} -> ${u.content.replaceAll("\n", " ").slice(0, 60)}`);
   }
   return lines;
 }

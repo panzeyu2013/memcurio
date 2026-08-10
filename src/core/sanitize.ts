@@ -21,6 +21,14 @@ const SECRET_PATTERNS: RegExp[] = [
   // Short secrets (8-11 chars) under strong-signal key names; >=12 is covered
   // by the first pattern.
   /(?<![A-Za-z0-9])(?:password|passwd|secret)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{8,11}["']?(?![A-Za-z0-9])/giu,
+  // Chinese key names (密码/密钥/令牌/凭据). normalizeText has already folded
+  // fullwidth separators to ASCII before this runs. The lookbehind only
+  // excludes ASCII word chars, so compound forms like "数据库密码:…" or
+  // "用户令牌=…" (the most common real-world shapes) still match; false
+  // positives on prose ("密码：请设置强密码") are kept out by the trailing
+  // lookahead and the >=12-char requirement on the whitespace form.
+  /(?<![A-Za-z0-9])(?:密码|密钥|令牌|凭据)[-_. ]*[=:]\s*["']?[\p{L}\p{N}_\-./]{8,}["']?(?![A-Za-z0-9\p{L}])/gu,
+  /(?<![A-Za-z0-9])(?:密码|密钥|令牌|凭据)\s+["']?[\p{L}\p{N}_\-./]{12,}["']?(?![A-Za-z0-9\p{L}])/gu,
   // Bare JWT without a "Bearer" prefix ("eyJ" is base64 of the "{" header).
   /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
 ];
@@ -136,10 +144,13 @@ export function scanInjection(text: string): string[] {
   // match English text — it only defeats the space-padded variants.
   const compacted = normalized
     .replace(/(?<=\p{L})\s+(?=\p{L})/gu, "")
-    // CJK punctuation-split obfuscation ("忽视，之前的指令"): collapse the
-    // common Chinese separators between letters. normalizeText has already
-    // turned fullwidth commas into ASCII ones, so both forms are folded.
-    // Periods are deliberately left alone (English matching semantics).
+    // CJK punctuation-split obfuscation ("忽视，之前的指令" / "别管。之前的
+    // 所有指令"): collapse the common Chinese separators between letters.
+    // normalizeText has already turned fullwidth commas into ASCII ones, so
+    // both forms are folded. CJK periods are folded too: sentence-boundary
+    // obfuscation ("别管。之前…") is a real pattern, and the keyword-anchored
+    // patterns make cross-sentence false positives rare enough to accept.
+    // ASCII periods are left alone (English matching semantics).
     .replace(/(?<=\p{L})[,;，。、；](?=\p{L})/gu, "");
   const flags: string[] = [];
   for (const pattern of INJECTION_PATTERNS) {
