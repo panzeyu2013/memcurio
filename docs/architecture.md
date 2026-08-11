@@ -1,161 +1,132 @@
-# Memcurio 架构现状图
+# Memcurio 架构（v2）
 
-> 2026-08-09 快照：M0–M4 代码完成（真实 harness 验证待启用），LLM 策展骨架就绪。
-> 设计文档见 [memory-harness-design.md](./memory-harness-design.md)。
+> 2026-08-10 v2 codex-style 重构快照：两阶段记忆管线（模型驱动的抽取与整合）落地，
+> §条目/命名空间/规则剪枝/状态机体系整体删除。
+> 实现契约见 [memory-pipeline-v2.md](./memory-pipeline-v2.md)（模块职责、导出签名、数据格式、行为规则以该文档为准）。
 
 ## 1. 分层架构
 
-```mermaid
-flowchart TB
-  subgraph H["Harness 层"]
-    OC["opencode"]
-    CX["codex"]
-    PI["pi"]
-  end
-
-  subgraph AD["适配器层（薄壳，只做事件翻译+注入通道）"]
-    AOC["opencode 插件 ✅<br/>event / compacting / tool 钩子<br/>bun 打包单文件"]
-    ACX["codex 适配器 ✅<br/>1 daemon + N hook 薄壳<br/>SessionStart/UserPromptSubmit/PostToolUse/<br/>PreCompact/PostCompact/Stop/SessionEnd"]
-    AB["基线（零代码）<br/>AGENTS.md + INDEX.md 注入"]
-  end
-
-  subgraph CORE["核心引擎（harness 无关、语言无关）"]
-    EV["统一事件模型 EventEnvelope"]
-    ST["存储层<br/>Markdown 真源（§ 条目）<br/>SQLite 影子索引 FTS5 trigram"]
-    RT["检索层 Retriever 接口<br/>trigram（默认）/ like（降级）<br/>CJK 窗口 OR 查询"]
-    PR["剪枝器<br/>active→stale→archived 状态机<br/>价值分 + pin 豁免"]
-    XF["命名空间 / 迁移<br/>JSONL export/import / merge"]
-    TX["事务化写入<br/>原子 rename + BEGIN/COMMIT/ROLLBACK"]
-    AU["审计 + 会话表"]
-    SEC["安全层<br/>注入消毒（promptware）<br/>密钥脱敏 [REDACTED]"]
-    BUD["注入预算<br/>token 估算（CJK 1/字，其余 0.25/字）<br/>裁剪 + 未注入标注"]
-    CUR["LLM 策展<br/>矛盾检测 / 伞合并 / 价值重评<br/>provider 可插拔"]
-  end
-
-  MCP["MCP server（stdio）<br/>memory_search / memory_remember / memory_forget / memory_status"]
-  CLI["CLI（25 命令，含 help/doctor/repair/compact）"]
-
-  OC -->|事件/工具调用| AOC
-  CX -->|hooks| ACX
-  OC -->|读 AGENTS.md| AB
-  AOC -.进程内 import.-> CORE
-  ACX -.命令调用.-> CORE
-  AB -.索引引用.-> ST
-  MCP -.进程内.-> CORE
-  CLI -.直接.-> CORE
+```
+Harness 层          opencode / codex / pi（或其他任何 harness）
+                        │  事件（session/message/tool/compact/end）
+                        ▼
+适配器层（薄壳）        opencode 插件 / codex daemon+hook
+                        │  只做两件事：事件翻译 → 统一会话模型；注入通道 → 组装上下文
+                        ▼
+核心引擎              Phase 1 抽取（模型判断"什么值得记"）
+                        Phase 2 整合（模型直接改写 MEMORY.md）
+                        读路径（memory_summary 注入 + 自检索指引）
+                        选择窗口遗忘（窗口外 stage1 剪除 + diff 外科删除）
+                        ad-hoc notes（用户显式 remember/forget）
+                        安全层（脱敏 / 注入扫描 / 原子写 / 权限）
+                        审计事务（audit + 事务日志 + 单 Transaction 应用）
 ```
 
-## 2. 数据流
+- **写记忆的决策交给模型**：Phase 1 抽取（session 结束 → 模型产出 rollout_summary/raw_memory），Phase 2 整合（模型基于 diff 直接改写 MEMORY.md 文档）；
+- **遗忘 = 选择窗口 + diff 驱动的外科删除**：不再有 active/stale/archived 状态机；窗口外 stage1 标记 deleted，其 rollout_summary 与 MEMORY.md 引用块被剪除；
+- **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
+- **用户显式操作（remember/forget）走 ad-hoc note**，下次整合时生效。
 
-```mermaid
-flowchart LR
-  subgraph WRITE["写路径"]
-    W1["remember / MCP remember<br/>import / merge"] --> W0["脱敏<br/>密钥 → [REDACTED] + 审计"]
-    W0 --> W2["事务：md 真源原子写"]
-    W2 --> W3["影子索引更新"]
-    W3 --> W4["审计 + 事务日志"]
-  end
+## 2. 存储布局
 
-  subgraph READ["读路径"]
-    R1["search / MCP search /<br/>codex UserPromptSubmit 动态注入"] --> R2["Retriever<br/>FTS5 trigram（CJK 窗口 OR）/ LIKE"]
-    R2 --> R5["消毒过滤<br/>promptware 命中条目跳过"]
-    R5 --> R6["预算裁剪<br/>fitLines(maxInjectTokens)"]
-    R6 --> R3["命中 → 注入"]
-    R3 --> R4["touch：use_count↑ value_score↑"]
-  end
-
-  subgraph LIFE["生命周期"]
-    L1["prune 干跑报告"] -->|--execute| L2["状态迁移<br/>md+索引+审计"]
-    L3["pin / revive / forget"]
-    L4["curate 干跑（provider）"] -->|--execute| L5["重评 / contradictions 表 / 伞合并"]
-  end
-
-  subgraph OBS["观测"]
-    O1["status / audit / index"]
-    O2["event（session 投递）"]
-  end
 ```
+~/.memcurio/
+├── memory/                          # 记忆工作区（Markdown 真源）
+│   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
+│   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
+│   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
+│   ├── rollout_summaries/<slug>.md  # 每会话一份摘要（选择窗口外的被剪除）
+│   ├── skills/                      # 可选：模型创建的可复用流程包
+│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember/forget 的 note（append-only）
+│   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
+├── index.sqlite                     # stage1_outputs / ad_hoc_notes / sessions / audit / meta（schema v5）
+├── config.json
+└── state/                           # 事务日志 / 锁 / socket（不变）
+```
+
+删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。`~/.memcurio/codex-plugin/` 产物仍生成，但由 `memcurio codex-plugin` 显式输出。
 
 ## 3. 模块地图
 
 ```
 src/
 ├── core/
-│   ├── events.ts       事件模型（host/event 校验）
-│   ├── paths.ts        布局（0700）+ ns 白名单（防穿越）
-│   ├── config.ts       config.json（budget/prune/namespace）
-│   ├── transaction.ts  原子写（0600+O_EXCL+目录fsync）+ 文件锁（pid/残留回收，存活持有者不抢，超时=busy_timeout）+ 事务日志（自动轮转）
-│   ├── mdStore.ts      真源解析/渲染（§ id | kind | created | status | pinned；重写保留非条目内容）
-│   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（WAL+busy_timeout+0600）
-│   ├── db.ts           影子索引（entries/sessions/contradictions/audit/meta + FTS5）
-│   │                   rebuild 保留统计 + schema_version 迁移 + withTransaction（嵌套防护）
-│   ├── ids.ts          条目 id（UUIDv4 32hex + 内容派生 id 防冲突）
-│   ├── llm.ts          共享 OpenAI 兼容客户端 + JSON 提取（curate/reflect 复用）
-│   ├── retriever.ts    Retriever 接口 + trigram/like 后端 + CJK 窗口 OR 查询
-│   ├── select.ts       静态 top-N（SQL 排序，排除 archived）
-│   ├── safeSearch.ts   检索注入过滤（分页直到凑满 topN）
-│   ├── prune.ts        剪枝状态机（纯函数）
-│   ├── transfer.ts     export/import/merge（ns 校验 + 内容去重 + 脱敏；拒绝 deleted 状态导入）
-│   ├── baseline.ts     INDEX.md + AGENTS.md 区块（预算+消毒+审计）
-│   ├── budget.ts       token 估算（CJK/假名/谚文=1，其余 0.25）+ 裁剪 + 截断标注
-│   ├── sanitize.ts     注入扫描（Unicode/双向符/控制符/全角等价/零宽）+ 密钥脱敏（高熵兜底）
-│   ├── reflect.ts      压缩反思（chat→http→fallback 降级链）
-│   └── curate.ts       LLM 策展（provider 抽象：矛盾/伞合并/重评 + 超时）
-├── mcp/index.ts        MCP server（4 工具：检索消毒 + config 默认 ns）
+│   ├── adhoc.ts        ad-hoc notes（add/list/pending/markApplied + 脱敏）
+│   ├── consolidate.ts  Phase 2 整合（planConsolidation / syncArtifacts / Rule + HttpLoop provider / runConsolidation）
+│   ├── db.ts           stage1_outputs / ad_hoc_notes / sessions / audit / meta（schema v5）
+│   ├── events.ts       事件模型（host/event 校验，不变）
+│   ├── extract.ts      Phase 1 抽取（RolloutSnapshot → Stage1Output；Noop/Http provider + 提示词 + 解析）
+│   ├── ids.ts          UUIDv4 id（含 newNoteId）
+│   ├── inject.ts       读路径注入（renderMemoryContext / 指引 / baseline 区块 / updateAgentsMd）
+│   ├── llm.ts          共享 OpenAI 兼容客户端 + JSON 提取（extract/consolidate 复用）
+│   ├── paths.ts        布局（0700）+ memory workspace 路径（ns 逻辑移除）
+│   ├── sanitize.ts     注入扫描 + 密钥脱敏（不变）
+│   ├── search.ts       读路径检索（searchMemory：MEMORY.md / summary / rollout_summaries，注入过滤 + usage 记账）
+│   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（不变）
+│   ├── transaction.ts  原子写 + 文件锁 + 事务日志（不变）
+│   ├── workspace.ts    工作区读写/快照/diff/baseline（MEMORY_DOCS / snapshot / diffTexts / saveBaseline）
+│   ├── budget.ts       token 估算 + 裁剪（不变）
+│   └── config.ts       config.json（budget + pipeline 配置）
+├── mcp/index.ts        MCP server（5 工具：search/remember/forget/status/context）
 ├── cli/
-│   ├── index.ts        CLI 入口（25 命令，含 help/doctor/repair/compact）
-│   └── i18n.ts         zh/en 词典（126 键对称）
+│   ├── index.ts        CLI 入口（22 命令）
+│   └── i18n.ts         zh/en 词典
 └── adapters/
-    ├── shared/engine.ts  MemcurioAdapter（会话记账/注入/复盘/读侧 touch）
-    ├── opencode/plugin.ts opencode 插件（打包单文件）
+    ├── shared/engine.ts  MemcurioAdapter（会话记账 / 抽取触发 / 静态+动态注入 / 压缩上下文）
+    ├── opencode/plugin.ts opencode 插件（打包单文件；事件→snapshot→Phase 1 HTTP 抽取）
     └── codex/
-        ├── daemon.ts    unix socket daemon（token 首写者胜 + pid 单实例锁 + chmod600）
+        ├── daemon.ts    unix socket daemon（事件 → 引擎；codexExecExtract 抽取通道）
         ├── hook.ts      薄壳（token 转发 + stderr/hook.log 诊断）
         └── generate.ts  plugin.json + 全事件 snippet + MCP bundle（dist 入口）
 docs/
-├── memory-harness-design.md   设计方案（原始调研）
-├── architecture.md            本文档
-├── integration-opencode.md    opencode 接入说明
-└── integration-codex.md       codex 接入说明（协议源码核实）
-tests/                          350+ 用例（23 文件）
+├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
+├── architecture.md         本文档
+├── integration-opencode.md opencode 接入说明
+└── integration-codex.md    codex 接入说明（协议源码核实）
 ```
 
-## 4. 存储布局
+## 4. 数据流
+
+### 写路径
 
 ```
-~/.memcurio/
-├── memory/
-│   ├── <namespace>/
-│   │   ├── MEMORY.md      # 事实/决策/约束（§ id | kind | created | status | pinned）
-│   │   ├── USER.md        # 偏好
-│   │   ├── SESSION.md     # 会话复盘（适配器自动落盘）
-│   │   └── COMPACT.md     # 压缩策略 + 反思写回（kind=COMPACT）
-│   └── INDEX.md           # 全局导航索引（AGENTS.md 引用）
-├── index.sqlite           # 影子索引（FTS5 trigram，可重建）
-├── config.json            # budget / prune 阈值 / namespace
-├── state/
-│   ├── transactions.jsonl # 事务日志（>1MB 自动轮转为 .1/.2）
-│   ├── codex.sock         # codex daemon socket（运行时，附 .pid 单实例锁）
-│   ├── codex.token        # socket 鉴权 token（0600）
-│   ├── daemon.log         # daemon stderr（hook 自拉起时重定向，0600）
-│   └── hook.log           # hook 诊断日志
-└── codex-plugin/          # memcurio codex-plugin 默认输出
+session 事件（session.end / deleted）
+  → 适配器组装 RolloutSnapshot（sessionId/workdir/host/统计/触碰文件）
+  → Phase 1 抽取（extract.ts）：模型判断 no-op 门 → stage1_outputs（raw_memory / rollout_summary / slug）
+  → stage1 DB（stageUpsert + audit）
+  → Phase 2 整合（consolidate.ts，curate 触发或会话后按规则触发）：
+       planConsolidation 选窗口内 stage1 → 渲染 artifacts（raw_memories 升序合并 / rollout_summaries）
+       → provider（HttpLoop 或 Rule）改写 MEMORY.md / memory_summary.md / 各 rollout_summary
+       → 单 Transaction 内应用全部编辑 + audit + note 标记 applied + saveBaseline
+  → MEMORY.md 改写完成（模型组织 Task Group，引擎只做校验/原子写/脱敏/注入扫描）
 ```
 
-> 一致性边界：单文件写是原子的（tmp+fsync+rename）；跨文件批量写（import/merge/prune/curate）在全部文件锁内完成并有同步失败回滚，但若进程在批量写中途被强杀（SIGKILL/断电），部分 md 已更新而索引未更新属预期内边界——事务日志会留下 BEGIN 记录，`memcurio repair --execute` 从 md 真源重建索引即可收敛；md 真源自身不会损坏。
+### 读路径
+
+```
+恒注入：memory_summary.md（脱敏 + 注入扫描 + 预算裁剪）→ session 启动上下文
+模型自检索：指引说明 MEMORY.md 位置与引用规则 → 模型按需 grep / memory_search
+动态注入（codex UserPromptSubmit / opencode compacting）：searchMemory top-K 命中拼接
+命中即记账：search/注入命中 rollout_summary 或 MEMORY.md 引用 → stage1 usage_count / last_usage（选择窗口依据）
+```
+
+### 遗忘路径
+
+```
+prune：选择窗口（maxUnusedDays / usage）dry-run 列出将被剪除的 stage1 + 摘要文件
+  --execute：窗口外 stage1 标记 deleted → 其 rollout_summaries/<slug>.md 删除
+            → 规则整合清理 MEMORY.md 中引用已剪除摘要的块（diff 外科删除）
+```
 
 ## 5. 里程碑状态
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 骨架：存储层 + 事务化写入 + CLI | ✅ 完成 |
-| M1 | MCP server + AGENTS.md 基线注入 | ✅ 完成 |
-| M2 | 剪枝状态机 + pin/revive + JSONL 导入导出 + 合并 | ✅ 完成 |
-| M3 | opencode 高集成适配器 | ✅ 代码完成 |
-| M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 代码完成 |
-| 安全层 | 注入消毒（Unicode/中文等价）+ 密钥脱敏 + 审计 + 文件权限 0700/0600 + socket 鉴权 | ✅ 完成 |
-| 注入预算 | token 估算 + 裁剪（全部注入路径） | ✅ 完成 |
-| 检索增强 | CJK 4 字符窗口 OR 查询（自然语言提问召回） | ✅ 完成 |
-| LLM 策展 | 矛盾检测/伞合并/价值重评（provider 抽象 + 上游脱敏 + 超时） | ✅ 骨架完成（需 API key 实测） |
+| v1 M0 | 骨架：存储层 + 事务化写入 + CLI | ✅ 完成（v1 体系，已被 v2 替代） |
+| v1 M1 | MCP server + AGENTS.md 基线注入 | ✅ 完成（v1 体系，已被 v2 替代） |
+| v1 M2 | 剪枝状态机 + pin/revive + JSONL 导入导出 + 合并 | ✅ 完成（v1 体系，已被 v2 替代） |
+| v1 M3 | opencode 高集成适配器 | ✅ 完成（v1 体系，已被 v2 替代） |
+| v1 M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 完成（v1 体系，已被 v2 替代） |
+| v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v5 + 22 命令 CLI + 5 MCP 工具 | ✅ 代码完成（真实 harness 验证待启用） |
 | 真实 harness 验证 | opencode/codex 实机闭环 | ⏳ 待启用 |
 | 官方 memories 镜像 | codex extensions 镜像同步 | ⏳ 延后 |

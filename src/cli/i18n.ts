@@ -13,355 +13,298 @@ export function currentLang(): Lang {
 type Entry = string | ((...args: string[]) => string);
 
 const zh: Record<string, Entry> = {
-  "usage.main": `memcurio — 跨 harness 记忆与上下文管理系统
+  "usage.main": `memcurio — 模型驱动的跨会话记忆系统（codex 式两阶段管线）
 
 用法: memcurio <command> [args]
 
 命令:
-  init               初始化 ~/.memcurio 布局
-  status             显示引擎状态（命名空间/后端/审计/pending）
-  remember <内容>    写入一条记忆 [--ns X] [--kind MEMORY|USER]
-  list               列出记忆 [--ns X] [--kind K] [--all]
-  search <query>     检索记忆 [--ns X] [--kind K] [--top-k N]
-  forget <id>        删除一条记忆（id 从 memcurio list 获取）
-  pin <id>           固定条目免于剪枝 [--unset]
-  revive <id>        将 stale/archived 条目恢复为 active
-  prune              价值感知剪枝（干跑报告；--execute 生效）[--ns X]
-  curate             LLM 策展干跑（矛盾/伞合并/重评；--execute 生效）[--ns X] [--min-use N] [--max-checks N]
-  export             导出 JSONL [--ns X] [--kind K] [--output FILE]
-  import <file>      导入 JSONL [--ns X]
-  merge <src> <dst>  命名空间合并（干跑；--execute 生效）
-  baseline [dir]     注入 AGENTS.md 记忆区块 [--top-k N]
-  index              重新生成全局 INDEX.md
-  reindex            从 Markdown 真源重建影子索引（保留使用统计）
-  compact <内容>     更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回）[--ns X]
-  repair             检测/修复事务异常（--execute 触发重建）
-  doctor             自检环境与数据健康
-  audit              审计记录 [--limit N]
-  event              投递统一事件（--json '{...}'）
-  mcp                启动 MCP server（stdio）
-  codex-daemon       启动 codex 适配器 daemon
-  codex-plugin [dir] 生成 codex 插件包（默认 ~/.memcurio/codex-plugin）
-  help [cmd]         命令帮助
+  init                初始化 ~/.memcurio 布局
+  status              显示管线状态（stage1/notes/审计/pending）
+  remember <内容>     写一条 ad-hoc 记忆 note（下次整合生效）[--apply 立即整合]
+  forget <文本>       写一条"忘掉"note（整合时移除含该文本的条目）[--apply 立即整合]
+  list                列出 MEMORY.md 分组 / rollout 摘要 / pending notes
+  search <query>      检索记忆 [--top-k N]
+  prune               选择窗口干跑（窗口外的 stage1 将被剪除）[--execute]
+  curate              Phase 2 整合干跑（预览 diff）[--execute] [--max-steps N]
+  baseline [dir]      把记忆上下文注入 AGENTS.md
+  reindex             从 stage1 库重新同步 artifacts 并重置基线
+  repair              检测/修复事务异常（--execute 触发重同步）
+  doctor              自检环境与数据健康
+  audit [--limit N]   审计记录
+  export [--output F] 导出 stage1 + notes 的 JSONL
+  import <file>       导入 JSONL
+  event [--json]      投递统一事件
+  mcp                 启动 MCP server（stdio）
+  codex-daemon        启动 codex 适配器 daemon
+  codex-plugin [dir]  生成 codex 插件包
+  help [cmd]          命令帮助
 `,
 
   "help.init": "memcurio init\n  初始化 ~/.memcurio 布局（可用 MEMCURIO_ROOT 覆盖路径）",
-  "help.status": "memcurio status\n  显示引擎状态（命名空间/后端/审计/pending）",
-  "help.remember": "memcurio remember <内容> [--ns X] [--kind MEMORY|USER]\n  写入一条记忆（写入即脱敏密钥、审计注入模式）",
-  "help.list": "memcurio list [--ns X] [--kind K] [--all]\n  列出记忆（默认显示 archived；--all 额外含已删除）",
-  "help.search": "memcurio search <query> [--ns X] [--kind K] [--top-k N]\n  检索记忆（trigram/like，命中计使用次数）",
-  "help.forget": "memcurio forget <id>\n  删除一条记忆（id 从 memcurio list 获取）",
-  "help.pin": "memcurio pin <id> [--unset]\n  固定条目免于剪枝 / 取消固定",
-  "help.revive": "memcurio revive <id>\n  将 stale/archived 条目恢复为 active",
-  "help.prune": "memcurio prune [--ns X] [--execute]\n  价值感知剪枝（干跑报告；--execute 生效）",
-  "help.curate": "memcurio curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM 策展（需 MEMCURIO_LLM_API_KEY；矛盾/伞合并/重评）",
-  "help.export": "memcurio export [--ns X] [--kind K] [--output FILE]\n  导出 JSONL（默认输出到 stdout）",
-  "help.import": "memcurio import <file.jsonl> [--ns X]\n  导入 JSONL（--ns 覆盖全部条目命名空间）",
-  "help.merge": "memcurio merge <src-ns> <dst-ns> [--execute]\n  命名空间合并（干跑；--execute 生效）",
-  "help.baseline": "memcurio baseline [dir] [--top-k N]\n  注入 AGENTS.md 记忆区块（读侧自动注入）",
-  "help.index": "memcurio index\n  重新生成全局 INDEX.md",
-  "help.reindex": "memcurio reindex\n  从 Markdown 真源重建影子索引（保留使用统计）",
-  "help.compact": "memcurio compact <内容> [--ns X]\n  更新 context 压缩策略（压缩前强制注入；压缩后反思自动写回；替换 active/stale 旧策略，保留已归档历史）",
-  "help.repair": "memcurio repair [--execute]\n  检测/修复事务异常（--execute 触发重建）",
-  "help.doctor": "memcurio doctor\n  自检环境与数据健康",
-  "help.audit": "memcurio audit [--limit N]\n  审计记录",
-  "help.event": "memcurio event --json '{...}' 或从 stdin 读取\n  投递统一事件（session_start/session_end 等）",
-  "help.mcp": "memcurio mcp\n  启动 MCP server（stdio）",
-  "help.codex-daemon": "memcurio codex-daemon\n  启动 codex 适配器 daemon",
-  "help.codex-plugin": "memcurio codex-plugin [dir]\n  生成 codex 插件包（默认 ~/.memcurio/codex-plugin）",
+  "help.status": "memcurio status\n  显示管线状态：stage1 计数（pending/selected/deleted）、ad-hoc notes、审计数、pending 事务",
+  "help.remember": "memcurio remember <内容> [--apply]\n  写一条 ad-hoc remember note（密钥自动脱敏、注入模式记审计）；\n  --apply 立即用规则整合器把 note 并入 MEMORY.md",
+  "help.forget": "memcurio forget <文本> [--apply]\n  写一条 ad-hoc forget note；整合时移除 MEMORY.md/memory_summary.md 中包含该文本的行\n  --apply 立即整合",
+  "help.list": "memcurio list\n  列出 MEMORY.md 的 Task Group 分组、rollout_summaries 文件、未应用的 notes",
+  "help.search": "memcurio search <query> [--top-k N]\n  在工作区 Markdown 中检索（行级子串计分；注入模式命中被过滤；命中计使用次数）",
+  "help.prune": "memcurio prune [--execute]\n  选择窗口干跑：窗口外（超过 maxUnusedDays 未使用）的 stage1 将被标记删除并剪除摘要；\n  --execute 执行剪除并运行规则整合清理 MEMORY.md",
+  "help.curate": "memcurio curate [--execute] [--max-steps N]\n  Phase 2 整合：选择 stage1 → 同步 artifacts → 对基线 diff → 由整合器改写 MEMORY.md/memory_summary.md；\n  --execute 应用（有 MEMCURIO_LLM_API_KEY 用 LLM 代理，否则规则整合器）",
+  "help.baseline": "memcurio baseline [dir]\n  把记忆上下文（memory_summary + 指引）注入 <dir>/AGENTS.md 的 memcurio 区块",
+  "help.reindex": "memcurio reindex\n  按当前 stage1 库重新同步 raw_memories.md 与 rollout_summaries/，并重置 .baseline",
+  "help.repair": "memcurio repair [--execute]\n  检测事务日志中的孤儿 BEGIN 与损坏行；--execute 重同步 artifacts 并清空日志",
+  "help.doctor": "memcurio doctor\n  自检：布局/配置/DB/工作区漂移/pending 事务/codex daemon",
+  "help.audit": "memcurio audit [--limit N]\n  最近审计记录",
+  "help.export": "memcurio export [--output FILE]\n  导出 stage1 输出与 ad-hoc notes 的 JSONL（默认 stdout）",
+  "help.import": "memcurio import <file.jsonl>\n  导入 JSONL 备份（stage1 按 rollout_key 去重；notes 按 id 去重并恢复 note 文件）",
+  "help.event": "memcurio event [--json '{...}']\n  投递统一事件（stdin 或 --json），记录 sessions/审计",
+  "help.mcp": "memcurio mcp\n  启动 MCP server（stdio）：memory_search / memory_remember / memory_forget / memory_status / memory_context",
+  "help.codex-daemon": "memcurio codex-daemon\n  启动 codex 适配器 daemon（unix socket + token 鉴权）",
+  "help.codex-plugin": "memcurio codex-plugin [dir]\n  生成 codex 插件包（daemon + hook + plugin.json + MCP bundle）",
   "help.help": "memcurio help [cmd]\n  命令帮助",
 
-  "remember.missing": 'remember: missing content (memcurio remember "内容")',
-  "remember.tooLong": (n: string) => `remember: 内容超过 ${n} 字符上限`,
-  "remember.nsNote": (ns: string, cur: string) =>
-    `note: 记忆写入命名空间 '${ns}'；当前目录会话注入使用 '${cur}'，如需注入请加 --ns ${cur} 或设置 config.namespace.default`,
-  "remember.redacted": "[secrets redacted]",
-  "remember.promptware": (flag: string) =>
-    `warn: 内容疑似注入模式（${flag}），已写入但将被过滤，不会注入到模型上下文`,
-  "search.missing": 'search: missing query (memcurio search "关键词")',
-  "search.note": (x: string) =>
-    `note: 无结果。可检查 --ns 是否匹配（当前: ${x}）、更换关键词，或用 memcurio list 确认记忆存在。`,
-  "search.filtered": (n: string) => `note: ${n} 条命中因注入风险被过滤，未展示`,
-  "search.fallback": (err: string) => `fts 检索失败，回退 LIKE：${err}`,
-  "forget.missing": "forget: missing entry_id (从 memcurio list 获取)",
-  "forget.done": (id: string) => `已删除 ${id}`,
-  "compact.missing": 'compact: missing content (memcurio compact "策略内容")',
-  "compact.tooLong": (n: string) => `compact: 内容超过 ${n} 字符上限`,
-  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT（已替换旧策略 ${n} 条，保留已归档历史）`,
-  "repair.none": "无未完成事务（事务日志健康）",
-  "repair.pendingHeader": (n: string) => `${n} 个未完成事务：`,
-  "repair.corrupt": (n: string) => `note: ${n} 行事务日志无法解析（torn write），已忽略`,
-  "repair.truth": "md 真源为最终真相，索引可重建。",
-  "repair.fix": "修复方式：--execute 将从 Markdown 真源重建影子索引（保留使用统计），并清理事务日志。",
-  "repair.done": (n: string) => `已修复：从 md 真源重建 ${n} 条，事务日志已清空`,
-  "event.tty": "event: stdin 为终端，请用 --json '{...}' 提供信封",
-  "curate.noKeyNote": "未配置 MEMCURIO_LLM_API_KEY：本次仅做规则扫描，未调用 LLM。设置后 --execute 执行完整策展。",
-  "curate.needProvider": "curate --execute 需要 LLM provider：设置 MEMCURIO_LLM_API_KEY（可选 MEMCURIO_LLM_BASE_URL / MEMCURIO_LLM_MODEL）",
-  "curate.plan": (p: string, r: string, c: string, u: string) =>
-    `curate plan (provider=${p}): ${r} 条重评，${c} 条矛盾，${u} 条伞合并（干跑）。`,
-  "curate.unparsable": (n: string) => `无法解析 ${n} 对（LLM 输出无法解析，需人工复核）`,
-  "curate.exhausted": (n: string) =>
-    `检查预算已用尽：LLM 调用达到上限，其余组合未评估（「无矛盾」不代表已检查；可增大 --max-checks ${n}）`,
-  "curate.applied": (r: string, c: string, u: string) =>
-    `curate 已应用：${r} 个分数，${c} 条矛盾，${u} 条伞合并`,
-  "codexPlugin.snippet": "（config.toml 合并备选）",
-  "codexPlugin.hint": "提示：如 codex 未自动加载，将 plugin.json 所在目录复制到 ~/.codex/plugins/memcurio/，或将 snippet 合并进 ~/.codex/config.toml",
-  "codexPlugin.generated": (d: string) => `codex 插件已生成于 ${d}`,
-  "daemon.listening": (p: string) => `memcurio codex daemon 监听 ${p}`,
-  "init.done": (root: string) => `已初始化 ${root}`,
-  "init.backend": (b: string) => `索引后端: ${b}`,
-  "reindex.done": (n: string, b: string) => `已重建索引 ${n} 条（backend=${b}）`,
-  "export.done": (n: string, p: string) => `已导出 ${n} 条 -> ${p}`,
-  "import.done": (a: string, e: string, d: string, c: string) =>
-    `已导入 ${a} 条（${e} 已存在，${d} 内容重复，${c} 冲突）`,
-  "import.conflict": (id: string, ns: string) => `冲突 ${id} 已存在但内容不同（跳过，ns=${ns}）`,
-  "import.conflictFail": (n: string) => `import: ${n} 条冲突条目 ID；未导入任何内容`,
-  "merge.done": (n: string, dst: string) => `已合并 ${n} 条到 ${dst}`,
-  "merge.dryRun": (c: string, f: string, d: string) =>
-    `合并计划：${c} 条复制，${f} 条冲突，${d} 条重复（干跑）。加 --execute 生效。`,
-  "prune.none": "没有可剪枝的条目",
-  "prune.dryRun": (n: string) => `建议 ${n} 条状态转换（干跑）。加 --execute 生效。`,
-  "prune.applied": (n: string) => `已应用 ${n} 条状态转换`,
-  "pin.done": (id: string) => `${id} 已固定`,
-  "unpin.done": (id: string) => `${id} 已取消固定`,
-  "revive.done": (id: string) => `${id} 已恢复`,
-  "baseline.done": (w: string, c: string, ns: string) => `baseline 已写入: ${w}/AGENTS.md（注入 ${c} 条，ns=${ns}）`,
-  "index.done": (p: string) => `索引已重新生成: ${p}/INDEX.md`,
-  "status.root": (r: string) => `root      : ${r}`,
-  "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
-  "status.configOk": "ok",
-  "status.configMissing": "missing",
-  "status.configBroken": "unparsable",
-  "status.namespaces": "namespaces: (none)",
-  "status.index": (b: string) => `index     : sqlite + ${b}`,
-  "status.audit": (n: string) => `audit     : ${n} records`,
-  "status.pending": (n: string) => `pending   : ${n} txns`,
-  "status.drift": (truth: string, indexed: string) =>
-    `note: md 真源 ${truth} 条与索引 ${indexed} 条不一致，可运行 memcurio reindex 修复`,
-  "init.hint": "note: 未找到记忆库。请先运行 `memcurio init`（或用 MEMCURIO_ROOT 指定位置）。",
-  "init.autocreated": "note: 未找到记忆库，已自动创建存储目录（运行 `memcurio init` 可生成配置文件）。",
-  "corruptIndex.hint":
-    "note: 影子索引损坏（它是可从 Markdown 真源重建的缓存）：删除 index.sqlite 后运行 memcurio reindex",
+  "init.done": (r: string) => `已初始化 ${r}`,
+  "init.autocreated": "memcurio: 数据根目录尚不存在，已自动创建",
+  "init.hint": "提示：请先运行 memcurio init 初始化布局",
+
+  "status.root": (r: string) => `root: ${r}`,
+  "status.config": (p: string, s: string) => `config: ${p} (${s})`,
+  "status.configMissing": "缺失",
+  "status.configOk": "正常",
+  "status.configBroken": "损坏",
+  "status.stage1": (p: string, s: string, d: string) => `stage1: pending=${p} selected=${s} deleted=${d}`,
+  "status.notes": (t: string, p: string) => `ad-hoc notes: ${t} (pending=${p})`,
+  "status.audit": (n: string) => `audit: ${n}`,
+  "status.pending": (n: string) => `pending txns: ${n}`,
+
+  "remember.missing": "缺少记忆内容（用法: memcurio remember <内容>）",
+  "remember.tooLong": (n: string) => `内容过长（上限 ${n} 字符）`,
+  "remember.done": (f: string) => `已写入记忆 note: ${f}`,
+  "remember.applyNote": "执行整合后写入 MEMORY.md；未整合前可 memcurio curate --execute 手动触发",
+  "remember.promptware": (f: string) => `警告: 内容命中注入模式（${f}），已记审计但仍写入（引擎会在注入时过滤）`,
+
+  "forget.missing": "缺少要遗忘的文本（用法: memcurio forget <文本>）",
+  "forget.done": (f: string) => `已写入 forget note: ${f}`,
+
+  "list.empty": "（暂无记忆）",
+  "list.groups": "MEMORY.md task groups:",
+  "list.rollouts": "rollout summaries:",
+  "list.notes": "pending notes:",
+
+  "search.missing": "缺少检索词（用法: memcurio search <query>）",
+  "search.note": "无命中",
+  "search.filtered": (n: string) => `${n} 条命中因注入模式被过滤`,
+
+  "prune.none": "没有可剪除的 stage1 输出",
+  "prune.applied": (n: string) => `已剪除 ${n} 条 stage1 输出（摘要文件已删除，MEMORY.md 已清理）`,
+  "prune.executeHint": "--execute 执行剪除",
+
+  "curate.applied": (m: string) => m,
+  "curate.noKeyNote": "未设置 MEMCURIO_LLM_API_KEY，使用规则整合器（确定性；LLM 整合请设置该环境变量）",
+  "curate.dryRun": "干跑完成（未写盘）；--execute 应用",
+
+  "baseline.done": (dir: string, bytes: string) => `已注入 AGENTS.md (${dir}, ${bytes} bytes)`,
+
+  "reindex.done": (n: string) => `已同步 ${n} 个文件并重置基线`,
+
+  "repair.none": "事务日志健康，无需修复",
+  "repair.pendingHeader": (n: string) => `发现 ${n} 个 pending 事务:`,
+  "repair.corrupt": (n: string) => `发现 ${n} 行损坏日志`,
+  "repair.truth": "提示: pending 事务表示上次批量写未完成；--execute 会重同步 artifacts 并收敛",
+  "repair.fix": "存在待修复问题（运行 --execute 修复）",
+  "repair.done": (n: string) => `已修复（重同步 ${n} 个文件，日志已清空）`,
+
   "doctor.layout": "布局",
   "doctor.config": "配置",
-  "doctor.index": "索引",
-  "doctor.txn": "事务",
-  "doctor.truthIds": "真源 ID",
-  "doctor.truthIndex": "真源/索引",
-  "doctor.ftsMirror": "FTS 镜像",
   "doctor.parsable": "可解析",
-  "doctor.noPending": "无异常",
-  "doctor.aligned": (n: string) => `${n} 条一致`,
-  "doctor.mismatch": (n: string) => `${n} 条不一致或缺失（memcurio reindex）`,
-  "doctor.duplicateIds": (n: string) => `${n} 条重复条目 ID`,
-  "doctor.unique": "唯一",
-  "doctor.reindexHint": "（memcurio reindex）",
-  "doctor.daemonIdle": "（未运行，仅 codex 用户需要）",
-  "doctor.pluginMissing": "（未生成，仅 codex 用户需要）",
-  "doctor.pluginLabel": "· codex 插件包",
-  "doctor.ok": "\ndoctor: 全部正常",
-  "doctor.bad": "\ndoctor: 发现问题，见上方 ✗ 项",
-  "note.invalidInt": (name: string, value: string, fallback: string) =>
-    `note: 忽略无效的 --${name} '${value}'（使用 ${fallback}）`,
-  "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} 超出上限 ${max}，已钳制`,
-  "note.nonInteger": (name: string, value: string) => `note: --${name} '${value}' 不是整数，已四舍五入`,
-  "note.extraArgs": (cmd: string, max: string) => `note: ${cmd}: 额外位置参数被忽略（最多 ${max} 个）`,
+  "doctor.index": "索引库",
+  "doctor.txn": "事务日志",
+  "doctor.noPending": "无 pending",
+  "doctor.ok": "一切正常",
+  "doctor.bad": "发现问题",
+  "doctor.daemonIdle": "（未运行）",
+  "doctor.pluginLabel": "codex 插件包",
+  "doctor.pluginMissing": "（未生成）",
+  "doctor.memory": "记忆工作区",
+  "doctor.stage1": "stage1 输出",
+  "doctor.drift": "工作区与基线不一致",
+  "doctor.driftHint": "运行 memcurio reindex 或 memcurio curate --execute 收敛",
+
+  "event.tty": "event 需要 stdin 输入或 --json 参数",
+  "event.invalid": (e: string) => `事件无效: ${e}`,
+
+  "export.done": (n: string, out: string) => `已导出 ${n} 条记录 -> ${out}`,
+  "import.missing": "缺少导入文件（用法: memcurio import <file.jsonl>）",
+  "import.empty": (p: string) => `${p} 中没有可导入的记录`,
+  "import.done": (a: string, s: string) => `导入完成: +${a}，跳过 ${s}`,
+  "import.conflict": (k: string) => `跳过（已存在）: ${k}`,
+
+  "daemon.listening": (p: string) => `codex daemon 监听 ${p}`,
+  "codexPlugin.generated": (d: string) => `已生成插件包: ${d}`,
+  "codexPlugin.snippet": "（snippet 为全事件示例，hook 已配置事件子集）",
+  "codexPlugin.hint": "按 docs/integration-codex.md 安装",
+
+  "error.prefix": "memcurio: ",
+  "help.unknown": (c: string) => `未知命令: ${c}（memcurio help 查看命令列表）`,
   "version": (v: string) => `memcurio ${v}`,
-  "error.prefix": "error: ",
-  "error.invalidKind": (k: string, list: string) => `无效类型 '${k}'（可选: ${list}）`,
-  "forget.notFound": (id: string) => `forget: 无此条目 ${id}`,
-  "pin.missing": "pin: 缺少 entry_id",
-  "pin.notFound": (id: string) => `pin: 无此条目 ${id}`,
-  "revive.missing": "revive: 缺少 entry_id",
-  "revive.notFound": (id: string) => `revive: 无此条目 ${id}`,
-  "import.missing": "import: 缺少 <file.jsonl>",
-  "import.empty": (p: string) => `import: ${p} 为空或没有可导入的条目`,
-  "merge.missing": "merge: 缺少 <src-ns> <dst-ns>",
-  "merge.srcMissing": (ns: string) => `merge: 源命名空间 ${ns} 不存在`,
-  "merge.dstMissing": (ns: string) => `merge: 目标命名空间 ${ns} 不存在`,
-  "event.invalid": (err: string) => `event: 无效信封: ${err}`,
-  "help.unknown": (cmd: string) => `未知命令: ${cmd}（运行 memcurio help 查看全部命令）`,
+
+  "note.extraArgs": (cmd: string, max: string) => `注意: ${cmd} 最多接受 ${max} 个位置参数，多余参数被忽略`,
+  "note.invalidInt": (name: string, v: string, def: string) => `${name} 不是有效整数（${v}），使用默认值 ${def}`,
+  "note.clamped": (name: string, v: string, max: string) => `${name}（${v}）超出上限，使用 ${max}`,
+  "note.nonInteger": (name: string, v: string) => `${name}（${v}）不是整数，已取整`,
+
+  "corruptIndex.hint": "index.sqlite 损坏：删除该文件后运行 memcurio reindex 重建（md 真源不受影响）",
 };
 
 const en: Record<string, Entry> = {
-  "usage.main": `memcurio — cross-harness memory and context management system
+  "usage.main": `memcurio — model-driven cross-session memory (codex-style two-phase pipeline)
 
 Usage: memcurio <command> [args]
 
 Commands:
-  init               Initialize the ~/.memcurio layout
-  status             Show engine status (namespaces/backend/audit/pending)
-  remember <text>    Save a memory [--ns X] [--kind MEMORY|USER]
-  list               List memories [--ns X] [--kind K] [--all]
-  search <query>     Search memories [--ns X] [--kind K] [--top-k N]
-  forget <id>        Delete a memory (get id from memcurio list)
-  pin <id>           Pin an entry to skip pruning [--unset]
-  revive <id>        Restore a stale/archived entry to active
-  prune              Value-aware pruning (dry-run; --execute applies) [--ns X]
-  curate             LLM curation dry-run (contradictions/umbrella/re-eval; --execute applies) [--ns X] [--min-use N] [--max-checks N]
-  export             Export JSONL [--ns X] [--kind K] [--output FILE]
-  import <file>      Import JSONL [--ns X]
-  merge <src> <dst>  Merge namespaces (dry-run; --execute applies)
-  baseline [dir]     Inject the AGENTS.md memory section [--top-k N]
-  index              Regenerate the global INDEX.md
-  reindex            Rebuild the shadow index from the Markdown source of truth (keeps usage stats)
-  compact <text>     Update the context-compression strategy (force-injected before compaction; reflection written back after) [--ns X]
-  repair             Detect/fix transaction anomalies (--execute triggers rebuild)
-  doctor             Self-check environment and data health
-  audit              Audit records [--limit N]
-  event              Send a unified event (--json '{...}')
-  mcp                Start the MCP server (stdio)
-  codex-daemon       Start the codex adapter daemon
-  codex-plugin [dir] Generate the codex plugin package (default ~/.memcurio/codex-plugin)
-  help [cmd]         Command help
+  init                Initialize the ~/.memcurio layout
+  status              Show pipeline status (stage1/notes/audit/pending)
+  remember <text>     Write an ad-hoc memory note (applied on next consolidation) [--apply]
+  forget <text>       Write a "forget" note (removes lines containing the text) [--apply]
+  list                List MEMORY.md groups / rollout summaries / pending notes
+  search <query>      Search memories [--top-k N]
+  prune               Selection-window dry run [--execute]
+  curate              Phase 2 consolidation dry run (diff preview) [--execute] [--max-steps N]
+  baseline [dir]      Inject the memory context into AGENTS.md
+  reindex             Re-sync artifacts from the stage-1 store and reset the baseline
+  repair              Detect/fix transaction anomalies (--execute re-syncs)
+  doctor              Self-check environment and data health
+  audit [--limit N]   Audit records
+  export [--output F] Export stage-1 outputs + notes as JSONL
+  import <file>       Import JSONL
+  event [--json]      Submit a unified event
+  mcp                 Start the MCP server (stdio)
+  codex-daemon        Start the codex adapter daemon
+  codex-plugin [dir]  Generate the codex plugin package
+  help [cmd]          Command help
 `,
 
   "help.init": "memcurio init\n  Initialize the ~/.memcurio layout (override with MEMCURIO_ROOT)",
-  "help.status": "memcurio status\n  Show engine status (namespaces/backend/audit/pending)",
-  "help.remember": "memcurio remember <text> [--ns X] [--kind MEMORY|USER]\n  Save a memory (secrets redacted on write; injection patterns audited)",
-  "help.list": "memcurio list [--ns X] [--kind K] [--all]\n  List memories (archived shown by default; --all additionally includes deleted)",
-  "help.search": "memcurio search <query> [--ns X] [--kind K] [--top-k N]\n  Search memories (trigram/like; hits count as usage)",
-  "help.forget": "memcurio forget <id>\n  Delete a memory (get id from memcurio list)",
-  "help.pin": "memcurio pin <id> [--unset]\n  Pin an entry to skip pruning / unpin",
-  "help.revive": "memcurio revive <id>\n  Restore a stale/archived entry to active",
-  "help.prune": "memcurio prune [--ns X] [--execute]\n  Value-aware pruning (dry-run; --execute applies)",
-  "help.curate": "memcurio curate [--ns X] [--min-use N] [--max-checks N] [--execute]\n  LLM curation (needs MEMCURIO_LLM_API_KEY; contradictions/umbrella/re-eval)",
-  "help.export": "memcurio export [--ns X] [--kind K] [--output FILE]\n  Export JSONL (stdout by default)",
-  "help.import": "memcurio import <file.jsonl> [--ns X]\n  Import JSONL (--ns overrides all entry namespaces)",
-  "help.merge": "memcurio merge <src-ns> <dst-ns> [--execute]\n  Merge namespaces (dry-run; --execute applies)",
-  "help.baseline": "memcurio baseline [dir] [--top-k N]\n  Inject the AGENTS.md memory section (auto-injected on read)",
-  "help.index": "memcurio index\n  Regenerate the global INDEX.md",
-  "help.reindex": "memcurio reindex\n  Rebuild the shadow index from the Markdown source of truth (keeps usage stats)",
-  "help.compact": "memcurio compact <text> [--ns X]\n  Update the context-compression strategy (force-injected before compaction; reflection written back after; replaces active/stale strategies, keeps archived history)",
-  "help.repair": "memcurio repair [--execute]\n  Detect/fix transaction anomalies (--execute triggers rebuild)",
-  "help.doctor": "memcurio doctor\n  Self-check environment and data health",
-  "help.audit": "memcurio audit [--limit N]\n  Audit records",
-  "help.event": "memcurio event --json '{...}' or read from stdin\n  Send a unified event (session_start/session_end, etc.)",
-  "help.mcp": "memcurio mcp\n  Start the MCP server (stdio)",
-  "help.codex-daemon": "memcurio codex-daemon\n  Start the codex adapter daemon",
-  "help.codex-plugin": "memcurio codex-plugin [dir]\n  Generate the codex plugin package (default ~/.memcurio/codex-plugin)",
+  "help.status": "memcurio status\n  Pipeline status: stage-1 counts (pending/selected/deleted), ad-hoc notes, audit count, pending txns",
+  "help.remember": "memcurio remember <text> [--apply]\n  Write an ad-hoc remember note (secrets redacted, injection patterns audited);\n  --apply consolidates immediately with the rule consolidator",
+  "help.forget": "memcurio forget <text> [--apply]\n  Write an ad-hoc forget note; consolidation removes lines containing the text from MEMORY.md/memory_summary.md\n  --apply consolidates immediately",
+  "help.list": "memcurio list\n  List MEMORY.md Task Groups, rollout summaries, and unapplied notes",
+  "help.search": "memcurio search <query> [--top-k N]\n  Line-level substring search over the workspace markdown; injection hits filtered; hits count as usage",
+  "help.prune": "memcurio prune [--execute]\n  Selection-window dry run: stage-1 outputs outside the unused-days window get pruned;\n  --execute prunes and runs rule consolidation to clean MEMORY.md",
+  "help.curate": "memcurio curate [--execute] [--max-steps N]\n  Phase 2 consolidation: select stage-1 -> sync artifacts -> diff vs baseline -> agent rewrites MEMORY.md/memory_summary.md;\n  --execute applies (LLM agent with MEMCURIO_LLM_API_KEY, rule consolidator otherwise)",
+  "help.baseline": "memcurio baseline [dir]\n  Inject the memory context (memory_summary + pointers) into <dir>/AGENTS.md",
+  "help.reindex": "memcurio reindex\n  Re-sync raw_memories.md and rollout_summaries/ from the stage-1 store and reset .baseline",
+  "help.repair": "memcurio repair [--execute]\n  Detect orphan BEGIN records and corrupt lines in the txn log; --execute re-syncs artifacts and clears the log",
+  "help.doctor": "memcurio doctor\n  Self-check: layout/config/DB/workspace drift/pending txns/codex daemon",
+  "help.audit": "memcurio audit [--limit N]\n  Recent audit records",
+  "help.export": "memcurio export [--output FILE]\n  Export stage-1 outputs and ad-hoc notes as JSONL (stdout by default)",
+  "help.import": "memcurio import <file.jsonl>\n  Import a JSONL backup (stage-1 deduped by rollout_key; notes deduped by id and files restored)",
+  "help.event": "memcurio event [--json '{...}']\n  Submit a unified event (stdin or --json), recording sessions/audit",
+  "help.mcp": "memcurio mcp\n  Start the MCP server (stdio): memory_search / memory_remember / memory_forget / memory_status / memory_context",
+  "help.codex-daemon": "memcurio codex-daemon\n  Start the codex adapter daemon (unix socket + token auth)",
+  "help.codex-plugin": "memcurio codex-plugin [dir]\n  Generate the codex plugin package (daemon + hook + plugin.json + MCP bundle)",
   "help.help": "memcurio help [cmd]\n  Command help",
 
-  "remember.missing": 'remember: missing content (memcurio remember "content")',
-  "remember.tooLong": (n: string) => `remember: content exceeds ${n} characters`,
-  "remember.nsNote": (ns: string, cur: string) =>
-    `note: memory saved to namespace '${ns}'; current directory sessions inject from '${cur}' — use --ns ${cur} or set config.namespace.default to inject here`,
-  "remember.redacted": "[secrets redacted]",
-  "remember.promptware": (flag: string) =>
-    `warn: content looks like an injection pattern (${flag}); stored but filtered from model context`,
-  "search.missing": 'search: missing query (memcurio search "keyword")',
-  "search.note": (x: string) =>
-    `note: no results. Check that --ns matches (current: ${x}), try different keywords, or run memcurio list to confirm memories exist.`,
-  "search.filtered": (n: string) => `note: ${n} hits filtered out by the injection scan, not shown`,
-  "search.fallback": (err: string) => `fts search failed, falling back to LIKE: ${err}`,
-  "forget.missing": "forget: missing entry_id (get it from memcurio list)",
-  "forget.done": (id: string) => `forgot ${id}`,
-  "compact.missing": 'compact: missing content (memcurio compact "strategy")',
-  "compact.tooLong": (n: string) => `compact: content exceeds ${n} characters`,
-  "compact.written": (id: string, ns: string, n: string) => `${id} ${ns}/COMPACT (replaced ${n} old strategy entries, kept archived history)`,
-  "repair.none": "no pending transactions (transaction log healthy)",
-  "repair.pendingHeader": (n: string) => `${n} unfinished transactions:`,
-  "repair.corrupt": (n: string) => `note: ${n} transaction log lines are unparsable (torn write), ignored`,
-  "repair.truth": "Markdown is the source of truth; the index can be rebuilt.",
-  "repair.fix": "Fix: --execute rebuilds the shadow index from the Markdown source of truth (keeps usage stats) and clears the transaction log.",
-  "repair.done": (n: string) => `repaired: rebuilt ${n} entries from md truth source, transaction log cleared`,
-  "event.tty": "event: stdin is a terminal; pass the envelope with --json '{...}'",
-  "curate.noKeyNote": "MEMCURIO_LLM_API_KEY not set: rule-based scan only, no LLM calls. Set it and run --execute for full curation.",
-  "curate.needProvider": "curate --execute requires an LLM provider: set MEMCURIO_LLM_API_KEY (optional MEMCURIO_LLM_BASE_URL / MEMCURIO_LLM_MODEL)",
-  "curate.plan": (p: string, r: string, c: string, u: string) =>
-    `curate plan (provider=${p}): ${r} reevaluations, ${c} contradictions, ${u} umbrellas (dry-run).`,
-  "curate.unparsable": (n: string) => `unparsable ${n} pairs (LLM output unparsable, needs manual review)`,
-  "curate.exhausted": (n: string) =>
-    `checks exhausted: LLM call budget used up, remaining pairs unevaluated ("no contradictions" is not a verdict; raise --max-checks beyond ${n})`,
-  "curate.applied": (r: string, c: string, u: string) =>
-    `curate applied: ${r} scores, ${c} contradictions, ${u} umbrellas`,
-  "codexPlugin.snippet": "(fallback for merging into config.toml)",
-  "codexPlugin.hint": "Note: if codex does not auto-load the plugin, copy the plugin.json directory to ~/.codex/plugins/memcurio/, or merge the snippet into ~/.codex/config.toml",
-  "codexPlugin.generated": (d: string) => `codex plugin generated in ${d}`,
-  "daemon.listening": (p: string) => `memcurio codex daemon listening on ${p}`,
-  "init.done": (root: string) => `initialized ${root}`,
-  "init.backend": (b: string) => `index backend: ${b}`,
-  "reindex.done": (n: string, b: string) => `reindexed ${n} entries (backend=${b})`,
-  "export.done": (n: string, p: string) => `exported ${n} entries -> ${p}`,
-  "import.done": (a: string, e: string, d: string, c: string) =>
-    `imported ${a} entries (${e} existing, ${d} content-dup, ${c} conflicts)`,
-  "import.conflict": (id: string, ns: string) => `conflict ${id} exists with different content (skipped, ns=${ns})`,
-  "import.conflictFail": (n: string) => `import: ${n} conflicting entry id(s); nothing imported`,
-  "merge.done": (n: string, dst: string) => `merged ${n} entries into ${dst}`,
-  "merge.dryRun": (c: string, f: string, d: string) =>
-    `merge plan: ${c} to copy, ${f} conflicts, ${d} dups (dry-run). Re-run with --execute to apply.`,
-  "prune.none": "nothing to prune",
-  "prune.dryRun": (n: string) => `${n} transitions proposed (dry-run). Re-run with --execute to apply.`,
-  "prune.applied": (n: string) => `applied ${n} transitions`,
-  "pin.done": (id: string) => `${id} pinned`,
-  "unpin.done": (id: string) => `${id} unpinned`,
-  "revive.done": (id: string) => `${id} revived`,
-  "baseline.done": (w: string, c: string, ns: string) => `baseline written: ${w}/AGENTS.md (${c} entries injected, ns=${ns})`,
-  "index.done": (p: string) => `index regenerated: ${p}/INDEX.md`,
-  "status.root": (r: string) => `root      : ${r}`,
-  "status.config": (p: string, ok: string) => `config    : ${p} (${ok})`,
-  "status.configOk": "ok",
+  "init.done": (r: string) => `initialized ${r}`,
+  "init.autocreated": "memcurio: data root did not exist; created it automatically",
+  "init.hint": "hint: run memcurio init first",
+
+  "status.root": (r: string) => `root: ${r}`,
+  "status.config": (p: string, s: string) => `config: ${p} (${s})`,
   "status.configMissing": "missing",
-  "status.configBroken": "unparsable",
-  "status.namespaces": "namespaces: (none)",
-  "status.index": (b: string) => `index     : sqlite + ${b}`,
-  "status.audit": (n: string) => `audit     : ${n} records`,
-  "status.pending": (n: string) => `pending   : ${n} txns`,
-  "status.drift": (truth: string, indexed: string) =>
-    `note: md truth has ${truth} entries but the index has ${indexed}; run memcurio reindex to repair`,
-  "init.hint": "note: no memory store found. Run `memcurio init` first (or point MEMCURIO_ROOT elsewhere).",
-  "init.autocreated": "note: no memory store found; created the storage layout automatically (run `memcurio init` to generate a config).",
-  "corruptIndex.hint":
-    "note: the shadow index is corrupted (it is a cache rebuildable from the Markdown truth): delete index.sqlite then run memcurio reindex",
+  "status.configOk": "ok",
+  "status.configBroken": "broken",
+  "status.stage1": (p: string, s: string, d: string) => `stage1: pending=${p} selected=${s} deleted=${d}`,
+  "status.notes": (t: string, p: string) => `ad-hoc notes: ${t} (pending=${p})`,
+  "status.audit": (n: string) => `audit: ${n}`,
+  "status.pending": (n: string) => `pending txns: ${n}`,
+
+  "remember.missing": "missing memory content (usage: memcurio remember <text>)",
+  "remember.tooLong": (n: string) => `content too long (max ${n} chars)`,
+  "remember.done": (f: string) => `memory note written: ${f}`,
+  "remember.applyNote": "applied to MEMORY.md after consolidation; run memcurio curate --execute to trigger now",
+  "remember.promptware": (f: string) => `warning: content matches an injection pattern (${f}); audited and stored (filtered at injection time)`,
+
+  "forget.missing": "missing forget target (usage: memcurio forget <text>)",
+  "forget.done": (f: string) => `forget note written: ${f}`,
+
+  "list.empty": "(no memories yet)",
+  "list.groups": "MEMORY.md task groups:",
+  "list.rollouts": "rollout summaries:",
+  "list.notes": "pending notes:",
+
+  "search.missing": "missing query (usage: memcurio search <query>)",
+  "search.note": "no hits",
+  "search.filtered": (n: string) => `${n} hit(s) filtered for injection patterns`,
+
+  "prune.none": "nothing to prune",
+  "prune.applied": (n: string) => `pruned ${n} stage-1 output(s); summaries removed and MEMORY.md cleaned`,
+  "prune.executeHint": "--execute to apply",
+
+  "curate.applied": (m: string) => m,
+  "curate.noKeyNote": "MEMCURIO_LLM_API_KEY not set; using the rule consolidator (deterministic). Set it for LLM consolidation",
+  "curate.dryRun": "dry run complete (nothing written); --execute to apply",
+
+  "baseline.done": (dir: string, bytes: string) => `injected AGENTS.md (${dir}, ${bytes} bytes)`,
+
+  "reindex.done": (n: string) => `synced ${n} file(s) and reset the baseline`,
+
+  "repair.none": "transaction log healthy, nothing to repair",
+  "repair.pendingHeader": (n: string) => `${n} pending transaction(s):`,
+  "repair.corrupt": (n: string) => `${n} corrupt log line(s)`,
+  "repair.truth": "pending txns mean an unfinished batch write; --execute re-syncs artifacts and converges",
+  "repair.fix": "issues found (run --execute to fix)",
+  "repair.done": (n: string) => `repaired (re-synced ${n} file(s), log cleared)`,
+
   "doctor.layout": "layout",
   "doctor.config": "config",
-  "doctor.index": "index",
-  "doctor.txn": "transactions",
-  "doctor.truthIds": "truth ids",
-  "doctor.truthIndex": "truth/index",
-  "doctor.ftsMirror": "fts mirror",
-  "doctor.parsable": "parseable",
+  "doctor.parsable": "parsable",
+  "doctor.index": "index db",
+  "doctor.txn": "txn log",
   "doctor.noPending": "no pending",
-  "doctor.aligned": (n: string) => `${n} aligned`,
-  "doctor.mismatch": (n: string) => `${n} mismatched or missing entries (memcurio reindex)`,
-  "doctor.duplicateIds": (n: string) => `${n} duplicate entry id(s)`,
-  "doctor.unique": "unique",
-  "doctor.reindexHint": " (memcurio reindex)",
-  "doctor.daemonIdle": " (not running; codex users only)",
-  "doctor.pluginMissing": " (not generated; codex users only)",
-  "doctor.pluginLabel": "· codex plugin package",
-  "doctor.ok": "\ndoctor: all checks passed",
-  "doctor.bad": "\ndoctor: issues found, see the ✗ items above",
-  "note.invalidInt": (name: string, value: string, fallback: string) =>
-    `note: ignoring invalid --${name} '${value}' (using ${fallback})`,
-  "note.clamped": (name: string, value: string, max: string) => `note: --${name} ${value} exceeds ${max}; clamped`,
-  "note.nonInteger": (name: string, value: string) => `note: --${name} '${value}' is not an integer; rounded`,
-  "note.extraArgs": (cmd: string, max: string) => `note: ${cmd}: extra positional arguments ignored (at most ${max} allowed)`,
+  "doctor.ok": "all good",
+  "doctor.bad": "problems found",
+  "doctor.daemonIdle": " (idle)",
+  "doctor.pluginLabel": "codex plugin package",
+  "doctor.pluginMissing": " (not generated)",
+  "doctor.memory": "memory workspace",
+  "doctor.stage1": "stage-1 outputs",
+  "doctor.drift": "workspace drifts from the baseline",
+  "doctor.driftHint": "run memcurio reindex or memcurio curate --execute",
+
+  "event.tty": "event requires stdin input or --json",
+  "event.invalid": (e: string) => `invalid event: ${e}`,
+
+  "export.done": (n: string, out: string) => `exported ${n} record(s) -> ${out}`,
+  "import.missing": "missing import file (usage: memcurio import <file.jsonl>)",
+  "import.empty": (p: string) => `${p} contains no importable records`,
+  "import.done": (a: string, s: string) => `import done: +${a}, skipped ${s}`,
+  "import.conflict": (k: string) => `skipped (already exists): ${k}`,
+
+  "daemon.listening": (p: string) => `codex daemon listening on ${p}`,
+  "codexPlugin.generated": (d: string) => `plugin package generated: ${d}`,
+  "codexPlugin.snippet": " (snippet is a full-event example; the hook is configured with a subset)",
+  "codexPlugin.hint": "install per docs/integration-codex.md",
+
+  "error.prefix": "memcurio: ",
+  "help.unknown": (c: string) => `unknown command: ${c} (memcurio help for the command list)`,
   "version": (v: string) => `memcurio ${v}`,
-  "error.prefix": "error: ",
-  "error.invalidKind": (k: string, list: string) => `invalid kind '${k}' (choose from ${list})`,
-  "forget.notFound": (id: string) => `forget: no such entry ${id}`,
-  "pin.missing": "pin: missing entry_id",
-  "pin.notFound": (id: string) => `pin: no such entry ${id}`,
-  "revive.missing": "revive: missing entry_id",
-  "revive.notFound": (id: string) => `revive: no such entry ${id}`,
-  "import.missing": "import: missing <file.jsonl>",
-  "import.empty": (p: string) => `import: ${p} is empty or contains no importable entries`,
-  "merge.missing": "merge: missing <src-ns> <dst-ns>",
-  "merge.srcMissing": (ns: string) => `merge: source namespace ${ns} does not exist`,
-  "merge.dstMissing": (ns: string) => `merge: target namespace ${ns} does not exist`,
-  "event.invalid": (err: string) => `event: invalid envelope: ${err}`,
-  "help.unknown": (cmd: string) => `unknown command: ${cmd} (Run memcurio help to list commands)`,
+
+  "note.extraArgs": (cmd: string, max: string) => `note: ${cmd} accepts at most ${max} positional args; extra args ignored`,
+  "note.invalidInt": (name: string, v: string, def: string) => `${name} is not a valid integer (${v}); using default ${def}`,
+  "note.clamped": (name: string, v: string, max: string) => `${name} (${v}) exceeds the cap; using ${max}`,
+  "note.nonInteger": (name: string, v: string) => `${name} (${v}) is not an integer; rounded`,
+
+  "corruptIndex.hint": "index.sqlite is corrupted: delete it and run memcurio reindex (md truth is unaffected)",
 };
 
 const dicts: Record<Lang, Record<string, Entry>> = { zh, en };
 
-/** Keys present in a language dictionary (for parity checks). */
-export function langKeys(lang: Lang): string[] {
-  return Object.keys(dicts[lang]);
-}
-
 export function t(key: string, ...args: string[]): string {
-  const entry = dicts[currentLang()][key] ?? zh[key] ?? key;
-  return typeof entry === "function" ? entry(...args) : entry;
+  const entry = dicts[currentLang()][key];
+  if (typeof entry === "function") {
+    return entry(...args);
+  }
+  if (typeof entry === "string") {
+    return entry;
+  }
+  return key;
 }

@@ -16,13 +16,15 @@
 
 | 事件 | 动作 |
 |---|---|
-| `session.created` | 登记会话（sessions 表 + 审计），确定命名空间 |
+| `session.created` | 登记会话（sessions 表 + 审计） |
 | `message.part.*` | 统计消息 part（去重） |
-| `tool.execute.after` | 统计工具使用/涉及文件；若读取的是 `~/.memcurio/memory/<ns>/*.md`（`INDEX.md` 除外）则对其条目 `touch`（use_count↑、value_score↑）——基线模式的读侧记账闭环 |
-| `session.idle` | 节流写会话复盘（`SESSION.md`：起止时间/消息数/工具/文件） |
-| `session.compacted` | 压缩完成后经 `client.session.messages` 读取压缩摘要 → 反思写回 COMPACT 压缩策略。反思默认走 **harness 自身模型**（临时会话 + `session.prompt`，完成后删除，无需额外 API key）；失败时降级为 env LLM 或规则兜底 |
-| `experimental.session.compacting` | 注入"长期记忆上下文" + **COMPACT 压缩策略**（压缩前强制注入）；`MEMCURIO_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词（保留任务状态/决策/涉及文件） |
-| `session.ended`（SDK 事件名为 `session.deleted`） | 最终复盘落盘 + 会话结束 |
+| `tool.execute.after` | 统计工具使用/涉及文件（Phase 1 抽取的 snapshot 输入） |
+| `session.idle` | 无操作（会话统计缓存在内存，抽取在会话结束时触发） |
+| `session.compacted` | 压缩摘要存入内存 snapshot（`adapter.sessionCompacted`，不落盘） |
+| `experimental.session.compacting` | 注入"长期记忆上下文"（static + 最近 search 命中，即 `adapter.buildCompactionContext`）；`MEMCURIO_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词 |
+| `session.ended`（SDK 事件名为 `session.deleted`） | 组装 RolloutSnapshot → Phase 1 抽取（`stageSession`）：默认经 `MEMCURIO_LLM_*` HTTP 通道（`HttpExtractProvider`），失败/无 key 时为 no-op（不落任何 SESSION.md 复盘） |
+
+> Phase 1 抽取：输入是内存中的会话统计与压缩摘要（`buildExtractPrompt`），回复经 `parseExtractReply` 解析入库，**不再向磁盘写 SESSION.md/COMPACT.md**。抽取失败不阻塞会话结束。
 
 ## 3. 安装
 
@@ -47,8 +49,8 @@ memcurio baseline .           # 在项目根目录生成/更新 AGENTS.md 记忆
 ## 4. 验证清单（真实 harness）
 
 - [ ] opencode 启动加载插件（日志出现 `[memcurio] info session created`）
-- [ ] 会话结束/空闲后 `~/.memcurio/memory/<ns>/SESSION.md` 生成复盘
-- [ ] 模型读取记忆 md 文件后 `memcurio list` 对应条目 use_count 递增
+- [ ] 会话结束后 stage1 抽取入库（`memcurio status` 可见 pending 计数；`memcurio curate` 预览 diff）
+- [ ] 读路径注入生效：会话启动携带 memory_summary + MEMORY.md 自检索指引
 - [ ] 长会话压缩后决策/约束仍在（compaction 上下文生效）
 - [ ] `MEMCURIO_REPLACE_COMPACTION=1` 下压缩提示词被替换
 

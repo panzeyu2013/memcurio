@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
-import { createHash } from "node:crypto";
 
 export function rootDir(): string {
   const env = process.env.MEMCURIO_ROOT;
@@ -18,6 +17,16 @@ export function ensureLayout(root: string): void {
       void 0;
     }
   }
+  const ws = memoryWorkspace(root);
+  for (const sub of ["rollout_summaries", "extensions/ad_hoc/notes", "skills", ".baseline"]) {
+    const d = join(ws, sub);
+    mkdirSync(d, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(d, 0o700);
+    } catch {
+      void 0;
+    }
+  }
   try {
     chmodSync(root, 0o700);
   } catch {
@@ -27,7 +36,7 @@ export function ensureLayout(root: string): void {
 }
 
 /** Remove `.tmp-*` files left behind by a process killed between write and
- *  rename (they are invisible to readAll and would accumulate forever). Files
+ *  rename (they are invisible to readers and would accumulate forever). Files
  *  younger than SWEEP_GRACE_MS are left alone — a concurrent process may be
  *  mid-`atomicWrite` with its temp file still in place, and unlinking it would
  *  make the writer's rename fail and roll back its batch. */
@@ -66,34 +75,29 @@ function sweepStaleTmpFiles(root: string): void {
   sweep(join(root, "state"), 0);
 }
 
-const NS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
-
-export function assertValidNs(ns: string): string {
-  if (!NS_PATTERN.test(ns) || ns === "." || ns === ".." || ns.endsWith(".")) {
-    throw new Error(`invalid namespace: ${JSON.stringify(ns)} (must match [A-Za-z0-9][A-Za-z0-9_.-]{0,39})`);
-  }
-  return ns;
-}
-
-export function nsDir(root: string, ns: string): string {
-  assertValidNs(ns);
-  const d = join(root, "memory", ns);
-  mkdirSync(d, { recursive: true, mode: 0o700 });
-  try {
-    chmodSync(d, 0o700);
-  } catch {
-    void 0;
-  }
-  return d;
-}
-
 export function memoryRoot(root: string): string {
   return join(root, "memory");
 }
 
-/** Basename of a namespace directory (cross-platform, unlike manual "/"). */
-export function nsName(dir: string): string {
-  return basename(dir);
+/** The memory workspace: markdown source of truth for the v2 pipeline. */
+export function memoryWorkspace(root: string): string {
+  return memoryRoot(root);
+}
+
+export function rolloutSummariesDir(root: string): string {
+  return join(memoryWorkspace(root), "rollout_summaries");
+}
+
+export function adHocNotesDir(root: string): string {
+  return join(memoryWorkspace(root), "extensions", "ad_hoc", "notes");
+}
+
+export function skillsDir(root: string): string {
+  return join(memoryWorkspace(root), "skills");
+}
+
+export function baselineDir(root: string): string {
+  return join(memoryWorkspace(root), ".baseline");
 }
 
 export function indexDb(root: string): string {
@@ -108,35 +112,13 @@ export function txnLog(root: string): string {
   return join(root, "state", "transactions.jsonl");
 }
 
-export function namespaces(root: string): string[] {
-  const mem = join(root, "memory");
-  try {
-    return readdirSync(mem, { withFileTypes: true })
-      // Skip dot directories: a stray .trash/ or .git/ in memory/ is not a
-      // namespace, and feeding it to nsDir would trip assertValidNs and take
-      // down every command that iterates namespaces.
-      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-      .map((e) => e.name)
-      .sort();
-  } catch {
-    return [];
+/** Resolve a workspace-relative path against the memory workspace and reject
+ *  anything that escapes it (symlinks, "..", absolute paths). */
+export function resolveWorkspacePath(root: string, rel: string): string {
+  const base = resolve(memoryWorkspace(root));
+  const target = resolve(base, rel);
+  if (target !== base && !target.startsWith(`${base}/`)) {
+    throw new Error(`workspace path escapes the memory root: ${JSON.stringify(rel)}`);
   }
-}
-
-export function namespaceFor(workdir: string): string {
-  if (!workdir) {
-    return "default";
-  }
-  // Basename-only slugs collide across parents (/work/a/proj vs /work/b/proj).
-  // Use a readable basename slug + a short hash of the full resolved path so
-  // different projects never silently share a namespace.
-  const resolved = resolve(workdir);
-  const name = basename(resolved);
-  const slug = name.replace(/[^A-Za-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
-  const hash = createHash("sha1").update(resolved).digest("hex").slice(0, 12);
-  const ns = `${slug || "ns"}-${hash}`;
-  if (ns === "." || ns === ".." || ns.startsWith(".") || ns.endsWith(".")) {
-    return "default";
-  }
-  return ns;
+  return target;
 }

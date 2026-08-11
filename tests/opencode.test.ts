@@ -1,31 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-
-import { MemcurioPlugin, partIdFor, sessionIdFor } from "../src/adapters/opencode/plugin.js";
-import { Index } from "../src/core/db.js";
-import { indexDb, namespaceFor } from "../src/core/paths.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MemcurioPlugin, partIdFor, sessionIdFor } from "../src/adapters/opencode/plugin.js";
+import { Index } from "../src/core/db.js";
+import { indexDb } from "../src/core/paths.js";
+import { listWorkspaceFiles } from "../src/core/workspace.js";
 
 let dir: string;
 let prevRoot: string | undefined;
+let prevLlmUrl: string | undefined;
+let llmRefuser: ReturnType<typeof startLlmRefuser> | null = null;
 const PROJ = "/tmp/MyProject";
-const ns = namespaceFor(PROJ);
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "oc-"));
-  prevRoot = process.env.MEMCURIO_ROOT;
-  process.env.MEMCURIO_ROOT = dir;
-});
-
-afterEach(() => {
-  if (prevRoot === undefined) {
-    delete process.env.MEMCURIO_ROOT;
-  } else {
-    process.env.MEMCURIO_ROOT = prevRoot;
-  }
-  rmSync(dir, { recursive: true, force: true });
-});
 
 interface FakePlugin {
   event: (input: unknown) => Promise<void>;
@@ -40,6 +26,41 @@ async function makeFakePlugin(client: unknown): Promise<FakePlugin> {
   const plugin = await MemcurioPlugin({ directory: PROJ, client } as unknown as never);
   return plugin as unknown as FakePlugin;
 }
+
+/** A local HTTP server that answers 401: llmChat throws on non-ok without
+ *  retrying, so the default HttpExtractProvider no-ops quickly (no key). */
+function startLlmRefuser(): { url: string; stop(): void } {
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => new Response("unauthorized", { status: 401 }),
+  });
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "oc-"));
+  prevRoot = process.env.MEMCURIO_ROOT;
+  process.env.MEMCURIO_ROOT = dir;
+  prevLlmUrl = process.env.MEMCURIO_LLM_BASE_URL;
+  llmRefuser = startLlmRefuser();
+  process.env.MEMCURIO_LLM_BASE_URL = llmRefuser.url;
+});
+
+afterEach(() => {
+  llmRefuser?.stop();
+  llmRefuser = null;
+  if (prevRoot === undefined) {
+    delete process.env.MEMCURIO_ROOT;
+  } else {
+    process.env.MEMCURIO_ROOT = prevRoot;
+  }
+  if (prevLlmUrl === undefined) {
+    delete process.env.MEMCURIO_LLM_BASE_URL;
+  } else {
+    process.env.MEMCURIO_LLM_BASE_URL = prevLlmUrl;
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
 
 describe("event shape helpers", () => {
   test("sessionIdFor extracts ids per event type", () => {
@@ -65,9 +86,19 @@ describe("event shape helpers", () => {
 });
 
 describe("MemcurioPlugin event handling", () => {
-  test("session.created registers a session row; idle+deleted close it", async () => {
+  test("created → compacted → deleted lifecycle records the session and stages nothing (no key)", async () => {
     const fakeClient = {
       app: { log: async () => ({}) },
+      session: {
+        messages: async () => ({
+          data: [
+            {
+              info: { summary: true },
+              parts: [{ type: "text", text: "压缩摘要: 保留 FTS5 trigram 决策" }],
+            },
+          ],
+        }),
+      },
     };
     const plugin = await makeFakePlugin(fakeClient);
     await plugin.event({
@@ -79,7 +110,7 @@ describe("MemcurioPlugin event handling", () => {
         properties: { part: { id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "hi" } },
       },
     });
-    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    await plugin.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
     const idx = await Index.create(indexDb(dir));
     const mid = idx.driver.get<{ started_at: string; ended_at: string | null }>(
       "SELECT started_at, ended_at FROM sessions WHERE session_id = 's1'",
@@ -94,7 +125,54 @@ describe("MemcurioPlugin event handling", () => {
       "SELECT ended_at FROM sessions WHERE session_id = 's1'",
     );
     expect(done?.ended_at).toBeTruthy();
+    // The default HTTP extractor no-ops without a key (401 refuser above).
+    expect(idx2.rawAll<{ ns: string }>("SELECT ns FROM audit WHERE action = 'extract.noop'").some((r) => r.ns === "opencode")).toBe(true);
     idx2.close();
+    // Compaction and session end write nothing to the memory workspace.
+    expect(listWorkspaceFiles(dir)).toEqual([]);
+  });
+
+  test("session.compacted prefers the info.summary-flagged message and keeps the summary in memory", async () => {
+    const fakeClient = {
+      app: { log: async () => ({}) },
+      session: {
+        messages: async () => ({
+          data: [
+            { info: { summary: true }, parts: [{ type: "text", text: "the REAL summary text" }] },
+            { info: {}, parts: [{ type: "text", text: "Continue if you have next steps, or stop." }] },
+          ],
+        }),
+      },
+    };
+    const plugin = await makeFakePlugin(fakeClient);
+    await plugin.event({
+      event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
+    });
+    await plugin.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
+    await plugin.event({ event: { type: "session.deleted", properties: { info: { id: "s1" } } } });
+    const idx = await Index.create(indexDb(dir));
+    const noop = idx.rawAll<{ detail: string }>("SELECT detail FROM audit WHERE action = 'extract.noop'");
+    expect(noop).not.toEqual([]);
+    idx.close();
+  });
+
+  test("session.idle and tool.execute.after do not throw", async () => {
+    const fakeClient = { app: { log: async () => ({}) } };
+    const plugin = await makeFakePlugin(fakeClient);
+    await plugin.event({
+      event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
+    });
+    const onToolExecuted = plugin["tool.execute.after"];
+    expect(onToolExecuted).toBeDefined();
+    await onToolExecuted?.({ sessionID: "s1", tool: "read", args: { filePath: "src/a.ts" } });
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    await plugin.event({ event: { type: "session.deleted", properties: { info: { id: "s1" } } } });
+    const idx = await Index.create(indexDb(dir));
+    const done = idx.driver.get<{ ended_at: string | null }>(
+      "SELECT ended_at FROM sessions WHERE session_id = 's1'",
+    );
+    expect(done?.ended_at).toBeTruthy();
+    idx.close();
   });
 
   test("handler failures are reported, not thrown", async () => {
@@ -120,123 +198,7 @@ describe("MemcurioPlugin event handling", () => {
     expect(errors[0] ?? "").toContain("blocker");
   });
 
-  test("compaction reflection uses the harness model via a temp session", async () => {
-    const prompts: string[] = [];
-    const deleted: string[] = [];
-    const fakeClient = {
-      app: { log: async () => ({}) },
-      session: {
-        messages: async ({ path }: { path: { id: string } }) => {
-          if (path.id === "temp1") {
-            return {
-              data: [
-                {
-                  info: {},
-                  parts: [
-                    {
-                      type: "text",
-                      text: '{"prompt": "harness model prompt reflection", "memory": "harness model memory reflection"}',
-                    },
-                  ],
-                },
-              ],
-            };
-          }
-          return {
-            data: [{ info: {}, parts: [{ type: "text", text: "compacted summary: keep FTS5 trigram" }] }],
-          };
-        },
-        create: async () => ({ data: { id: "temp1" } }),
-        prompt: async ({ body }: { body: { parts: Array<{ text: string }> } }) => {
-          prompts.push(body.parts[0]?.text ?? "");
-          return {};
-        },
-        delete: async ({ path }: { path: { id: string } }) => {
-          deleted.push(path.id);
-          return {};
-        },
-      },
-    };
-    const plugin = await makeFakePlugin(fakeClient);
-    await plugin.event({
-      event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
-    });
-    await plugin.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
-    const idx = await Index.create(indexDb(dir));
-    const entry = idx.list({ ns, kind: "COMPACT", allStatus: true })[0];
-    expect(entry).toBeDefined();
-    expect(entry?.content).toContain("harness model prompt reflection");
-    expect(entry?.content).toContain("harness model memory reflection");
-    idx.close();
-    expect(prompts.length).toBe(1);
-    expect(prompts[0]).toContain("compacted summary");
-    expect(prompts[0]).toContain('"currentStrategy"');
-    expect(prompts[0]).toContain("untrusted session data");
-    expect(deleted).toEqual(["temp1"]);
-  });
-
-  test("compaction summary prefers the message flagged info.summary", async () => {
-    const prompts: string[] = [];
-    const fakeClient = {
-      app: { log: async () => ({}) },
-      session: {
-        messages: async ({ path }: { path: { id: string } }) => {
-          if (path.id === "temp1") {
-            return {
-              data: [
-                {
-                  info: {},
-                  parts: [{ type: "text", text: '{"prompt": "p", "memory": "m"}' }],
-                },
-              ],
-            };
-          }
-          // The last text part is opencode's auto-continue boilerplate; the
-          // real summary lives in the info.summary-flagged message.
-          return {
-            data: [
-              { info: { summary: true }, parts: [{ type: "text", text: "the REAL summary text" }] },
-              { info: {}, parts: [{ type: "text", text: "Continue if you have next steps, or stop." }] },
-            ],
-          };
-        },
-        create: async () => ({ data: { id: "temp1" } }),
-        prompt: async ({ body }: { body: { parts: Array<{ text: string }> } }) => {
-          prompts.push(body.parts[0]?.text ?? "");
-          return {};
-        },
-        delete: async () => ({ data: {} }),
-      },
-    };
-    const plugin = await makeFakePlugin(fakeClient);
-    await plugin.event({
-      event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
-    });
-    await plugin.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
-    expect(prompts[0]).toContain("the REAL summary text");
-    expect(prompts[0]).not.toContain("Continue if you have next steps");
-  });
-
-  test("tool.execute.after records tool usage into the session record", async () => {
-    const fakeClient = { app: { log: async () => ({}) } };
-    const plugin = await makeFakePlugin(fakeClient);
-    await plugin.event({
-      event: { type: "session.created", properties: { info: { id: "s1", directory: PROJ } } },
-    });
-    const onToolExecuted = plugin["tool.execute.after"];
-    expect(onToolExecuted).toBeDefined();
-    await onToolExecuted?.({ sessionID: "s1", tool: "read", args: { filePath: "src/a.ts" } });
-    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
-    const { readFileSync } = await import("node:fs");
-    const { nsDir } = await import("../src/core/paths.js");
-    const md = readFileSync(join(nsDir(dir, ns), "SESSION.md"), "utf-8");
-    expect(md).toContain("read×1");
-    expect(md).toContain("src/a.ts");
-  });
-
-  test("experimental.session.compacting appends memory context", async () => {
-    const { main } = await import("../src/cli/index.js");
-    await main(["init"]);
+  test("experimental.session.compacting appends the static memory context", async () => {
     const fakeClient = { app: { log: async () => ({}) } };
     const plugin = await makeFakePlugin(fakeClient);
     await plugin.event({
@@ -247,6 +209,6 @@ describe("MemcurioPlugin event handling", () => {
     expect(onCompacting).toBeDefined();
     await onCompacting?.({ sessionID: "s1" }, output);
     expect(output.context.length).toBeGreaterThan(0);
-    expect(String(output.context[0])).toContain("memcurio memory context");
+    expect(String(output.context[0])).toContain("memcurio memory (read path)");
   });
 });

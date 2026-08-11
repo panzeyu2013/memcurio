@@ -1,5 +1,3 @@
-import type { Entry, Kind } from "./mdStore.js";
-import { isKnownKind, isKnownStatus } from "./mdStore.js";
 import type { DbDriver, SqlRow } from "./sqlite.js";
 import { openDb } from "./sqlite.js";
 import { HOSTS } from "./events.js";
@@ -13,57 +11,26 @@ function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Rebuild the FTS shadow table inside BEGIN IMMEDIATE with busy retries, so
- *  concurrent opens (daemon + CLI) cannot starve each other on the rebuild. */
-function rebuildFtsWithBusyRetry(driver: DbDriver): void {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      driver.exec("BEGIN IMMEDIATE");
-    } catch (err) {
-      const wait = busyRetryWaitMs(attempt);
-      if (!isBusy(err) || wait === null) {
-        throw err;
-      }
-      sleep(wait);
-      continue;
-    }
-    try {
-      driver.run("DELETE FROM fts");
-      driver.run("INSERT INTO fts(entry_id, content) SELECT entry_id, content FROM entries");
-      driver.exec("COMMIT");
-    } catch (err) {
-      try {
-        driver.exec("ROLLBACK");
-      } catch {
-        void 0;
-      }
-      throw err;
-    }
-    return;
-  }
-}
-
-/** Exponential backoff between busy retries (250/500/1000ms); null means the
- *  retry budget is exhausted and the busy error should propagate. A lock
- *  holder suspended by the OS scheduler for seconds needs this slack, while
- *  the 20s busy_timeout already covers ordinary contention. */
-function busyRetryWaitMs(attempt: number): number | null {
-  const waits = [250, 500, 1000];
-  return attempt < waits.length ? waits[attempt] ?? 1000 : null;
-}
-
 const BASE = `
-CREATE TABLE IF NOT EXISTS entries(
-  entry_id TEXT PRIMARY KEY,
-  ns TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS stage1_outputs(
+  rollout_key TEXT PRIMARY KEY,
+  raw_memory TEXT NOT NULL,
+  rollout_summary TEXT NOT NULL,
+  rollout_slug TEXT NOT NULL,
+  source_updated_at TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  last_usage TEXT,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  selected_for_phase2 INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS ad_hoc_notes(
+  id TEXT PRIMARY KEY,
+  filename TEXT NOT NULL,
   kind TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  last_used_at TEXT,
-  use_count INTEGER NOT NULL DEFAULT 0,
-  value_score REAL NOT NULL DEFAULT 1.0,
-  status TEXT NOT NULL DEFAULT 'active',
-  pinned INTEGER NOT NULL DEFAULT 0
+  applied INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions(
   session_id TEXT PRIMARY KEY,
@@ -72,13 +39,6 @@ CREATE TABLE IF NOT EXISTS sessions(
   started_at TEXT NOT NULL,
   ended_at TEXT,
   summary TEXT
-);
-CREATE TABLE IF NOT EXISTS contradictions(
-  entry_a TEXT,
-  entry_b TEXT,
-  detected_at TEXT,
-  resolved INTEGER DEFAULT 0,
-  reason TEXT
 );
 CREATE TABLE IF NOT EXISTS audit(
   ts TEXT,
@@ -90,148 +50,93 @@ CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_entries_ns_status ON entries(ns, status);
-CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_entries_rank ON entries((CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b);
+CREATE INDEX IF NOT EXISTS idx_stage1_status ON stage1_outputs(status);
+CREATE INDEX IF NOT EXISTS idx_stage1_generated ON stage1_outputs(generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_applied ON ad_hoc_notes(applied);
 `;
 
-const FTS_TRIGRAM = `
-CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
-  entry_id UNINDEXED, content, tokenize='trigram'
-);
-CREATE TRIGGER IF NOT EXISTS fts_insert AFTER INSERT ON entries BEGIN
-  INSERT INTO fts(entry_id, content) VALUES (new.entry_id, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS fts_delete AFTER DELETE ON entries BEGIN
-  DELETE FROM fts WHERE entry_id = old.entry_id;
-END;
-CREATE TRIGGER IF NOT EXISTS fts_update AFTER UPDATE OF content ON entries BEGIN
-  DELETE FROM fts WHERE entry_id = old.entry_id;
-  INSERT INTO fts(entry_id, content) VALUES (new.entry_id, new.content);
-END;
-`;
-
-interface EntryRow {
-  entry_id: string;
-  ns: string;
-  kind: string;
-  content: string;
-  created_at: string;
-  last_used_at: string | null;
-  use_count: number;
-  value_score: number;
-  status: string;
-  pinned: number;
+export interface Stage1OutputRow {
+  rolloutKey: string;
+  rawMemory: string;
+  rolloutSummary: string;
+  rolloutSlug: string;
+  sourceUpdatedAt: string;
+  generatedAt: string;
+  lastUsage: string | null;
+  usageCount: number;
+  selectedForPhase2: boolean;
+  status: "pending" | "selected" | "deleted";
 }
 
-function rowToEntry(r: EntryRow): Entry {
+export interface AdHocNoteRow {
+  id: string;
+  filename: string;
+  kind: "remember" | "forget" | "update";
+  content: string;
+  createdAt: string;
+  applied: boolean;
+}
+
+interface Stage1Row {
+  rollout_key: string;
+  raw_memory: string;
+  rollout_summary: string;
+  rollout_slug: string;
+  source_updated_at: string;
+  generated_at: string;
+  last_usage: string | null;
+  usage_count: number;
+  selected_for_phase2: number;
+  status: string;
+}
+
+function rowToStage1(r: Stage1Row): Stage1OutputRow {
+  const status = r.status === "deleted" || r.status === "selected" ? r.status : "pending";
   return {
-    entryId: r.entry_id,
-    ns: r.ns,
-    // Guard against stale/foreign rows entering the type system unchecked:
-    // unknown values fall back to the least surprising defaults instead of
-    // silently poisoning filtering/ranking logic.
-    kind: isKnownKind(r.kind) ? (r.kind as Kind) : "MEMORY",
-    content: r.content,
-    createdAt: r.created_at,
-    lastUsedAt: r.last_used_at,
-    useCount: r.use_count,
-    valueScore: r.value_score,
-    status: isKnownStatus(r.status) ? (r.status as Entry["status"]) : "archived",
-    pinned: r.pinned === 1,
+    rolloutKey: r.rollout_key,
+    rawMemory: r.raw_memory,
+    rolloutSummary: r.rollout_summary,
+    rolloutSlug: r.rollout_slug,
+    sourceUpdatedAt: r.source_updated_at,
+    generatedAt: r.generated_at,
+    lastUsage: r.last_usage,
+    usageCount: r.usage_count,
+    selectedForPhase2: r.selected_for_phase2 === 1,
+    status,
   };
 }
 
-const ENTRY_COLS = "entry_id, ns, kind, content, created_at, last_used_at, use_count, value_score, status, pinned";
-export interface IndexCreateOptions {
-  /** true forces, false skips, undefined verifies once per database schema version. */
-  verifyFts?: boolean;
+interface NoteRow {
+  id: string;
+  filename: string;
+  kind: string;
+  content: string;
+  created_at: string;
+  applied: number;
 }
 
+function rowToNote(r: NoteRow): AdHocNoteRow {
+  const kind = r.kind === "remember" || r.kind === "forget" || r.kind === "update" ? r.kind : "remember";
+  return { id: r.id, filename: r.filename, kind, content: r.content, createdAt: r.created_at, applied: r.applied === 1 };
+}
+
+const STAGE_COLS = "rollout_key, raw_memory, rollout_summary, rollout_slug, source_updated_at, generated_at, last_usage, usage_count, selected_for_phase2, status";
+
 export class Index {
-  readonly backend: "trigram" | "like";
-  /** Exposed for tests and direct SQL access; treat as internal otherwise. */
   readonly driver: DbDriver;
   private constructor(
     driver: DbDriver,
     readonly path: string,
-    backend: "trigram" | "like",
   ) {
     this.driver = driver;
-    this.backend = backend;
   }
 
-  static async create(path: string, opts: IndexCreateOptions = {}): Promise<Index> {
+  static async create(path: string): Promise<Index> {
     const driver = await openDb(path);
     try {
       driver.exec(BASE);
       migrate(driver);
-      const schemaVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value ?? "1";
-      const verifiedVersion = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_verified_version'")?.value;
-      const previousBackend = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'fts_backend'")?.value;
-      let backend: "trigram" | "like" = "trigram";
-      try {
-        driver.exec(FTS_TRIGRAM);
-      } catch {
-        backend = "like";
-      }
-      const shouldVerifyFts = opts.verifyFts === true || (opts.verifyFts === undefined && verifiedVersion !== schemaVersion);
-      if (backend === "trigram" && shouldVerifyFts) {
-        try {
-          const entriesCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM entries")?.c ?? 0;
-          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
-          const inconsistent = entriesCount !== ftsCount || !!driver.get<{ bad: number }>(
-            `SELECT 1 AS bad FROM (
-               SELECT entry_id, content FROM entries
-               EXCEPT
-               SELECT entry_id, content FROM fts
-             ) LIMIT 1`,
-          ) || !!driver.get<{ bad: number }>(
-            `SELECT 1 AS bad FROM (
-               SELECT entry_id FROM fts
-               EXCEPT
-               SELECT entry_id FROM entries
-             ) LIMIT 1`,
-          );
-          if (inconsistent) {
-            rebuildFtsWithBusyRetry(driver);
-          }
-          driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_verified_version', ?)", [schemaVersion]);
-        } catch {
-          backend = "like";
-        }
-      } else if (
-        backend === "trigram" &&
-        // Cheap row-count sanity check on every open: catches an externally
-        // emptied/damaged fts table that the one-time version gate would miss.
-        // Doctor (verifyFts:false) skips it on purpose so drift stays visible
-        // to the diagnostic instead of being silently healed.
-        previousBackend === "trigram" &&
-        opts.verifyFts !== false
-      ) {
-        try {
-          const entriesCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM entries")?.c ?? 0;
-          const ftsCount = driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
-          if (entriesCount !== ftsCount) {
-            rebuildFtsWithBusyRetry(driver);
-          }
-        } catch {
-          backend = "like";
-        }
-      }
-      if (backend !== previousBackend && previousBackend !== undefined && backend === "trigram" && opts.verifyFts !== false) {
-        // Backend switched like -> trigram: the fts shadow table may be stale
-        // or absent, so rebuild it from scratch. Doctor (verifyFts:false)
-        // skips this too so the drift stays visible to the diagnostic.
-        try {
-          rebuildFtsWithBusyRetry(driver);
-        } catch {
-          backend = "like";
-        }
-      }
-      driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_backend', ?)", [backend]);
-      return new Index(driver, path, backend);
+      return new Index(driver, path);
     } catch (err) {
       driver.close();
       throw err;
@@ -307,188 +212,111 @@ export class Index {
     }
   }
 
-  add(entry: Entry): void {
-    // Skip the content column when it did not change: the fts_update trigger
-    // fires on every UPDATE OF content, and re-indexing an unchanged body is
-    // pure write amplification (repeated add() of the same entry is common in
-    // status/stat updates).
-    const prev = this.get(entry.entryId);
-    if (prev && prev.content === entry.content) {
-      this.driver.run(
-        `UPDATE entries SET ns=?, kind=?, created_at=?, last_used_at=?, use_count=?, value_score=?, status=?, pinned=? WHERE entry_id=?`,
-        [
-          entry.ns,
-          entry.kind,
-          entry.createdAt,
-          entry.lastUsedAt,
-          entry.useCount,
-          entry.valueScore,
-          entry.status,
-          entry.pinned ? 1 : 0,
-          entry.entryId,
-        ],
-      );
-      return;
-    }
+  // ---------------------------------------------------------------- stage1
+
+  stageUpsert(out: { rolloutKey: string; rawMemory: string; rolloutSummary: string; rolloutSlug: string; sourceUpdatedAt: string }): void {
     this.driver.run(
-      `INSERT INTO entries(${ENTRY_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(entry_id) DO UPDATE SET
-         ns=excluded.ns,
-         kind=excluded.kind,
-         content=excluded.content,
-         created_at=excluded.created_at,
-         last_used_at=excluded.last_used_at,
-         use_count=excluded.use_count,
-         value_score=excluded.value_score,
-         status=excluded.status,
-         pinned=excluded.pinned`,
+      `INSERT INTO stage1_outputs(${STAGE_COLS}) VALUES (?,?,?,?,?,?,NULL,0,0,'pending')
+       ON CONFLICT(rollout_key) DO UPDATE SET
+         raw_memory=excluded.raw_memory,
+         rollout_summary=excluded.rollout_summary,
+         rollout_slug=excluded.rollout_slug,
+         source_updated_at=excluded.source_updated_at,
+         generated_at=excluded.generated_at,
+         status=CASE WHEN stage1_outputs.status='deleted' THEN 'pending' ELSE stage1_outputs.status END`,
       [
-        entry.entryId,
-        entry.ns,
-        entry.kind,
-        entry.content,
-        entry.createdAt,
-        entry.lastUsedAt,
-        entry.useCount,
-        entry.valueScore,
-        entry.status,
-        entry.pinned ? 1 : 0,
+        out.rolloutKey,
+        out.rawMemory,
+        out.rolloutSummary,
+        out.rolloutSlug,
+        out.sourceUpdatedAt,
+        new Date().toISOString(),
       ],
     );
   }
 
-  /** Update only the given fields of an existing entry, preserving everything
-   *  else (including concurrent use_count/last_used_at touches). No-op when
-   *  the entry does not exist. Use from inside commit callbacks so index rows
-   *  never regress to a pre-lock snapshot. */
-  patch(entryId: string, fields: Partial<Entry>): void {
-    const current = this.get(entryId);
-    if (!current) {
-      return;
-    }
-    this.add({ ...current, ...fields });
+  stageList(): Stage1OutputRow[] {
+    return this.driver
+      .all<Stage1Row>("SELECT * FROM stage1_outputs ORDER BY generated_at DESC")
+      .map(rowToStage1);
   }
 
-  delete(entryId: string): void {
-    this.driver.run("DELETE FROM entries WHERE entry_id = ?", [entryId]);
-  }
-
-  get(entryId: string): Entry | undefined {
-    const row = this.driver.get<EntryRow>(
-      `SELECT ${ENTRY_COLS} FROM entries WHERE entry_id = ?`,
-      [entryId],
+  /** Selection rules (mirrors codex phase-2 selection), read-only: only
+   *  non-deleted rows inside the unused-days window qualify; ranking is
+   *  usage_count first, then recency of last_usage (falling back to
+   *  generated_at). Rows inside the window but beyond maxInputs are dropped
+   *  from this batch (not deleted). */
+  stageSelectRows(cfg: { maxUnusedDays: number; maxInputs: number }): Stage1OutputRow[] {
+    const cutoff = daysAgo(cfg.maxUnusedDays);
+    const rows = this.driver.all<Stage1Row>(
+      `SELECT * FROM stage1_outputs WHERE status != 'deleted' ORDER BY usage_count DESC,
+        COALESCE(last_usage, generated_at) DESC`,
     );
-    return row ? rowToEntry(row) : undefined;
+    return rows
+      .map(rowToStage1)
+      .filter((r) => withinWindow(r.lastUsage ?? r.generatedAt, cutoff))
+      .slice(0, Math.max(1, cfg.maxInputs));
   }
 
-  list(params: { ns?: string; kind?: Kind; allStatus?: boolean } = {}): Entry[] {
-    const where: string[] = [];
-    const args: unknown[] = [];
-    if (params.ns) {
-      where.push("ns = ?");
-      args.push(params.ns);
-    }
-    if (params.kind) {
-      where.push("kind = ?");
-      args.push(params.kind);
-    }
-    if (!params.allStatus) {
-      where.push("status != 'deleted'");
-    }
-    const sql = `SELECT ${ENTRY_COLS} FROM entries${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`;
-    return this.driver.all<EntryRow>(sql, args).map(rowToEntry);
+  /** Rows that fall outside the unused-days window (candidates for pruning). */
+  stageOutsideWindow(maxUnusedDays: number): Stage1OutputRow[] {
+    const cutoff = daysAgo(maxUnusedDays);
+    return this.stageList().filter(
+      (r) => r.status !== "deleted" && !withinWindow(r.lastUsage ?? r.generatedAt, cutoff),
+    );
   }
 
-  top(params: { ns?: string; kinds?: Kind[]; limit: number; offset?: number; includeArchived?: boolean }): Entry[] {
-    const where: string[] = ["status != 'deleted'"];
-    const args: unknown[] = [];
-    if (params.ns) {
-      where.push("ns = ?");
-      args.push(params.ns);
+  stageMarkSelected(keys: string[]): void {
+    for (const key of keys) {
+      this.driver.run("UPDATE stage1_outputs SET selected_for_phase2 = 1 WHERE rollout_key = ?", [key]);
     }
-    if (params.kinds?.length) {
-      where.push(`kind IN (${params.kinds.map(() => "?").join(",")})`);
-      args.push(...params.kinds);
-    }
-    if (!params.includeArchived) {
-      where.push("status != 'archived'");
-    }
-    const sql = `SELECT ${ENTRY_COLS} FROM entries WHERE ${where.join(" AND ")} ORDER BY (CASE WHEN status = 'stale' THEN 0.5 ELSE 1 END) * value_score DESC, last_used_at DESC, entry_id LIMIT ? OFFSET ?`;
-    args.push(params.limit, params.offset ?? 0);
-    return this.driver.all<EntryRow>(sql, args).map(rowToEntry);
   }
 
-  touch(entryIds: string[]): void {
-    const ids = [...new Set(entryIds)].filter(Boolean);
-    if (!ids.length) {
-      return;
+  stageMarkDeleted(keys: string[]): void {
+    for (const key of keys) {
+      this.driver.run("UPDATE stage1_outputs SET status = 'deleted' WHERE rollout_key = ?", [key]);
     }
-    const ts = new Date().toISOString();
-    const placeholders = ids.map(() => "?").join(",");
+  }
+
+  stageSetUsage(key: string): void {
     this.driver.run(
-      `UPDATE entries SET value_score = max(value_score, 1 + 0.05 * min(use_count + 1, 20)), use_count = use_count + 1, last_used_at = ? WHERE entry_id IN (${placeholders})`,
-      [ts, ...ids],
+      "UPDATE stage1_outputs SET usage_count = usage_count + 1, last_usage = ? WHERE rollout_key = ?",
+      [new Date().toISOString(), key],
     );
   }
 
-  counts(): Record<string, Record<string, number>> {
-    const rows = this.driver.all<SqlRow>(
-      "SELECT ns, status, count(*) AS c FROM entries GROUP BY ns, status",
-    );
-    const out: Record<string, Record<string, number>> = {};
-    for (const r of rows) {
-      const ns = String(r.ns);
-      out[ns] ??= {};
-      out[ns][String(r.status)] = Number(r.c);
-    }
-    return out;
+  stageGet(key: string): Stage1OutputRow | undefined {
+    const r = this.driver.get<Stage1Row>("SELECT * FROM stage1_outputs WHERE rollout_key = ?", [key]);
+    return r ? rowToStage1(r) : undefined;
   }
 
-  rebuild(entries: Entry[]): void {
-    const existing = new Map(
-      this.driver
-        .all<EntryRow>(`SELECT ${ENTRY_COLS} FROM entries`)
-        .map((r) => [r.entry_id, rowToEntry(r)]),
+  stageBySlug(slug: string): Stage1OutputRow | undefined {
+    const r = this.driver.get<Stage1Row>("SELECT * FROM stage1_outputs WHERE rollout_slug = ?", [slug]);
+    return r ? rowToStage1(r) : undefined;
+  }
+
+  // ------------------------------------------------------------ ad hoc notes
+
+  noteAdd(n: { id: string; filename: string; kind: "remember" | "forget" | "update"; content: string; createdAt: string }): void {
+    this.driver.run(
+      "INSERT INTO ad_hoc_notes(id, filename, kind, content, created_at, applied) VALUES (?,?,?,?,?,0)",
+      [n.id, n.filename, n.kind, n.content, n.createdAt],
     );
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
-    const unique: Entry[] = [];
-    for (const e of entries) {
-      if (seen.has(e.entryId)) {
-        duplicates.add(e.entryId);
-        continue;
-      }
-      seen.add(e.entryId);
-      unique.push(e);
-    }
-    const work = (): void => {
-      this.driver.run("DELETE FROM entries");
-      for (const e of unique) {
-        const prev = existing.get(e.entryId);
-        this.add(
-          prev
-            ? {
-                ...e,
-                lastUsedAt: prev.lastUsedAt,
-                useCount: prev.useCount,
-                valueScore: prev.valueScore,
-              }
-            : e,
-        );
-      }
-    };
-    if (duplicates.size) {
-      this.audit("warn.duplicate", "-", `duplicate entryId across md files, kept first: ${[...duplicates].join(",")}`);
-    }
-    // Joining an outer transaction keeps the rebuild atomic with the caller's
-    // post-rebuild audit writes: a failure then rolls back the whole index
-    // rebuild instead of leaving a rebuilt index next to rolled-back md truth.
-    if (this.inTxn) {
-      work();
-    } else {
-      this.withTransaction(work);
+  }
+
+  noteList(): AdHocNoteRow[] {
+    return this.driver
+      .all<NoteRow>("SELECT * FROM ad_hoc_notes ORDER BY created_at ASC")
+      .map(rowToNote);
+  }
+
+  noteMarkApplied(ids: string[]): void {
+    for (const id of ids) {
+      this.driver.run("UPDATE ad_hoc_notes SET applied = 1 WHERE id = ?", [id]);
     }
   }
+
+  // -------------------------------------------------------------- sessions
 
   /** Close session rows left open by a crashed/terminated process. When `host`
    *  is given, only that host's sessions are closed, so one adapter never
@@ -516,27 +344,7 @@ export class Index {
     this.driver.run("UPDATE sessions SET ended_at = ? WHERE session_id = ?", [ts, sessionId]);
   }
 
-  recordContradiction(entryA: string, entryB: string, reason: string): void {
-    // Normalize the pair ordering so the (entry_a, entry_b) unique index treats
-    // mirrored reports of the same contradiction as one record.
-    if (entryA > entryB) {
-      [entryA, entryB] = [entryB, entryA];
-    }
-    this.driver.run(
-      "INSERT OR IGNORE INTO contradictions(entry_a, entry_b, detected_at, resolved, reason) VALUES (?,?,?,0,?)",
-      [entryA, entryB, new Date().toISOString(), reason],
-    );
-  }
-
-  openContradictions(): SqlRow[] {
-    return this.driver.all<SqlRow>(
-      "SELECT entry_a, entry_b, detected_at, reason FROM contradictions WHERE resolved = 0 ORDER BY rowid DESC LIMIT 100",
-    );
-  }
-
-  rawAll<T = SqlRow>(sql: string, params?: unknown[]): T[] {
-    return this.driver.all<T>(sql, params);
-  }
+  // ---------------------------------------------------------------- audit
 
   audit(action: string, ns: string, detail: string): void {
     this.driver.run("INSERT INTO audit(ts, action, ns, detail) VALUES (?,?,?,?)", [
@@ -559,60 +367,46 @@ export class Index {
     return row?.c ?? 0;
   }
 
+  rawAll<T = SqlRow>(sql: string, params?: unknown[]): T[] {
+    return this.driver.all<T>(sql, params);
+  }
+
   close(): void {
     this.driver.close();
   }
 }
 
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString();
+}
+
+function withinWindow(iso: string, cutoff: string): boolean {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && t >= Date.parse(cutoff);
+}
+
+/** Exponential backoff between busy retries (250/500/1000ms); null means the
+ *  retry budget is exhausted and the busy error should propagate. */
+function busyRetryWaitMs(attempt: number): number | null {
+  const waits = [250, 500, 1000];
+  return attempt < waits.length ? waits[attempt] ?? 1000 : null;
+}
+
 function migrate(driver: DbDriver): void {
   const version = driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
-  let current = typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1;
-  if (current < 2) {
-    const cols = driver.all<{ name: string }>("PRAGMA table_info(entries)");
-    if (!cols.some((c) => c.name === "pinned")) {
-      // Two processes migrating the same old database concurrently both see
-      // "no pinned column" and race the ALTER; tolerate the loser.
-      try {
-        driver.run("ALTER TABLE entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-      } catch (err) {
-        if (!(err instanceof Error && /duplicate column/i.test(err.message))) {
-          throw err;
-        }
-      }
+  const current = typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1;
+  if (current < 5) {
+    // v5: the v2 pipeline replaces the §-entry store (entries/fts) and the
+    // curate bookkeeping (contradictions) with stage1_outputs + ad_hoc_notes.
+    // The old tables are dropped rather than renamed: no code reads them
+    // anymore and the md truth they indexed no longer exists.
+    try {
+      driver.exec("DROP TABLE IF EXISTS entries");
+      driver.exec("DROP TABLE IF EXISTS fts");
+      driver.exec("DROP TABLE IF EXISTS contradictions");
+    } catch {
+      void 0;
     }
-    current = 2;
-  }
-  if (current < 3) {
-    const cols = driver.all<{ name: string }>("PRAGMA table_info(contradictions)");
-    if (!cols.some((c) => c.name === "reason")) {
-      try {
-        driver.run("ALTER TABLE contradictions ADD COLUMN reason TEXT");
-      } catch (err) {
-        if (!(err instanceof Error && /duplicate column/i.test(err.message))) {
-          throw err;
-        }
-      }
-    }
-    driver.run(
-      "DELETE FROM contradictions WHERE rowid NOT IN (SELECT MAX(rowid) FROM contradictions GROUP BY entry_a, entry_b)",
-    );
-    driver.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_contradictions_pair ON contradictions(entry_a, entry_b)");
-    current = 3;
-  }
-  if (current < 4) {
-    // idx_entries_value duplicates the ranking expression index; drop it to
-    // stop paying write amplification on every mutation.
-    driver.run("DROP INDEX IF EXISTS idx_entries_value");
-    // Normalize legacy mirrored pairs so the unique index can dedupe them.
-    driver.run(
-      "UPDATE contradictions SET entry_a = min(entry_a, entry_b), entry_b = max(entry_a, entry_b) WHERE entry_a > entry_b",
-    );
-    driver.run(
-      "DELETE FROM contradictions WHERE rowid NOT IN (SELECT MAX(rowid) FROM contradictions GROUP BY entry_a, entry_b)",
-    );
-    current = 4;
-  }
-  if (current !== (typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1)) {
-    driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", [String(current)]);
+    driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '5')");
   }
 }

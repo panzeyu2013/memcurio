@@ -1,22 +1,18 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { configPath } from "./paths.js";
+import { DEFAULT_PIPELINE_CONFIG } from "./consolidate.js";
+import type { PipelineConfig } from "./consolidate.js";
 
 export interface Config {
-  namespace: { default: string };
-  budget: { maxInjectTokens: number; topKStatic: number };
-  prune: { staleDays: number; archivedDays: number; graceDays: number };
+  budget: { maxInjectTokens: number };
+  pipeline: PipelineConfig;
 }
 
 export const DEFAULT_CONFIG: Config = {
-  namespace: { default: "default" },
-  budget: { maxInjectTokens: 1500, topKStatic: 10 },
-  prune: { staleDays: 30, archivedDays: 90, graceDays: 3 },
+  budget: { maxInjectTokens: 1500 },
+  pipeline: structuredClone(DEFAULT_PIPELINE_CONFIG),
 };
-
-function validNumber(v: unknown, def: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
-  return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : def;
-}
 
 function validInteger(v: unknown, def: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max ? v : def;
@@ -30,37 +26,28 @@ function normalizeConfig(value: unknown, strict: boolean): Config {
   if (!isRecord(value)) {
     throw new Error("config must be a JSON object");
   }
-  const namespace = value.namespace;
   const budget = value.budget;
-  const prune = value.prune;
-  if (strict && namespace !== undefined && !isRecord(namespace)) throw new Error("config.namespace must be an object");
+  const pipeline = value.pipeline;
   if (strict && budget !== undefined && !isRecord(budget)) throw new Error("config.budget must be an object");
-  if (strict && prune !== undefined && !isRecord(prune)) throw new Error("config.prune must be an object");
-  const ns = isRecord(namespace) ? namespace : {};
+  if (strict && pipeline !== undefined && !isRecord(pipeline)) throw new Error("config.pipeline must be an object");
   const bd = isRecord(budget) ? budget : {};
-  const pr = isRecord(prune) ? prune : {};
-  if (strict && ns.default !== undefined && validString(ns.default, "") === "") throw new Error("config.namespace.default must be a non-empty string");
+  const pl = isRecord(pipeline) ? pipeline : {};
   if (strict && bd.maxInjectTokens !== undefined && validInteger(bd.maxInjectTokens, -1, 128, 1_000_000) === -1) throw new Error("config.budget.maxInjectTokens must be an integer in [128, 1000000]");
-  if (strict && bd.topKStatic !== undefined && validInteger(bd.topKStatic, -1, 1, 1000) === -1) throw new Error("config.budget.topKStatic must be an integer in [1, 1000]");
-  for (const key of ["staleDays", "archivedDays", "graceDays"] as const) {
-    if (strict && pr[key] !== undefined && validNumber(pr[key], -1, 0, 36_500) === -1) throw new Error(`config.prune.${key} must be a finite number in [0, 36500]`);
+  for (const key of ["maxUnusedDays", "minUsage", "maxInputs", "retentionDays", "maxAgentSteps"] as const) {
+    if (strict && pl[key] !== undefined && validInteger(pl[key], -1, key === "maxInputs" || key === "maxAgentSteps" ? 1 : 0, key === "maxAgentSteps" ? 1000 : 36_500) === -1) throw new Error(`config.pipeline.${key} must be an integer`);
   }
   return {
-    namespace: { default: validString(ns.default, DEFAULT_CONFIG.namespace.default) },
     budget: {
       maxInjectTokens: validInteger(bd.maxInjectTokens, DEFAULT_CONFIG.budget.maxInjectTokens, 128, 1_000_000),
-      topKStatic: validInteger(bd.topKStatic, DEFAULT_CONFIG.budget.topKStatic, 1, 1000),
     },
-    prune: {
-      staleDays: validNumber(pr.staleDays, DEFAULT_CONFIG.prune.staleDays, 0, 36_500),
-      archivedDays: validNumber(pr.archivedDays, DEFAULT_CONFIG.prune.archivedDays, 0, 36_500),
-      graceDays: validNumber(pr.graceDays, DEFAULT_CONFIG.prune.graceDays, 0, 36_500),
+    pipeline: {
+      maxUnusedDays: validInteger(pl.maxUnusedDays, DEFAULT_PIPELINE_CONFIG.maxUnusedDays, 0, 36_500),
+      minUsage: validInteger(pl.minUsage, DEFAULT_PIPELINE_CONFIG.minUsage, 0, 1_000_000),
+      maxInputs: validInteger(pl.maxInputs, DEFAULT_PIPELINE_CONFIG.maxInputs, 1, 10_000),
+      retentionDays: validInteger(pl.retentionDays, DEFAULT_PIPELINE_CONFIG.retentionDays, 0, 36_500),
+      maxAgentSteps: validInteger(pl.maxAgentSteps, DEFAULT_PIPELINE_CONFIG.maxAgentSteps, 1, 1000),
     },
   };
-}
-
-function validString(v: unknown, def: string): string {
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : def;
 }
 
 /** Fresh copy of the defaults: the returned object is shared with callers who
@@ -100,4 +87,9 @@ export function loadConfig(root: string): Config {
 
 export function validateConfig(root: string): Config {
   return normalizeConfig(JSON.parse(readFileSync(configPath(root), "utf-8")), true);
+}
+
+/** Export pipeline config straight from config.json (with defaults). */
+export function pipelineConfig(root: string): PipelineConfig {
+  return loadConfig(root).pipeline;
 }

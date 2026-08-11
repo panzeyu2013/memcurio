@@ -31,33 +31,42 @@ describe("loadConfig", () => {
     writeFileSync(
       join(dir, "config.json"),
       JSON.stringify({
-        prune: { staleDays: "abc", archivedDays: -5, graceDays: 3.5 },
+        pipeline: { maxUnusedDays: "abc", maxInputs: -5, maxAgentSteps: 3.5 },
         budget: { maxInjectTokens: NaN, topKStatic: 1.5 },
       }),
     );
     const cfg = loadConfig(dir);
-    expect(cfg.prune.staleDays).toBe(DEFAULT_CONFIG.prune.staleDays);
-    expect(cfg.prune.archivedDays).toBe(DEFAULT_CONFIG.prune.archivedDays);
-    expect(cfg.prune.graceDays).toBe(3.5);
+    expect(cfg.pipeline.maxUnusedDays).toBe(DEFAULT_CONFIG.pipeline.maxUnusedDays);
+    expect(cfg.pipeline.maxInputs).toBe(DEFAULT_CONFIG.pipeline.maxInputs);
+    // validInteger rejects non-integers too (3.5 is not a safe integer).
+    expect(cfg.pipeline.maxAgentSteps).toBe(DEFAULT_CONFIG.pipeline.maxAgentSteps);
     expect(cfg.budget.maxInjectTokens).toBe(DEFAULT_CONFIG.budget.maxInjectTokens);
-    expect(cfg.budget.topKStatic).toBe(DEFAULT_CONFIG.budget.topKStatic);
   });
 
-  test("merges partial config with defaults", () => {
+  test("merges partial config with defaults and tolerates legacy keys", () => {
     writeFileSync(
       join(dir, "config.json"),
-      JSON.stringify({ namespace: { default: "myproj" }, prune: { staleDays: 7 } }),
+      JSON.stringify({
+        namespace: { default: "myproj" },
+        prune: { staleDays: 7 },
+        pipeline: { maxUnusedDays: 30 },
+      }),
     );
     const cfg = loadConfig(dir);
-    expect(cfg.namespace.default).toBe("myproj");
-    expect(cfg.prune.staleDays).toBe(7);
-    expect(cfg.prune.archivedDays).toBe(DEFAULT_CONFIG.prune.archivedDays);
+    expect(cfg.pipeline.maxUnusedDays).toBe(30);
+    expect(cfg.pipeline.maxInputs).toBe(DEFAULT_CONFIG.pipeline.maxInputs);
+    // legacy keys are ignored, not fatal
+    expect(cfg).not.toHaveProperty("namespace");
+    expect(cfg).not.toHaveProperty("prune");
   });
 
-  test("null or oversized fields fall back at runtime and fail strict doctor validation", () => {
+  test("strict validation rejects out-of-range pipeline values", () => {
     const path = join(dir, "config.json");
-    writeFileSync(path, JSON.stringify({ namespace: null, budget: { maxInjectTokens: 1, topKStatic: 1_000_000 } }));
-    expect(loadConfig(dir)).toEqual(DEFAULT_CONFIG);
-    expect(() => validateConfig(dir)).toThrow(/namespace/);
+    writeFileSync(path, JSON.stringify({ pipeline: { maxUnusedDays: -1 }, budget: { maxInjectTokens: 1 } }));
+    // normalizeConfig validates budget before pipeline, so the budget error
+    // surfaces first.
+    expect(() => validateConfig(dir)).toThrow(/maxInjectTokens/);
+    writeFileSync(path, JSON.stringify({ pipeline: { maxUnusedDays: -1 } }));
+    expect(() => validateConfig(dir)).toThrow(/maxUnusedDays/);
   });
 });

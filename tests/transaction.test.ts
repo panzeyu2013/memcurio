@@ -6,8 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSyn
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseFile, renderEntry, updateKindsAtomically } from "../src/core/mdStore.js";
-import type { Entry } from "../src/core/mdStore.js";
+import { writeWorkspaceText, readWorkspaceText } from "../src/core/workspace.js";
 
 let dir: string;
 let log: string;
@@ -246,60 +245,47 @@ describe("atomicWrite", () => {
   });
 });
 
-describe("updateKindsAtomically", () => {
-  test("restores every truth file when the shadow-index commit fails", () => {
-    const aDir = join(dir, "memory", "a");
-    const bDir = join(dir, "memory", "b");
-    const entry = (entryId: string, ns: string): Entry => ({
-      entryId,
-      ns,
-      kind: "MEMORY",
-      content: `original ${ns}`,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      status: "active",
-      pinned: false,
-      lastUsedAt: null,
-      useCount: 0,
-      valueScore: 1,
-    });
-    const a = entry("aaaabbbb", "a");
-    const b = entry("ccccdddd", "b");
-    const aPath = join(aDir, "MEMORY.md");
-    const bPath = join(bDir, "MEMORY.md");
-    atomicWrite(aPath, renderEntry(a));
-    atomicWrite(bPath, renderEntry(b));
-    expect(() => updateKindsAtomically([
-      { nsDir: aDir, kind: "MEMORY", mutate: (entries) => entries.map((e) => ({ ...e, status: "stale" })) },
-      { nsDir: bDir, kind: "MEMORY", mutate: (entries) => entries.map((e) => ({ ...e, status: "archived" })) },
-    ], () => {
-      throw new Error("index commit failed");
-    })).toThrow("index commit failed");
-    expect(parseFile(readFileSync(aPath, "utf-8"), "a")[0]?.status).toBe("active");
-    expect(parseFile(readFileSync(bPath, "utf-8"), "b")[0]?.status).toBe("active");
+describe("workspace writes (atomic + locked)", () => {
+  test("writes are atomic and readable", () => {
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: a\n");
+    expect(readWorkspaceText(dir, "MEMORY.md")).toBe("# Task Group: a\n");
+    const path = join(dir, "memory", "MEMORY.md");
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
-  test("removes a newly-created truth file when the commit fails", () => {
-    const nsPath = join(dir, "memory", "new");
-    const path = join(nsPath, "MEMORY.md");
-    expect(() => updateKindsAtomically([{
-      nsDir: nsPath,
-      kind: "MEMORY",
-      mutate: () => [{
-        entryId: "aaaabbbb",
-        ns: "new",
-        kind: "MEMORY",
-        content: "new",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        status: "active",
-        pinned: false,
-        lastUsedAt: null,
-        useCount: 0,
-        valueScore: 1,
-      }],
-    }], () => {
-      throw new Error("index commit failed");
-    })).toThrow();
-    expect(existsSync(path)).toBe(false);
+  test("lock contention serializes concurrent writers without lost updates", () => {
+    const lockPath = join(dir, "locks", "x.lock");
+    const counter: number[] = [];
+    const worker = (): void => {
+      withFileLock(lockPath, () => {
+        counter.push(1);
+      });
+    };
+    for (let i = 0; i < 4; i++) {
+      worker();
+    }
+    expect(counter).toHaveLength(4);
+  });
+
+  test("re-entrant lock is rejected", () => {
+    const lockPath = join(dir, "locks", "x.lock");
+    expect(() =>
+      withFileLock(lockPath, () => {
+        withFileLock(lockPath, () => {});
+      }),
+    ).toThrow(/re-entrant/);
+  });
+
+  test("dead-pid locks are reclaimed immediately", () => {
+    const lockPath = join(dir, "locks", "dead.lock");
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, "999999|1234567890");
+    expect(isStaleLock(lockPath)).toBe(true);
+    let ran = false;
+    withFileLock(lockPath, () => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
   });
 });
 

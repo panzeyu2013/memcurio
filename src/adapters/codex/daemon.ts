@@ -1,20 +1,19 @@
-import { createServer, Socket } from "node:net";
-import type { Socket as SocketType } from "node:net";
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import type { Socket as SocketType } from "node:net";
+import { createServer, Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
-
-import { MemcurioAdapter } from "../shared/engine.js";
-import type { AdapterLog } from "../shared/engine.js";
-import { parseReflectionResponse, reflectionUserPrompt } from "../../core/reflect.js";
-import type { CompactionReflection, ReflectChat } from "../../core/reflect.js";
 import { Index } from "../../core/db.js";
+import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../../core/extract.js";
+import { buildExtractPrompt, parseExtractReply, rolloutKeyFor } from "../../core/extract.js";
 import { ensureLayout, indexDb } from "../../core/paths.js";
 import { isStaleLock } from "../../core/transaction.js";
+import type { AdapterLog } from "../shared/engine.js";
+import { MemcurioAdapter } from "../shared/engine.js";
 
 export interface CodexEventInput {
   hook_event_name?: string;
@@ -34,8 +33,8 @@ export interface CodexEventInput {
 export type { AdapterLog };
 
 const DEDUPE_WINDOW_MS = 10 * 60_000;
-// PostCompact processing (reflection) can run up to 120s, so its dedupe window
-// must cover a hook-client retry after that timeout.
+// PostCompact can be re-fired by a hook-client retry after a slow daemon
+// response, so its dedupe window covers the full hook request budget.
 const POST_COMPACT_DEDUPE_MS = 130_000;
 const IDLE_EXIT_MS = 6 * 60 * 60_000;
 // A single request line from the hook client; legit payloads are a few KB,
@@ -65,7 +64,7 @@ function resolvePostToolUseFile(toolInput: unknown, cwd: string): string | undef
 export function createCodexHandler(log?: AdapterLog) {
   const adapter = new MemcurioAdapter({
     log,
-    reflect: process.env.MEMCURIO_CODEX_REFLECT === "0" ? undefined : codexExecReflect({ log }),
+    extract: process.env.MEMCURIO_CODEX_REFLECT === "0" ? undefined : codexExecExtract({ log }),
   });
   const recent = new Map<string, number>();
   const inFlight = new Map<string, Promise<Record<string, unknown>>>();
@@ -193,7 +192,11 @@ export function createCodexHandler(log?: AdapterLog) {
   };
 }
 
-export function parseCodexExecOutput(stdout: string): CompactionReflection | null {
+/** Select the final Phase-1 reply from a codex exec JSONL stream. Returns the
+ *  raw reply text (the JSON object is parsed by parseExtractReply, which also
+ *  applies the no-op gate); null when the turn failed or no usable reply was
+ *  emitted. */
+export function parseCodexExecOutput(stdout: string): string | null {
   let finalReply: string | undefined;
   let failed = false;
   for (const line of stdout.split("\n")) {
@@ -210,7 +213,7 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
     // Only turn.failed is terminal. A type:"error" event is NOT: codex emits
     // it for transient conditions (e.g. "Reconnecting... (request timed
     // out)") and then continues the turn; treating it as failure would
-    // discard a perfectly good reflection on every network blip.
+    // discard a perfectly good extraction on every network blip.
     if (ev.type === "turn.failed") {
       failed = true;
       break;
@@ -218,15 +221,16 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
     if (ev.type === "item.completed") {
       const item = ev.item as { type?: unknown; text?: unknown } | undefined;
       if (item?.type === "agent_message" && typeof item.text === "string" && item.text.trim()) {
-        // Prefer the message that actually parses as our reflection JSON; the
-        // last agent_message may be an intermediate "let me check…" stub.
-        let parsed: CompactionReflection | null = null;
+        // Prefer the message that actually carries our JSON object (it has a
+        // raw_memory field); the last agent_message may be an intermediate
+        // "let me check…" stub.
+        let parsed: { raw_memory?: unknown } | null = null;
         try {
-          parsed = parseReflectionResponse(item.text);
+          parsed = JSON.parse(item.text) as { raw_memory?: unknown };
         } catch {
           parsed = null;
         }
-        if (parsed) {
+        if (parsed && typeof parsed.raw_memory === "string") {
           finalReply = item.text;
         } else if (finalReply === undefined) {
           finalReply = item.text;
@@ -247,21 +251,17 @@ export function parseCodexExecOutput(stdout: string): CompactionReflection | nul
   if (failed || !finalReply) {
     return null;
   }
-  try {
-    return parseReflectionResponse(finalReply);
-  } catch {
-    return null;
-  }
+  return finalReply;
 }
 
-// A sanity cap on reflection stdout: legit JSONL streams are a few KB, so this
+// A sanity cap on extraction stdout: legit JSONL streams are a few KB, so this
 // only guards against a runaway child. Unlike stderr it must stay generous —
-// truncating mid-event would silently discard a valid reflection.
-const REFLECT_STDOUT_MAX_BYTES = 1024 * 1024;
+// truncating mid-event would silently discard a valid extraction.
+const EXTRACT_STDOUT_MAX_BYTES = 1024 * 1024;
 
-/** Hook events that memcurio registers; cleared for the reflection
+/** Hook events that memcurio registers; cleared for the extraction
  *  sub-session so its events cannot echo back into this daemon. */
-const REFLECTION_EVENTS = [
+const EXTRACT_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
   "PostToolUse",
@@ -271,85 +271,89 @@ const REFLECTION_EVENTS = [
   "SessionEnd",
 ] as const;
 
-export function codexExecReflect(opts: {
+export function codexExecExtract(opts: {
   log?: AdapterLog;
   timeoutMs?: number;
   bin?: string;
-} = {}): ReflectChat {
+} = {}): ExtractProvider {
   const bin = opts.bin ?? process.env.MEMCURIO_CODEX_BIN ?? "codex";
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const log = opts.log ?? (() => {});
-  return ({ summary, strategy }) =>
-    new Promise<CompactionReflection | null>((resolve) => {
-      if (!summary) {
-        resolve(null);
-        return;
-      }
-      // Never let the reflection sub-session fire hooks back at this daemon:
-      // its own SessionStart/UserPromptSubmit/Stop events would create fake
-      // sessions and pollute session accounting (and eat the PostCompact
-      // budget with nested round-trips). `hooks.disabled` is NOT a codex
-      // config key (verified against codex-rs source: the hooks schema only
-      // knows `events` and `state`, so the key is silently ignored), so each
-      // memcurio event is cleared explicitly instead. CLI overrides merge as
-      // the last layer, and an empty array replaces the user's handlers.
-      const args = [
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        ...REFLECTION_EVENTS.flatMap((event) => ["-c", `hooks.events.${event}=[]`]),
-        reflectionUserPrompt(summary, strategy),
-      ];
-      const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const settle = (r: CompactionReflection | null): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        resolve(r);
-      };
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        log("warn", "codex exec reflection timed out");
-        settle(null);
-      }, timeoutMs);
-      child.stdout.on("data", (d: Buffer) => {
-        if (stdout.length < REFLECT_STDOUT_MAX_BYTES) {
-          stdout += d.toString().slice(0, REFLECT_STDOUT_MAX_BYTES - stdout.length);
-        }
-      });
-      child.stderr.on("data", (d: Buffer) => {
-        if (stderr.length < 4096) {
-          stderr += d.toString().slice(0, 4096 - stderr.length);
-        }
-      });
-      // A killed/closed child can emit EPIPE/ECONNRESET on its pipes; without
-      // handlers that would crash the whole daemon (and every hook with it).
-      child.stdout.on("error", () => {});
-      child.stderr.on("error", () => {});
-      child.on("error", (err) => {
-        log("warn", `codex exec unavailable: ${String(err)}`);
-        settle(null);
-      });
-      child.on("close", (code) => {
-        if (code !== 0) {
-          log("warn", `codex exec failed (${String(code)}): ${stderr.slice(0, 200)}`);
+  return {
+    name: "codex-exec",
+    extract(snapshot: RolloutSnapshot): Promise<Stage1Output | null> {
+      return new Promise<Stage1Output | null>((resolve) => {
+        // Never let the extraction sub-session fire hooks back at this
+        // daemon: its own SessionStart/UserPromptSubmit/Stop events would
+        // create fake sessions and pollute session accounting. `hooks.disabled`
+        // is NOT a codex config key (verified against codex-rs source: the
+        // hooks schema only knows `events` and `state`, so the key is silently
+        // ignored), so each memcurio event is cleared explicitly instead. CLI
+        // overrides merge as the last layer, and an empty array replaces the
+        // user's handlers.
+        const args = [
+          "exec",
+          "--json",
+          "--ephemeral",
+          "--skip-git-repo-check",
+          ...EXTRACT_EVENTS.flatMap((event) => ["-c", `hooks.events.${event}=[]`]),
+          buildExtractPrompt(snapshot),
+        ];
+        const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        const settle = (r: Stage1Output | null): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(r);
+        };
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          log("warn", "codex exec extraction timed out");
           settle(null);
-          return;
-        }
-        try {
-          settle(parseCodexExecOutput(stdout));
-        } catch (err) {
-          log("warn", `failed to parse codex exec output: ${String(err)}`);
+        }, timeoutMs);
+        child.stdout.on("data", (d: Buffer) => {
+          if (stdout.length < EXTRACT_STDOUT_MAX_BYTES) {
+            stdout += d.toString().slice(0, EXTRACT_STDOUT_MAX_BYTES - stdout.length);
+          }
+        });
+        child.stderr.on("data", (d: Buffer) => {
+          if (stderr.length < 4096) {
+            stderr += d.toString().slice(0, 4096 - stderr.length);
+          }
+        });
+        // A killed/closed child can emit EPIPE/ECONNRESET on its pipes; without
+        // handlers that would crash the whole daemon (and every hook with it).
+        child.stdout.on("error", () => {});
+        child.stderr.on("error", () => {});
+        child.on("error", (err) => {
+          log("warn", `codex exec unavailable: ${String(err)}`);
           settle(null);
-        }
+        });
+        child.on("close", (code) => {
+          if (code !== 0) {
+            log("warn", `codex exec failed (${String(code)}): ${stderr.slice(0, 200)}`);
+            settle(null);
+            return;
+          }
+          try {
+            const reply = parseCodexExecOutput(stdout);
+            settle(reply === null ? null : parseExtractReply(reply, {
+              rolloutKey: rolloutKeyFor(snapshot),
+              sourceUpdatedAt: snapshot.endedAt,
+            }));
+          } catch (err) {
+            log("warn", `failed to parse codex exec output: ${String(err)}`);
+            settle(null);
+          }
+        });
       });
-    });
+    },
+  };
 }
 
 export function defaultSocketPath(root: string): string {

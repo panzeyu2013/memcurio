@@ -7,6 +7,11 @@ export function newEntryId(): string {
   return randomUUID().replaceAll("-", "");
 }
 
+/** Same format as newEntryId (UUIDv4 without dashes). */
+export function newNoteId(): string {
+  return randomUUID().replaceAll("-", "");
+}
+
 export function derivedEntryId(seed: string, reserved: Set<string>): string {
   for (let salt = 0; ; salt += 1) {
     const id = createHash("sha256").update(`${seed}|${salt}`).digest("hex").slice(0, 32);

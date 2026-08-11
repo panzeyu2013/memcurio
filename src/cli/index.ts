@@ -1,25 +1,29 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import { generateIndex, injectBaseline } from "../core/baseline.js";
-import { loadConfig, validateConfig } from "../core/config.js";
-import { applyCuratePlan, buildCuratePlan, formatCuratePlan, HttpProvider, NoopProvider } from "../core/curate.js";
-import type { CurateProvider } from "../core/curate.js";
+import { addAdHocNote, listAdHocNotes } from "../core/adhoc.js";
+import { loadConfig, pipelineConfig, validateConfig } from "../core/config.js";
+import {
+  HttpLoopConsolidateProvider,
+  RuleConsolidateProvider,
+  planConsolidation,
+  runConsolidation,
+  syncArtifacts,
+} from "../core/consolidate.js";
 import { Index } from "../core/db.js";
+import type { AdHocNoteRow, Stage1OutputRow } from "../core/db.js";
 import { makeEnvelope, parseEnvelope, MAX_ENVELOPE_BYTES } from "../core/events.js";
 import type { EventEnvelope } from "../core/events.js";
-import { KINDS, newEntry, readAll, updateKindsAtomically } from "../core/mdStore.js";
-import type { Entry, Kind, Status } from "../core/mdStore.js";
-import { assertValidNs, configPath, ensureLayout, indexDb, memoryRoot, namespaceFor, namespaces, nsDir, rootDir, txnLog } from "../core/paths.js";
-import { computeTransitions, formatTransition } from "../core/prune.js";
-import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
-import { safeSearch } from "../core/safeSearch.js";
-import { applyImport, applyMerge, MAX_MEMORY_CONTENT_CHARS, planImport, planMerge, readExportFile, serializeExport, writeExport } from "../core/transfer.js";
-import { Transaction, truncateLog } from "../core/transaction.js";
+import { injectBaseline } from "../core/inject.js";
 import { llmEnv } from "../core/llm.js";
+import { configPath, ensureLayout, indexDb, rootDir, txnLog } from "../core/paths.js";
+import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
+import { searchMemory } from "../core/search.js";
+import { Transaction, truncateLog } from "../core/transaction.js";
+import { hasWorkspaceChanges, readWorkspaceText, rolloutSlugs, saveBaseline, writeAdHocNoteFile } from "../core/workspace.js";
 import { generateCodexPlugin } from "../adapters/codex/generate.js";
 import { defaultSocketPath, runCodexDaemon } from "../adapters/codex/daemon.js";
 import { runServer } from "../mcp/index.js";
@@ -49,13 +53,10 @@ function warnExtraArgs(cmd: string, positionals: string[], max: number): void {
  *  exit code without sniffing error-message strings. */
 export class UsageError extends Error {}
 
-async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
+const MAX_NOTE_CHARS = 20_000;
+
+async function withStore<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   const root = rootDir();
-  // Some commands reach the index without initializing first (status/list on
-  // a fresh root); create the 0700 layout so Index.create does not fail with
-  // a bare sqlite "unable to open database file" error. Keep the user
-  // informed that a store was auto-created instead of silently pretending it
-  // was already there.
   const freshRoot = !existsSync(indexDb(root));
   if (freshRoot) {
     console.error(t("init.autocreated"));
@@ -67,10 +68,6 @@ async function withIndex<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   } finally {
     idx.close();
   }
-}
-
-function countsTotal(counts: Record<string, Record<string, number>>): number {
-  return Object.values(counts).reduce((s, m) => s + Object.values(m).reduce((a, b) => a + b, 0), 0);
 }
 
 function positiveInt(value: string | undefined, fallback: number, max = 1000, name?: string): number {
@@ -92,84 +89,23 @@ function positiveInt(value: string | undefined, fallback: number, max = 1000, na
   return Math.round(n);
 }
 
-function nsArg(raw: string | undefined): string | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  try {
-    return assertValidNs(raw);
-  } catch (err) {
-    throw new UsageError((err as Error).message);
-  }
-}
-
-const WRITABLE_KINDS: Kind[] = KINDS.filter((k) => k !== "SESSION" && k !== "COMPACT");
-// Read-only commands (list/search/export) may filter on any kind.
-const READONLY_KINDS: Kind[] = KINDS.filter((k) => !WRITABLE_KINDS.includes(k));
-
-function kindArg(raw: string | undefined, extra: Kind[] = []): Kind | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const kind = raw.toUpperCase() as Kind;
-  if (!KINDS.includes(kind) || ![...WRITABLE_KINDS, ...extra].includes(kind)) {
-    // List only the kinds the current command actually accepts: telling a
-    // writer that SESSION/COMPACT are "valid" would just send users into a
-    // second failure.
-    throw new UsageError(t("error.invalidKind", kind, [...WRITABLE_KINDS, ...extra].join("|")));
-  }
-  return kind;
-}
-
-/** Build per-file mutations that redact secrets found in the md truth, plus
- *  identity mutations for every other truth file, so a rebuild can read the
- *  full truth under the same locks that the mutation runs under. */
-function collectTruthRedactionMutations(root: string): {
-  mutations: Array<{ nsDir: string; kind: Kind; mutate: (entries: Entry[]) => Entry[] }>;
-  redacted: number;
-} {
-  const mutations: Array<{ nsDir: string; kind: Kind; mutate: (entries: Entry[]) => Entry[] }> = [];
-  let redacted = 0;
-  for (const ns of namespaces(root)) {
-    const dir = nsDir(root, ns);
-    for (const kind of KINDS) {
-      if (!existsSync(join(dir, `${kind}.md`))) {
-        continue;
-      }
-      mutations.push({
-        nsDir: dir,
-        kind,
-        mutate: (entries) =>
-          entries.map((entry) => {
-            const result = redactSecrets(entry.content);
-            if (result.redacted) {
-              redacted += 1;
-              return { ...entry, content: result.text };
-            }
-            return entry;
-          }),
-      });
-    }
-  }
-  return { mutations, redacted };
-}
-
 async function cmdInit(): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
   loadConfig(root);
   const idx = await Index.create(indexDb(root));
-  const backend = idx.backend;
-  idx.audit("init", "-", "memcurio initialized");
-  idx.close();
+  try {
+    idx.audit("init", "-", "memcurio initialized");
+  } finally {
+    idx.close();
+  }
   console.log(t("init.done", root));
-  console.log(t("init.backend", backend));
   return 0;
 }
 
 async function cmdStatus(): Promise<number> {
   const root = rootDir();
-  return withIndex(async (idx) => {
+  return withStore(async (idx) => {
     console.log(t("status.root", root));
     let configState: string;
     if (!existsSync(configPath(root))) {
@@ -183,25 +119,13 @@ async function cmdStatus(): Promise<number> {
       }
     }
     console.log(t("status.config", configPath(root), configState));
-    const counts = idx.counts();
-    const indexedTotal = countsTotal(counts);
-    if (!indexedTotal) {
-      console.log(t("status.namespaces"));
-    }
-    for (const [ns, statuses] of Object.entries(counts)) {
-      const parts = Object.entries(statuses)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => `${k}=${v}`)
-        .join(", ");
-      console.log(`  ${ns.padEnd(11)}: ${parts}`);
-    }
-    // The index alone can lie (crash between md write and index commit):
-    // surface a drift warning when the md truth has content the index lacks.
-    const truthTotal = namespaces(root).reduce((s, ns) => s + readAll(nsDir(root, ns)).length, 0);
-    if (truthTotal > 0 && truthTotal !== indexedTotal) {
-      console.warn(t("status.drift", String(truthTotal), String(indexedTotal)));
-    }
-    console.log(t("status.index", idx.backend));
+    const stages = idx.stageList();
+    const pending = stages.filter((s) => s.status === "pending").length;
+    const selected = stages.filter((s) => s.status === "selected").length;
+    const deleted = stages.filter((s) => s.status === "deleted").length;
+    console.log(t("status.stage1", String(pending), String(selected), String(deleted)));
+    const notes = idx.noteList();
+    console.log(t("status.notes", String(notes.length), String(notes.filter((n) => !n.applied).length)));
     console.log(t("status.audit", String(idx.auditCount())));
     const txn = new Transaction(txnLog(root));
     console.log(t("status.pending", String(txn.pending().length)));
@@ -209,262 +133,207 @@ async function cmdStatus(): Promise<number> {
   });
 }
 
+async function runRuleConsolidation(root: string): Promise<string> {
+  const run = await runConsolidation(root, new RuleConsolidateProvider(), { execute: true, config: pipelineConfig(root) });
+  return run.message;
+}
+
 async function cmdRemember(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { ns: { type: "string" }, kind: { type: "string" } },
+    options: { apply: { type: "boolean" } },
   });
   const content = positionals[0];
   if (!content) {
     return failUsage(t("remember.missing"));
   }
   warnExtraArgs("remember", positionals, 1);
-  if (content.length > MAX_MEMORY_CONTENT_CHARS) {
-    return failUsage(t("remember.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
+  if (content.length > MAX_NOTE_CHARS) {
+    return failUsage(t("remember.tooLong", String(MAX_NOTE_CHARS)));
   }
+  const flags = sanitizeForInjection(content);
   const root = rootDir();
   ensureLayout(root);
-  const config = loadConfig(root);
-  const explicitNs = values.ns as string | undefined;
-  let ns: string;
-  try {
-    ns = assertValidNs(explicitNs ?? config.namespace.default);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
+  const note = await addAdHocNote(root, content, "remember");
+  console.log(t("remember.done", note.filename));
+  if (!flags.safe) {
+    console.error(t("remember.promptware", flags.flags[0] ?? "?"));
   }
-  let kind: Kind;
-  try {
-    // SESSION/COMPACT are maintained by the harness/adapters, not by `remember`.
-    kind = kindArg(values.kind as string | undefined, []) ?? "MEMORY";
-  } catch (err) {
-    return failUsage(String((err as Error).message));
+  if (values.apply) {
+    console.log(await runRuleConsolidation(root));
+  } else {
+    console.error(t("remember.applyNote"));
   }
-  if (!explicitNs && ns !== namespaceFor(process.cwd())) {
-    console.error(t("remember.nsNote", ns, namespaceFor(process.cwd())));
-  }
-  const redacted = redactSecrets(content);
-  const flags = sanitizeForInjection(redacted.text);
-  const entry = newEntry(ns, kind, redacted.text);
-  return withIndex(async (idx) => {
-    const txn = new Transaction(txnLog(root));
-    txn.run("remember", ns, entry.entryId, () => {
-      updateKindsAtomically(
-        [{ nsDir: nsDir(root, ns), kind, mutate: (entries) => [...entries, entry] }],
-        () => idx.withTransaction(() => {
-          idx.add(entry);
-          idx.audit("remember", ns, entry.entryId);
-          if (redacted.redacted) idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
-          if (!flags.safe) idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
-        }),
-      );
-    });
-    console.log(`${entry.entryId} ${ns}/${kind}${redacted.redacted ? ` ${t("remember.redacted")}` : ""}`);
-    if (!flags.safe) {
-      console.error(t("remember.promptware", flags.flags[0] ?? "?"));
-    }
-    return 0;
-  });
+  return 0;
 }
 
-async function cmdList(rest: string[]): Promise<number> {
+async function cmdForget(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { ns: { type: "string" }, kind: { type: "string" }, all: { type: "boolean" } },
+    options: { apply: { type: "boolean" } },
   });
-  warnExtraArgs("list", positionals, 0);
-  let ns: string | undefined;
-  let kind: Kind | undefined;
-  try {
-    ns = nsArg(values.ns as string | undefined);
-    kind = kindArg(values.kind as string | undefined, READONLY_KINDS);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
+  const content = positionals[0];
+  if (!content) {
+    return failUsage(t("forget.missing"));
   }
-  return withIndex(async (idx) => {
-    for (const e of idx.list({ ns, kind, allStatus: values.all })) {
-      const preview = e.content.replaceAll("\n", " ").slice(0, 60);
-      console.log(`${e.entryId} ${e.ns}/${e.kind} ${e.status} use=${e.useCount} ${preview}`);
-    }
+  warnExtraArgs("forget", positionals, 1);
+  if (content.length > MAX_NOTE_CHARS) {
+    return failUsage(t("remember.tooLong", String(MAX_NOTE_CHARS)));
+  }
+  const root = rootDir();
+  ensureLayout(root);
+  const note = await addAdHocNote(root, content, "forget");
+  console.log(t("forget.done", note.filename));
+  if (values.apply) {
+    console.log(await runRuleConsolidation(root));
+  }
+  return 0;
+}
+
+async function cmdList(rest: string[]): Promise<number> {
+  warnExtraArgs("list", rest, 0);
+  const root = rootDir();
+  ensureLayout(root);
+  const memory = readWorkspaceText(root, "MEMORY.md");
+  const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
+  const rollouts = rolloutSlugs(root);
+  const notes = (await listAdHocNotes(root)).filter((n) => !n.applied);
+  if (!groups.length && !rollouts.length && !notes.length) {
+    console.log(t("list.empty"));
     return 0;
-  });
+  }
+  if (groups.length) {
+    console.log(t("list.groups"));
+    for (const g of groups) {
+      console.log(`  # Task Group: ${g}`);
+    }
+  }
+  if (rollouts.length) {
+    console.log(t("list.rollouts"));
+    for (const r of rollouts) {
+      console.log(`  rollout_summaries/${r}`);
+    }
+  }
+  if (notes.length) {
+    console.log(t("list.notes"));
+    for (const n of notes) {
+      console.log(`  [${n.kind}] ${n.filename}`);
+    }
+  }
+  return 0;
 }
 
 async function cmdSearch(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: {
-      ns: { type: "string" },
-      kind: { type: "string" },
-      "top-k": { type: "string" },
-    },
+    options: { "top-k": { type: "string" } },
   });
   const query = positionals[0];
   if (!query) {
     return failUsage(t("search.missing"));
   }
   warnExtraArgs("search", positionals, 1);
-  let ns: string | undefined;
-  let kind: Kind | undefined;
-  try {
-    ns = nsArg(values.ns as string | undefined);
-    kind = kindArg(values.kind as string | undefined, READONLY_KINDS);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
-  }
   const topK = positiveInt(values["top-k"], 10, 1000, "top-k");
-  return withIndex(async (idx) => {
-    const result = safeSearch(idx, {
-      query,
-      topK,
-      ns,
-      kinds: kind ? [kind] : (["MEMORY", "USER"] as Kind[]),
-    }, {
-      onError: (err) => console.error(t("search.fallback", String(err))),
-      onBlocked: (h, flag) => idx.audit("warn.promptware", h.ns, `blocked from cli result: ${h.entryId} (${flag})`),
-    });
-    const safeHits = result.hits;
-    for (const h of safeHits) {
-      const preview = h.content.replaceAll("\n", " ").slice(0, 80);
-      console.log(`${h.score.toFixed(2).padStart(7)} ${h.reason.padEnd(12)} ${h.entryId} ${h.ns}/${h.kind} ${preview}`);
-    }
-    idx.touch(safeHits.map((h) => h.entryId));
-    const filtered = result.blocked;
-    idx.audit("search", ns ?? "-", `${JSON.stringify(redactSecrets(query).text)} -> ${safeHits.length} hits${filtered > 0 ? ` (${filtered} filtered)` : ""}`);
-    if (!safeHits.length && !filtered) {
-      console.error(t("search.note", ns ?? "all"));
-    } else if (filtered > 0) {
-      console.error(t("search.filtered", String(filtered)));
-    }
-    return 0;
-  });
-}
-
-async function cmdForget(rest: string[]): Promise<number> {
-  const { positionals } = parseArgs({ args: rest, allowPositionals: true });
-  const entryId = positionals[0];
-  if (!entryId) {
-    return failUsage(t("forget.missing"));
-  }
-  warnExtraArgs("forget", positionals, 1);
   const root = rootDir();
-  return withIndex(async (idx) => {
-    const entry = idx.get(entryId);
-    if (!entry) {
-      return fail(t("forget.notFound", entryId));
+  const result = await searchMemory(root, query, topK);
+  return withStore(async (idx) => {
+    for (const h of result.hits) {
+      console.log(`${String(h.score).padStart(3)} ${h.rel}:${h.line} ${h.content.slice(0, 120)}`);
     }
-    const txn = new Transaction(txnLog(root));
-    txn.run("forget", entry.ns, entryId, () => {
-      updateKindsAtomically(
-        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) => entries.filter((e) => e.entryId !== entryId) }],
-        () => idx.withTransaction(() => {
-          idx.delete(entryId);
-          idx.audit("forget", entry.ns, entryId);
-        }),
-      );
-    });
-    console.log(t("forget.done", entryId));
+    idx.audit("search", "-", `${JSON.stringify(redactSecrets(query).text)} -> ${result.hits.length} hits${result.blocked > 0 ? ` (${result.blocked} filtered)` : ""}`);
+    if (!result.hits.length && !result.blocked) {
+      console.error(t("search.note"));
+    } else if (result.blocked > 0) {
+      console.error(t("search.filtered", String(result.blocked)));
+    }
     return 0;
   });
 }
 
-async function cmdCompact(rest: string[]): Promise<number> {
+async function cmdPrune(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { ns: { type: "string" } },
+    options: { execute: { type: "boolean" } },
   });
-  const content = positionals[0];
-  if (!content) {
-    return failUsage(t("compact.missing"));
-  }
-  warnExtraArgs("compact", positionals, 1);
-  if (content.length > MAX_MEMORY_CONTENT_CHARS) {
-    return failUsage(t("compact.tooLong", String(MAX_MEMORY_CONTENT_CHARS)));
-  }
+  warnExtraArgs("prune", positionals, 0);
   const root = rootDir();
   ensureLayout(root);
-  const config = loadConfig(root);
-  const explicitNs = values.ns as string | undefined;
-  let ns: string;
-  try {
-    ns = assertValidNs(explicitNs ?? config.namespace.default);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
+  const cfg = pipelineConfig(root);
+  const plan = await planConsolidation(root, cfg);
+  console.log(plan.preview);
+  if (!plan.pruned.length) {
+    console.log(t("prune.none"));
+  } else if (!values.execute) {
+    console.log(t("prune.executeHint"));
   }
-  const redacted = redactSecrets(content);
-  const flags = sanitizeForInjection(redacted.text);
-  const entry = newEntry(ns, "COMPACT", redacted.text);
-  return withIndex(async (idx) => {
-    const txn = new Transaction(txnLog(root));
-    let replaced = 0;
-    txn.run("compact", ns, entry.entryId, () => {
-      const archivedIds: string[] = [];
-      updateKindsAtomically(
-        [{ nsDir: nsDir(root, ns), kind: "COMPACT", mutate: (entries) => {
-          // Re-read the truth under the lock (never a pre-lock snapshot): a
-          // daemon PostCompact reflection may have been appended meanwhile.
-          // Archive (never delete) replaced active/stale strategies: the
-          // daemon appends its reflections to the active entry, so deleting
-          // it would destroy that reflection history.
-          const replacedOnes = entries.filter((e) => e.status === "active" || e.status === "stale");
-          replaced = replacedOnes.length;
-          archivedIds.length = 0;
-          for (const r of replacedOnes) {
-            archivedIds.push(r.entryId);
-          }
-          const kept = entries.filter((e) => e.status !== "deleted");
-          return [
-            ...kept.map((e) =>
-              replacedOnes.some((r) => r.entryId === e.entryId) ? { ...e, status: "archived" as Status } : e,
-            ),
-            entry,
-          ];
-        } }],
-        () => idx.withTransaction(() => {
-          for (const id of archivedIds) {
-            idx.patch(id, { status: "archived" });
-          }
-          idx.add(entry);
-          idx.audit("compact", ns, `${entry.entryId} replaced ${replaced} old strategy entries`);
-          if (redacted.redacted) idx.audit("warn.redacted", ns, `secret redacted in ${entry.entryId}`);
-          if (!flags.safe) idx.audit("warn.promptware", ns, `injection pattern on write: ${entry.entryId} (${flags.flags[0]})`);
-        }),
-      );
-    });
-    console.log(t("compact.written", entry.entryId, ns, String(replaced)));
+  if (!values.execute) {
     return 0;
+  }
+  const run = await runConsolidation(root, new RuleConsolidateProvider(), { execute: true, config: cfg });
+  if (plan.pruned.length) {
+    console.log(t("prune.applied", String(plan.pruned.length)));
+  }
+  console.log(run.message);
+  return 0;
+}
+
+async function cmdCurate(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { execute: { type: "boolean" }, "max-steps": { type: "string" } },
   });
+  warnExtraArgs("curate", positionals, 0);
+  const root = rootDir();
+  ensureLayout(root);
+  const cfg = pipelineConfig(root);
+  const plan = await planConsolidation(root, cfg);
+  console.log(plan.preview);
+  if (!values.execute) {
+    console.log(t("curate.dryRun"));
+    return 0;
+  }
+  const env = llmEnv();
+  const maxSteps = values["max-steps"] ? positiveInt(values["max-steps"], cfg.maxAgentSteps, 1000, "max-steps") : cfg.maxAgentSteps;
+  const provider = env.apiKey ? new HttpLoopConsolidateProvider(maxSteps) : new RuleConsolidateProvider();
+  const run = await runConsolidation(root, provider, { execute: true, config: cfg });
+  console.log(t("curate.applied", run.message));
+  if (!env.apiKey) {
+    console.log(t("curate.noKeyNote"));
+  }
+  return 0;
+}
+
+async function cmdBaseline(rest: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args: rest, allowPositionals: true });
+  const workdir = positionals[0] ?? process.cwd();
+  warnExtraArgs("baseline", positionals, 1);
+  const root = rootDir();
+  ensureLayout(root);
+  loadConfig(root);
+  const bytes = await injectBaseline(workdir);
+  console.log(t("baseline.done", workdir, String(bytes)));
+  return 0;
 }
 
 async function cmdReindex(rest: string[] = []): Promise<number> {
   warnExtraArgs("reindex", rest, 0);
   const root = rootDir();
-  return withIndex(async (idx) => {
+  ensureLayout(root);
+  const cfg = pipelineConfig(root);
+  const plan = await planConsolidation(root, cfg);
+  return withStore(async (idx) => {
     const txn = new Transaction(txnLog(root));
-    let total = 0;
-    // Hold every truth-file lock for the whole md-redaction + index-rebuild
-    // so concurrent adapter writes cannot be silently dropped, and log the
-    // operation so a crash between md rewrite and rebuild leaves a pending
-    // marker for `repair`.
-    txn.run("reindex", "-", "rebuild from md truth", () => {
-      const { mutations, redacted } = collectTruthRedactionMutations(root);
-      updateKindsAtomically(mutations, (entries) => {
-        total = entries.length;
-        // Rebuild + audits commit in one SQLite transaction: if the audit
-        // insert fails, the index rebuild rolls back with the md truth.
-        idx.withTransaction(() => {
-          idx.rebuild(entries);
-          idx.audit("reindex", "-", `${entries.length} entries${redacted ? ` (${redacted} redacted)` : ""}`);
-          if (redacted) {
-            idx.audit("warn.redacted", "-", `secrets redacted during reindex: ${redacted} entries`);
-          }
-        });
-      });
+    txn.run("reindex", "-", "sync artifacts from stage1", () => {
+      syncArtifacts(root, plan);
+      saveBaseline(root);
+      idx.audit("reindex", "-", `synced ${Object.keys(plan.artifacts).length} artifact file(s), pruned ${plan.pruned.length}`);
     });
-    console.log(t("reindex.done", String(total), idx.backend));
+    console.log(t("reindex.done", String(Object.keys(plan.artifacts).length)));
     return 0;
   });
 }
@@ -498,31 +367,22 @@ async function cmdRepair(rest: string[]): Promise<number> {
   }
   if (!values.execute) {
     console.log(t("repair.fix"));
-    // Issues exist but were not fixed: let scripts detect "needs repair".
     return 1;
   }
-  return withIndex(async (idx) => {
+  ensureLayout(root);
+  const cfg = pipelineConfig(root);
+  const plan = await planConsolidation(root, cfg);
+  return withStore(async (idx) => {
     const txn = new Transaction(txnLog(root));
-    let total = 0;
+    let count = 0;
     txn.run("repair", "-", `cleared ${pending.length} pending txns`, () => {
-      const { mutations, redacted } = collectTruthRedactionMutations(root);
-      updateKindsAtomically(mutations, (entries) => {
-        total = entries.length;
-        idx.withTransaction(() => {
-          idx.rebuild(entries);
-          idx.audit(
-            "repair",
-            "-",
-            `rebuilt from md: ${entries.length} entries, cleared ${pending.length} pending txns${redacted ? ` (${redacted} redacted)` : ""}`,
-          );
-          if (redacted) {
-            idx.audit("warn.redacted", "-", `secrets redacted during repair: ${redacted} entries`);
-          }
-        });
-      });
+      syncArtifacts(root, plan);
+      saveBaseline(root);
+      count = Object.keys(plan.artifacts).length;
+      idx.audit("repair", "-", `re-synced ${count} artifact file(s), cleared ${pending.length} pending txns`);
     });
     truncateLog(txnLog(root));
-    console.log(t("repair.done", String(total)));
+    console.log(t("repair.done", String(count)));
     return 0;
   });
 }
@@ -535,7 +395,7 @@ async function cmdAudit(rest: string[]): Promise<number> {
   });
   warnExtraArgs("audit", positionals, 0);
   const limit = positiveInt(values.limit, 20, 1000, "limit");
-  return withIndex(async (idx) => {
+  return withStore(async (idx) => {
     for (const r of idx.auditRecent(limit)) {
       console.log(`${String(r.ts)} ${String(r.action).padEnd(10)} ${String(r.ns).padEnd(11)} ${String(r.detail)}`);
     }
@@ -559,8 +419,6 @@ async function cmdEvent(rest: string[]): Promise<number> {
         return fail(t("event.tty"));
       }
       const raw = readFileSync(0, "utf-8");
-      // Same bound as parseEnvelope: an untrusted pipe must not be able to
-      // force an unbounded allocation before the parse.
       if (Buffer.byteLength(raw, "utf-8") > MAX_ENVELOPE_BYTES) {
         return fail(t("event.invalid", "input exceeds the size limit"));
       }
@@ -569,7 +427,7 @@ async function cmdEvent(rest: string[]): Promise<number> {
   } catch (err) {
     return fail(t("event.invalid", String(err)));
   }
-  return withIndex(async (idx) => {
+  return withStore(async (idx) => {
     if (env.event === "session_start") {
       idx.recordSession(env.sessionId, env.host, env.workdir, env.ts);
       idx.audit("event.session_start", env.workdir || "-", env.sessionId);
@@ -584,327 +442,151 @@ async function cmdEvent(rest: string[]): Promise<number> {
   });
 }
 
-async function cmdPrune(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { execute: { type: "boolean" }, ns: { type: "string" } },
-  });
-  warnExtraArgs("prune", positionals, 0);
-  const root = rootDir();
-  const config = loadConfig(root);
-  let ns: string | undefined;
-  try {
-    ns = nsArg(values.ns as string | undefined);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
-  }
-  return withIndex(async (idx) => {
-    const entries = idx.list({ ns, allStatus: true });
-    const transitions = computeTransitions(entries, new Date(), config.prune);
-    if (!transitions.length) {
-      console.log(t("prune.none"));
-      return 0;
-    }
-    for (const t of transitions) {
-      console.log(formatTransition(t));
-    }
-    if (!values.execute) {
-      console.log(t("prune.dryRun", String(transitions.length)));
-      return 0;
-    }
-    const txn = new Transaction(txnLog(root));
-    txn.run("prune", ns ?? "-", `${transitions.length} transitions`, () => {
-      const ids = transitions.map((t) => t.entryId);
-      const byId = new Map(transitions.map((t) => [t.entryId, t]));
-      updateKindsAtomically(
-        ids.map((id) => {
-          const t = byId.get(id);
-          if (t === undefined) {
-            throw new Error(`prune: missing transition for entry ${id}`);
-          }
-          return {
-            nsDir: nsDir(root, t.ns),
-            kind: t.kind as Kind,
-            mutate: (entries) =>
-              entries.map((x) => (x.entryId === id ? { ...x, status: t.to } : x)),
-          };
-        }),
-        () => idx.withTransaction(() => {
-          // Patch status only: a concurrent touch must keep its stats, and a
-          // snapshot write from before the lock would regress them.
-          for (const t of transitions) {
-            idx.patch(t.entryId, { status: t.to });
-          }
-          idx.audit(
-            "prune",
-            ns ?? "-",
-            transitions.map((t) => `${t.entryId}:${t.from}->${t.to}`).join(","),
-          );
-        }),
-      );
-    });
-    console.log(t("prune.applied", String(transitions.length)));
-    return 0;
-  });
+interface ExportRecord {
+  type: "stage1" | "note";
+  rolloutKey?: string;
+  rawMemory?: string;
+  rolloutSummary?: string;
+  rolloutSlug?: string;
+  sourceUpdatedAt?: string;
+  generatedAt?: string;
+  lastUsage?: string | null;
+  usageCount?: number;
+  selectedForPhase2?: boolean;
+  status?: string;
+  id?: string;
+  filename?: string;
+  kind?: string;
+  content?: string;
+  createdAt?: string;
+  applied?: boolean;
 }
 
-async function cmdPin(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { unset: { type: "boolean" } },
-  });
-  const entryId = positionals[0];
-  if (!entryId) {
-    return failUsage(t("pin.missing"));
-  }
-  warnExtraArgs("pin", positionals, 1);
-  const root = rootDir();
-  const pinned = !values.unset;
-  return withIndex(async (idx) => {
-    const entry = idx.get(entryId);
-    if (!entry) {
-      return fail(t("pin.notFound", entryId));
-    }
-    const txn = new Transaction(txnLog(root));
-    txn.run(pinned ? "pin" : "unpin", entry.ns, entryId, () => {
-      const fields: Partial<Entry> = { pinned };
-      if (!pinned) {
-        // Restart the idle clock on unpin: the pinned period did not count
-        // against the entry, so it must not be pruned immediately.
-        fields.lastUsedAt = new Date().toISOString();
-      }
-      updateKindsAtomically(
-        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) =>
-          entries.map((x) => (x.entryId === entryId ? { ...x, ...fields } : x)) }],
-        () => idx.withTransaction(() => {
-          idx.patch(entryId, fields);
-          idx.audit(pinned ? "pin" : "unpin", entry.ns, entryId);
-        }),
-      );
-    });
-    console.log(pinned ? t("pin.done", entryId) : t("unpin.done", entryId));
-    return 0;
-  });
+function serializeStage1(s: Stage1OutputRow): ExportRecord {
+  return {
+    type: "stage1",
+    rolloutKey: s.rolloutKey,
+    rawMemory: s.rawMemory,
+    rolloutSummary: s.rolloutSummary,
+    rolloutSlug: s.rolloutSlug,
+    sourceUpdatedAt: s.sourceUpdatedAt,
+    generatedAt: s.generatedAt,
+    lastUsage: s.lastUsage,
+    usageCount: s.usageCount,
+    selectedForPhase2: s.selectedForPhase2,
+    status: s.status,
+  };
 }
 
-async function cmdRevive(rest: string[]): Promise<number> {
-  const { positionals } = parseArgs({ args: rest, allowPositionals: true });
-  const entryId = positionals[0];
-  if (!entryId) {
-    return failUsage(t("revive.missing"));
-  }
-  warnExtraArgs("revive", positionals, 1);
-  const root = rootDir();
-  return withIndex(async (idx) => {
-    const entry = idx.get(entryId);
-    if (!entry) {
-      return fail(t("revive.notFound", entryId));
-    }
-    const txn = new Transaction(txnLog(root));
-    txn.run("revive", entry.ns, entryId, () => {
-      const fields: Partial<Entry> = { status: "active" as Status, lastUsedAt: new Date().toISOString() };
-      updateKindsAtomically(
-        [{ nsDir: nsDir(root, entry.ns), kind: entry.kind, mutate: (entries) =>
-          entries.map((x) => (x.entryId === entryId ? { ...x, status: "active" as Status } : x)) }],
-        () => idx.withTransaction(() => {
-          idx.patch(entryId, fields);
-          idx.audit("revive", entry.ns, entryId);
-        }),
-      );
-    });
-    console.log(t("revive.done", entryId));
-    return 0;
-  });
+function serializeNote(n: AdHocNoteRow): ExportRecord {
+  return {
+    type: "note",
+    id: n.id,
+    filename: n.filename,
+    kind: n.kind,
+    content: n.content,
+    createdAt: n.createdAt,
+    applied: n.applied,
+  };
 }
 
 async function cmdExport(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { ns: { type: "string" }, kind: { type: "string" }, output: { type: "string" } },
+    options: { output: { type: "string" } },
   });
   warnExtraArgs("export", positionals, 0);
-  let ns: string | undefined;
-  let kind: Kind | undefined;
-  try {
-    ns = nsArg(values.ns as string | undefined);
-    kind = kindArg(values.kind as string | undefined, READONLY_KINDS);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
-  }
-  return withIndex(async (idx) => {
-    const entries = idx.list({ ns, kind, allStatus: true });
-    const text = serializeExport(entries);
+  return withStore(async (idx) => {
+    const records: ExportRecord[] = [
+      ...idx.stageList().map(serializeStage1),
+      ...idx.noteList().map(serializeNote),
+    ];
+    const text = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
     if (values.output) {
-      writeExport(values.output, entries);
-      console.log(t("export.done", String(entries.length), values.output));
+      writeExportFile(values.output, text);
+      console.log(t("export.done", String(records.length), values.output));
     } else {
       process.stdout.write(text);
     }
-    idx.audit("export", ns ?? "-", `${entries.length} entries${values.output ? ` -> ${values.output}` : " -> stdout"}`);
+    idx.audit("export", "-", `${records.length} records${values.output ? ` -> ${values.output}` : " -> stdout"}`);
     return 0;
   });
 }
 
+function writeExportFile(path: string, text: string): void {
+  writeFileSync(path, text, { mode: 0o600 });
+}
+
 async function cmdImport(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { ns: { type: "string" } },
-  });
+  const { positionals } = parseArgs({ args: rest, allowPositionals: true });
   const path = positionals[0];
   if (!path) {
     return failUsage(t("import.missing"));
   }
   warnExtraArgs("import", positionals, 1);
-  const nsOverride = values.ns as string | undefined;
-  if (nsOverride) {
+  const root = rootDir();
+  ensureLayout(root);
+  const raw = readFileSync(path, "utf-8");
+  const records: ExportRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
     try {
-      assertValidNs(nsOverride);
-    } catch (err) {
-      return failUsage(String((err as Error).message));
+      const parsed = JSON.parse(line) as ExportRecord;
+      if (parsed.type === "stage1" || parsed.type === "note") {
+        records.push(parsed);
+      }
+    } catch {
+      void 0;
     }
   }
-  const root = rootDir();
-  return withIndex(async (idx) => {
-    const parsed = readExportFile(path);
-    if (!parsed.length) {
-      return fail(t("import.empty", path));
-    }
-    const plan = planImport(parsed, idx, nsOverride);
-    for (const c of plan.conflicts) {
-      console.log(t("import.conflict", c.entryId, c.ns));
-    }
-    if (plan.conflicts.length) {
-      return fail(t("import.conflictFail", String(plan.conflicts.length)));
-    }
-    const txn = new Transaction(txnLog(root));
-    txn.run("import", nsOverride ?? "-", path, () => {
-      applyImport(plan, idx, root);
-      idx.audit("import", nsOverride ?? "-", `${path}: +${plan.added.length}, skip ${plan.skippedExisting}, dup ${plan.skippedDuplicate}, conflict ${plan.conflicts.length}`);
-    });
-    console.log(t("import.done", String(plan.added.length), String(plan.skippedExisting), String(plan.skippedDuplicate), String(plan.conflicts.length)));
-    return 0;
-  });
-}
-
-async function cmdMerge(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { execute: { type: "boolean" } },
-  });
-  const srcNs = positionals[0];
-  const dstNs = positionals[1];
-  if (!srcNs || !dstNs) {
-    return failUsage(t("merge.missing"));
+  if (!records.length) {
+    return fail(t("import.empty", path));
   }
-  warnExtraArgs("merge", positionals, 2);
-  try {
-    assertValidNs(srcNs);
-    assertValidNs(dstNs);
-  } catch (err) {
-    return failUsage(String((err as Error).message));
-  }
-  const root = rootDir();
-  return withIndex(async (idx) => {
-    // Judge existence by the md truth, not the index: the index can be
-    // legitimately inconsistent (external edits, crashes) and should not
-    // make merge fail or silently no-op.
-    if (!namespaces(root).includes(srcNs)) {
-      return fail(t("merge.srcMissing", srcNs));
+  return withStore(async (idx) => {
+    let added = 0;
+    let skipped = 0;
+    for (const r of records) {
+      if (r.type === "stage1" && r.rolloutKey) {
+        if (idx.stageGet(r.rolloutKey)) {
+          skipped += 1;
+          console.log(t("import.conflict", r.rolloutKey));
+          continue;
+        }
+        idx.stageUpsert({
+          rolloutKey: r.rolloutKey,
+          rawMemory: r.rawMemory ?? "",
+          rolloutSummary: r.rolloutSummary ?? "",
+          rolloutSlug: r.rolloutSlug ?? "rollout",
+          sourceUpdatedAt: r.sourceUpdatedAt ?? new Date().toISOString(),
+        });
+        added += 1;
+      } else if (r.type === "note" && r.id && r.filename) {
+        if (idx.noteList().some((n) => n.id === r.id)) {
+          skipped += 1;
+          continue;
+        }
+        const kind = r.kind === "remember" || r.kind === "forget" || r.kind === "update" ? r.kind : "remember";
+        idx.noteAdd({
+          id: r.id,
+          filename: r.filename,
+          kind,
+          content: r.content ?? "",
+          createdAt: r.createdAt ?? new Date().toISOString(),
+        });
+        try {
+          writeAdHocNoteFile(root, r.filename, r.content ?? "");
+        } catch {
+          // invalid/unsafe filename: DB row kept, file skipped (next consolidate
+          // reports it as pending but harmless).
+        }
+        added += 1;
+      }
     }
-    if (!namespaces(root).includes(dstNs)) {
-      // An explicit destination that does not exist is almost always a typo;
-      // refusing beats silently creating a namespace nobody expects.
-      return fail(t("merge.dstMissing", dstNs));
-    }
-    const src = idx.list({ ns: srcNs, allStatus: true });
-    const dst = idx.list({ ns: dstNs, allStatus: true });
-    const reservedIds = new Set(idx.list({ allStatus: true }).map((e) => e.entryId));
-    const plan = planMerge(src, dst, dstNs, reservedIds);
-    for (const e of plan.toCopy) {
-      console.log(`copy ${e.entryId} ${e.ns}/${e.kind} ${e.content.replaceAll("\n", " ").slice(0, 60)}`);
-    }
-    for (const c of plan.conflicts) {
-      console.log(`conflict ${c.entryId} exists in both with different content (not copied)`);
-    }
-    for (const d of plan.dupsByContent) {
-      console.log(`dup ${d.entryId} content already in ${dstNs} (skipped)`);
-    }
-    if (!values.execute) {
-      console.log(t("merge.dryRun", String(plan.toCopy.length), String(plan.conflicts.length), String(plan.dupsByContent.length)));
-      return 0;
-    }
-    const txn = new Transaction(txnLog(root));
-    txn.run("merge", `${srcNs}->${dstNs}`, `${plan.toCopy.length} copied`, () => {
-      applyMerge(plan, idx, root);
-      idx.audit("merge", `${srcNs}->${dstNs}`, `copied ${plan.toCopy.length}, conflicts ${plan.conflicts.length}`);
-    });
-    console.log(t("merge.done", String(plan.toCopy.length), dstNs));
-    return 0;
-  });
-}
-
-function resolveCurateProvider(): CurateProvider {
-  const env = llmEnv();
-  if (!env.apiKey) {
-    return new NoopProvider();
-  }
-  return new HttpProvider({
-    baseUrl: env.baseUrl,
-    apiKey: env.apiKey,
-    model: env.model,
-  });
-}
-
-async function cmdCurate(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: {
-      execute: { type: "boolean" },
-      ns: { type: "string" },
-      "min-use": { type: "string" },
-      "max-checks": { type: "string" },
-    },
-  });
-  warnExtraArgs("curate", positionals, 0);
-  const root = rootDir();
-  const provider = resolveCurateProvider();
-  const maxChecks = values["max-checks"] ? positiveInt(values["max-checks"], 100, 1000, "max-checks") : undefined;
-  return withIndex(async (idx) => {
-    const plan = await buildCuratePlan(idx, provider, {
-      ns: values.ns as string | undefined,
-      minUseForReeval: values["min-use"] ? positiveInt(values["min-use"], 5, 1_000_000, "min-use") : undefined,
-      maxChecks,
-    });
-    for (const line of formatCuratePlan(plan)) {
-      console.log(line);
-    }
-    if (plan.unparsable > 0) {
-      console.log(t("curate.unparsable", String(plan.unparsable)));
-    }
-    if (plan.checksExhausted) {
-      console.log(t("curate.exhausted", String(maxChecks ?? 100)));
-    }
-    const lines = [
-      t("curate.plan", provider.name, String(plan.reevaluations.length), String(plan.contradictions.length), String(plan.umbrellas.length)),
-    ];
-    if (provider.name === "noop") {
-      lines.push(t("curate.noKeyNote"));
-    }
-    console.log(lines.join("\n"));
-    if (!values.execute) {
-      return 0;
-    }
-    if (provider.name === "noop") {
-      return fail(t("curate.needProvider"));
-    }
-    await applyCuratePlan(idx, root, plan);
-    console.log(t("curate.applied", String(plan.reevaluations.length), String(plan.contradictions.length), String(plan.umbrellas.length)));
+    idx.audit("import", path, `+${added}, skip ${skipped}`);
+    console.log(t("import.done", String(added), String(skipped)));
     return 0;
   });
 }
@@ -915,8 +597,6 @@ async function cmdCodexDaemon(): Promise<number> {
   const socketPath = process.env.MEMCURIO_CODEX_SOCKET
     ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
     : defaultSocketPath(root);
-  // Announce only after the pid lock and socket are actually acquired, so a
-  // double-start fails before printing a misleading "listening" line.
   const daemon = await runCodexDaemon({ socketPath, root });
   console.log(t("daemon.listening", socketPath));
   await daemon.closed;
@@ -939,35 +619,7 @@ async function cmdCodexPlugin(rest: string[]): Promise<number> {
   return 0;
 }
 
-async function cmdIndex(): Promise<number> {
-  const root = rootDir();
-  await generateIndex();
-  console.log(t("index.done", memoryRoot(root)));
-  return 0;
-}
-
-async function cmdBaseline(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { "top-k": { type: "string" } },
-  });
-  const workdir = positionals[0] ?? process.cwd();
-  warnExtraArgs("baseline", positionals, 1);
-  const topK = values["top-k"] ? positiveInt(values["top-k"], 10, 1000, "top-k") : undefined;
-  const root = rootDir();
-  ensureLayout(root);
-  loadConfig(root);
-  await generateIndex();
-  const ns = namespaceFor(workdir);
-  const count = await injectBaseline(workdir, topK);
-  console.log(t("baseline.done", workdir, String(count), ns));
-  return 0;
-}
-
 async function cmdMcp(): Promise<number> {
-  // runServer reports transport/connect failures; surface them as a non-zero
-  // exit instead of being overwritten by the main() exit code.
   return (await runServer()) ? 0 : 1;
 }
 
@@ -987,51 +639,19 @@ async function cmdDoctor(): Promise<number> {
   } catch (err) {
     check(t("doctor.config"), false, String(err));
   }
-  let idx: Index | null = null;
   try {
-    // Doctor performs its own read-only mirror comparison below; do not heal
-    // the mismatch during open or the diagnostic would become false-green.
-    idx = await Index.create(indexDb(root), { verifyFts: false });
-    const counts = idx.counts();
-    const total = countsTotal(counts);
-    check(t("doctor.index"), true, `backend=${idx.backend}, entries=${total}`);
-    const truth = namespaces(root).flatMap((ns) => readAll(nsDir(root, ns)));
-    const indexed = idx.list({ allStatus: true });
-    const indexedById = new Map(indexed.map((e) => [e.entryId, e]));
-    const truthIds = new Set(truth.map((e) => e.entryId));
-    const duplicateIds = truth.length - truthIds.size;
-    check(t("doctor.truthIds"), duplicateIds === 0, duplicateIds ? t("doctor.duplicateIds", String(duplicateIds)) : t("doctor.unique"));
-    const drift = truth.filter((e) => {
-      const row = indexedById.get(e.entryId);
-      return !row || row.ns !== e.ns || row.kind !== e.kind || row.content !== e.content ||
-        row.createdAt !== e.createdAt || row.status !== e.status || row.pinned !== e.pinned;
-    }).length + indexed.filter((e) => !truthIds.has(e.entryId)).length;
-    check(t("doctor.truthIndex"), drift === 0, drift ? t("doctor.mismatch", String(drift)) : t("doctor.aligned", String(truth.length)));
-    if (idx.backend === "trigram") {
-      const ftsCount = idx.driver.get<{ c: number }>("SELECT count(*) AS c FROM fts")?.c ?? 0;
-      const bad = idx.driver.get<{ bad: number }>(
-        `SELECT 1 AS bad FROM (
-          SELECT entry_id, content FROM entries
-          EXCEPT
-          SELECT entry_id, content FROM fts
-        ) LIMIT 1`,
-      ) || idx.driver.get<{ bad: number }>(
-        `SELECT 1 AS bad FROM (
-          SELECT entry_id FROM fts
-          EXCEPT
-          SELECT entry_id FROM entries
-        ) LIMIT 1`,
-      );
-      check(t("doctor.ftsMirror"), ftsCount === indexed.length && !bad, `${ftsCount}/${indexed.length} rows${ftsCount !== indexed.length || bad ? t("doctor.reindexHint") : ""}`);
+    const idx = await Index.create(indexDb(root));
+    try {
+      const stages = idx.stageList();
+      check(t("doctor.index"), true, `${t("doctor.stage1")}: ${stages.length}`);
+      check(t("doctor.memory"), hasWorkspaceChanges(root) === false, hasWorkspaceChanges(root) ? `${t("doctor.drift")} — ${t("doctor.driftHint")}` : "");
+      const pending = new Transaction(txnLog(root)).pending();
+      check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcurio repair)` : t("doctor.noPending"));
+    } finally {
+      idx.close();
     }
-    const pending = new Transaction(txnLog(root)).pending();
-    check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcurio repair)` : t("doctor.noPending"));
   } catch (err) {
     check(t("doctor.index"), false, String(err));
-  } finally {
-    // Close even when a check above threw, so a failing doctor never leaks
-    // the open database handle.
-    idx?.close();
   }
   const socketPath = process.env.MEMCURIO_CODEX_SOCKET
     ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
@@ -1047,24 +667,19 @@ const HELP_CMDS = new Set([
   "init",
   "status",
   "remember",
+  "forget",
   "list",
   "search",
-  "forget",
-  "pin",
-  "revive",
   "prune",
   "curate",
-  "export",
-  "import",
-  "merge",
   "baseline",
-  "index",
   "reindex",
-  "compact",
   "repair",
   "doctor",
   "audit",
   "event",
+  "export",
+  "import",
   "mcp",
   "codex-daemon",
   "codex-plugin",
@@ -1073,7 +688,6 @@ const HELP_CMDS = new Set([
 
 async function cmdHelp(rest: string[]): Promise<number> {
   const cmd = rest[0];
-  // `help -h`/`help --help` are the same as `help` with no argument.
   if (cmd && (cmd === "-h" || cmd === "--help")) {
     console.log(t("usage.main"));
     return 0;
@@ -1122,48 +736,38 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdStatus();
       case "remember":
         return await cmdRemember(rest);
+      case "forget":
+        return await cmdForget(rest);
       case "list":
         return await cmdList(rest);
       case "search":
         return await cmdSearch(rest);
-      case "forget":
-        return await cmdForget(rest);
+      case "prune":
+        return await cmdPrune(rest);
+      case "curate":
+        return await cmdCurate(rest);
+      case "baseline":
+        return await cmdBaseline(rest);
       case "reindex":
         return await cmdReindex(rest);
-      case "compact":
-        return await cmdCompact(rest);
       case "repair":
         return await cmdRepair(rest);
+      case "doctor":
+        return await cmdDoctor();
       case "audit":
         return await cmdAudit(rest);
       case "event":
         return await cmdEvent(rest);
-      case "index":
-        return await cmdIndex();
-      case "baseline":
-        return await cmdBaseline(rest);
-      case "mcp":
-        return await cmdMcp();
-      case "prune":
-        return await cmdPrune(rest);
-      case "pin":
-        return await cmdPin(rest);
-      case "revive":
-        return await cmdRevive(rest);
       case "export":
         return await cmdExport(rest);
       case "import":
         return await cmdImport(rest);
-      case "merge":
-        return await cmdMerge(rest);
-      case "curate":
-        return await cmdCurate(rest);
+      case "mcp":
+        return await cmdMcp();
       case "codex-daemon":
         return await cmdCodexDaemon();
       case "codex-plugin":
         return await cmdCodexPlugin(rest);
-      case "doctor":
-        return await cmdDoctor();
       default:
         console.error(`${t("error.prefix")}${t("help.unknown", cmd)}`);
         return 2;
@@ -1175,13 +779,8 @@ export async function main(argv: string[]): Promise<number> {
       console.error(t("init.hint"));
     }
     if (/file is not a database|not a database/i.test(msg)) {
-      // The shadow index is a rebuildable cache; a corrupted file can only be
-      // recovered by removing it and rebuilding from the md truth.
       console.error(t("corruptIndex.hint"));
     }
-    // Structured classification instead of message sniffing: node:util's
-    // parseArgs reports usage problems via ERR_PARSE_ARGS_* codes, and
-    // CLI-level validation throws UsageError; everything else is runtime.
     const code = (err as NodeJS.ErrnoException)?.code;
     const isUsage =
       err instanceof UsageError ||
