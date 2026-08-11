@@ -62,12 +62,12 @@ export async function searchMemory(
       // Usage tracking: a hit on a rollout summary (or a MEMORY.md line
       // citing one) counts as reuse of that stage-1 output.
       if (rel.startsWith("rollout_summaries/")) {
-        usedKeys.add(rel.replace(/^rollout_summaries\//, "").replace(/\.md$/, ""));
+        usedKeys.add(rel.replace(/^rollout_summaries\//, ""));
       } else {
         for (const m of line.matchAll(/rollout_summaries\/([^\s()]+\.md)/g)) {
           const name = m[1];
           if (name) {
-            usedKeys.add(name.replace(/\.md$/, ""));
+            usedKeys.add(name);
           }
         }
       }
@@ -77,8 +77,8 @@ export async function searchMemory(
   if (usedKeys.size) {
     const idx = await Index.create(indexDb(root));
     try {
-      for (const slug of usedKeys) {
-        const row = idx.stageBySlug(slug);
+      for (const filename of usedKeys) {
+        const row = idx.stageByArtifactFilename(filename);
         if (row) {
           idx.stageSetUsage(row.rolloutKey);
         }

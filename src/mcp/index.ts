@@ -9,6 +9,7 @@ import { addAdHocNote } from "../core/adhoc.js";
 import { Index } from "../core/db.js";
 import { renderMemoryContext, renderReadPathInstructions } from "../core/inject.js";
 import { ensureLayout, indexDb, rootDir } from "../core/paths.js";
+import { redactSecrets } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
 
 /** Keep the MCP server version in lockstep with the package. Resolves for
@@ -53,7 +54,8 @@ export function createServer(): McpServer {
       const idx = await openIndex(root);
       try {
         const result = await searchMemory(root, args.query, args.topK);
-        idx.audit("mcp.search", "-", `${args.query} -> ${result.hits.length} hits${result.blocked ? ` (${result.blocked} filtered)` : ""}`);
+        const safeQuery = redactSecrets(args.query).text;
+        idx.audit("mcp.search", "-", `${safeQuery} -> ${result.hits.length} hits${result.blocked ? ` (${result.blocked} filtered)` : ""}`);
         return text({ hits: result.hits, blocked: result.blocked });
       } finally {
         idx.close();

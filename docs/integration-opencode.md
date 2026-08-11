@@ -1,6 +1,6 @@
 # opencode 插件接入（M3）
 
-> 代码已完成并通过模拟钩子冒烟验证；真实 harness 验证待用户启用后执行。
+> 当前状态：**实验性 / NO-GO for release**。OpenCode 1.18.13 已在隔离项目按全局插件目录完成 server 启动、session 创建/删除、`session_end` durable queue 和 worker 完成态 smoke；真实消息证据、压缩注入、长会话恢复和 provider/model 质量仍待独立验收。记录见 [Harness smoke](verification/2026-08-11-harness-smoke.md)。
 
 ## 1. 能力矩阵（opencode 适配器）
 
@@ -17,14 +17,15 @@
 | 事件 | 动作 |
 |---|---|
 | `session.created` | 登记会话（sessions 表 + 审计） |
-| `message.part.*` | 统计消息 part（去重） |
+| `session.updated` / 任意续接事件 | 插件重启或中途加载时重建缺失的会话 envelope，避免 idle/deleted 最终快照被丢弃 |
+| `message.part.*` | 统计消息 part（去重），保留有界文本作为 EvidenceSnapshot |
 | `tool.execute.after` | 统计工具使用/涉及文件（Phase 1 抽取的 snapshot 输入） |
-| `session.idle` | 无操作（会话统计缓存在内存，抽取在会话结束时触发） |
-| `session.compacted` | 压缩摘要存入内存 snapshot（`adapter.sessionCompacted`，不落盘） |
+| `session.idle` | 组装有界、脱敏 EvidenceSnapshot 并幂等写入 durable extraction queue；worker 异步消费 |
+| `session.compacted` | 拉取最终 messages，刷新有界 EvidenceSnapshot，并把摘要存入内存 snapshot（`adapter.sessionCompacted`） |
 | `experimental.session.compacting` | 注入"长期记忆上下文"（static + 最近 search 命中，即 `adapter.buildCompactionContext`）；`MEMCURIO_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词 |
-| `session.ended`（SDK 事件名为 `session.deleted`） | 组装 RolloutSnapshot → Phase 1 抽取（`stageSession`）：默认经 `MEMCURIO_LLM_*` HTTP 通道（`HttpExtractProvider`），失败/无 key 时为 no-op（不落任何 SESSION.md 复盘） |
+| `session.deleted` | 写入最终 checkpoint 并关闭会话；作为 idle checkpoint 的补充，不依赖用户主动删除才产生任务 |
 
-> Phase 1 抽取：输入是内存中的会话统计与压缩摘要（`buildExtractPrompt`），回复经 `parseExtractReply` 解析入库，**不再向磁盘写 SESSION.md/COMPACT.md**。抽取失败不阻塞会话结束。
+> Phase 1 抽取：输入是最终 messages 加内存中的会话统计与压缩摘要（`buildExtractPrompt`），回复经 `parseExtractReply` 解析入库，**不再向磁盘写 SESSION.md/COMPACT.md**。OpenCode 当前使用独立 HTTP provider；没有 `MEMCURIO_LLM_API_KEY` 时任务进入不计 attempts 的 `blocked`，配置恢复后重新激活；临时 provider 失败保持 pending/processing 并按 lease/backoff 重试。只有结构合法的全空 JSON 是 no-op，无效或被注入策略拒绝的输出会重试/死信，不会伪装成 completed。抽取失败不阻塞会话结束。
 
 ## 3. 安装
 
@@ -46,11 +47,14 @@ cp dist/opencode-memcurio-plugin.js ~/.config/opencode/plugins/memcurio.js
 memcurio baseline .           # 在项目根目录生成/更新 AGENTS.md 记忆区块
 ```
 
-## 4. 验证清单（真实 harness）
+## 4. 验证清单
 
-- [ ] opencode 启动加载插件（日志出现 `[memcurio] info session created`）
-- [ ] 会话结束后 stage1 抽取入库（`memcurio status` 可见 pending 计数；`memcurio curate` 预览 diff）
-- [ ] 读路径注入生效：会话启动携带 memory_summary + MEMORY.md 自检索指引
+- [x] OpenCode 1.18.13 server 按 `~/.config/opencode/plugins/` 加载 bundle 并完成 session lifecycle
+- [x] 空 session 的 deleted checkpoint 入 durable queue，worker 完成 `session_end` noop（无消息时）
+- [x] idle/deleted checkpoint 使用 provider-scoped durable queue；插件启动会 drain 到期任务并安排下一次 wake
+- [ ] 插件重启/lease expiry 的跨进程故障注入
+- [ ] 消息文本脱敏后进入 EvidenceSnapshot 和 stage1（`memcurio curate` 预览 diff）
+- [ ] 读路径注入生效：会话启动携带 memory_summary + MEMORY.md 自检索指引（核心/模拟链路已有回归）
 - [ ] 长会话压缩后决策/约束仍在（compaction 上下文生效）
 - [ ] `MEMCURIO_REPLACE_COMPACTION=1` 下压缩提示词被替换
 

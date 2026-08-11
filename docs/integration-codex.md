@@ -1,6 +1,6 @@
 # codex 适配器（M4）
 
-> 代码已完成（hook 协议按 codex 源码 schema 核实），冒烟通过；真实 harness 验证待启用。
+> 当前状态：**实验性 / NO-GO for release**。Codex 0.147.0 已在隔离环境完成 marketplace 发现/安装、生成插件缓存校验、SessionStart、Stop、SessionEnd Hook/daemon smoke；真实模型抽取、长会话、多进程故障恢复和生产信任策略仍待独立验收。记录见 [Harness smoke](verification/2026-08-11-harness-smoke.md)。
 > 生成工具：`memcurio codex-plugin [out-dir]`；daemon：`memcurio codex-daemon`。
 
 ## 1. 架构：1 daemon + N 薄壳（规避 hook 冷启动）
@@ -17,10 +17,13 @@ hook.js（薄壳，~50ms）
 codex-daemon.js（常驻，持会话状态）
   │
   ▼
-MemcurioAdapter（会话记账 / 注入 / Phase 1 抽取）
+MemcurioAdapter（会话记账 / EvidenceSnapshot / durable queue / 注入）
+  │
+  ▼
+worker（lease/retry）→ Phase 1 codex exec（`--disable hooks`）→ stage1
 ```
 
-- hook 首次调用时若 daemon 未启动，自动 `bun daemon.js` 拉起（detached）并重试
+- hook 首次调用时若 daemon 未启动，自动 `bun daemon.js` 拉起（detached）并重试；SessionEnd 会先把受限、脱敏的输入原子写入 `state/codex-spool/*.json`，因此冷启动或 daemon 短暂不可用时仍可立即确认，daemon 启动后再 drain spool
 - daemon 监听 `~/.memcurio/state/codex.sock`（`MEMCURIO_CODEX_SOCKET` 可覆盖），**chmod 600 + 随机 token 握手**（token 存 `state/codex.token`，daemon 首写者胜、hook 每次启动读取）
 - hook 失败时向 stderr 输出可操作信息并追加 `state/hook.log`
 - daemon 对 `PostToolUse`/`UserPromptSubmit` 按 `tool_use_id`/`turn_id` 去重（10 分钟窗口），hook 重试不会重复记账
@@ -28,10 +31,11 @@ MemcurioAdapter（会话记账 / 注入 / Phase 1 抽取）
 - `PostCompact` 按 `turn_id+transcript_path+trigger` 去重（窗口 130s，覆盖抽取最长耗时），两次独立压缩（不同 turn_id）都会更新会话压缩摘要（内存 snapshot.summary）
 - daemon 单实例由 `state/codex.sock.pid` pid 锁保证（存活 pid 绝不抢锁、绝不删除其 socket）；token 首写者胜
 - daemon 无连接 6 小时自动退出（防孤儿残留）；下次 hook 调用自动拉起
-- 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续
-- 会话结束抽取：SessionEnd 后经 `codex exec --json --ephemeral --skip-git-repo-check`（`codexExecExtract`）用 codex 自身模型跑 Phase 1 抽取（无需额外 API key）；输入为内存中的会话统计与压缩摘要，失败依次降级 env LLM / no-op（不抽取）；`MEMCURIO_CODEX_REFLECT=0` 关闭该通道，`MEMCURIO_CODEX_BIN` 指定 codex 路径
-- 抽取子会话不会把事件回打回本 daemon：`hooks.disabled` 不是 codex 配置键（会被静默忽略），因此对每个已注册事件显式传 `-c hooks.events.<Event>=[]` 清空（CLI override 层最后合并、空数组整体覆盖用户配置）。注意：该清空只作用于 config.toml 内联层——若 hooks 是通过 **hooks.json** 或 managed requirements 配置的，`-c` 无法覆盖，抽取子会话仍会回打事件；此类用户请用 `MEMCURIO_CODEX_REFLECT=0` 关闭抽取通道
-- SessionEnd 的 3s 上限是 codex 硬限制：hook 侧 2.5s 内部 deadline 不可通过 `MEMCURIO_CODEX_DEADLINE_MS` 放宽（该变量只作用于常规事件）；冷启动首个事件恰为 SessionEnd 时会丢弃该事件，会话行由下次 daemon 启动时的 `closeStaleSessions` 补关
+- 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续；daemon 启动时会恢复过期/到期的 durable queue，并为未来的 backoff/lease expiry 安排下一次唤醒
+- 会话 checkpoint：Hook 先将 SessionEnd spool 原子落盘；daemon 再把 Stop/SessionEnd 的有界、脱敏事件与 transcript 尾部写入 provider-scoped SQLite `extraction_jobs`，由 worker 经 `codex exec --json --ephemeral --skip-git-repo-check`（`codexExecExtract`）用 codex 自身模型跑 Phase 1 抽取；任务使用幂等键、claim token fencing、lease 续租、指数退避和 dead-letter，`MEMCURIO_CODEX_REFLECT=0` 关闭该通道，`MEMCURIO_CODEX_BIN` 指定 codex 路径
+- 抽取子会话使用 Codex 当前支持的 `codex exec --disable hooks`，避免项目、插件和 managed hook 配置回打本 daemon；fake CLI 回归测试会断言该参数存在
+- SessionEnd 默认 1s、最大 3s：hook 先原子落 spool，再只做一次最多 150ms 的 daemon 通知；daemon 不可用时立即返回，500ms 内部上限不可通过 `MEMCURIO_CODEX_DEADLINE_MS` 放宽（该变量只作用于常规事件）
+- active spool 受 4096 条/64MiB 总量与 8MiB 单条上限保护；损坏记录隔离为 `.dead`，保留 30 天且另有 256 条/64MiB 上限；`doctor` 输出 active/quarantined/bytes
 
 ## 2. 事件映射（协议按 codex 源码 `codex-rs/hooks/schema/generated/*.schema.json` 核实）
 
@@ -41,19 +45,19 @@ MemcurioAdapter（会话记账 / 注入 / Phase 1 抽取）
 | `UserPromptSubmit` | cwd, session_id, prompt, turn_id | 消息计数；**按 prompt 动态检索注入**（searchMemory top-K） | `hookSpecificOutput.additionalContext` |
 | `PostToolUse` | tool_name, tool_input | 工具/文件记账（Phase 1 抽取 snapshot 输入） | 无注入 |
 | `PreCompact` | cwd, session_id, transcript_path | 无操作 | ⚠️ 当前协议输出**无注入通道** |
-| `PostCompact` | cwd, session_id, transcript_path, trigger | 标记会话已压缩；更新内存压缩摘要（`sessionCompacted`，**同步等待**：hook 最长等 ~125s，daemon 内抽取链有 120s 总预算；若 hook 超时其报错但 daemon 仍在后台完成，inFlight 去重保证不重复）。SessionEnd 时的抽取默认经 `codex exec --json --ephemeral` 用 **codex 自身模型**（输出为 JSONL 事件流，源码核实：最终回复为最后一条**可解析为抽取 JSON** 的 `item.completed` 且 `item.type=agent_message`，全不可解析时取第一条；`turn.failed`/`error`/非零退出即降级） | 无 |
-| `Stop` | cwd, session_id, turn_id | 无操作（会话统计已在内存，抽取在 SessionEnd 触发） | 无 |
-| `SessionEnd` | cwd, session_id | 组装 RolloutSnapshot → Phase 1 抽取（stageSession）+ 会话关闭 | 无 |
+| `PostCompact` | cwd, session_id, transcript_path, trigger | 标记会话已压缩；读取有界 transcript 尾部并加入 EvidenceSnapshot | 无 |
+| `Stop` | cwd, session_id, turn_id | 组装 idle checkpoint 入 durable queue；worker 异步消费 | 无 |
+| `SessionEnd` | cwd, session_id, transcript_path | Hook 原子写 spool；daemon 恢复后组装最终 EvidenceSnapshot，并将 queue + 会话关闭放进同一 DB transaction；worker 异步抽取 | 无 |
 | `SubagentStart/Stop` | agent_id | 无操作（continue 透传） | 无 |
 
 ## 3. 安装
 
 ```bash
-# 1. 生成插件包（daemon/hook/MCP 单文件 bundle + plugin.json + 全事件 config.toml 片段）
+# 1. 在最终安装位置生成插件包（daemon/hook/MCP bundle + .codex-plugin/plugin.json + hooks/hooks.json + .mcp.json + TOML fallback）
 memcurio codex-plugin ~/.codex/plugins/memcurio
 
-# 2a. 首选：plugin.json 自动加载（codex 插件目录）
-#     ~/.codex/plugins/memcurio/plugin.json 已就位
+# 2a. 首选：插件 manifest 自动发现/加载
+#     ~/.codex/plugins/memcurio/.codex-plugin/plugin.json 已就位
 
 # 2b. 备选：合并 ~/.codex/plugins/memcurio/codex-config.toml.snippet 到 ~/.codex/config.toml
 #     （snippet 已包含全部 7 个主事件，无需手写；SubagentStart/Stop 协议透传）
@@ -74,11 +78,15 @@ memcurio codex-daemon
 | `BUN_BIN` | hook/生成插件使用的 bun 可执行文件路径（默认自动探测） |
 | `MEMCURIO_LANG` | hook 失败提示语言（zh/en，默认随 LANG） |
 
-## 4. 验证清单（真实 harness）
+## 4. 验证清单
 
-- [ ] `codex` 会话启动后记忆注入（SessionStart additionalContext 生效）
+- [x] 隔离 Codex 0.147.0 marketplace 发现、安装、插件缓存文件校验
+- [x] `codex` Hook SessionStart 返回 `hookSpecificOutput.additionalContext`
+- [x] Stop/SessionEnd Hook 返回合法 JSON，并在 daemon 中留下 durable extraction job
 - [ ] 提问后动态记忆注入（UserPromptSubmit）
-- [ ] 会话结束后 Phase 1 抽取入库（`memcurio status` 可见 pending 计数；`memcurio curate` 预览 diff）
+- [x] SessionEnd daemon 不可用时由本地 spool 确认，daemon 重启后 drain 并恢复 queue（模拟/回归覆盖）
+- [ ] backoff/lease expiry 的跨进程故障注入
+- [ ] transcript/user prompt 证据脱敏后进入 Stage 1（需真实 transcript + provider）
 - [ ] 压缩不丢决策（PostCompact 后下一轮 SessionStart(source=compact) 重新注入）
 
 ## 5. 与设计文档的差异（源码核实修正）

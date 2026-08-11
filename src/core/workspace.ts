@@ -1,12 +1,14 @@
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
-import { adHocNotesDir, baselineDir, memoryWorkspace, resolveWorkspacePath, rolloutSummariesDir } from "./paths.js";
+import { adHocNotesDir, baselineDir, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
 import { createHash } from "node:crypto";
 
 export const MEMORY_DOCS = ["MEMORY.md", "memory_summary.md", "raw_memories.md"] as const;
+export const MAX_WORKSPACE_FILE_BYTES = 1024 * 1024;
+export const MAX_WORKSPACE_FILES = 4_096;
 
 /** Workspace-relative path sanity: "a/b.md" ok, absolute/.. rejected. */
 export function assertWorkspaceRel(rel: string): string {
@@ -28,13 +30,36 @@ function lockPathFor(root: string, rel: string): string {
 export function readWorkspaceText(root: string, rel: string): string {
   const safe = assertWorkspaceRel(rel);
   const path = resolveWorkspacePath(root, safe);
+  let fd: number | undefined;
   try {
-    return readFileSync(path, "utf-8");
+    fd = openSync(path, "r");
+    if (fstatSync(fd).size > MAX_WORKSPACE_FILE_BYTES) {
+      throw new Error(`workspace file exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit: ${safe}`);
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_WORKSPACE_FILE_BYTES - total + 1));
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) {
+        break;
+      }
+      total += read;
+      if (total > MAX_WORKSPACE_FILE_BYTES) {
+        throw new Error(`workspace file exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit: ${safe}`);
+      }
+      chunks.push(buffer.subarray(0, read));
+    }
+    return Buffer.concat(chunks, total).toString("utf-8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return "";
     }
     throw err;
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
   }
 }
 
@@ -63,7 +88,7 @@ export function deleteWorkspaceText(root: string, rel: string): void {
 
 /** Recursively list workspace .md files (skipping .baseline and dot dirs). */
 export function listWorkspaceFiles(root: string, sub?: string): string[] {
-  const base = sub ? resolve(memoryWorkspace(root), sub) : memoryWorkspace(root);
+  const base = sub ? resolveWorkspacePath(root, assertWorkspaceRel(sub)) : memoryWorkspace(root);
   const out: string[] = [];
   const walk = (dir: string, depth: number): void => {
     if (depth > 4) {
@@ -84,6 +109,9 @@ export function listWorkspaceFiles(root: string, sub?: string): string[] {
         walk(p, depth + 1);
       } else if (e.name.endsWith(".md")) {
         out.push(relative(memoryWorkspace(root), p));
+        if (out.length > MAX_WORKSPACE_FILES) {
+          throw new Error(`workspace contains more than ${MAX_WORKSPACE_FILES} markdown files`);
+        }
       }
     }
   };
@@ -188,16 +216,9 @@ export function diffWorkspace(rel: string, before: string, after: string): Works
 // -------------------------------------------------------------- baseline
 
 export function saveBaseline(root: string): void {
-  const dir = baselineDir(root);
   for (const rel of [...MEMORY_DOCS, ...listWorkspaceFiles(root, "rollout_summaries")]) {
     const content = readWorkspaceText(root, rel);
-    const target = join(dir, rel);
-    const tmp = `${target}.tmp`;
-    try {
-      unlinkSync(tmp);
-    } catch {
-      void 0;
-    }
+    const target = resolveWorkspacePath(root, `.baseline/${rel}`);
     // Copy with the same atomic-write discipline (tmp + rename) so a crash
     // never leaves a torn baseline.
     atomicWrite(target, content);
@@ -208,6 +229,7 @@ export function loadBaseline(root: string): Record<string, string> {
   const dir = baselineDir(root);
   const out: Record<string, string> = {};
   const base = resolve(dir);
+  let files = 0;
   const walk = (d: string, depth: number): void => {
     if (depth > 4) {
       return;
@@ -223,8 +245,16 @@ export function loadBaseline(root: string): Record<string, string> {
       if (e.isDirectory()) {
         walk(p, depth + 1);
       } else if (e.name.endsWith(".md")) {
+        files += 1;
+        if (files > MAX_WORKSPACE_FILES) {
+          throw new Error(`workspace baseline contains more than ${MAX_WORKSPACE_FILES} markdown files`);
+        }
         try {
-          out[relative(base, p)] = readFileSync(p, "utf-8");
+          const rel = relative(base, p);
+          // Resolve through the workspace guard before reading: a hand-placed
+          // symlink in .baseline must not turn repair/revision checks into an
+          // arbitrary external file read.
+          out[rel] = readWorkspaceText(root, `.baseline/${rel}`);
         } catch {
           void 0;
         }
@@ -233,6 +263,30 @@ export function loadBaseline(root: string): Record<string, string> {
   };
   walk(base, 0);
   return out;
+}
+
+/** Restore a baseline snapshot after a failed multi-file consolidation. The
+ *  baseline is not a database transaction, so the caller supplies the last
+ *  known-good contents and this function removes files introduced by the
+ *  failed save as well. */
+export function restoreBaseline(root: string, snapshot: Record<string, string>): void {
+  const current = loadBaseline(root);
+  const rels = new Set([...Object.keys(current), ...Object.keys(snapshot)]);
+  for (const rel of rels) {
+    const safe = assertWorkspaceRel(rel);
+    const target = resolveWorkspacePath(root, `.baseline/${safe}`);
+    if (Object.hasOwn(snapshot, safe)) {
+      atomicWrite(target, snapshot[safe] ?? "");
+    } else {
+      try {
+        unlinkSync(target);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw err;
+        }
+      }
+    }
+  }
 }
 
 /** True when any managed doc differs from the last successful baseline. */
@@ -248,34 +302,28 @@ export function hasWorkspaceChanges(root: string): boolean {
 
 // ---------------------------------------------------- rollout summaries
 
-export function rolloutSummaryPath(root: string, slug: string): string {
-  const safe = assertWorkspaceRel(slug);
+export function rolloutSummaryPath(root: string, filename: string): string {
+  const safe = assertWorkspaceRel(filename);
   if (!safe.endsWith(".md")) {
-    throw new Error(`rollout summary slug must end in .md: ${JSON.stringify(slug)}`);
+    throw new Error(`rollout summary filename must end in .md: ${JSON.stringify(filename)}`);
   }
-  return join(rolloutSummariesDir(root), safe);
+  return resolveWorkspacePath(root, `rollout_summaries/${safe}`);
 }
 
-export function readRolloutSummary(root: string, slug: string): string {
-  try {
-    return readFileSync(rolloutSummaryPath(root, slug), "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return "";
-    }
-    throw err;
-  }
+export function readRolloutSummary(root: string, filename: string): string {
+  rolloutSummaryPath(root, filename);
+  return readWorkspaceText(root, `rollout_summaries/${filename}`);
 }
 
-export function writeRolloutSummary(root: string, slug: string, content: string): void {
-  const path = rolloutSummaryPath(root, slug);
-  withFileLock(lockPathFor(root, `rollout_summaries/${slug}`), () => {
+export function writeRolloutSummary(root: string, filename: string, content: string): void {
+  const path = rolloutSummaryPath(root, filename);
+  withFileLock(lockPathFor(root, `rollout_summaries/${filename}`), () => {
     atomicWrite(path, content);
   });
 }
 
-export function deleteRolloutSummary(root: string, slug: string): void {
-  deleteWorkspaceText(root, `rollout_summaries/${slug}`);
+export function deleteRolloutSummary(root: string, filename: string): void {
+  deleteWorkspaceText(root, `rollout_summaries/${filename}`);
 }
 
 export function rolloutSlugs(root: string): string[] {
@@ -292,18 +340,12 @@ export function noteFilePath(root: string, filename: string): string {
   if (!NOTE_FILENAME_RE.test(filename)) {
     throw new Error(`invalid ad-hoc note filename: ${JSON.stringify(filename)}`);
   }
-  return join(adHocNotesDir(root), filename);
+  return resolveWorkspacePath(root, `extensions/ad_hoc/notes/${filename}`);
 }
 
 export function readAdHocNoteFile(root: string, filename: string): string {
-  try {
-    return readFileSync(noteFilePath(root, filename), "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return "";
-    }
-    throw err;
-  }
+  noteFilePath(root, filename);
+  return readWorkspaceText(root, `extensions/ad_hoc/notes/${filename}`);
 }
 
 export function writeAdHocNoteFile(root: string, filename: string, content: string): void {
@@ -313,6 +355,10 @@ export function writeAdHocNoteFile(root: string, filename: string, content: stri
   });
 }
 
+export function deleteAdHocNoteFile(root: string, filename: string): void {
+  deleteWorkspaceText(root, `extensions/ad_hoc/notes/${filename}`);
+}
+
 export function listAdHocNoteFiles(root: string): string[] {
   let names: string[];
   try {
@@ -320,7 +366,11 @@ export function listAdHocNoteFiles(root: string): string[] {
   } catch {
     return [];
   }
-  return names.filter((n) => n.endsWith(".md") && NOTE_FILENAME_RE.test(n)).sort();
+  const valid = names.filter((n) => n.endsWith(".md") && NOTE_FILENAME_RE.test(n)).sort();
+  if (valid.length > MAX_WORKSPACE_FILES) {
+    throw new Error(`workspace contains more than ${MAX_WORKSPACE_FILES} ad-hoc note files`);
+  }
+  return valid;
 }
 
 /** True when a workspace directory exists (guard for stat/read). */

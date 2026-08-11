@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -239,6 +239,7 @@ describe("atomicWrite", () => {
   test("preserves existing file permissions", async () => {
     const path = join(dir, "target.md");
     writeFileSync(path, "old", { mode: 0o644 });
+    chmodSync(path, 0o644);
     atomicWrite(path, "new");
     const { statSync } = await import("node:fs");
     expect(statSync(path).mode & 0o777).toBe(0o644);

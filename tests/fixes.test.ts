@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { runCli } from "./helpers.js";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,6 +73,21 @@ describe("repair", () => {
     expect(fix.code).toBe(0);
     const doctor = await runCli("doctor");
     expect(doctor.code).toBe(0);
+  });
+
+  test("repair reports an orphaned generation even when the transaction log is empty", async () => {
+    await runCli("init");
+    const generation = "a".repeat(16);
+    const generationDir = join(dir, "state", "consolidation", generation);
+    mkdirSync(generationDir, { recursive: true });
+    writeFileSync(join(generationDir, "manifest.json"), "{\"broken\":true}\n");
+    const r = await runCli("repair");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("generation");
+    expect(r.out).toContain(generation);
+    const fix = await runCli("repair", "--execute");
+    expect(fix.code).toBe(1);
+    expect(fix.err).toContain("malformed");
   });
 });
 

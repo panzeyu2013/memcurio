@@ -9,8 +9,7 @@ import { listWorkspaceFiles } from "../src/core/workspace.js";
 
 let dir: string;
 let prevRoot: string | undefined;
-let prevLlmUrl: string | undefined;
-let llmRefuser: ReturnType<typeof startLlmRefuser> | null = null;
+let prevLlmKey: string | undefined;
 const PROJ = "/tmp/MyProject";
 
 interface FakePlugin {
@@ -27,37 +26,40 @@ async function makeFakePlugin(client: unknown): Promise<FakePlugin> {
   return plugin as unknown as FakePlugin;
 }
 
-/** A local HTTP server that answers 401: llmChat throws on non-ok without
- *  retrying, so the default HttpExtractProvider no-ops quickly (no key). */
-function startLlmRefuser(): { url: string; stop(): void } {
-  const server = Bun.serve({
-    port: 0,
-    fetch: () => new Response("unauthorized", { status: 401 }),
-  });
-  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+async function waitForAudit(action: string, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      if (idx.rawAll<{ action: string }>("SELECT action FROM audit WHERE action = ?", [action]).length > 0) {
+        return;
+      }
+    } finally {
+      idx.close();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for audit action ${action}`);
 }
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "oc-"));
   prevRoot = process.env.MEMCURIO_ROOT;
   process.env.MEMCURIO_ROOT = dir;
-  prevLlmUrl = process.env.MEMCURIO_LLM_BASE_URL;
-  llmRefuser = startLlmRefuser();
-  process.env.MEMCURIO_LLM_BASE_URL = llmRefuser.url;
+  prevLlmKey = process.env.MEMCURIO_LLM_API_KEY;
+  delete process.env.MEMCURIO_LLM_API_KEY;
 });
 
 afterEach(() => {
-  llmRefuser?.stop();
-  llmRefuser = null;
   if (prevRoot === undefined) {
     delete process.env.MEMCURIO_ROOT;
   } else {
     process.env.MEMCURIO_ROOT = prevRoot;
   }
-  if (prevLlmUrl === undefined) {
-    delete process.env.MEMCURIO_LLM_BASE_URL;
+  if (prevLlmKey === undefined) {
+    delete process.env.MEMCURIO_LLM_API_KEY;
   } else {
-    process.env.MEMCURIO_LLM_BASE_URL = prevLlmUrl;
+    process.env.MEMCURIO_LLM_API_KEY = prevLlmKey;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -120,13 +122,16 @@ describe("MemcurioPlugin event handling", () => {
     idx.close();
 
     await plugin.event({ event: { type: "session.deleted", properties: { info: { id: "s1" } } } });
+    await waitForAudit("extract.queue_blocked");
     const idx2 = await Index.create(indexDb(dir));
     const done = idx2.driver.get<{ ended_at: string | null }>(
       "SELECT ended_at FROM sessions WHERE session_id = 's1'",
     );
     expect(done?.ended_at).toBeTruthy();
-    // The default HTTP extractor no-ops without a key (401 refuser above).
-    expect(idx2.rawAll<{ ns: string }>("SELECT ns FROM audit WHERE action = 'extract.noop'").some((r) => r.ns === "opencode")).toBe(true);
+    // OpenCode currently uses the standalone HTTP provider. Without an API
+    // key the durable job waits for configuration without consuming attempts.
+    expect(idx2.extractionList("blocked").some((job) => job.provider === "http" && job.attempts === 0)).toBe(true);
+    expect(idx2.rawAll<{ ns: string }>("SELECT ns FROM audit WHERE action = 'extract.queue_complete'")).toEqual([]);
     idx2.close();
     // Compaction and session end write nothing to the memory workspace.
     expect(listWorkspaceFiles(dir)).toEqual([]);
@@ -150,9 +155,9 @@ describe("MemcurioPlugin event handling", () => {
     });
     await plugin.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
     await plugin.event({ event: { type: "session.deleted", properties: { info: { id: "s1" } } } });
+    await waitForAudit("extract.queue_blocked");
     const idx = await Index.create(indexDb(dir));
-    const noop = idx.rawAll<{ detail: string }>("SELECT detail FROM audit WHERE action = 'extract.noop'");
-    expect(noop).not.toEqual([]);
+    expect(idx.extractionList("blocked")).not.toEqual([]);
     idx.close();
   });
 
@@ -173,6 +178,82 @@ describe("MemcurioPlugin event handling", () => {
     );
     expect(done?.ended_at).toBeTruthy();
     idx.close();
+  });
+
+  test("idle reconstructs a session after plugin restart and preserves the final snapshot", async () => {
+    const fakeClient = {
+      app: { log: async () => ({}) },
+      session: {
+        messages: async () => ({
+          data: [{
+            info: { id: "m-resumed", sessionID: "resumed", role: "user" },
+            parts: [{ id: "p-resumed", messageID: "m-resumed", type: "text", text: "keep the resumed-session decision" }],
+          }],
+        }),
+      },
+    };
+    const plugin = await makeFakePlugin(fakeClient);
+
+    // A plugin/app restart can deliver idle without replaying session.created.
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "resumed" } } });
+    await waitForAudit("extract.queue_blocked");
+
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.driver.get("SELECT session_id FROM sessions WHERE session_id='resumed'")).not.toBeNull();
+      const jobs = idx.extractionList("blocked");
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.snapshotJson).toContain("keep the resumed-session decision");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("idle snapshots replace streamed fragments, use Message.role, and remove deleted parts", async () => {
+    const fakeClient = {
+      app: { log: async () => ({}) },
+      session: {
+        messages: async () => ({
+          data: [{
+            info: { id: "m1", sessionID: "s1", role: "assistant" },
+            parts: [{ id: "p1", messageID: "m1", type: "text", text: "Hello important decision" }],
+          }],
+        }),
+      },
+    };
+    const plugin = await makeFakePlugin(fakeClient);
+    await plugin.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } });
+    await plugin.event({
+      event: {
+        type: "message.part.updated",
+        properties: { part: { id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "H" } },
+      },
+    });
+    await plugin.event({
+      event: {
+        type: "message.part.updated",
+        properties: { part: { id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "Hello important decision" } },
+      },
+    });
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const jobs = idx.extractionList();
+      expect(jobs).not.toEqual([]);
+      const snapshot = JSON.parse(jobs[0]?.snapshotJson ?? "{}") as {
+        evidence?: { items?: Array<{ kind?: string; text?: string }> };
+      };
+      expect(snapshot.evidence?.items).toEqual([
+        { kind: "assistant", text: "Hello important decision" },
+      ]);
+      expect(JSON.stringify(snapshot)).not.toContain('"text":"H"');
+    } finally {
+      idx.close();
+    }
+    await plugin.event({
+      event: { type: "message.part.removed", properties: { sessionID: "s1", messageID: "m1", partID: "p1" } },
+    });
+    expect(partIdFor({ type: "message.part.removed", properties: { sessionID: "s1", partID: "p1" } })).toBe("p1");
   });
 
   test("handler failures are reported, not thrown", async () => {

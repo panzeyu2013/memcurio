@@ -31,6 +31,8 @@ jobs:
       # Explicitly verify the build artifacts exist (prepare already built
       # them, so this is a no-op guard against a broken prepare).
       - run: test -f dist/cli/index.js -a -f dist/opencode-memcurio-plugin.js
+      - run: bun run pack:check
+      - run: bun run eval:lexical
       # Validate the published tarball contents (files list / prepare) so a
       # broken `files` field is caught in CI, not at publish time. Note: the
       # command is `bun pm pack` — plain `bun pack` is not a bun subcommand.

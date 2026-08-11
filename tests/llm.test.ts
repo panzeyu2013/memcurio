@@ -136,4 +136,13 @@ describe("llmChat", () => {
       })) as unknown as typeof fetch;
     await expect(llmChat("system", "user", { apiKey: "k" })).resolves.toBe("");
   });
+
+  test("rejects an oversized successful response before parsing it", async () => {
+    globalThis.fetch = (async () =>
+      new Response("x".repeat(2 * 1024 * 1024 + 1), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+    await expect(llmChat("system", "user", { apiKey: "k" })).rejects.toThrow(/byte limit/);
+  });
 });

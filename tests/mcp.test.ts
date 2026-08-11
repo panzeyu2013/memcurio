@@ -135,6 +135,21 @@ describe("memcurio MCP server", () => {
     });
   });
 
+  test("memory_search redacts secrets from the audit detail", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", "- deployment uses a private token\n");
+    const secret = "sk-proj-1234567890abcdefghijklmnop";
+    await withClient(async (client) => {
+      await client.callTool({
+        name: "memory_search",
+        arguments: { query: secret, topK: 5 },
+      });
+      const audit = await readAudit();
+      const searchAudit = audit.find((r) => r.action === "mcp.search");
+      expect(searchAudit?.detail).toContain("[REDACTED]");
+      expect(searchAudit?.detail).not.toContain(secret);
+    });
+  });
+
   test("memory_remember writes a note file and a DB row", async () => {
     await withClient(async (client) => {
       const note = parseText(

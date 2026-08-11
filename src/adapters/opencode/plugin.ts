@@ -22,6 +22,12 @@ export function sessionIdFor(event: { type?: string; properties?: unknown }): st
     case "session.compacted": {
       return typeof p.sessionID === "string" ? p.sessionID : "";
     }
+    case "message.updated": {
+      const info = p.info as { sessionID?: unknown } | undefined;
+      return typeof info?.sessionID === "string" ? info.sessionID : "";
+    }
+    case "message.removed":
+      return typeof p.sessionID === "string" ? p.sessionID : "";
     case "message.part.updated": {
       const part = p.part as { sessionID?: unknown } | undefined;
       return typeof part?.sessionID === "string" ? part.sessionID : "";
@@ -37,13 +43,17 @@ export function sessionIdFor(event: { type?: string; properties?: unknown }): st
 }
 
 export function partIdFor(event: { type?: string; properties?: unknown }): string {
-  const part = properties(event).part as { id?: unknown } | undefined;
-  return typeof part?.id === "string" ? part.id : "";
+  const p = properties(event);
+  const part = p.part as { id?: unknown } | undefined;
+  if (typeof part?.id === "string") {
+    return part.id;
+  }
+  return typeof p.partID === "string" ? p.partID : "";
 }
 
 interface SessionMessage {
-  info: { summary?: boolean };
-  parts: Array<{ type?: string; text?: string; synthetic?: boolean }>;
+  info: { id?: string; sessionID?: string; role?: string; summary?: boolean };
+  parts: Array<{ id?: string; messageID?: string; type?: string; text?: string; synthetic?: boolean }>;
 }
 
 function textOf(m: SessionMessage): string | undefined {
@@ -80,7 +90,54 @@ interface SessionClient {
 // Only the tail of the transcript matters for summaries.
 const MESSAGES_LIMIT = 50;
 
+function messageKind(role: unknown): "user" | "assistant" | "event" {
+  return role === "user" ? "user" : role === "assistant" ? "assistant" : "event";
+}
+
+function evidenceFromMessages(messages: SessionMessage[]): Array<{
+  partId: string;
+  messageId?: string;
+  kind: "user" | "assistant" | "event";
+  text?: string;
+}> {
+  const out: Array<{ partId: string; messageId?: string; kind: "user" | "assistant" | "event"; text?: string }> = [];
+  messages.forEach((message, messageIndex) => {
+    const messageId = message.info?.id;
+    const kind = messageKind(message.info?.role);
+    message.parts.forEach((part, partIndex) => {
+      if (typeof part.text !== "string" || !part.text.trim()) {
+        return;
+      }
+      const partId = part.id || `${messageId ?? `message-${messageIndex}`}:part-${partIndex}`;
+      out.push({
+        partId,
+        messageId: part.messageID || messageId,
+        kind,
+        text: part.text,
+      });
+    });
+  });
+  return out;
+}
+
+async function fetchMessages(client: unknown, sessionId: string): Promise<SessionMessage[] | undefined> {
+  const session = (client as { session?: SessionClient }).session;
+  if (!session?.messages) {
+    return undefined;
+  }
+  try {
+    const result = await session.messages({
+      path: { id: sessionId },
+      query: { limit: MESSAGES_LIMIT },
+    });
+    return result.data ?? [];
+  } catch {
+    return undefined;
+  }
+}
+
 export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
+  const root = rootDir();
   const recentCompactions = new Map<string, { summary: string; ts: number }>();
   // opencode may dispatch events for the same session concurrently; serialize
   // per session so DB writes (session.created vs message.part.*) never
@@ -93,6 +150,8 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
     return next;
   };
   const adapter = new MemcurioAdapter({
+    durableQueue: true,
+    root,
     log: (level, message, extra) => {
       void client.app
         .log({ body: { service: "memcurio", level, message, extra } })
@@ -107,7 +166,7 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
   // Close this host's session rows left open by a crashed/restarted harness
   // process (codex's daemon does the same at startup).
   try {
-    const idx = await Index.create(indexDb(rootDir()));
+    const idx = await Index.create(indexDb(root));
     try {
       idx.closeAllSessions(new Date().toISOString(), "opencode");
     } finally {
@@ -116,6 +175,9 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
   } catch {
     // non-fatal: another process may hold the DB during startup
   }
+  // Resume jobs left by a previous plugin process. The call is deliberately
+  // detached so plugin initialization never waits for a model/provider.
+  void adapter.processPendingExtractions().catch(report);
   return {
     event: async ({ event }) => {
       const type = event.type;
@@ -125,23 +187,32 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
       }
       return runSerial(id, async () => {
         try {
-          if (type === "session.created") {
-            await adapter.sessionCreated(id, directory, "opencode");
+          // OpenCode does not replay session.created when a plugin is loaded
+          // into an already-running conversation. Reconstruct the local
+          // envelope from any event carrying a session id so authoritative
+          // idle/deleted message snapshots cannot be silently discarded.
+          const info = properties(event).info as { directory?: unknown } | undefined;
+          const workdir = typeof info?.directory === "string" ? info.directory : directory;
+          if (!adapter.state(id)) {
+            await adapter.sessionCreated(id, workdir, "opencode");
+          }
+          if (type === "session.created" || type === "session.updated") {
+            // sessionCreated is idempotent and refreshes the workdir for an
+            // envelope reconstructed from an earlier partial event.
+            await adapter.sessionCreated(id, workdir, "opencode");
           } else if (type === "session.idle") {
-            await adapter.sessionIdle(id);
-          } else if (type === "session.compacted") {
-            let summary: string | undefined;
-            try {
-              const res = (await (client as unknown as { session: SessionClient }).session.messages({
-                path: { id },
-                query: { limit: MESSAGES_LIMIT },
-              })) as unknown as {
-                data?: SessionMessage[];
-              };
-              summary = summaryFromMessages(res.data ?? []);
-            } catch {
-              summary = undefined;
+            const messages = await fetchMessages(client, id);
+            if (messages) {
+              adapter.messageSnapshot(id, evidenceFromMessages(messages));
             }
+            await adapter.sessionIdle(id);
+            void adapter.processPendingExtractions().catch(report);
+          } else if (type === "session.compacted") {
+            const messages = await fetchMessages(client, id);
+            if (messages) {
+              adapter.messageSnapshot(id, evidenceFromMessages(messages));
+            }
+            const summary = messages ? summaryFromMessages(messages) : undefined;
             const fingerprint = summary ?? "<no-summary>";
             const prior = recentCompactions.get(id);
             // Dedupe a double-fired event by identical summary within the
@@ -160,13 +231,39 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
             await adapter.sessionCompacted(id, summary);
             recentCompactions.set(id, { summary: fingerprint, ts: Date.now() });
           } else if (type === "session.deleted") {
+            const messages = await fetchMessages(client, id);
+            if (messages) {
+              adapter.messageSnapshot(id, evidenceFromMessages(messages));
+            }
             await adapter.sessionEnded(id);
+            void adapter.processPendingExtractions().catch(report);
             recentCompactions.delete(id);
             queues.delete(id);
-          } else if (type.startsWith("message.part")) {
+          } else if (type === "message.updated") {
+            const info = properties(event).info as { id?: unknown; role?: unknown } | undefined;
+            if (typeof info?.id === "string") {
+              adapter.messageRoleKnown(id, info.id, messageKind(info.role));
+            }
+          } else if (type === "message.removed") {
+            const messageId = properties(event).messageID;
+            if (typeof messageId === "string") {
+              adapter.messageRemovedByMessage(id, messageId);
+            }
+          } else if (type === "message.part.removed") {
             const partId = partIdFor(event);
             if (partId) {
-              await adapter.messageSeen(id, partId);
+              adapter.messageRemoved(id, partId);
+            }
+          } else if (type === "message.part.updated") {
+            const partId = partIdFor(event);
+            if (partId) {
+              const part = properties(event).part as { text?: unknown; role?: unknown; messageID?: unknown } | undefined;
+              const kind = part?.role === "user" || part?.role === "assistant" ? part.role : undefined;
+              await adapter.messageSeen(id, partId, {
+                kind,
+                text: typeof part?.text === "string" ? part.text : undefined,
+                messageId: typeof part?.messageID === "string" ? part.messageID : undefined,
+              });
             }
           }
         } catch (err) {
@@ -177,8 +274,11 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
     "tool.execute.after": async (input) => {
       try {
         const id = String((input as { sessionID?: string }).sessionID ?? "");
-        if (!adapter.state(id)) {
+        if (!id) {
           return;
+        }
+        if (!adapter.state(id)) {
+          await adapter.sessionCreated(id, directory, "opencode");
         }
         const tool = String((input as { tool?: string }).tool ?? "");
         if (!tool) {
@@ -192,6 +292,7 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
               ? (input as { filePath?: string }).filePath
               : undefined;
         await adapter.toolExecuted(id, tool, { filePath });
+        void adapter.processPendingExtractions().catch(report);
       } catch (err) {
         report(err);
       }

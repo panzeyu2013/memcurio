@@ -7,10 +7,13 @@ import type { CodexDaemonHandle } from "../src/adapters/codex/daemon.js";
 import {
   codexExecExtract,
   createCodexHandler,
+  daemonPidPath,
   ensureToken,
   parseCodexExecOutput,
   runCodexDaemon,
 } from "../src/adapters/codex/daemon.js";
+import { readCodexTranscriptEvidence } from "../src/adapters/codex/transcript.js";
+import { drainCodexSpool, inspectCodexSpool, writeCodexSessionEndSpool } from "../src/adapters/codex/spool.js";
 import { MemcurioAdapter } from "../src/adapters/shared/engine.js";
 import { Index } from "../src/core/db.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
@@ -36,21 +39,12 @@ const STAGE: Stage1Output = {
   sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
 };
 
-/** A local HTTP server that answers 401: llmChat throws on non-ok without
- *  retrying, so the default HttpExtractProvider no-ops quickly (no key). */
-function startLlmRefuser(): { url: string; stop(): void } {
-  const server = Bun.serve({
-    port: 0,
-    fetch: () => new Response("unauthorized", { status: 401 }),
-  });
-  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
-}
-
+/** A local HTTP server that answers 401: llmChat throws on non-ok so the
+ * durable queue keeps the checkpoint retryable instead of acknowledging it. */
 let dir: string;
 let prevRoot: string | undefined;
 let prevReflect: string | undefined;
-let prevLlmUrl: string | undefined;
-let llmRefuser: ReturnType<typeof startLlmRefuser> | null = null;
+let prevLlmKey: string | undefined;
 // Track daemons so a failing test never leaks SIGINT/SIGTERM handlers or a
 // live socket into later tests in this file.
 const activeDaemons = new Set<Promise<CodexDaemonHandle>>();
@@ -61,14 +55,11 @@ beforeEach(() => {
   process.env.MEMCURIO_ROOT = dir;
   prevReflect = process.env.MEMCURIO_CODEX_REFLECT;
   process.env.MEMCURIO_CODEX_REFLECT = "0";
-  prevLlmUrl = process.env.MEMCURIO_LLM_BASE_URL;
-  llmRefuser = startLlmRefuser();
-  process.env.MEMCURIO_LLM_BASE_URL = llmRefuser.url;
+  prevLlmKey = process.env.MEMCURIO_LLM_API_KEY;
+  delete process.env.MEMCURIO_LLM_API_KEY;
 });
 
 afterEach(async () => {
-  llmRefuser?.stop();
-  llmRefuser = null;
   const daemons = [...activeDaemons];
   activeDaemons.clear();
   for (const d of daemons) {
@@ -88,10 +79,10 @@ afterEach(async () => {
   } else {
     process.env.MEMCURIO_CODEX_REFLECT = prevReflect;
   }
-  if (prevLlmUrl === undefined) {
-    delete process.env.MEMCURIO_LLM_BASE_URL;
+  if (prevLlmKey === undefined) {
+    delete process.env.MEMCURIO_LLM_API_KEY;
   } else {
-    process.env.MEMCURIO_LLM_BASE_URL = prevLlmUrl;
+    process.env.MEMCURIO_LLM_API_KEY = prevLlmKey;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -179,9 +170,58 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
       "SELECT ended_at FROM sessions WHERE session_id = 's1'",
     );
     expect(row?.ended_at).toBeTruthy();
-    // The default HTTP extractor no-ops without a key (401 refuser above).
+    // A missing HTTP provider configuration is an intentional retryable
+    // failure, not a successful no-op completion.
     expect(idx.rawAll<{ ns: string }>("SELECT ns FROM audit WHERE action = 'extract.noop'").some((r) => r.ns === "codex")).toBe(true);
     idx.close();
+  });
+
+  test("SessionEnd on a fresh handler recreates state and durably keeps transcript evidence", async () => {
+    const transcript = join(dir, "session-end.jsonl");
+    writeFileSync(transcript, `${JSON.stringify({ role: "user", text: "Keep this important decision" })}\n`);
+    const handle = createCodexHandler();
+    const out = await handle({
+      hook_event_name: "SessionEnd",
+      cwd: "/tmp/MyProject",
+      session_id: "fresh-session-end",
+      transcript_path: transcript,
+    });
+    expect(out.continue).toBe(true);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const session = idx.driver.get<{ ended_at: string | null }>("SELECT ended_at FROM sessions WHERE session_id='fresh-session-end'");
+      expect(session?.ended_at).toBeTruthy();
+      const jobs = idx.extractionList();
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.snapshotJson).toContain("Keep this important decision");
+      expect(idx.auditCount()).toBeGreaterThanOrEqual(3);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("a prompt after daemon restart reconstructs the session and reaches the final snapshot", async () => {
+    const handle = createCodexHandler();
+    await handle({
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/tmp/MyProject",
+      session_id: "resumed-after-daemon-restart",
+      turn_id: "turn-resumed",
+      prompt: "Preserve this resumed-session decision",
+    });
+    await handle({
+      hook_event_name: "SessionEnd",
+      cwd: "/tmp/MyProject",
+      session_id: "resumed-after-daemon-restart",
+    });
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const job = idx.extractionList()[0];
+      expect(job?.snapshotJson).toContain("Preserve this resumed-session decision");
+      expect(job?.snapshotJson).toContain('"kind":"user"');
+    } finally {
+      idx.close();
+    }
   });
 
   test("SessionEnd staging maps through MemcurioAdapter with an injected extract", async () => {
@@ -242,8 +282,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
   test("a failed delivery remains retryable with the same dedupe key", async () => {
     const blockedRoot = join(dir, "blocked-root");
     writeFileSync(blockedRoot, "not a directory");
-    process.env.MEMCURIO_ROOT = blockedRoot;
-    const handle = createCodexHandler();
+    const handle = createCodexHandler(undefined, blockedRoot);
     const payload = {
       hook_event_name: "SessionStart",
       cwd: "/tmp/MyProject",
@@ -251,7 +290,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
       source: "startup",
     };
     await expect(handle(payload)).rejects.toThrow();
-    process.env.MEMCURIO_ROOT = dir;
+    rmSync(blockedRoot, { force: true });
     const retried = await handle(payload);
     expect(retried.continue).toBe(true);
     expect((retried.hookSpecificOutput as { additionalContext?: string }).additionalContext).toContain(
@@ -262,8 +301,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
   test("concurrent duplicate deliveries share the same failure instead of acknowledging one", async () => {
     const blockedRoot = join(dir, "blocked-concurrent-root");
     writeFileSync(blockedRoot, "not a directory");
-    process.env.MEMCURIO_ROOT = blockedRoot;
-    const handle = createCodexHandler();
+    const handle = createCodexHandler(undefined, blockedRoot);
     const payload = {
       hook_event_name: "SessionStart",
       cwd: "/tmp/MyProject",
@@ -272,7 +310,7 @@ describe("codex hook dispatcher (schema-verified inputs)", () => {
     };
     const results = await Promise.allSettled([handle(payload), handle(payload)]);
     expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
-    process.env.MEMCURIO_ROOT = dir;
+    rmSync(blockedRoot, { force: true });
     expect((await handle(payload)).continue).toBe(true);
   });
 });
@@ -318,11 +356,105 @@ describe("codex exec extraction", () => {
     expect(await provider.extract(snapshot())).toBeNull();
   });
 
-  test("resolves null on a failing child", async () => {
+  test("rejects on a failing child so the durable queue can retry", async () => {
     const script = join(dir, "fail-codex.sh");
     writeFileSync(script, "#!/bin/sh\necho 'model error' >&2\nexit 1\n", { mode: 0o755 });
     const provider = codexExecExtract({ bin: script, timeoutMs: 5000 });
-    expect(await provider.extract(snapshot())).toBeNull();
+    await expect(provider.extract(snapshot())).rejects.toThrow(/codex exec failed/);
+  });
+
+  test("disables hooks in the extraction child process", async () => {
+    const script = join(dir, "capture-codex.sh");
+    const argsFile = join(dir, "codex-args.txt");
+    const reply = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "i1",
+        type: "agent_message",
+        text: JSON.stringify({ rollout_summary: "summary", rollout_slug: "slug", raw_memory: "memory" }),
+      },
+    });
+    writeFileSync(
+      script,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argsFile)}\nprintf '%s\\n' '${reply}'\n`,
+      { mode: 0o755 },
+    );
+    const provider = codexExecExtract({ bin: script, timeoutMs: 5000 });
+    expect(await provider.extract(snapshot())).not.toBeNull();
+    const args = readFileSync(argsFile, "utf-8").trim().split("\n");
+    expect(args).toContain("--disable");
+    expect(args).toContain("hooks");
+    expect(args.some((arg) => arg.startsWith("hooks.events."))).toBe(false);
+  });
+});
+
+describe("codex transcript evidence", () => {
+  test("reads bounded JSONL text as quarantined evidence", () => {
+    const transcript = join(dir, "transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({ role: "user", message: { content: "Keep the FTS5 decision" } })}\n` +
+      `${JSON.stringify({ role: "assistant", text: "API key=abcdefghijklmnop" })}\n`,
+    );
+    const evidence = readCodexTranscriptEvidence(transcript);
+    expect(evidence.map((item) => item.kind)).toEqual(["user", "assistant"]);
+    expect(evidence[0]?.text).toContain("FTS5");
+    expect(evidence[1]?.text).toContain("[REDACTED]");
+  });
+
+  test("redacts malformed transcript lines before they can enter the spool", () => {
+    const transcript = join(dir, "malformed-transcript.jsonl");
+    writeFileSync(transcript, "not-json API key=abcdefghijklmnop\n");
+    const evidence = readCodexTranscriptEvidence(transcript);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.text).toContain("[REDACTED]");
+    expect(JSON.stringify(evidence)).not.toContain("abcdefghijklmnop");
+  });
+
+  test("daemon spool drain removes a record only after acknowledgement", async () => {
+    writeCodexSessionEndSpool(
+      dir,
+      { hook_event_name: "SessionEnd", session_id: "spooled", cwd: "/tmp/project" },
+      [{ kind: "assistant", text: "durable decision" }],
+    );
+    let replayed: unknown;
+    const drained = await drainCodexSpool(dir, async (input) => {
+      replayed = input;
+      return { continue: true };
+    });
+    expect(drained).toBe(1);
+    expect(replayed).toMatchObject({
+      hook_event_name: "SessionEnd",
+      session_id: "spooled",
+      __memcurio_transcript_evidence: [{ kind: "assistant", text: "durable decision" }],
+    });
+    expect((await import("node:fs")).readdirSync(join(dir, "state", "codex-spool"))).toEqual([]);
+  });
+
+  test("spool rejects an oversized record and reports bounded usage", () => {
+    expect(() => writeCodexSessionEndSpool(
+      dir,
+      { hook_event_name: "SessionEnd", session_id: "oversized", payload: "x".repeat(9 * 1024 * 1024) },
+      [],
+    )).toThrow(/exceeds/);
+    expect(inspectCodexSpool(dir)).toEqual({ active: 0, dead: 0, activeBytes: 0, overCapacity: false });
+  });
+
+  test("spool capacity accounting fails closed under writer contention", () => {
+    const spoolDir = join(dir, "state", "codex-spool");
+    mkdirSync(spoolDir, { recursive: true });
+    const lock = join(spoolDir, ".capacity.lock");
+    writeFileSync(lock, `${process.pid}|${Date.now()}`);
+    try {
+      expect(() => writeCodexSessionEndSpool(
+        dir,
+        { hook_event_name: "SessionEnd", session_id: "contended" },
+        [],
+      )).toThrow(/file lock/);
+    } finally {
+      rmSync(lock, { force: true });
+    }
+    expect(inspectCodexSpool(dir).active).toBe(0);
   });
 });
 
@@ -398,6 +530,44 @@ describe("codex hook child process", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("daemon");
   }, 15_000);
+
+  test("SessionEnd acknowledges after atomic local spool even when daemon is unavailable", async () => {
+    const { spawn } = await import("node:child_process");
+    const hookSrc = join(import.meta.dir, "..", "src", "adapters", "codex", "hook.ts");
+    const transcript = join(dir, "hook-session-end.jsonl");
+    writeFileSync(transcript, `${JSON.stringify({ role: "assistant", text: "durable transcript decision" })}\n`);
+    const socketPath = join(dir, "state", "missing-session-end.sock");
+    const startedAt = Date.now();
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [hookSrc], {
+        env: {
+          ...process.env,
+          MEMCURIO_ROOT: dir,
+          MEMCURIO_CODEX_SOCKET: socketPath,
+          MEMCURIO_CODEX_DAEMON: "/nonexistent/memcurio-daemon",
+          BUN_BIN: "/nonexistent/bun",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(JSON.stringify({
+        hook_event_name: "SessionEnd",
+        cwd: "/tmp/MyProject",
+        session_id: "spooled-session-end",
+        transcript_path: transcript,
+      }));
+    });
+    expect(result.code).toBe(0);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(JSON.parse(result.stdout)).toEqual({ continue: true });
+    const spoolFiles = (await import("node:fs")).readdirSync(join(dir, "state", "codex-spool"));
+    expect(spoolFiles.some((name) => name.endsWith(".json"))).toBe(true);
+  }, 10_000);
 });
 
 describe("codex plugin generation", () => {
@@ -415,9 +585,15 @@ describe("codex plugin generation", () => {
     const outDir = join(dir, "plugin");
     const generated = await generateCodexPlugin(outDir);
     const plugin = JSON.parse(readFileSync(generated.pluginJsonPath, "utf-8")) as {
-      hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>>;
+      mcpServers: string;
+      hooks: string;
     };
-    expect(Object.keys(plugin.hooks)).toEqual([
+    expect(plugin.mcpServers).toBe("./.mcp.json");
+    expect(plugin.hooks).toBe("./hooks/hooks.json");
+    const hookConfig = JSON.parse(readFileSync(generated.hooksJsonPath, "utf-8")) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>>;
+    };
+    expect(Object.keys(hookConfig.hooks)).toEqual([
       "SessionStart",
       "UserPromptSubmit",
       "PostToolUse",
@@ -426,29 +602,72 @@ describe("codex plugin generation", () => {
       "Stop",
       "SessionEnd",
     ]);
-    for (const groups of Object.values(plugin.hooks)) {
+    for (const groups of Object.values(hookConfig.hooks)) {
       const command = groups[0]?.hooks[0]?.command;
-      // Both the bun binary and the hook path are single-quoted (spaces safe,
-      // no shell injection), so the command starts with an opening quote.
+      // The binary is shell-quoted and the plugin-relative path uses the
+      // official PLUGIN_ROOT environment variable.
       expect(command?.startsWith("'")).toBe(true);
-      expect(command?.endsWith(`'${generated.hookPath}'`)).toBe(true);
+      expect(command).toContain("PLUGIN_ROOT/hook.js");
       expect(command).toContain(`'${process.execPath}'`);
     }
-    // SessionEnd must request the 3s ceiling: codex's default 1s timeout
-    // would kill a cold daemon start before the session row closes.
-    expect(plugin.hooks.SessionEnd?.[0]?.hooks[0]?.timeout).toBe(3);
-    const nonEnd = plugin.hooks.Stop?.[0]?.hooks[0]?.timeout;
+    // Keep the 3s ceiling as filesystem/fsync margin even though the normal
+    // spool-first path returns within the default 1s budget.
+    expect(hookConfig.hooks.SessionEnd?.[0]?.hooks[0]?.timeout).toBe(3);
+    const nonEnd = hookConfig.hooks.Stop?.[0]?.hooks[0]?.timeout;
     expect(nonEnd).toBeUndefined();
     expect(existsSync(generated.daemonPath)).toBe(true);
     expect(existsSync(generated.hookPath)).toBe(true);
+    expect(existsSync(generated.mcpPath)).toBe(true);
+    expect(existsSync(generated.pluginJsonPath)).toBe(true);
+    expect(existsSync(generated.hooksJsonPath)).toBe(true);
+    expect(existsSync(generated.mcpJsonPath)).toBe(true);
     expect(existsSync(generated.snippetPath)).toBe(true);
+    const mcp = JSON.parse(readFileSync(generated.mcpJsonPath, "utf-8")) as {
+      memcurio: { command: string; args: string[] };
+    };
+    expect(mcp.memcurio.command).toBe(process.execPath);
+    expect(mcp.memcurio.args).toEqual(["./index.js"]);
+    expect((mcp.memcurio as { cwd?: string }).cwd).toBe(".");
     const snippet = readFileSync(generated.snippetPath, "utf-8");
-    // Event keys must be PascalCase: codex's serde rename ignores snake_case
-    // keys silently, so the fallback config would be a no-op otherwise.
-    expect(snippet).toContain("[hooks.events.SessionStart]");
-    expect(snippet).not.toContain("[hooks.events.session_start]");
-    expect(snippet).toContain("[hooks.events.SessionEnd]");
-    expect(snippet).toMatch(/SessionEnd\][\s\S]*timeout = 3/);
+    // Event keys must be PascalCase and use the current array-of-groups TOML
+    // shape; the old hooks.events.* tables are not a valid fallback.
+    expect(snippet).toContain("[[hooks.SessionStart]]");
+    expect(snippet).not.toContain("hooks.events.");
+    expect(snippet).toContain("[[hooks.SessionEnd]]");
+    expect(snippet).toMatch(/hooks\.SessionEnd[\s\S]*timeout = 3/);
+  });
+
+  test.skipIf(!hasDist)("generated MCP bundle starts from the relocated plugin root", async () => {
+    const { generateCodexPlugin } = await import("../src/adapters/codex/generate.js");
+    const { cpSync } = await import("node:fs");
+    const { spawn } = await import("node:child_process");
+    const distCopy = join(dir, "mcp-dist-copy");
+    cpSync(join(import.meta.dir, "..", "dist"), distCopy, { recursive: true });
+    const outDir = join(dir, "relocated-plugin");
+    const generated = await generateCodexPlugin(outDir, { distDir: distCopy });
+    rmSync(distCopy, { recursive: true, force: true });
+    const mcp = JSON.parse(readFileSync(generated.mcpJsonPath, "utf-8")) as {
+      memcurio: { command: string; args: string[]; cwd?: string };
+    };
+    const child = spawn(mcp.memcurio.command, mcp.memcurio.args, {
+      cwd: mcp.memcurio.cwd === "." ? outDir : mcp.memcurio.cwd,
+      env: { ...process.env, MEMCURIO_ROOT: dir },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    const exited = new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    const state = await Promise.race([
+      exited.then((code) => `exit:${String(code)}`),
+      new Promise<string>((resolve) => setTimeout(() => resolve("running"), 200)),
+    ]);
+    expect(state).toBe("running");
+    child.kill("SIGTERM");
+    await exited;
+    expect(stderr).toBe("");
   });
 
   test.skipIf(!hasDist)("generateCodexPlugin fails loudly on missing dist output", async () => {
@@ -510,7 +729,7 @@ describe("codex exec output parsing", () => {
     const stub = "analysis {not json}";
     const reply = parseCodexExecOutput(agentMessage(stub));
     expect(reply).toBe(stub);
-    expect(parseExtractReply(reply ?? "", { rolloutKey: "codex|s9" })).toBeNull();
+    expect(() => parseExtractReply(reply ?? "", { rolloutKey: "codex|s9" })).toThrow(/invalid extraction reply/);
   });
 
   test("parseExtractReply consumes the selected reply with the snapshot fallback", () => {
@@ -615,12 +834,52 @@ describe("codex daemon socket", () => {
     await stopDaemon(daemon, socketPath);
   });
 
+  test("one memory root cannot be served by two socket paths", async () => {
+    const firstSocket = join(dir, "state", "codex-a.sock");
+    const secondSocket = join(dir, "state", "codex-b.sock");
+    const daemon = trackDaemon(runCodexDaemon({ socketPath: firstSocket, root: dir }));
+    await waitForSocket(firstSocket);
+    await expect(runCodexDaemon({ socketPath: secondSocket, root: dir })).rejects.toThrow(/already running/);
+    expect(existsSync(secondSocket)).toBe(false);
+    await stopDaemon(daemon, firstSocket);
+  });
+
+  test("an explicit daemon root is also used by the event adapter", async () => {
+    const envRoot = mkdtempSync(join(tmpdir(), "cx-env-"));
+    process.env.MEMCURIO_ROOT = envRoot;
+    const socketPath = join(dir, "state", "codex.sock");
+    const daemon = trackDaemon(runCodexDaemon({ socketPath, root: dir }));
+    try {
+      await waitForSocket(socketPath);
+      const token = readFileSync(join(dir, "state", "codex.token"), "utf-8").trim();
+      await new Promise<void>((resolve, reject) => {
+        const sock = connect(socketPath);
+        sock.on("error", reject);
+        sock.on("close", () => resolve());
+        sock.write(`${JSON.stringify({
+          token,
+          input: { hook_event_name: "SessionStart", cwd: "/tmp/explicit", session_id: "explicit-root", source: "startup" },
+        })}\n`);
+      });
+      const idx = await Index.create(indexDb(dir));
+      try {
+        expect(idx.driver.get("SELECT session_id FROM sessions WHERE session_id='explicit-root'")).not.toBeNull();
+      } finally {
+        idx.close();
+      }
+      expect(existsSync(indexDb(envRoot))).toBe(false);
+    } finally {
+      await stopDaemon(daemon, socketPath);
+      rmSync(envRoot, { recursive: true, force: true });
+    }
+  });
+
   test("a stale pid file (dead owner) is reclaimed on start", async () => {
     const socketPath = join(dir, "state", "codex.sock");
     mkdirSync(join(dir, "state"), { recursive: true });
     // A pid that cannot be alive (PID 2**22-1 is far beyond the system's
     // default pid_max of 4194304) marks the previous daemon as crashed.
-    writeFileSync(`${socketPath}.pid`, "4194303|2026-01-01T00:00:00.000Z\n", { mode: 0o600 });
+    writeFileSync(daemonPidPath(dir), "4194303|stale-owner\n", { mode: 0o600 });
     const daemon = trackDaemon(runCodexDaemon({ socketPath }));
     await waitForSocket(socketPath);
     await stopDaemon(daemon, socketPath);

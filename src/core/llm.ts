@@ -26,6 +26,48 @@ export interface LlmChatOptions {
   timeoutMs?: number;
 }
 
+const MAX_LLM_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_LLM_ERROR_BYTES = 64 * 1024;
+
+async function readResponseBody(res: Response, maxBytes: number, truncate = false): Promise<string> {
+  if (!res.body) {
+    return "";
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (!value) {
+      continue;
+    }
+    const remaining = maxBytes - size;
+    if (value.byteLength > remaining) {
+      if (truncate && remaining > 0) {
+        chunks.push(value.slice(0, remaining));
+        size += remaining;
+      }
+      await reader.cancel();
+      if (!truncate) {
+        throw new Error(`llm response exceeds ${maxBytes} byte limit`);
+      }
+      break;
+    }
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(joined);
+}
+
 /** One OpenAI-compatible chat/completions call. Transient failures (network
  *  drop, HTTP 429/5xx) are retried with capped exponential backoff; anything
  *  else (auth 401, parse errors) is thrown so callers decide how to degrade. */
@@ -70,6 +112,7 @@ export async function llmChat(
       throw err;
     }
     if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+      void res.body?.cancel();
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
       continue;
     }
@@ -78,9 +121,10 @@ export async function llmChat(
   if (!res.ok) {
     // The upstream error body may echo parts of our request; redact before
     // logging so secrets in the prompt never leak into logs.
-    throw new Error(`llm ${res.status}: ${redactSecrets((await res.text()).slice(0, 200)).text}`);
+    const errorBody = await readResponseBody(res, MAX_LLM_ERROR_BYTES, true);
+    throw new Error(`llm ${res.status}: ${redactSecrets(errorBody.slice(0, 200)).text}`);
   }
-  const data = (await res.json()) as {
+  const data = JSON.parse(await readResponseBody(res, MAX_LLM_RESPONSE_BYTES)) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
   return data.choices?.[0]?.message?.content ?? "";

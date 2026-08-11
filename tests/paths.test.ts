@@ -63,4 +63,16 @@ describe("resolveWorkspacePath", () => {
     expect(() => resolveWorkspacePath(dir, "/etc/passwd")).toThrow(/escapes/);
     expect(() => resolveWorkspacePath(dir, "a/../../evil.md")).toThrow(/escapes/);
   });
+
+  test("rejects symlinked paths that escape the workspace", () => {
+    ensureLayout(dir);
+    const outside = mkdtempSync(join(tmpdir(), "paths-outside-"));
+    const link = join(memoryWorkspace(dir), "link");
+    try {
+      symlinkSync(outside, link);
+      expect(() => resolveWorkspacePath(dir, "link/escape.md")).toThrow(/escapes/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });

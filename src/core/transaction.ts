@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 
@@ -40,6 +40,10 @@ export function atomicWrite(path: string, content: string): void {
   let fd: number | null = null;
   try {
     fd = openSync(tmp, "wx", mode);
+    // openSync applies the process umask to newly created files. Explicitly
+    // restore the intended mode so replacing an existing 0644/0755 file does
+    // not silently downgrade it (for example under umask 0077).
+    chmodSync(tmp, mode);
     writeFileSync(fd, content);
     fsyncSync(fd);
     closeSync(fd);

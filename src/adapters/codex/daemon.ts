@@ -8,12 +8,14 @@ import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 import { Index } from "../../core/db.js";
-import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../../core/extract.js";
+import { NoopExtractProvider } from "../../core/extract.js";
+import type { EvidenceInput, ExtractProvider, RolloutSnapshot, Stage1Output } from "../../core/extract.js";
 import { buildExtractPrompt, parseExtractReply, rolloutKeyFor } from "../../core/extract.js";
 import { ensureLayout, indexDb } from "../../core/paths.js";
-import { isStaleLock } from "../../core/transaction.js";
 import type { AdapterLog } from "../shared/engine.js";
 import { MemcurioAdapter } from "../shared/engine.js";
+import { readCodexTranscriptEvidence } from "./transcript.js";
+import { drainCodexSpool } from "./spool.js";
 
 export interface CodexEventInput {
   hook_event_name?: string;
@@ -28,6 +30,9 @@ export interface CodexEventInput {
   trigger?: string;
   /** Present on SessionStart; distinguishes startup/resume from compact. */
   source?: string;
+  /** Internal-only fields added while replaying the local SessionEnd spool. */
+  __memcurio_spool_id?: string;
+  __memcurio_transcript_evidence?: EvidenceInput[];
 }
 
 export type { AdapterLog };
@@ -61,10 +66,12 @@ function resolvePostToolUseFile(toolInput: unknown, cwd: string): string | undef
   return raw === undefined ? undefined : resolve(cwd || ".", raw);
 }
 
-export function createCodexHandler(log?: AdapterLog) {
+export function createCodexHandler(log?: AdapterLog, root?: string) {
   const adapter = new MemcurioAdapter({
     log,
-    extract: process.env.MEMCURIO_CODEX_REFLECT === "0" ? undefined : codexExecExtract({ log }),
+    root,
+    durableQueue: true,
+    extract: process.env.MEMCURIO_CODEX_REFLECT === "0" ? new NoopExtractProvider() : codexExecExtract({ log }),
   });
   const recent = new Map<string, number>();
   const inFlight = new Map<string, Promise<Record<string, unknown>>>();
@@ -93,6 +100,8 @@ export function createCodexHandler(log?: AdapterLog) {
         ]);
         return `PostCompact:${input.session_id}:${identity}`;
       }
+      case "SessionEnd":
+        return input.session_id ? `SessionEnd:${input.session_id}:${input.transcript_path ?? ""}` : null;
       default:
         return null;
     }
@@ -112,7 +121,7 @@ export function createCodexHandler(log?: AdapterLog) {
     return false;
   }
 
-  return async function handleEvent(raw: unknown): Promise<Record<string, unknown>> {
+  const handleEvent = async function handleEvent(raw: unknown): Promise<Record<string, unknown>> {
     const input = (raw ?? {}) as CodexEventInput;
     const event = input.hook_event_name ?? "";
     const key = dedupeKey(input);
@@ -125,16 +134,37 @@ export function createCodexHandler(log?: AdapterLog) {
         return { continue: true };
       }
     }
-    const cwd = input.cwd ?? "";
-    const sessionId = input.session_id ?? "";
-    const delivery = (async (): Promise<Record<string, unknown>> => {
-      try {
-        const output = await (async (): Promise<Record<string, unknown>> => {
+      const cwd = input.cwd ?? "";
+      const sessionId = input.session_id ?? "";
+      const delivery = (async (): Promise<Record<string, unknown>> => {
+        try {
+          const output = await (async (): Promise<Record<string, unknown>> => {
+          if (
+            sessionId &&
+            !adapter.state(sessionId) &&
+            (event === "UserPromptSubmit" || event === "PostToolUse" || event === "PostCompact" || event === "Stop" || event === "SessionEnd")
+          ) {
+            // A long-running Codex session can outlive an idle/crashed daemon.
+            // Recreate the envelope on the first resumable event, not only at
+            // SessionEnd, so subsequent prompts/tools remain in the snapshot.
+            await adapter.sessionCreated(sessionId, cwd, "codex");
+          }
+          if (
+            sessionId &&
+            (input.__memcurio_transcript_evidence || input.transcript_path) &&
+            (event === "PostCompact" || event === "SessionEnd")
+          ) {
+            adapter.transcriptEvidence(
+              sessionId,
+              input.__memcurio_transcript_evidence ?? (input.transcript_path ? readCodexTranscriptEvidence(input.transcript_path) : []),
+            );
+          }
           switch (event) {
             case "SessionStart": {
               if (sessionId) {
                 await adapter.sessionCreated(sessionId, cwd, "codex");
               }
+              void adapter.processPendingExtractions().catch((err) => log?.("warn", "extraction worker failed", { error: String(err) }));
               const context = await adapter.buildStaticContext(cwd);
               return {
                 continue: true,
@@ -142,7 +172,10 @@ export function createCodexHandler(log?: AdapterLog) {
               };
             }
             case "UserPromptSubmit": {
-              await adapter.messageSeen(sessionId, `turn:${input.turn_id ?? ""}`);
+              await adapter.messageSeen(sessionId, `turn:${input.turn_id ?? ""}`, {
+                kind: "user",
+                text: input.prompt,
+              });
               const context = await adapter.buildDynamicContext(cwd, input.prompt ?? "");
               return {
                 continue: true,
@@ -163,10 +196,14 @@ export function createCodexHandler(log?: AdapterLog) {
             }
             case "Stop": {
               await adapter.sessionIdle(sessionId);
+              void adapter.processPendingExtractions().catch((err) => log?.("warn", "extraction worker failed", { error: String(err) }));
               return { continue: true };
             }
             case "SessionEnd": {
               await adapter.sessionEnded(sessionId);
+              // Queue insertion is awaited above; model extraction is not part
+              // of the SessionEnd Hook latency budget.
+              void adapter.processPendingExtractions().catch((err) => log?.("warn", "extraction worker failed", { error: String(err) }));
               return { continue: true };
             }
             default:
@@ -190,12 +227,15 @@ export function createCodexHandler(log?: AdapterLog) {
     }
     return delivery;
   };
+  return Object.assign(handleEvent, {
+    processPendingExtractions: (): Promise<unknown> => adapter.processPendingExtractions(),
+  });
 }
 
 /** Select the final Phase-1 reply from a codex exec JSONL stream. Returns the
  *  raw reply text (the JSON object is parsed by parseExtractReply, which also
  *  applies the no-op gate); null when the turn failed or no usable reply was
- *  emitted. */
+ *  emitted. A null here is a provider/protocol failure, not a valid no-op. */
 export function parseCodexExecOutput(stdout: string): string | null {
   let finalReply: string | undefined;
   let failed = false;
@@ -259,18 +299,6 @@ export function parseCodexExecOutput(stdout: string): string | null {
 // truncating mid-event would silently discard a valid extraction.
 const EXTRACT_STDOUT_MAX_BYTES = 1024 * 1024;
 
-/** Hook events that memcurio registers; cleared for the extraction
- *  sub-session so its events cannot echo back into this daemon. */
-const EXTRACT_EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PostToolUse",
-  "PreCompact",
-  "PostCompact",
-  "Stop",
-  "SessionEnd",
-] as const;
-
 export function codexExecExtract(opts: {
   log?: AdapterLog;
   timeoutMs?: number;
@@ -282,21 +310,20 @@ export function codexExecExtract(opts: {
   return {
     name: "codex-exec",
     extract(snapshot: RolloutSnapshot): Promise<Stage1Output | null> {
-      return new Promise<Stage1Output | null>((resolve) => {
+      return new Promise<Stage1Output | null>((resolve, reject) => {
         // Never let the extraction sub-session fire hooks back at this
         // daemon: its own SessionStart/UserPromptSubmit/Stop events would
-        // create fake sessions and pollute session accounting. `hooks.disabled`
-        // is NOT a codex config key (verified against codex-rs source: the
-        // hooks schema only knows `events` and `state`, so the key is silently
-        // ignored), so each memcurio event is cleared explicitly instead. CLI
-        // overrides merge as the last layer, and an empty array replaces the
-        // user's handlers.
+        // create fake sessions and pollute session accounting. `--disable
+        // hooks` is the supported Codex CLI feature switch and also covers
+        // plugin/project/managed hook sources that a per-event config override
+        // cannot reliably mask.
         const args = [
           "exec",
+          "--disable",
+          "hooks",
           "--json",
           "--ephemeral",
           "--skip-git-repo-check",
-          ...EXTRACT_EVENTS.flatMap((event) => ["-c", `hooks.events.${event}=[]`]),
           buildExtractPrompt(snapshot),
         ];
         const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -311,10 +338,18 @@ export function codexExecExtract(opts: {
           clearTimeout(timer);
           resolve(r);
         };
+        const fail = (err: unknown): void => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        };
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
           log("warn", "codex exec extraction timed out");
-          settle(null);
+          fail(new Error("codex exec extraction timed out"));
         }, timeoutMs);
         child.stdout.on("data", (d: Buffer) => {
           if (stdout.length < EXTRACT_STDOUT_MAX_BYTES) {
@@ -332,23 +367,27 @@ export function codexExecExtract(opts: {
         child.stderr.on("error", () => {});
         child.on("error", (err) => {
           log("warn", `codex exec unavailable: ${String(err)}`);
-          settle(null);
+          fail(err);
         });
         child.on("close", (code) => {
           if (code !== 0) {
             log("warn", `codex exec failed (${String(code)}): ${stderr.slice(0, 200)}`);
-            settle(null);
+            fail(new Error(`codex exec failed (${String(code)}): ${stderr.slice(0, 200)}`));
             return;
           }
           try {
             const reply = parseCodexExecOutput(stdout);
-            settle(reply === null ? null : parseExtractReply(reply, {
+            if (reply === null) {
+              fail(new Error("codex exec produced no usable extraction reply"));
+              return;
+            }
+            settle(parseExtractReply(reply, {
               rolloutKey: rolloutKeyFor(snapshot),
               sourceUpdatedAt: snapshot.endedAt,
             }));
           } catch (err) {
             log("warn", `failed to parse codex exec output: ${String(err)}`);
-            settle(null);
+            fail(err);
           }
         });
       });
@@ -362,6 +401,10 @@ export function defaultSocketPath(root: string): string {
 
 export function tokenPath(root: string): string {
   return join(root, "state", "codex.token");
+}
+
+export function daemonPidPath(root: string): string {
+  return join(root, "state", "codex-daemon.pid");
 }
 
 function sleepSync(ms: number): void {
@@ -490,10 +533,12 @@ export async function runCodexDaemon(opts: {
   // does not silently drift between invocations launched from different cwds.
   const socketPath = resolve(opts.socketPath);
   mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
-  const root = opts.root ?? (process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio"));
+  const root = resolve(opts.root ?? (process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio")));
+  ensureLayout(root);
   const token = ensureToken(root);
-  const handle = createCodexHandler(opts.log);
-  const pidPath = `${socketPath}.pid`;
+  const handle = createCodexHandler(opts.log, root);
+  const pidPath = daemonPidPath(root);
+  let pidLockValue = "";
 
   // Single-instance guard independent of the socket probe: while the daemon's
   // event loop is busy (long synchronous SQLite work), isListening() can
@@ -502,42 +547,74 @@ export async function runCodexDaemon(opts: {
   // alive (it is removed on graceful shutdown), so a live pid means another
   // daemon owns this root — never touch its socket.
   const acquirePidLock = (): void => {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const candidate = `${process.pid}|${randomBytes(16).toString("hex")}`;
       try {
-        writeFileSync(pidPath, `${process.pid}|${Date.now()}\n`, { flag: "wx", mode: 0o600 });
+        writeFileSync(pidPath, `${candidate}\n`, { flag: "wx", mode: 0o600 });
+        pidLockValue = candidate;
         return;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
           throw err;
         }
+        let observed = "";
         let pid = 0;
+        let observedStat: { dev: number; ino: number; mtimeMs: number } | undefined;
         try {
-          const [rawPid] = readFileSync(pidPath, "utf-8").trim().split("|");
+          observed = readFileSync(pidPath, "utf-8").trim();
+          const [rawPid] = observed.split("|");
           pid = Number(rawPid);
+          const stat = statSync(pidPath);
+          observedStat = { dev: stat.dev, ino: stat.ino, mtimeMs: stat.mtimeMs };
         } catch {
-          // unreadable/corrupt pid file: treat as stale and reclaim below
+          // The lock may be between exclusive creation and content write.
         }
         // Our own pid in the lock means another daemon instance in THIS
         // process already holds it (tests/embedded double start).
         if (pid === process.pid) {
           throw new Error(`codex daemon already running on ${socketPath}`);
         }
-        // Same convention as the md-file locks (transaction.ts isStaleLock):
-        // a dead pid is reclaimed immediately, a live pid older than
-        // STALE_LOCK_MS is a crashed holder whose pid got reused by an
-        // unrelated process — without this, a SIGKILLed daemon followed by
-        // pid reuse would block every future daemon start forever.
-        if (!isStaleLock(pidPath)) {
+        let live = false;
+        if (Number.isSafeInteger(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            live = true;
+          } catch (probeErr) {
+            live = (probeErr as NodeJS.ErrnoException).code === "EPERM";
+          }
+        }
+        // A daemon may legitimately live for six hours, so age alone can
+        // never make a live PID stale. Corrupt/empty locks receive a short
+        // grace period for the exclusive creator to finish its write.
+        if (live || (!pid && observedStat && Date.now() - observedStat.mtimeMs < 5_000)) {
           throw new Error(`codex daemon already running (pid ${pid}) on ${socketPath}`);
         }
         try {
-          rmSync(pidPath, { force: true });
+          const latest = readFileSync(pidPath, "utf-8").trim();
+          const latestStat = statSync(pidPath);
+          if (latest === observed && observedStat && latestStat.dev === observedStat.dev && latestStat.ino === observedStat.ino) {
+            rmSync(pidPath, { force: true });
+          }
         } catch {
           void 0;
         }
       }
     }
     throw new Error(`failed to acquire daemon pid lock ${pidPath}`);
+  };
+
+  const releasePidLock = (): void => {
+    if (!pidLockValue) {
+      return;
+    }
+    try {
+      if (readFileSync(pidPath, "utf-8").trim() === pidLockValue) {
+        rmSync(pidPath, { force: true });
+      }
+    } catch {
+      void 0;
+    }
+    pidLockValue = "";
   };
 
   let lastActivity = Date.now();
@@ -641,11 +718,7 @@ export async function runCodexDaemon(opts: {
   // A live socket while we hold the pid lock can only mean a legacy
   // (pid-file-less) daemon: never steal its socket.
   if (await isListening(socketPath)) {
-    try {
-      rmSync(pidPath, { force: true });
-    } catch {
-      void 0;
-    }
+    releasePidLock();
     throw new Error(`codex daemon already running on ${socketPath}`);
   }
   // We own the root now, so any leftover socket is stale.
@@ -668,12 +741,14 @@ export async function runCodexDaemon(opts: {
     await listen();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+      releasePidLock();
       throw err;
     }
     // A socket exists but we hold the pid lock: it can only belong to a
     // legacy (pid-file-less) daemon still running, or be truly stale.
     for (let attempt = 0; attempt < 3; attempt++) {
       if (await isListening(socketPath)) {
+        releasePidLock();
         throw new Error(`codex daemon already running on ${socketPath}`);
       }
       rmSync(socketPath, { force: true });
@@ -682,14 +757,23 @@ export async function runCodexDaemon(opts: {
         break;
       } catch (retryErr) {
         if ((retryErr as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+          releasePidLock();
           throw retryErr;
         }
         if (attempt === 2) {
+          releasePidLock();
           throw new Error(`codex daemon failed to bind ${socketPath} after retries`);
         }
       }
     }
   }
+
+  // Drain the hook-side atomic spool only after the socket is live. A hook can
+  // race this replay with a direct request; SessionEnd's in-flight/dedupe key
+  // and queue idempotency make that replay safe.
+  void drainCodexSpool(root, handle, (message, extra) => opts.log?.("warn", message, extra))
+    .then(() => handle.processPendingExtractions())
+    .catch((err) => opts.log?.("warn", "Codex spool/extraction recovery failed", { error: String(err) }));
 
   server.on("error", (err) => {
     if (opts.log) {
@@ -700,13 +784,12 @@ export async function runCodexDaemon(opts: {
   });
 
   const cleanup = (): void => {
-    for (const p of [socketPath, pidPath]) {
-      try {
-        rmSync(p, { force: true });
-      } catch {
-        void 0;
-      }
+    try {
+      rmSync(socketPath, { force: true });
+    } catch {
+      void 0;
     }
+    releasePidLock();
   };
 
   let closedResolve!: () => void;

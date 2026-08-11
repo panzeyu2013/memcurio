@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
 
 export function rootDir(): string {
   const env = process.env.MEMCURIO_ROOT;
@@ -120,5 +120,34 @@ export function resolveWorkspacePath(root: string, rel: string): string {
   if (target !== base && !target.startsWith(`${base}/`)) {
     throw new Error(`workspace path escapes the memory root: ${JSON.stringify(rel)}`);
   }
-  return target;
+  const baseReal = realpathOrSelf(base);
+  let actual = baseReal;
+  const remaining = relative(base, target).split(sep).filter(Boolean);
+  for (const [index, segment] of remaining.entries()) {
+    const candidate = join(actual, segment);
+    try {
+      actual = realpathOrSelf(candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        actual = join(actual, ...remaining.slice(index));
+        break;
+      }
+      throw err;
+    }
+    if (actual !== baseReal && !actual.startsWith(`${baseReal}${sep}`)) {
+      throw new Error(`workspace path escapes the memory root: ${JSON.stringify(rel)}`);
+    }
+  }
+  return actual;
+}
+
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return path;
+    }
+    throw err;
+  }
 }

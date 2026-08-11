@@ -4,7 +4,10 @@ import { homedir } from "node:os";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 
+import { ensureLayout } from "../../core/paths.js";
 import { redactSecrets } from "../../core/sanitize.js";
+import { readCodexTranscriptEvidence } from "./transcript.js";
+import { removeCodexSpool, writeCodexSessionEndSpool } from "./spool.js";
 
 // Guard against a runaway/abused stdin: legit codex hook payloads are a few
 // KB; anything near this cap is not a real event.
@@ -12,10 +15,11 @@ const MAX_STDIN_BYTES = 10 * 1024 * 1024;
 // The daemon's responses are a few KB; this caps an unbounded socket
 // accumulation from a misbehaving peer.
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-// codex kills the SessionEnd hook process after 1s by default (max 3s), so a
-// cold daemon start cannot fit inside it: fail fast and let the daemon-side
-// stale-session recovery close the session row later.
-const SESSION_END_DEADLINE_MS = 2_500;
+// Codex kills the SessionEnd hook process after 1s by default (max 3s). The
+// hook therefore commits a local spool record before it ever tries a daemon;
+// daemon startup is only an optimization, never the durability boundary.
+const SESSION_END_DEADLINE_MS = 500;
+const SESSION_END_NOTIFY_MS = 150;
 // PostCompact reflection can legitimately run for a while before returning.
 const POST_COMPACT_DEADLINE_MS = 130_000;
 const REGULAR_DEADLINE_MS = 10_000;
@@ -123,8 +127,38 @@ const deadline = Date.now() + (isPostCompact
       ? envDeadline
       : REGULAR_DEADLINE_MS);
 
+let sessionEndSpoolPath: string | undefined;
+if (isSessionEnd) {
+  try {
+    const parsed = JSON.parse(stdin) as Record<string, unknown>;
+    ensureLayout(root);
+    const transcriptPath = typeof parsed.transcript_path === "string" ? parsed.transcript_path : undefined;
+    const transcriptEvidence = transcriptPath ? readCodexTranscriptEvidence(transcriptPath) : [];
+    // SessionEnd only needs stable routing metadata. Do not copy arbitrary
+    // hook fields (which may contain prompts/tool payloads) into the durable
+    // spool; transcriptEvidence is already bounded and redacted separately.
+    const safeInput: Record<string, unknown> = {};
+    for (const key of ["hook_event_name", "cwd", "session_id", "transcript_path", "trigger", "turn_id", "source"]) {
+      const value = parsed[key];
+      if (typeof value === "string") {
+        safeInput[key] = redactSecrets(value).text.slice(0, 4000);
+      }
+    }
+    sessionEndSpoolPath = writeCodexSessionEndSpool(root, safeInput, transcriptEvidence);
+  } catch (err) {
+    log(`SessionEnd spool failed: ${String(err)}`);
+    const isZh = /^zh/i.test(process.env.MEMCURIO_LANG ?? process.env.LANG ?? "");
+    process.stderr.write(
+      isZh
+        ? "memcurio: SessionEnd 本地持久化失败，已拒绝确认 hook；请检查 ~/.memcurio/state 权限\n"
+        : "memcurio: SessionEnd local persistence failed; hook was not acknowledged; check ~/.memcurio/state permissions\n",
+    );
+    process.exit(1);
+  }
+}
+
 async function tryRequest(): Promise<string | null> {
-  const maxAttempts = isPostCompact ? 1 : isSessionEnd ? 2 : 3;
+  const maxAttempts = isPostCompact || isSessionEnd ? 1 : 3;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -135,7 +169,7 @@ async function tryRequest(): Promise<string | null> {
       return null;
     }
     try {
-      const resp = await request(wrapped, Math.min(isPostCompact ? 125_000 : 1500, remaining));
+      const resp = await request(wrapped, Math.min(isPostCompact ? 125_000 : isSessionEnd ? SESSION_END_NOTIFY_MS : 1500, remaining));
       const trimmed = resp.trim();
       if (trimmed) {
         try {
@@ -198,15 +232,35 @@ function spawnDaemon(): void {
 let resp = await tryRequest();
 if (resp === null) {
   spawnDaemon();
-  // Poll until the deadline, not a fixed retry count: a cold daemon start on
-  // a slow machine can exceed 20 quick attempts, and the deadline is the
-  // real bound the hook must respect anyway.
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, deadline - Date.now()))));
-    resp = await tryRequest();
-    if (resp !== null) {
-      break;
+  if (!isSessionEnd) {
+    // Regular hooks still need a daemon response. SessionEnd already crossed
+    // its durability boundary at the atomic spool write above, so waiting for
+    // a cold daemon would only spend its advisory 1-3s process budget.
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, deadline - Date.now()))));
+      resp = await tryRequest();
+      if (resp !== null) {
+        break;
+      }
     }
+  }
+}
+
+if (resp === null && isSessionEnd && sessionEndSpoolPath) {
+  // The durable local record is enough for Codex's short hook deadline. The
+  // next daemon startup drains it; leaving it in place also covers a response
+  // lost after the daemon committed the event (queue idempotency absorbs the
+  // replay).
+  log("SessionEnd persisted to local spool; daemon response unavailable");
+  process.stdout.write(JSON.stringify({ continue: true }));
+  process.exit(0);
+}
+
+if (resp !== null && sessionEndSpoolPath) {
+  try {
+    removeCodexSpool(sessionEndSpoolPath);
+  } catch {
+    // A concurrently draining daemon may already have removed this record.
   }
 }
 

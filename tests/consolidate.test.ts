@@ -1,20 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { addAdHocNote } from "../src/core/adhoc.js";
-import { HttpLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
-import type { ConsolidateInput, ConsolidateProvider } from "../src/core/consolidate.js";
+import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
+import { HttpLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
 import { stageSession } from "../src/core/extract.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
 import { Index } from "../src/core/db.js";
 import { ensureLayout, indexDb } from "../src/core/paths.js";
 import { hasWorkspaceChanges, loadBaseline, readWorkspaceText, rolloutSlugs, writeRolloutSummary, writeWorkspaceText } from "../src/core/workspace.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { applyGeneration, prepareGeneration } from "../src/core/generation.js";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
-import type { Server } from "node:http";
 
 let dir: string;
+const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cons-"));
@@ -22,6 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -56,6 +58,14 @@ class Provider implements ExtractProvider {
 }
 
 describe("planConsolidation", () => {
+  test("rejects a raw projection larger than a managed workspace file", () => {
+    expect(() => renderRawMemories([{
+      rolloutKey: "test|oversized",
+      rawMemory: "x".repeat(1024 * 1024),
+      artifactFilename: "rollout-aaaaaaaaaaaaaaaaaaaaaaaa.md",
+    }])).toThrow(/projection exceeds/);
+  });
+
   test("empty store: no changes", async () => {
     const plan = await planConsolidation(dir);
     expect(plan.changed).toBe(false);
@@ -65,12 +75,13 @@ describe("planConsolidation", () => {
   test("staged outputs appear as artifacts and diff additions", async () => {
     await stageSession(dir, snapshot, new Provider(stage1({})));
     const plan = await planConsolidation(dir);
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s1"));
     expect(plan.changed).toBe(true);
     expect(plan.selected).toHaveLength(1);
     expect(plan.artifacts["raw_memories.md"]).toContain("SQLite FTS5 trigram works");
-    expect(plan.artifacts["rollout_summaries/proj-setup.md"]).toContain("# recap");
+    expect(plan.artifacts[`rollout_summaries/${artifactFilename}`]).toContain("# recap");
     expect(plan.diff.some((d) => d.rel === "raw_memories.md")).toBe(true);
-    expect(plan.diff.some((d) => d.rel === "rollout_summaries/proj-setup.md")).toBe(true);
+    expect(plan.diff.some((d) => d.rel === `rollout_summaries/${artifactFilename}`)).toBe(true);
   });
 
   test("rows outside the unused-days window are pruned", async () => {
@@ -151,6 +162,15 @@ describe("RuleConsolidateProvider", () => {
     expect(run.result?.report).toContain("forget note applied");
   });
 
+  test("forget notes also remove facts first introduced by the same raw diff", async () => {
+    await stageSession(dir, snapshot, new Provider(stage1({
+      rawMemory: "task_group: proj\ncwd: /tmp/proj\n\n### Task 1: setup\n\nReusable knowledge:\n- TRANSIENT_PRIVATE_FACT",
+    })));
+    await addAdHocNote(dir, "TRANSIENT_PRIVATE_FACT", "forget");
+    await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });
+    expect(readWorkspaceText(dir, "MEMORY.md")).not.toContain("TRANSIENT_PRIVATE_FACT");
+  });
+
   test("raw memories are ingested into task-group blocks", async () => {
     await stageSession(dir, snapshot, new Provider(stage1({})));
     await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });
@@ -161,13 +181,15 @@ describe("RuleConsolidateProvider", () => {
     // The block must cite its supporting rollout summary so later pruning can
     // remove it when the summary is deleted.
     expect(memory).toContain("### rollout_summary_files");
-    expect(memory).toContain("- rollout_summaries/proj-setup.md");
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s1"));
+    expect(memory).toContain(`- rollout_summaries/${artifactFilename}`);
     // Raw top-level frontmatter must not leak into the handbook (task-level
     // outcome lines inside "### Task N" blocks are legitimate).
     expect(memory).not.toContain("description: proj facts");
   });
 
   test("blocks citing only pruned summaries are removed", async () => {
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s2"));
     writeWorkspaceText(dir, "MEMORY.md", [
       "# Task Group: proj",
       "scope: x",
@@ -175,7 +197,7 @@ describe("RuleConsolidateProvider", () => {
       "",
       "### rollout_summary_files",
       "",
-      "- rollout_summaries/gone.md (cwd=/tmp/proj)",
+      `- rollout_summaries/${artifactFilename} (cwd=/tmp/proj)`,
       "",
       "## Reusable knowledge",
       "",
@@ -226,6 +248,12 @@ describe("RuleConsolidateProvider", () => {
     const run = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });
     expect(run.result?.report).toContain("update note ignored");
     expect(run.applied).toBe(false);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.noteList()[0]?.applied).toBe(false);
+    } finally {
+      idx.close();
+    }
   });
 
   test("no-op when nothing changed", async () => {
@@ -242,6 +270,22 @@ describe("runConsolidation", () => {
     expect(run.applied).toBe(false);
     expect(readWorkspaceText(dir, "MEMORY.md")).toBe("");
     expect(loadBaseline(dir)["MEMORY.md"] ?? "").toBe("");
+  });
+
+  test("dry run never recovers or deletes a pending generation manifest", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", "after\n");
+    const generation = prepareGeneration(
+      dir,
+      "cccccccccccccccccccccccccccccccc",
+      { "MEMORY.md": { present: true, content: "before\n" } },
+      { "MEMORY.md": { present: true, content: "after\n" } },
+      {},
+      {},
+    );
+    expect(() => applyGeneration(dir, generation, "after", { failAfter: 1 })).toThrow();
+    await runConsolidation(dir, new RuleConsolidateProvider(), { execute: false });
+    expect(readWorkspaceText(dir, "MEMORY.md")).toBe("after\n");
+    expect(existsSync(join(dir, "state", "consolidation", generation.id, "manifest.json"))).toBe(true);
   });
 
   test("execute marks notes applied, stages selected, baseline saved", async () => {
@@ -291,33 +335,95 @@ describe("runConsolidation", () => {
     } as unknown as ConsolidateProvider;
     await expect(runConsolidation(dir, badProvider, { execute: true })).rejects.toThrow(/injection pattern/);
   });
+
+  test("provider failure rolls back synchronized artifacts and leaves stage pending", async () => {
+    await stageSession(dir, snapshot, new Provider(stage1({})));
+    const failedProvider = {
+      name: "failed",
+      async consolidate(): Promise<ConsolidateResult> {
+        return {
+          edits: [{ rel: "MEMORY.md", content: "partial result\n" }],
+          report: "provider timed out",
+          rejected: [],
+          completed: false,
+        };
+      },
+    } as unknown as ConsolidateProvider;
+    await expect(runConsolidation(dir, failedProvider, { execute: true })).rejects.toThrow(/did not complete/);
+    expect(readWorkspaceText(dir, "raw_memories.md")).toBe("");
+    expect(rolloutSlugs(dir)).toEqual([]);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.stageGet("test|s1")?.status).toBe("pending");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("model providers cannot commit an uncited MEMORY task group", async () => {
+    const provider: ConsolidateProvider = {
+      name: "model-test",
+      async consolidate(): Promise<ConsolidateResult> {
+        return {
+          edits: [{ rel: "MEMORY.md", content: "# Task Group: uncited\n\n## Reusable knowledge\n\n- unsupported fact\n" }],
+          report: "done",
+          rejected: [],
+          completed: true,
+        };
+      },
+    };
+    await expect(runConsolidation(dir, provider, { execute: true })).rejects.toThrow(/no rollout summary provenance/);
+    expect(readWorkspaceText(dir, "MEMORY.md")).toBe("");
+  });
+
+  test("concurrent consolidation is rejected by the workspace lease", async () => {
+    let startedResolve: (() => void) | undefined;
+    let releaseResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const release = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    const slowProvider: ConsolidateProvider = {
+      name: "slow",
+      async consolidate(): Promise<ConsolidateResult> {
+        startedResolve?.();
+        await release;
+        return { edits: [], report: "done", rejected: [], completed: true };
+      },
+    };
+    const first = runConsolidation(dir, slowProvider, { execute: true });
+    await started;
+    await expect(runConsolidation(dir, new RuleConsolidateProvider(), { execute: true })).rejects.toThrow(/already in progress/);
+    releaseResolve?.();
+    await first;
+  });
 });
 
 describe("HttpLoopConsolidateProvider", () => {
   test("runs a tool loop against a scripted chat server and applies edits", async () => {
     const replies = [
       JSON.stringify({ tool: "write_file", args: { rel: "MEMORY.md", content: "# Task Group: agent\n\n## Reusable knowledge\n\n- agent wrote this\n" } }),
-      JSON.stringify({ tool: "finish", args: { report: "agent consolidation done" } }),
+      JSON.stringify({ tool: "finish", args: { report: "agent consolidation done", applied_notes: ["note.md", "unknown.md"] } }),
     ];
-    const server = await scriptedChat(replies);
+    const restoreFetch = scriptedChat(replies);
     try {
       const previous = process.env.MEMCURIO_LLM_API_KEY;
       const previousUrl = process.env.MEMCURIO_LLM_BASE_URL;
       process.env.MEMCURIO_LLM_API_KEY = "test-key";
-      process.env.MEMCURIO_LLM_BASE_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+      process.env.MEMCURIO_LLM_BASE_URL = "http://memcurio.test/v1";
       try {
         await addAdHocNote(dir, "seed", "remember");
         const provider = new HttpLoopConsolidateProvider(5);
         const input: ConsolidateInput = {
           workspace: {},
           diff: [],
-          notes: [],
+          notes: [{ kind: "remember", filename: "note.md", content: "seed" }],
           memoryRoot: join(dir, "memory"),
         };
         const result = await provider.consolidate(input);
         expect(result.edits).toHaveLength(1);
         expect(result.edits[0]?.rel).toBe("MEMORY.md");
         expect(result.report).toBe("agent consolidation done");
+        expect(result.consumedNoteFilenames).toEqual(["note.md"]);
+        expect(result.completed).toBe(true);
       } finally {
         if (previous === undefined) {
           delete process.env.MEMCURIO_LLM_API_KEY;
@@ -331,7 +437,7 @@ describe("HttpLoopConsolidateProvider", () => {
         }
       }
     } finally {
-      server.close();
+      restoreFetch();
     }
   });
 
@@ -341,12 +447,12 @@ describe("HttpLoopConsolidateProvider", () => {
       JSON.stringify({ tool: "write_file", args: { rel: "notes.txt", content: "x\n" } }),
       JSON.stringify({ tool: "finish", args: { report: "done" } }),
     ];
-    const server = await scriptedChat(replies);
+    const restoreFetch = scriptedChat(replies);
     try {
       const previous = process.env.MEMCURIO_LLM_API_KEY;
       const previousUrl = process.env.MEMCURIO_LLM_BASE_URL;
       process.env.MEMCURIO_LLM_API_KEY = "test-key";
-      process.env.MEMCURIO_LLM_BASE_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+      process.env.MEMCURIO_LLM_BASE_URL = "http://memcurio.test/v1";
       try {
         const provider = new HttpLoopConsolidateProvider(5);
         const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
@@ -366,27 +472,60 @@ describe("HttpLoopConsolidateProvider", () => {
         }
       }
     } finally {
-      server.close();
+      restoreFetch();
+    }
+  });
+
+  test("redacts workspace, diff, and note secrets before HTTP provider egress", async () => {
+    let requestBody = "";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ tool: "finish", args: { report: "safe" } }) } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const previous = process.env.MEMCURIO_LLM_API_KEY;
+    const previousUrl = process.env.MEMCURIO_LLM_BASE_URL;
+    process.env.MEMCURIO_LLM_API_KEY = "test-key";
+    process.env.MEMCURIO_LLM_BASE_URL = "http://memcurio.test/v1";
+    try {
+      const secret = "sk-abcdef123456789012345678";
+      const provider = new HttpLoopConsolidateProvider(2);
+      await provider.consolidate({
+        workspace: { "MEMORY.md": `token ${secret}\n` },
+        diff: [{ rel: "MEMORY.md", hunks: [{ kind: "add", text: secret }], text: secret }],
+        notes: [{ kind: "remember", filename: "note.md", content: secret }],
+        memoryRoot: dir,
+      });
+      expect(requestBody).not.toContain(secret);
+      expect(requestBody).toContain("[REDACTED]");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.MEMCURIO_LLM_API_KEY;
+      } else {
+        process.env.MEMCURIO_LLM_API_KEY = previous;
+      }
+      if (previousUrl === undefined) {
+        delete process.env.MEMCURIO_LLM_BASE_URL;
+      } else {
+        process.env.MEMCURIO_LLM_BASE_URL = previousUrl;
+      }
     }
   });
 });
 
-function scriptedChat(replies: string[]): Promise<Server> {
-  return new Promise((resolve) => {
-    let i = 0;
-    const server = createServer((req, res) => {
-      let body = "";
-      req.on("data", (c: Buffer) => {
-        body += c.toString();
-      });
-      req.on("end", () => {
-        void body;
-        const reply = replies[Math.min(i, replies.length - 1)] ?? JSON.stringify({ tool: "finish", args: { report: "fallback" } });
-        i += 1;
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
-      });
+function scriptedChat(replies: string[]): () => void {
+  let i = 0;
+  globalThis.fetch = (async () => {
+    const reply = replies[Math.min(i, replies.length - 1)] ?? JSON.stringify({ tool: "finish", args: { report: "fallback" } });
+    i += 1;
+    return new Response(JSON.stringify({ choices: [{ message: { content: reply } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
     });
-    server.listen(0, "127.0.0.1", () => resolve(server));
-  });
+  }) as unknown as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
 }

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const HOOK_EVENTS = [
   "SessionStart",
@@ -28,7 +28,10 @@ export interface GeneratedPlugin {
   outDir: string;
   daemonPath: string;
   hookPath: string;
+  mcpPath: string;
   pluginJsonPath: string;
+  hooksJsonPath: string;
+  mcpJsonPath: string;
   snippetPath: string;
 }
 
@@ -47,7 +50,25 @@ export async function generateCodexPlugin(
   outDir: string,
   opts: { distDir?: string } = {},
 ): Promise<GeneratedPlugin> {
-  mkdirSync(outDir, { recursive: true });
+  const pluginRoot = resolve(outDir);
+  // `distDir` may be a disposable/cached copy without a sibling node_modules.
+  // Resolve the two bare imports used by the MCP entrypoint from memcurio's
+  // own package root, then let Bun inline their dependency graph. This keeps
+  // the generated plugin runnable after the source package/cache is removed.
+  const packageRoot = join(import.meta.dir, "..", "..", "..");
+  const packageDependencyResolver: Bun.BunPlugin = {
+    name: "memcurio-package-dependencies",
+    setup(build) {
+      build.onResolve(
+        { filter: /^(?:@modelcontextprotocol\/sdk(?:\/.*)?|zod(?:\/.*)?)$/ },
+        (args) => ({ path: Bun.resolveSync(args.path, packageRoot) }),
+      );
+    },
+  };
+  const manifestDir = join(pluginRoot, ".codex-plugin");
+  const hooksDir = join(pluginRoot, "hooks");
+  mkdirSync(manifestDir, { recursive: true });
+  mkdirSync(hooksDir, { recursive: true });
   // Overridable so tests can point at a disposable copy instead of the real
   // build output (and so alternate layouts can be supported later).
   const distDir = opts.distDir ?? join(import.meta.dir, "..", "..", "..", "dist");
@@ -61,29 +82,36 @@ export async function generateCodexPlugin(
   }
   const result = await Bun.build({
     entrypoints: [daemonSrc, hookSrc, mcpSrc],
-    outdir: outDir,
+    outdir: pluginRoot,
     target: "bun",
     naming: "[name].js",
+    packages: "bundle",
+    splitting: false,
+    plugins: [packageDependencyResolver],
   });
   if (!result.success) {
     throw new Error(`bun build failed: ${result.logs.map((l) => String(l)).join("; ")}`);
   }
-  const daemonPath = join(outDir, "daemon.js");
-  const hookPath = join(outDir, "hook.js");
-  const mcpPath = join(outDir, "index.js");
+  const daemonPath = join(pluginRoot, "daemon.js");
+  const hookPath = join(pluginRoot, "hook.js");
+  const mcpPath = join(pluginRoot, "index.js");
   // Embed the absolute bun binary so codex (which may run with a different
   // PATH, e.g. launched from a GUI) does not need `bun` on its PATH. Quote it:
   // the command runs through a shell, and a path with spaces (macOS app
   // bundles) or env-controlled metacharacters would break or hijack the hook.
   const bunBin = process.env.BUN_BIN ?? process.execPath;
-  const hookCommand = `${shellQuote(bunBin)} ${shellQuote(hookPath)}`;
+  const fallbackHookCommand = `${shellQuote(bunBin)} ${shellQuote(hookPath)}`;
+  // Plugin hooks run with PLUGIN_ROOT set by Codex. Keep this command
+  // relocatable so a generated package can be copied into the plugin cache.
+  const pluginHookCommand = `${shellQuote(bunBin)} "$PLUGIN_ROOT/hook.js"`;
 
   const hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>> = {};
   for (const event of HOOK_EVENTS) {
     // codex caps the SessionEnd hook process at 3s regardless of config, so
-    // request that ceiling explicitly — the default (1s) would kill a cold
-    // daemon start before the session row can be closed.
-    const hook = { type: "command", command: hookCommand, ...(event === "SessionEnd" ? { timeout: 3 } : {}) };
+    // request that ceiling explicitly as margin for the spool fsync. The hook
+    // normally returns within the 1s default and never waits for cold daemon
+    // startup after the durable SessionEnd record is committed.
+    const hook = { type: "command", command: pluginHookCommand, ...(event === "SessionEnd" ? { timeout: 3 } : {}) };
     hooks[event] = [{ matcher: "", hooks: [hook] }];
   }
 
@@ -91,13 +119,25 @@ export async function generateCodexPlugin(
     name: "memcurio-codex",
     version: packageVersion(),
     description: "跨 Harness 记忆与上下文管理（codex 适配器）：会话注入 + 记账 + 复盘",
-    hooks,
-    mcp_servers: {
-      memcurio: { command: bunBin, args: [mcpPath] },
-    },
+    mcpServers: "./.mcp.json",
+    hooks: "./hooks/hooks.json",
   };
-  const pluginJsonPath = join(outDir, "plugin.json");
+  const pluginJsonPath = join(manifestDir, "plugin.json");
   writeFileSync(pluginJsonPath, `${JSON.stringify(plugin, null, 2)}\n`, { mode: 0o600 });
+
+  const hooksJsonPath = join(hooksDir, "hooks.json");
+  writeFileSync(hooksJsonPath, `${JSON.stringify({ hooks }, null, 2)}\n`, { mode: 0o600 });
+
+  // The bundled MCP config is deliberately a direct server map. Codex runs a
+  // plugin MCP server from the plugin root; use a relative entrypoint so the
+  // marketplace/cache copy remains self-contained after the source output
+  // directory is removed. `cwd: "."` makes that contract explicit.
+  const mcpJsonPath = join(pluginRoot, ".mcp.json");
+  writeFileSync(
+    mcpJsonPath,
+    `${JSON.stringify({ memcurio: { command: bunBin, args: ["./index.js"], cwd: "." } }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
 
   // TOML event keys must be codex's PascalCase names: codex-rs deserializes
   // hooks via serde(rename = "SessionStart") and silently ignores unknown
@@ -113,14 +153,16 @@ export async function generateCodexPlugin(
     ["SessionEnd", "SessionEnd"],
   ];
   const snippet = [
-    "# memcurio-codex hooks 声明（如 plugin.json 未被加载则合并进 ~/.codex/config.toml）",
+    "# memcurio-codex hooks 声明（如插件未被加载则合并进 ~/.codex/config.toml）",
     "# 注：PreCompact 当前协议无注入通道，仅保留占位。",
-    "# 注：SessionEnd 显式写 timeout = 3（codex 的硬上限），否则冷启动时 1s 默认超时会杀掉 hook。",
+    "# 注：SessionEnd 显式写 timeout = 3（codex 的硬上限），为本地 spool fsync 留出余量；hook 不等待 daemon 冷启动。",
     "# 注：事件键必须用 codex 的 PascalCase 名称（serde 重命名），snake_case 会被静默忽略。",
     ...eventNames.flatMap(([tomlName, eventName]) => [
-      `[hooks.events.${tomlName}]`,
+      `[[hooks.${tomlName}]]`,
       'matcher = ""',
-      `hooks = [{ type = "command", command = ${tomlQuote(hookCommand)}${eventName === "SessionEnd" ? ", timeout = 3" : ""} }]  # ${eventName}`,
+      `[[hooks.${tomlName}.hooks]]`,
+      `type = "command"`,
+      `command = ${tomlQuote(fallbackHookCommand)}${eventName === "SessionEnd" ? "\ntimeout = 3" : ""}  # ${eventName}`,
     ]),
     "",
     "# MCP（模型侧工具面）",
@@ -129,8 +171,8 @@ export async function generateCodexPlugin(
     `args = [${tomlQuote(mcpPath)}]`,
     "",
   ].join("\n");
-  const snippetPath = join(outDir, "codex-config.toml.snippet");
+  const snippetPath = join(pluginRoot, "codex-config.toml.snippet");
   writeFileSync(snippetPath, snippet, { mode: 0o600 });
 
-  return { outDir, daemonPath, hookPath, pluginJsonPath, snippetPath };
+  return { outDir: pluginRoot, daemonPath, hookPath, mcpPath, pluginJsonPath, hooksJsonPath, mcpJsonPath, snippetPath };
 }

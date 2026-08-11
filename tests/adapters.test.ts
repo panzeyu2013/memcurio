@@ -11,19 +11,8 @@ import { listWorkspaceFiles, writeWorkspaceText } from "../src/core/workspace.js
 
 let dir: string;
 let prevRoot: string | undefined;
-let prevLlmUrl: string | undefined;
-let llmRefuser: ReturnType<typeof startLlmRefuser> | null = null;
+let prevLlmKey: string | undefined;
 const PROJ = "/tmp/MyProject";
-
-/** A local HTTP server that answers 401: llmChat throws on non-ok without
- *  retrying, so the default HttpExtractProvider no-ops quickly (no key). */
-function startLlmRefuser(): { url: string; stop(): void } {
-  const server = Bun.serve({
-    port: 0,
-    fetch: () => new Response("unauthorized", { status: 401 }),
-  });
-  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
-}
 
 class FakeExtractProvider implements ExtractProvider {
   readonly name = "fake";
@@ -47,23 +36,20 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "adp-"));
   prevRoot = process.env.MEMCURIO_ROOT;
   process.env.MEMCURIO_ROOT = dir;
-  prevLlmUrl = process.env.MEMCURIO_LLM_BASE_URL;
-  llmRefuser = startLlmRefuser();
-  process.env.MEMCURIO_LLM_BASE_URL = llmRefuser.url;
+  prevLlmKey = process.env.MEMCURIO_LLM_API_KEY;
+  delete process.env.MEMCURIO_LLM_API_KEY;
 });
 
 afterEach(() => {
-  llmRefuser?.stop();
-  llmRefuser = null;
   if (prevRoot === undefined) {
     delete process.env.MEMCURIO_ROOT;
   } else {
     process.env.MEMCURIO_ROOT = prevRoot;
   }
-  if (prevLlmUrl === undefined) {
-    delete process.env.MEMCURIO_LLM_BASE_URL;
+  if (prevLlmKey === undefined) {
+    delete process.env.MEMCURIO_LLM_API_KEY;
   } else {
-    process.env.MEMCURIO_LLM_BASE_URL = prevLlmUrl;
+    process.env.MEMCURIO_LLM_API_KEY = prevLlmKey;
   }
   rmSync(dir, { recursive: true, force: true });
 });
@@ -84,6 +70,20 @@ describe("MemcurioAdapter", () => {
     const row = idx.driver.get<{ workdir: string }>("SELECT workdir FROM sessions WHERE session_id = 's1'");
     expect(row?.workdir).toBe(PROJ);
     idx.close();
+  });
+
+  test("bounds in-memory message parts, roles, and text before checkpointing", async () => {
+    const adapter = new MemcurioAdapter();
+    await adapter.sessionCreated("bounded", PROJ, "opencode");
+    for (let index = 0; index < 4_105; index++) {
+      const id = `m${index}`;
+      adapter.messageRoleKnown("bounded", id, "user");
+      await adapter.messageSeen("bounded", `p${index}`, { messageId: id, text: "x".repeat(5_000) });
+    }
+    const state = adapter.state("bounded");
+    expect(state?.messageEvidence.size).toBe(4_096);
+    expect(state?.messageRoles.size).toBe(4_096);
+    expect(state?.messageEvidence.get("p4104")?.item.text?.length).toBe(4_000);
   });
 
   test("lifecycle stages a rollout on sessionEnded", async () => {
@@ -120,6 +120,28 @@ describe("MemcurioAdapter", () => {
     );
     expect(row?.ended_at).toBeTruthy();
     idx.close();
+  });
+
+  test("durable queue captures redacted evidence and processes outside session end", async () => {
+    const fake = new FakeExtractProvider(STAGE);
+    const adapter = new MemcurioAdapter({ extract: fake, durableQueue: true });
+    await adapter.sessionCreated("durable-1", PROJ, "opencode");
+    await adapter.messageSeen("durable-1", "p1", {
+      kind: "user",
+      text: "API key=abcdefghijklmnop; keep the FTS5 decision",
+    });
+    const ended = await adapter.sessionEnded("durable-1");
+    expect(ended).toEqual({ staged: false, queued: true });
+    const queued = await Index.create(indexDb(dir));
+    try {
+      expect(queued.extractionList("pending")).toHaveLength(1);
+      expect(queued.extractionList("pending")[0]?.snapshotJson).not.toContain("abcdefghijklmnop");
+    } finally {
+      queued.close();
+    }
+    const result = await adapter.processPendingExtractions();
+    expect(result[0]?.status).toBe("completed");
+    expect(fake.snapshots[0]?.evidence?.items[0]?.text).toContain("[REDACTED]");
   });
 
   test("extract returning null stages nothing", async () => {

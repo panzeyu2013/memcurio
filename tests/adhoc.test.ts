@@ -5,7 +5,7 @@ import { adHocNotesDir, ensureLayout } from "../src/core/paths.js";
 import { NOTE_FILENAME_RE, listAdHocNoteFiles, readAdHocNoteFile } from "../src/core/workspace.js";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,6 +73,12 @@ describe("addAdHocNote", () => {
 
   test("rejects empty content", async () => {
     await expect(addAdHocNote(dir, "   ", "remember")).rejects.toThrow(/empty/);
+  });
+
+  test("removes the note file when the database write cannot start", async () => {
+    mkdirSync(indexDb(dir));
+    await expect(addAdHocNote(dir, "must roll back", "remember")).rejects.toThrow();
+    expect(listAdHocNoteFiles(dir)).toEqual([]);
   });
 });
 

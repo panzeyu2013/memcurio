@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { diffTexts, diffWorkspace, listWorkspaceFiles, readWorkspaceText, rolloutSlugs, saveBaseline, loadBaseline, hasWorkspaceChanges, writeRolloutSummary, readRolloutSummary, deleteRolloutSummary, writeWorkspaceText, deleteWorkspaceText } from "../src/core/workspace.js";
+import { diffTexts, diffWorkspace, listWorkspaceFiles, MAX_WORKSPACE_FILE_BYTES, readWorkspaceText, rolloutSlugs, saveBaseline, loadBaseline, hasWorkspaceChanges, writeRolloutSummary, readRolloutSummary, deleteRolloutSummary, writeWorkspaceText, deleteWorkspaceText } from "../src/core/workspace.js";
 import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +59,11 @@ describe("workspace text IO", () => {
   test("rejects paths escaping the workspace", () => {
     expect(() => writeWorkspaceText(dir, "../evil.md", "x")).toThrow();
     expect(() => readWorkspaceText(dir, "/etc/passwd")).toThrow();
+  });
+
+  test("rejects oversized managed files before loading them into memory", () => {
+    writeWorkspaceText(dir, "MEMORY.md", "x".repeat(MAX_WORKSPACE_FILE_BYTES + 1));
+    expect(() => readWorkspaceText(dir, "MEMORY.md")).toThrow(/byte limit/);
   });
 
   test("listWorkspaceFiles walks nested dirs and skips dot dirs", () => {

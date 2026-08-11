@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { searchMemory } from "../src/core/search.js";
+import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
 import { ensureLayout } from "../src/core/paths.js";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
@@ -45,7 +46,8 @@ describe("searchMemory", () => {
   });
 
   test("hits bump usage on the cited stage-1 output", async () => {
-    writeRolloutSummary(dir, "proj-setup.md", "recap with fts trigram detail\n");
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s1"));
+    writeRolloutSummary(dir, artifactFilename, "recap with fts trigram detail\n");
     const idx = await Index.create(indexDb(dir));
     try {
       idx.stageUpsert({
@@ -60,7 +62,7 @@ describe("searchMemory", () => {
     }
     const { hits } = await searchMemory(dir, "trigram", 10);
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits[0]?.rel).toBe("rollout_summaries/proj-setup.md");
+    expect(hits[0]?.rel).toBe(`rollout_summaries/${artifactFilename}`);
     const idx2 = await Index.create(indexDb(dir));
     try {
       const row = idx2.stageGet("test|s1");

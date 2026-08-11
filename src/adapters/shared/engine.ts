@@ -1,8 +1,9 @@
 import { fitContext } from "../../core/budget.js";
+import { resolve } from "node:path";
 import { loadConfig } from "../../core/config.js";
 import { Index } from "../../core/db.js";
-import type { ExtractProvider, RolloutSnapshot } from "../../core/extract.js";
-import { HttpExtractProvider, stageSession } from "../../core/extract.js";
+import type { ExtractProvider, EvidenceInput, RolloutSnapshot } from "../../core/extract.js";
+import { createEvidenceSnapshot, enqueueExtractionJob, HttpExtractProvider, processExtractionQueue, stageSession } from "../../core/extract.js";
 import { renderMemoryContext, renderReadPathInstructions } from "../../core/inject.js";
 import { rootDir as coreRoot, ensureLayout, indexDb } from "../../core/paths.js";
 import { searchMemory } from "../../core/search.js";
@@ -17,6 +18,11 @@ export interface SessionState {
   touchedFiles: Set<string>;
   summary?: string;
   compacted: boolean;
+  evidence: EvidenceInput[];
+  /** Latest evidence for each message part. Stream updates replace the same
+   * part instead of appending a stale first fragment forever. */
+  messageEvidence: Map<string, { messageId?: string; item: EvidenceInput }>;
+  messageRoles: Map<string, EvidenceInput["kind"]>;
 }
 
 export type AdapterLog = (
@@ -25,31 +31,48 @@ export type AdapterLog = (
   extra?: Record<string, unknown>,
 ) => void;
 
-/** Bounds on per-session in-memory tracking; the snapshot only reports a
- *  count, so trimming the oldest seen part ids does not distort output. */
-const MAX_SEEN_PARTS = 200_000;
+/** Bounds on per-session in-memory tracking. */
+const MAX_SEEN_PARTS = 4_096;
+const MAX_MESSAGE_ROLES = 4_096;
+const MAX_MESSAGE_TEXT_CHARS = 4_000;
+const MAX_TRACKED_TOOLS = 256;
+const MAX_TRACKED_FILES = 256;
 const MAX_SUMMARY_CHARS = 4000;
 const DEFAULT_INJECT_BUDGET = 1500;
 
 export interface AdapterOptions {
   log?: AdapterLog;
-  /** Phase-1 extraction channel; defaults to HTTP, which no-ops without
-   *  MEMCURIO_LLM_API_KEY. */
+  /** Fixed store root for this adapter instance. Capturing it once prevents
+   * environment changes or daemon overrides from splitting one session across
+   * different SQLite/workspace roots. */
+  root?: string;
+  /** Phase-1 extraction channel; defaults to HTTP. Missing configuration is
+   *  a retryable provider failure for durable queue consumers. */
   extract?: ExtractProvider;
   injectBudgetTokens?: number;
+  /** Harness adapters enable this so hooks only persist a checkpoint and the
+   * model runs in the durable worker. Direct core callers retain the legacy
+   * inline behavior unless they opt in. */
+  durableQueue?: boolean;
 }
 
 export class MemcurioAdapter {
   private readonly sessions = new Map<string, SessionState>();
-  private readonly seenParts = new Map<string, Set<string>>();
+  private readonly root: string;
   private readonly log: AdapterLog;
   private readonly extract: ExtractProvider;
   private readonly injectBudgetTokens: number | undefined;
+  private readonly durableQueue: boolean;
+  private workerPromise: Promise<QueueDrainResult[]> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryDueAt: number | undefined;
 
   constructor(opts: AdapterOptions = {}) {
+    this.root = resolve(opts.root ?? coreRoot());
     this.log = opts.log ?? (() => {});
     this.extract = opts.extract ?? new HttpExtractProvider();
     this.injectBudgetTokens = opts.injectBudgetTokens;
+    this.durableQueue = opts.durableQueue === true;
   }
 
   state(sessionId: string): SessionState | undefined {
@@ -57,8 +80,15 @@ export class MemcurioAdapter {
   }
 
   async sessionCreated(sessionId: string, workdir: string, host: string): Promise<void> {
-    const root = coreRoot();
+    const root = this.root;
     ensureLayout(root);
+    const existing = this.sessions.get(sessionId);
+    if (existing) {
+      // Codex re-emits SessionStart(source=compact). Do not reset the
+      // in-memory evidence/counts accumulated before compaction.
+      existing.workdir = workdir || existing.workdir;
+      return;
+    }
     const state: SessionState = {
       sessionId,
       workdir,
@@ -68,9 +98,11 @@ export class MemcurioAdapter {
       toolUsage: new Map(),
       touchedFiles: new Set(),
       compacted: false,
+      evidence: [],
+      messageEvidence: new Map(),
+      messageRoles: new Map(),
     };
     this.sessions.set(sessionId, state);
-    this.seenParts.set(sessionId, new Set());
     const idx = await Index.create(indexDb(root));
     try {
       idx.recordSession(sessionId, host, workdir, state.startedAt);
@@ -81,7 +113,11 @@ export class MemcurioAdapter {
     this.log("info", "session created", { sessionId, workdir, host });
   }
 
-  async messageSeen(sessionId: string, partId: string): Promise<void> {
+  async messageSeen(
+    sessionId: string,
+    partId: string,
+    details?: { kind?: EvidenceInput["kind"]; text?: string; messageId?: string },
+  ): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s) {
       // Events can legitimately race ahead of session.created (plugin loaded
@@ -90,18 +126,112 @@ export class MemcurioAdapter {
       this.log("debug", "messageSeen: unknown session, ignoring", { sessionId });
       return;
     }
-    const seen = this.seenParts.get(sessionId) ?? new Set<string>();
-    seen.add(partId);
-    // Bound per-session memory on pathological (tens of thousands of parts)
-    // conversations: the count still reflects what has been seen.
-    if (seen.size > MAX_SEEN_PARTS) {
-      const first = seen.values().next().value;
+    const messageId = details?.messageId;
+    const kind = details?.kind ?? (messageId ? s.messageRoles.get(messageId) : undefined) ?? "event";
+    s.messageEvidence.set(partId, {
+      messageId,
+      item: { kind, text: details?.text?.slice(0, MAX_MESSAGE_TEXT_CHARS) },
+    });
+    if (s.messageEvidence.size > MAX_SEEN_PARTS) {
+      const first = s.messageEvidence.keys().next().value;
       if (first) {
-        seen.delete(first);
+        s.messageEvidence.delete(first);
       }
     }
-    this.seenParts.set(sessionId, seen);
-    s.messageCount = seen.size;
+    s.messageCount = s.messageEvidence.size;
+  }
+
+  /** Record the role from OpenCode's Message object. The role is not a Part
+   * field; when it arrives after a streamed part, update the stored evidence
+   * in place so the final snapshot has the correct user/assistant class. */
+  messageRoleKnown(sessionId: string, messageId: string, kind: EvidenceInput["kind"]): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !messageId) {
+      return;
+    }
+    if (!s.messageRoles.has(messageId) && s.messageRoles.size >= MAX_MESSAGE_ROLES) {
+      const oldest = s.messageRoles.keys().next().value;
+      if (oldest) {
+        s.messageRoles.delete(oldest);
+      }
+    }
+    s.messageRoles.set(messageId, kind);
+    for (const record of s.messageEvidence.values()) {
+      if (record.messageId === messageId) {
+        record.item.kind = kind;
+      }
+    }
+  }
+
+  messageRemoved(sessionId: string, partId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) {
+      return;
+    }
+    s.messageEvidence.delete(partId);
+    s.messageCount = s.messageEvidence.size;
+  }
+
+  messageRemovedByMessage(sessionId: string, messageId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) {
+      return;
+    }
+    for (const [partId, record] of s.messageEvidence) {
+      if (record.messageId === messageId) {
+        s.messageEvidence.delete(partId);
+      }
+    }
+    s.messageRoles.delete(messageId);
+    s.messageCount = s.messageEvidence.size;
+  }
+
+  /** Replace the in-memory message-part view with the authoritative messages
+   * returned by OpenCode at idle/close. This repairs missed deltas and removes
+   * parts that the stream reported as deleted. */
+  messageSnapshot(
+    sessionId: string,
+    items: ReadonlyArray<{ partId: string; messageId?: string; kind: EvidenceInput["kind"]; text?: string }>,
+  ): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) {
+      return;
+    }
+    s.messageEvidence.clear();
+    s.messageRoles.clear();
+    for (const item of items.slice(-MAX_SEEN_PARTS)) {
+      if (!item.partId) {
+        continue;
+      }
+      s.messageEvidence.set(item.partId, {
+        messageId: item.messageId,
+        item: { kind: item.kind, text: item.text?.slice(0, MAX_MESSAGE_TEXT_CHARS) },
+      });
+      if (item.messageId) {
+        if (!s.messageRoles.has(item.messageId) && s.messageRoles.size >= MAX_MESSAGE_ROLES) {
+          const oldest = s.messageRoles.keys().next().value;
+          if (oldest) {
+            s.messageRoles.delete(oldest);
+          }
+        }
+        s.messageRoles.set(item.messageId, item.kind);
+      }
+    }
+    s.messageCount = s.messageEvidence.size;
+  }
+
+  /** Add host-owned transcript evidence to the in-memory checkpoint. The
+   * reader is adapter-specific; this shared method only applies the bounded
+   * collection guard before the next durable snapshot is written. */
+  transcriptEvidence(sessionId: string, items: readonly EvidenceInput[]): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) {
+      this.log("debug", "transcriptEvidence: unknown session, ignoring", { sessionId });
+      return;
+    }
+    for (const item of items) {
+      this.addEvidence(s, item);
+    }
   }
 
   async toolExecuted(sessionId: string, tool: string, details?: { filePath?: string }): Promise<void> {
@@ -110,10 +240,25 @@ export class MemcurioAdapter {
       this.log("debug", "toolExecuted: unknown session, ignoring", { sessionId, tool });
       return;
     }
-    s.toolUsage.set(tool, (s.toolUsage.get(tool) ?? 0) + 1);
-    if (details?.filePath) {
-      s.touchedFiles.add(details.filePath);
+    const toolName = tool.slice(0, 500);
+    if (!s.toolUsage.has(toolName) && s.toolUsage.size >= MAX_TRACKED_TOOLS) {
+      const oldest = s.toolUsage.keys().next().value;
+      if (oldest) {
+        s.toolUsage.delete(oldest);
+      }
     }
+    s.toolUsage.set(toolName, (s.toolUsage.get(toolName) ?? 0) + 1);
+    if (details?.filePath) {
+      const filePath = details.filePath.slice(0, 2_000);
+      if (!s.touchedFiles.has(filePath) && s.touchedFiles.size >= MAX_TRACKED_FILES) {
+        const oldest = s.touchedFiles.values().next().value;
+        if (oldest) {
+          s.touchedFiles.delete(oldest);
+        }
+      }
+      s.touchedFiles.add(filePath);
+    }
+    this.addEvidence(s, { kind: "tool", name: tool, path: details?.filePath });
   }
 
   async sessionIdle(sessionId: string): Promise<void> {
@@ -125,8 +270,18 @@ export class MemcurioAdapter {
     if (s.messageCount === 0 && s.toolUsage.size === 0) {
       return;
     }
-    // The old auto-write timer is gone; an idle session with content is just
-    // observed so the flow stays debuggable.
+    if (this.durableQueue) {
+      const snapshot = this.snapshotFor(s, "idle");
+      const queued = await this.enqueueSnapshot(snapshot, "idle");
+      this.log("debug", "session checkpoint queued", {
+        sessionId,
+        jobId: queued.jobId,
+        inserted: queued.inserted,
+      });
+      return;
+    }
+    // Direct core callers retain the old observation-only behavior; harness
+    // adapters opt into the durable queue above.
     this.log("debug", "session idle with content", {
       sessionId,
       messages: s.messageCount,
@@ -142,48 +297,94 @@ export class MemcurioAdapter {
     }
     if (summary) {
       s.summary = summary.slice(0, MAX_SUMMARY_CHARS);
+      this.addEvidence(s, { kind: "summary", text: s.summary });
     }
     s.compacted = true;
   }
 
-  async sessionEnded(sessionId: string): Promise<{ staged: boolean }> {
+  async sessionEnded(sessionId: string): Promise<{ staged: boolean; queued: boolean }> {
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("warn", "sessionEnded: unknown session, ignoring", { sessionId });
-      return { staged: false };
+      return { staged: false, queued: false };
     }
-    const snapshot: RolloutSnapshot = {
-      sessionId: s.sessionId,
-      workdir: s.workdir,
-      host: s.host,
-      summary: s.summary,
-      messages: s.messageCount,
-      tools: [...s.toolUsage.keys()],
-      files: [...s.touchedFiles].slice(0, 10),
-      startedAt: s.startedAt,
-      endedAt: new Date().toISOString(),
-    };
+    const snapshot = this.snapshotFor(s, "session_end");
     let staged = false;
-    try {
-      staged = (await stageSession(coreRoot(), snapshot, this.extract)) !== null;
-    } catch (err) {
-      this.log("warn", "session staging failed", { sessionId, error: String(err) });
+    let queued = false;
+    if (this.durableQueue) {
+      const idx = await Index.create(indexDb(this.root));
+      try {
+        let job: ReturnType<typeof enqueueExtractionJob> | undefined;
+        idx.withTransaction(() => {
+          job = enqueueExtractionJob(idx, snapshot, "session_end", this.extract.name);
+          idx.endSession(sessionId, snapshot.endedAt);
+          idx.audit("extract.queued", s.host, `${job.jobId} (session_end)`);
+          idx.audit("adapter.session_end", "-", sessionId);
+        });
+        queued = job !== undefined;
+      } finally {
+        idx.close();
+      }
+    } else {
+      try {
+        staged = (await stageSession(this.root, snapshot, this.extract)) !== null;
+      } catch (err) {
+        this.log("warn", "session staging failed", { sessionId, error: String(err) });
+      }
+      const idx = await Index.create(indexDb(this.root));
+      try {
+        idx.endSession(sessionId, snapshot.endedAt);
+        idx.audit("adapter.session_end", "-", sessionId);
+      } finally {
+        idx.close();
+      }
     }
-    const idx = await Index.create(indexDb(coreRoot()));
-    try {
-      idx.endSession(sessionId, snapshot.endedAt);
-      idx.audit("adapter.session_end", "-", sessionId);
-    } finally {
-      idx.close();
-    }
-    this.seenParts.delete(sessionId);
     this.sessions.delete(sessionId);
-    this.log("info", "session ended", { sessionId, staged });
-    return { staged };
+    this.log("info", "session ended", { sessionId, staged, queued });
+    return { staged, queued };
+  }
+
+  /** Drain durable jobs outside the host event request. Only one drain runs
+   * per adapter; a failed job remains pending/dead in SQLite and schedules its
+   * next retry without blocking future Hook responses. */
+  async processPendingExtractions(limit = 8): Promise<QueueDrainResult[]> {
+    if (!this.durableQueue) {
+      return [];
+    }
+    if (this.workerPromise) {
+      return this.workerPromise;
+    }
+    const work = (async (): Promise<QueueDrainResult[]> => {
+      const results: QueueDrainResult[] = [];
+      for (let i = 0; i < limit; i += 1) {
+        const result = await processExtractionQueue(this.root, this.extract);
+        if (result.status === "empty") {
+          break;
+        }
+        results.push(result);
+        if (result.status === "blocked") {
+          // Configuration changes, not wall-clock retries, reactivate this
+          // provider. A future host event or explicit retry command probes it.
+          break;
+        }
+        if (result.status === "retry" && result.retryInMs !== undefined) {
+          this.scheduleRetry(result.retryInMs);
+          break;
+        }
+      }
+      await this.scheduleNextWake();
+      return results;
+    })();
+    this.workerPromise = work;
+    try {
+      return await work;
+    } finally {
+      this.workerPromise = null;
+    }
   }
 
   async buildStaticContext(workdir: string, budgetTokens?: number): Promise<string> {
-    const root = coreRoot();
+    const root = this.root;
     const budget = budgetTokens ?? this.#injectionBudget();
     const summary = await renderMemoryContext(root, budget);
     const idx = await Index.create(indexDb(root));
@@ -196,7 +397,7 @@ export class MemcurioAdapter {
   }
 
   async buildDynamicContext(workdir: string, query: string, budgetTokens?: number): Promise<string> {
-    const root = coreRoot();
+    const root = this.root;
     const budget = budgetTokens ?? this.#injectionBudget();
     const { hits, blocked } = await searchMemory(root, query, 8);
     const idx = await Index.create(indexDb(root));
@@ -248,9 +449,104 @@ export class MemcurioAdapter {
       return this.injectBudgetTokens;
     }
     try {
-      return loadConfig(coreRoot()).budget.maxInjectTokens ?? DEFAULT_INJECT_BUDGET;
+      return loadConfig(this.root).budget.maxInjectTokens ?? DEFAULT_INJECT_BUDGET;
     } catch {
       return DEFAULT_INJECT_BUDGET;
     }
   }
+
+  private addEvidence(state: SessionState, item: EvidenceInput): void {
+    if (!item.text && !item.name && !item.path) {
+      return;
+    }
+    state.evidence.push({
+      kind: item.kind,
+      text: item.text?.slice(0, MAX_MESSAGE_TEXT_CHARS),
+      name: item.name?.slice(0, 500),
+      path: item.path?.slice(0, 2_000),
+    });
+    if (state.evidence.length > 256) {
+      state.evidence.splice(0, state.evidence.length - 256);
+    }
+  }
+
+  private snapshotFor(state: SessionState, sourceEvent: string): RolloutSnapshot {
+    return {
+      sessionId: state.sessionId,
+      workdir: state.workdir,
+      host: state.host,
+      sourceEvent,
+      summary: state.summary,
+      messages: state.messageCount,
+      tools: [...state.toolUsage.keys()],
+      files: [...state.touchedFiles].slice(0, 10),
+      startedAt: state.startedAt,
+      endedAt: new Date().toISOString(),
+      evidence: createEvidenceSnapshot([
+        ...state.evidence,
+        ...[...state.messageEvidence.values()].map((record) => record.item),
+      ]),
+    };
+  }
+
+  private async enqueueSnapshot(snapshot: RolloutSnapshot, sourceEvent: string): Promise<{ jobId: string; inserted: boolean }> {
+    const idx = await Index.create(indexDb(this.root));
+    try {
+      let queued: ReturnType<typeof enqueueExtractionJob> | undefined;
+      idx.withTransaction(() => {
+        queued = enqueueExtractionJob(idx, snapshot, sourceEvent, this.extract.name);
+        idx.audit("extract.queued", snapshot.host, `${queued.jobId} (${sourceEvent})`);
+      });
+      if (!queued) {
+        throw new Error("extraction checkpoint was not queued");
+      }
+      return { jobId: queued.jobId, inserted: queued.inserted };
+    } finally {
+      idx.close();
+    }
+  }
+
+  private scheduleRetry(delayMs: number): void {
+    const delay = Math.max(100, Math.min(delayMs, 60 * 60_000));
+    const dueAt = Date.now() + delay;
+    // A recovery wake may discover an earlier job than the timer installed by
+    // a previous failure. Replace a later timer so the earliest provider
+    // checkpoint always wakes the worker.
+    if (this.retryTimer && this.retryDueAt !== undefined && this.retryDueAt <= dueAt) {
+      return;
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+    }
+    this.retryDueAt = dueAt;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.retryDueAt = undefined;
+      void this.processPendingExtractions().catch((err) => {
+        this.log("warn", "extraction retry failed", { error: String(err) });
+      });
+    }, delay);
+    const timer = this.retryTimer as unknown as { unref?: () => void };
+    timer.unref?.();
+  }
+
+  private async scheduleNextWake(): Promise<void> {
+    const idx = await Index.create(indexDb(this.root));
+    try {
+      const next = idx.extractionNextWakeAt(this.extract.name);
+      if (!next) {
+        return;
+      }
+      this.scheduleRetry(Math.max(0, Date.parse(next) - Date.now()));
+    } finally {
+      idx.close();
+    }
+  }
+}
+
+interface QueueDrainResult {
+  status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced";
+  jobId?: string;
+  staged?: boolean;
+  retryInMs?: number;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import {
   planConsolidation,
   runConsolidation,
   syncArtifacts,
+  withWorkspaceWriteLease,
 } from "../core/consolidate.js";
 import { Index } from "../core/db.js";
 import type { AdHocNoteRow, Stage1OutputRow } from "../core/db.js";
@@ -23,9 +24,13 @@ import { configPath, ensureLayout, indexDb, rootDir, txnLog } from "../core/path
 import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
 import { Transaction, truncateLog } from "../core/transaction.js";
-import { hasWorkspaceChanges, readWorkspaceText, rolloutSlugs, saveBaseline, writeAdHocNoteFile } from "../core/workspace.js";
+import { generationMarkerFromMeta, inspectGenerationManifests, recoverPendingGenerations } from "../core/generation.js";
+import { deleteAdHocNoteFile, hasWorkspaceChanges, NOTE_FILENAME_RE, noteFilePath, readWorkspaceText, rolloutSlugs, writeAdHocNoteFile } from "../core/workspace.js";
+import { purgeRollout } from "../core/purge.js";
 import { generateCodexPlugin } from "../adapters/codex/generate.js";
 import { defaultSocketPath, runCodexDaemon } from "../adapters/codex/daemon.js";
+import { inspectCodexSpool } from "../adapters/codex/spool.js";
+import { MemcurioAdapter } from "../adapters/shared/engine.js";
 import { runServer } from "../mcp/index.js";
 import { t } from "./i18n.js";
 
@@ -54,6 +59,8 @@ function warnExtraArgs(cmd: string, positionals: string[], max: number): void {
 export class UsageError extends Error {}
 
 const MAX_NOTE_CHARS = 20_000;
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+const MAX_IMPORT_TEXT_CHARS = 200_000;
 
 async function withStore<T>(fn: (idx: Index) => Promise<T>): Promise<T> {
   const root = rootDir();
@@ -129,6 +136,7 @@ async function cmdStatus(): Promise<number> {
     console.log(t("status.audit", String(idx.auditCount())));
     const txn = new Transaction(txnLog(root));
     console.log(t("status.pending", String(txn.pending().length)));
+    console.log(t("status.extractions", String(idx.extractionPendingCount())));
     return 0;
   });
 }
@@ -281,6 +289,34 @@ async function cmdPrune(rest: string[]): Promise<number> {
   return 0;
 }
 
+async function cmdPurge(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      "rollout-key": { type: "string" },
+      execute: { type: "boolean" },
+      export: { type: "string" },
+    },
+  });
+  warnExtraArgs("purge", positionals, 0);
+  const rolloutKey = values["rollout-key"];
+  if (!rolloutKey) {
+    return failUsage(t("purge.missingKey"));
+  }
+  if (!values.execute) {
+    return failUsage(t("purge.requiresExecute"));
+  }
+  const root = rootDir();
+  const result = await purgeRollout(root, rolloutKey, values.export ? [values.export] : []);
+  if (!result) {
+    console.log(t("purge.notFound", rolloutKey));
+    return 0;
+  }
+  console.log(t("purge.done", result.rolloutKey, result.artifactFilename, String(result.exportRecords)));
+  return 0;
+}
+
 async function cmdCurate(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -325,12 +361,13 @@ async function cmdReindex(rest: string[] = []): Promise<number> {
   const root = rootDir();
   ensureLayout(root);
   const cfg = pipelineConfig(root);
-  const plan = await planConsolidation(root, cfg);
-  return withStore(async (idx) => {
+  return withWorkspaceWriteLease(root, async (idx, renew) => {
+    recoverPendingGenerations(root, generationMarkerFromMeta(idx.metaGet("consolidation_generation")));
+    const plan = await planConsolidation(root, cfg);
+    renew();
     const txn = new Transaction(txnLog(root));
     txn.run("reindex", "-", "sync artifacts from stage1", () => {
       syncArtifacts(root, plan);
-      saveBaseline(root);
       idx.audit("reindex", "-", `synced ${Object.keys(plan.artifacts).length} artifact file(s), pruned ${plan.pruned.length}`);
     });
     console.log(t("reindex.done", String(Object.keys(plan.artifacts).length)));
@@ -349,7 +386,8 @@ async function cmdRepair(rest: string[]): Promise<number> {
   const txnLogObj = new Transaction(txnLog(root));
   const pending = txnLogObj.pending();
   const corrupt = txnLogObj.corruptLines();
-  if (!pending.length && corrupt === 0) {
+  const generations = inspectGenerationManifests(root);
+  if (!pending.length && corrupt === 0 && generations.length === 0) {
     console.log(t("repair.none"));
     return 0;
   }
@@ -358,6 +396,12 @@ async function cmdRepair(rest: string[]): Promise<number> {
   }
   if (corrupt > 0) {
     console.log(t("repair.corrupt", String(corrupt)));
+  }
+  if (generations.length) {
+    console.log(t("repair.generations", String(generations.length)));
+    for (const generation of generations) {
+      console.log(`  generation ${generation.id} phase=${generation.phase}${generation.targetCount === undefined ? "" : ` targets=${generation.targetCount}`}`);
+    }
   }
   for (const p of pending) {
     console.log(`  ${p.txn} ${p.action ?? "?"} ns=${p.ns ?? "-"} ${p.detail ?? ""}`);
@@ -369,17 +413,22 @@ async function cmdRepair(rest: string[]): Promise<number> {
     console.log(t("repair.fix"));
     return 1;
   }
+  if (generations.some((generation) => generation.phase === "invalid")) {
+    console.error(t("repair.invalidGeneration"));
+    return 1;
+  }
   ensureLayout(root);
   const cfg = pipelineConfig(root);
-  const plan = await planConsolidation(root, cfg);
-  return withStore(async (idx) => {
+  return withWorkspaceWriteLease(root, async (idx, renew) => {
+    const recovered = recoverPendingGenerations(root, generationMarkerFromMeta(idx.metaGet("consolidation_generation")));
+    const plan = await planConsolidation(root, cfg);
+    renew();
     const txn = new Transaction(txnLog(root));
     let count = 0;
     txn.run("repair", "-", `cleared ${pending.length} pending txns`, () => {
       syncArtifacts(root, plan);
-      saveBaseline(root);
       count = Object.keys(plan.artifacts).length;
-      idx.audit("repair", "-", `re-synced ${count} artifact file(s), cleared ${pending.length} pending txns`);
+      idx.audit("repair", "-", `re-synced ${count} artifact file(s), cleared ${pending.length} pending txns, recovered ${recovered.length} generation(s)`);
     });
     truncateLog(txnLog(root));
     console.log(t("repair.done", String(count)));
@@ -448,12 +497,16 @@ interface ExportRecord {
   rawMemory?: string;
   rolloutSummary?: string;
   rolloutSlug?: string;
+  artifactId?: string;
+  artifactFilename?: string;
   sourceUpdatedAt?: string;
   generatedAt?: string;
   lastUsage?: string | null;
   usageCount?: number;
   selectedForPhase2?: boolean;
   status?: string;
+  checkpointRank?: number;
+  checkpointSourceEvent?: string;
   id?: string;
   filename?: string;
   kind?: string;
@@ -462,6 +515,23 @@ interface ExportRecord {
   applied?: boolean;
 }
 
+type ValidatedImportRecord =
+  | {
+    type: "stage1";
+    rolloutKey: string;
+    rawMemory: string;
+    rolloutSummary: string;
+    rolloutSlug: string;
+    sourceUpdatedAt: string;
+    checkpointRank: number;
+    checkpointSourceEvent: string;
+    generatedAt: string;
+    lastUsage: string | null;
+    usageCount: number;
+    status: Stage1OutputRow["status"];
+  }
+  | { type: "note"; id: string; filename: string; kind: "remember" | "forget" | "update"; content: string; createdAt: string; applied: boolean };
+
 function serializeStage1(s: Stage1OutputRow): ExportRecord {
   return {
     type: "stage1",
@@ -469,12 +539,16 @@ function serializeStage1(s: Stage1OutputRow): ExportRecord {
     rawMemory: s.rawMemory,
     rolloutSummary: s.rolloutSummary,
     rolloutSlug: s.rolloutSlug,
+    artifactId: s.artifactId,
+    artifactFilename: s.artifactFilename,
     sourceUpdatedAt: s.sourceUpdatedAt,
     generatedAt: s.generatedAt,
     lastUsage: s.lastUsage,
     usageCount: s.usageCount,
     selectedForPhase2: s.selectedForPhase2,
     status: s.status,
+    checkpointRank: s.checkpointRank,
+    checkpointSourceEvent: s.checkpointSourceEvent,
   };
 }
 
@@ -518,6 +592,136 @@ function writeExportFile(path: string, text: string): void {
   writeFileSync(path, text, { mode: 0o600 });
 }
 
+function safeImportScalar(value: unknown, max: number, required = false): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  const hasControl = Array.from(text).some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+  if ((required && !text) || text.length > max || hasControl) {
+    return null;
+  }
+  return text;
+}
+
+function safeImportIso(value: unknown, fallback?: string): string | null {
+  if (value === undefined && fallback !== undefined) {
+    return fallback;
+  }
+  const text = safeImportScalar(value, 100, true);
+  if (!text) {
+    return null;
+  }
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function importCheckpointRank(sourceEvent: string): number {
+  if (sourceEvent === "session_end") {
+    return 2;
+  }
+  if (sourceEvent === "idle" || sourceEvent === "stop" || sourceEvent === "post_compact") {
+    return 1;
+  }
+  return 0;
+}
+
+/** Validate and sanitize a JSONL record before opening the destination store.
+ * This keeps malformed/untrusted input from causing partial imports or writing
+ * arbitrary note paths. */
+function validateImportRecord(value: unknown): ValidatedImportRecord | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as ExportRecord;
+  if (record.type === "stage1") {
+    const rolloutKey = safeImportScalar(record.rolloutKey, 500, true);
+    const rawMemory = typeof record.rawMemory === "string" ? redactSecrets(record.rawMemory).text.trim() : null;
+    const rolloutSummary = typeof record.rolloutSummary === "string" ? redactSecrets(record.rolloutSummary).text.trim() : null;
+    if (!rolloutKey || rawMemory === null || rolloutSummary === null) {
+      return null;
+    }
+    if (rawMemory.length > MAX_IMPORT_TEXT_CHARS || rolloutSummary.length > MAX_IMPORT_TEXT_CHARS) {
+      return null;
+    }
+    if ((!rawMemory && !rolloutSummary) || !sanitizeForInjection(`${rawMemory}\n${rolloutSummary}`).safe) {
+      return null;
+    }
+    const suppliedSlug = record.rolloutSlug === undefined ? "rollout" : safeImportScalar(record.rolloutSlug, 80);
+    if (!suppliedSlug || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(suppliedSlug)) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    const sourceUpdatedAt = safeImportIso(record.sourceUpdatedAt, now);
+    if (!sourceUpdatedAt) {
+      return null;
+    }
+    const generatedAt = safeImportIso(record.generatedAt, sourceUpdatedAt);
+    const lastUsage = record.lastUsage === null || record.lastUsage === undefined
+      ? null
+      : safeImportIso(record.lastUsage);
+    const usageCount = record.usageCount === undefined ? 0 : record.usageCount;
+    const checkpointRank = record.checkpointRank === undefined ? 0 : record.checkpointRank;
+    const checkpointSourceEvent = record.checkpointSourceEvent === undefined
+      ? ""
+      : safeImportScalar(record.checkpointSourceEvent, 80);
+    const status = record.status === undefined
+      ? (record.selectedForPhase2 === true ? "selected" : "pending")
+      : record.status;
+    if (
+      !generatedAt || (record.lastUsage !== null && record.lastUsage !== undefined && !lastUsage) ||
+      !Number.isSafeInteger(usageCount) || usageCount < 0 || usageCount > 1_000_000_000 ||
+      !Number.isSafeInteger(checkpointRank) || checkpointRank < 0 || checkpointRank > 2 ||
+      checkpointSourceEvent === null ||
+      checkpointRank !== importCheckpointRank(checkpointSourceEvent) ||
+      (status !== "pending" && status !== "selected" && status !== "deleted")
+    ) {
+      return null;
+    }
+    return {
+      type: "stage1",
+      rolloutKey,
+      rawMemory,
+      rolloutSummary,
+      rolloutSlug: suppliedSlug,
+      sourceUpdatedAt,
+      checkpointRank,
+      checkpointSourceEvent,
+      generatedAt,
+      lastUsage,
+      usageCount,
+      status,
+    };
+  }
+  if (record.type === "note") {
+    const id = safeImportScalar(record.id, 128, true);
+    const filename = safeImportScalar(record.filename, 128, true);
+    const content = typeof record.content === "string" ? redactSecrets(record.content).text.trim() : null;
+    const kind = record.kind;
+    if (
+      !id || !/^[A-Za-z0-9_-]{1,128}$/.test(id) ||
+      !filename || !NOTE_FILENAME_RE.test(filename) ||
+      content === null || !content || content.length > MAX_NOTE_CHARS ||
+      (kind !== "remember" && kind !== "forget" && kind !== "update") ||
+      !sanitizeForInjection(content).safe
+    ) {
+      return null;
+    }
+    const createdAt = safeImportIso(record.createdAt, new Date().toISOString());
+    if (!createdAt) {
+      return null;
+    }
+    if (record.applied !== undefined && typeof record.applied !== "boolean") {
+      return null;
+    }
+    return { type: "note", id, filename, kind, content, createdAt, applied: record.applied === true };
+  }
+  return null;
+}
+
 async function cmdImport(rest: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: rest, allowPositionals: true });
   const path = positionals[0];
@@ -527,68 +731,134 @@ async function cmdImport(rest: string[]): Promise<number> {
   warnExtraArgs("import", positionals, 1);
   const root = rootDir();
   ensureLayout(root);
+  try {
+    if (statSync(path).size > MAX_IMPORT_BYTES) {
+      return fail(t("import.tooLarge", String(MAX_IMPORT_BYTES)));
+    }
+  } catch (err) {
+    return fail(String(err));
+  }
   const raw = readFileSync(path, "utf-8");
-  const records: ExportRecord[] = [];
+  const records: ValidatedImportRecord[] = [];
+  let invalid = 0;
   for (const line of raw.split("\n")) {
     if (!line.trim()) {
       continue;
     }
     try {
-      const parsed = JSON.parse(line) as ExportRecord;
-      if (parsed.type === "stage1" || parsed.type === "note") {
+      const parsed = validateImportRecord(JSON.parse(line));
+      if (parsed) {
         records.push(parsed);
+      } else {
+        invalid += 1;
       }
     } catch {
-      void 0;
+      invalid += 1;
     }
+  }
+  if (invalid) {
+    return fail(t("import.invalid", String(invalid)));
   }
   if (!records.length) {
     return fail(t("import.empty", path));
   }
   return withStore(async (idx) => {
-    let added = 0;
+    const stageKeys = new Set(idx.stageList().map((row) => row.rolloutKey));
+    const noteIds = new Set(idx.noteList().map((note) => note.id));
+    const plannedNoteFiles = new Set<string>();
+    const additions: ValidatedImportRecord[] = [];
     let skipped = 0;
+    // Resolve conflicts before touching either SQLite or the note files. A
+    // same filename with a different id is ambiguous and must not overwrite
+    // an existing note (including an orphan left by an interrupted import).
     for (const r of records) {
-      if (r.type === "stage1" && r.rolloutKey) {
-        if (idx.stageGet(r.rolloutKey)) {
+      if (r.type === "stage1") {
+        if (stageKeys.has(r.rolloutKey)) {
           skipped += 1;
-          console.log(t("import.conflict", r.rolloutKey));
-          continue;
+        } else {
+          stageKeys.add(r.rolloutKey);
+          additions.push(r);
         }
-        idx.stageUpsert({
-          rolloutKey: r.rolloutKey,
-          rawMemory: r.rawMemory ?? "",
-          rolloutSummary: r.rolloutSummary ?? "",
-          rolloutSlug: r.rolloutSlug ?? "rollout",
-          sourceUpdatedAt: r.sourceUpdatedAt ?? new Date().toISOString(),
-        });
-        added += 1;
-      } else if (r.type === "note" && r.id && r.filename) {
-        if (idx.noteList().some((n) => n.id === r.id)) {
-          skipped += 1;
-          continue;
-        }
-        const kind = r.kind === "remember" || r.kind === "forget" || r.kind === "update" ? r.kind : "remember";
-        idx.noteAdd({
-          id: r.id,
-          filename: r.filename,
-          kind,
-          content: r.content ?? "",
-          createdAt: r.createdAt ?? new Date().toISOString(),
-        });
-        try {
-          writeAdHocNoteFile(root, r.filename, r.content ?? "");
-        } catch {
-          // invalid/unsafe filename: DB row kept, file skipped (next consolidate
-          // reports it as pending but harmless).
-        }
-        added += 1;
+        continue;
       }
+      if (noteIds.has(r.id)) {
+        skipped += 1;
+        continue;
+      }
+      if (plannedNoteFiles.has(r.filename) || existsSync(noteFilePath(root, r.filename))) {
+        throw new Error(`import filename collision: ${r.filename}`);
+      }
+      noteIds.add(r.id);
+      plannedNoteFiles.add(r.filename);
+      additions.push(r);
     }
-    idx.audit("import", path, `+${added}, skip ${skipped}`);
+    let added = 0;
+    const createdNoteFiles: string[] = [];
+    try {
+      idx.withTransaction(() => {
+        for (const r of additions) {
+          if (r.type === "stage1") {
+            idx.stageRestore(r);
+          } else {
+            writeAdHocNoteFile(root, r.filename, r.content);
+            createdNoteFiles.push(r.filename);
+            idx.noteAdd({
+              id: r.id,
+              filename: r.filename,
+              kind: r.kind,
+              content: r.content,
+              createdAt: r.createdAt,
+              applied: r.applied,
+            });
+          }
+          added += 1;
+        }
+        idx.audit("import", path, `+${added}, skip ${skipped}`);
+      });
+    } catch (err) {
+      // SQLite rolls back automatically; remove only files created by this
+      // batch so a failed cross-resource import cannot leave ghost notes.
+      for (const filename of createdNoteFiles.reverse()) {
+        try {
+          deleteAdHocNoteFile(root, filename);
+        } catch {
+          // Preserve the original import error; doctor can expose any file
+          // drift if the filesystem itself is unavailable.
+        }
+      }
+      throw err;
+    }
     console.log(t("import.done", String(added), String(skipped)));
     return 0;
   });
+}
+
+async function cmdRetryExtraction(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { limit: { type: "string" }, dead: { type: "boolean" } },
+  });
+  warnExtraArgs("retry-extraction", positionals, 0);
+  const limit = positiveInt(values.limit, 8, 100, "limit");
+  let requeued = 0;
+  if (values.dead) {
+    requeued = await withStore(async (idx) => {
+      const count = idx.extractionRequeueDead();
+      if (count) {
+        idx.audit("extract.queue_requeue_dead", "-", String(count));
+      }
+      return count;
+    });
+  }
+  const adapter = new MemcurioAdapter({ durableQueue: true, root: rootDir() });
+  const results = await adapter.processPendingExtractions(limit);
+  const staged = results.filter((result) => result.staged).length;
+  const retried = results.filter((result) => result.status === "retry").length;
+  const dead = results.filter((result) => result.status === "dead").length;
+  const blocked = results.filter((result) => result.status === "blocked").length;
+  console.log(t("extract.retryDone", String(results.length), String(staged), String(retried), String(dead), String(blocked), String(requeued)));
+  return 0;
 }
 
 async function cmdCodexDaemon(): Promise<number> {
@@ -613,7 +883,9 @@ async function cmdCodexPlugin(rest: string[]): Promise<number> {
   console.log(t("codexPlugin.generated", generated.outDir));
   console.log(`  daemon  : ${generated.daemonPath}`);
   console.log(`  hook    : ${generated.hookPath}`);
-  console.log(`  plugin  : ${generated.pluginJsonPath}`);
+  console.log(`  manifest: ${generated.pluginJsonPath}`);
+  console.log(`  hooks   : ${generated.hooksJsonPath}`);
+  console.log(`  mcp     : ${generated.mcpJsonPath}`);
   console.log(`  snippet : ${generated.snippetPath}${t("codexPlugin.snippet")}`);
   console.log(t("codexPlugin.hint"));
   return 0;
@@ -646,7 +918,25 @@ async function cmdDoctor(): Promise<number> {
       check(t("doctor.index"), true, `${t("doctor.stage1")}: ${stages.length}`);
       check(t("doctor.memory"), hasWorkspaceChanges(root) === false, hasWorkspaceChanges(root) ? `${t("doctor.drift")} — ${t("doctor.driftHint")}` : "");
       const pending = new Transaction(txnLog(root)).pending();
-      check(t("doctor.txn"), pending.length === 0, pending.length ? `${pending.length} pending (memcurio repair)` : t("doctor.noPending"));
+      const corrupt = new Transaction(txnLog(root)).corruptLines();
+      check(t("doctor.txn"), pending.length === 0 && corrupt === 0, pending.length || corrupt ? `${pending.length} pending, ${corrupt} corrupt (memcurio repair)` : t("doctor.noPending"));
+      const jobs = idx.extractionList();
+      const active = jobs.filter((job) => job.status === "pending" || job.status === "processing" || job.status === "blocked");
+      const blocked = jobs.filter((job) => job.status === "blocked");
+      const dead = jobs.filter((job) => job.status === "dead");
+      console.log(`${t("doctor.extraction")}: ${active.length}`);
+      check(t("doctor.deadLetters"), dead.length === 0, dead.length ? `${dead.length} dead-letter job(s)` : t("doctor.noDeadLetters"));
+      for (const job of dead.slice(0, 10)) {
+        console.log(`  dead ${job.jobId} provider=${job.provider} attempts=${job.attempts}: ${(job.lastError ?? "unknown").slice(0, 240)}`);
+      }
+      for (const job of blocked.slice(0, 10)) {
+        console.log(`  blocked ${job.jobId} provider=${job.provider}: ${(job.lastError ?? "configuration required").slice(0, 240)}`);
+      }
+      const generations = inspectGenerationManifests(root);
+      const generationDetail = generations.length
+        ? generations.map((generation) => `${generation.id}:${generation.phase}`).join(", ")
+        : t("doctor.noGenerations");
+      check(t("doctor.generation"), generations.length === 0, generationDetail);
     } finally {
       idx.close();
     }
@@ -657,8 +947,19 @@ async function cmdDoctor(): Promise<number> {
     ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
     : defaultSocketPath(root);
   const pluginDir = join(root, "codex-plugin");
+  const spool = inspectCodexSpool(root);
+  check(
+    t("doctor.codexSpool"),
+    !spool.overCapacity,
+    `${spool.active} active, ${spool.dead} quarantined, ${spool.activeBytes} bytes`,
+  );
   console.log(`· codex daemon${existsSync(socketPath) ? "" : t("doctor.daemonIdle")}: ${socketPath}`);
-  console.log(`${t("doctor.pluginLabel")}${existsSync(join(pluginDir, "plugin.json")) ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);
+  const pluginReady = [
+    join(pluginDir, ".codex-plugin", "plugin.json"),
+    join(pluginDir, "hooks", "hooks.json"),
+    join(pluginDir, ".mcp.json"),
+  ].every((path) => existsSync(path));
+  console.log(`${t("doctor.pluginLabel")}${pluginReady ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);
   console.log(ok ? t("doctor.ok") : t("doctor.bad"));
   return ok ? 0 : 1;
 }
@@ -671,6 +972,7 @@ const HELP_CMDS = new Set([
   "list",
   "search",
   "prune",
+  "purge",
   "curate",
   "baseline",
   "reindex",
@@ -680,6 +982,7 @@ const HELP_CMDS = new Set([
   "event",
   "export",
   "import",
+  "retry-extraction",
   "mcp",
   "codex-daemon",
   "codex-plugin",
@@ -744,6 +1047,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdSearch(rest);
       case "prune":
         return await cmdPrune(rest);
+      case "purge":
+        return await cmdPurge(rest);
       case "curate":
         return await cmdCurate(rest);
       case "baseline":
@@ -762,6 +1067,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdExport(rest);
       case "import":
         return await cmdImport(rest);
+      case "retry-extraction":
+        return await cmdRetryExtraction(rest);
       case "mcp":
         return await cmdMcp();
       case "codex-daemon":

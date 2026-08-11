@@ -1,12 +1,10 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 import { Index } from "./db.js";
-import { adHocNotesDir, indexDb, ensureLayout } from "./paths.js";
+import { indexDb, ensureLayout } from "./paths.js";
 import { newEntryId } from "./ids.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
-import { writeAdHocNoteFile } from "./workspace.js";
+import { deleteAdHocNoteFile, writeAdHocNoteFile } from "./workspace.js";
 
 export type AdHocKind = "remember" | "forget" | "update";
 
@@ -49,14 +47,13 @@ export async function addAdHocNote(root: string, content: string, kind: AdHocKin
   const flags = sanitizeForInjection(redacted.text);
   const now = new Date();
   ensureLayout(root);
-  // Same-second notes with the same slug would overwrite each other's files;
-  // bump a numeric suffix until the filename is free.
-  let filename = `${timestampFilename(now)}-${slugify(redacted.text)}.md`;
-  for (let n = 1; existsSync(join(adHocNotesDir(root), filename)); n++) {
-    filename = `${timestampFilename(now)}-${slugify(redacted.text)}-${n}.md`;
-  }
+  const id = newEntryId();
+  // The random entry-id suffix removes the same-second filename TOCTOU race
+  // between concurrent writers while keeping the slug segment within the
+  // workspace filename allowlist.
+  const filename = `${timestampFilename(now)}-${slugify(redacted.text).slice(0, 66)}-${id.slice(0, 12)}.md`;
   const note: AdHocNote = {
-    id: newEntryId(),
+    id,
     filename,
     kind,
     content: redacted.text,
@@ -64,18 +61,31 @@ export async function addAdHocNote(root: string, content: string, kind: AdHocKin
     applied: false,
   };
   writeAdHocNoteFile(root, filename, redacted.text);
-  const idx = await Index.create(indexDb(root));
+  let idx: Index | undefined;
   try {
-    idx.noteAdd(note);
-    idx.audit("adhoc.note", kind, filename);
-    if (redacted.redacted) {
-      idx.audit("warn.redacted", kind, `secret redacted in note ${filename}`);
+    const opened = await Index.create(indexDb(root));
+    idx = opened;
+    opened.withTransaction(() => {
+      opened.noteAdd(note);
+      opened.audit("adhoc.note", kind, filename);
+      if (redacted.redacted) {
+        opened.audit("warn.redacted", kind, `secret redacted in note ${filename}`);
+      }
+      if (!flags.safe) {
+        opened.audit("warn.promptware", kind, `injection pattern in note ${filename}: ${flags.flags[0] ?? ""}`);
+      }
+    });
+  } catch (err) {
+    // Do not leave a note file with no corresponding SQLite row when opening
+    // or committing the store fails.
+    try {
+      deleteAdHocNoteFile(root, filename);
+    } catch {
+      // Preserve the database error; doctor can report filesystem drift.
     }
-    if (!flags.safe) {
-      idx.audit("warn.promptware", kind, `injection pattern in note ${filename}: ${flags.flags[0] ?? ""}`);
-    }
+    throw err;
   } finally {
-    idx.close();
+    idx?.close();
   }
   return note;
 }

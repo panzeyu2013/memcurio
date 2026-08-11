@@ -39,13 +39,15 @@
     "memcurio": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc && bun run scripts/chmod-cli.ts",
+    "build": "bun run scripts/clean-dist.ts && tsc && bun run scripts/chmod-cli.ts",
     "prepare": "bun run build && bun run bundle:plugin",
     "test": "bun test",
     "lint": "biome lint src tests scripts",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "dev": "bun run src/cli/index.ts",
-    "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts"
+    "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts",
+    "pack:check": "bun run build && bun run bundle:plugin && bun run scripts/pack-check.ts",
+    "eval:lexical": "bun run scripts/eval-lexical.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
