@@ -17,7 +17,8 @@ This document defines the contribution guidelines for memcurio. All commits, rev
 - After adding files or changing core paths, run: `bun test` (all green) + `bun run typecheck` (covers src/tests/scripts) + `bun run lint` (biome, zero diagnostics) + `bun run build` + `bun run bundle:plugin`.
 - Biome is lint-only in this repo (formatter disabled — the codebase uses a compact single-line style); do not run `biome format`, and keep that style in new code.
 - Concurrency safety: all md writes go through `addEntry`/`updateKind` (read-modify-write under lock); SQLite relies on WAL + busy_timeout; never bypass `withTransaction`.
-- Security baseline: ns parameters must pass `assertValidNs`; any injection path must pass `sanitizeForInjection`; any write path must pass `redactSecrets`; query text in audit records must be redacted.
+- Transaction journal (`transactions.jsonl`, `src/core/transaction.ts`) covers CLI-level destructive operations only. Core write paths are protected by the SQLite `withTransaction` boundary plus the generation manifest protocol (`src/core/generation.ts`): cross-file Markdown + baseline commits are recoverable to "complete old or complete new" from the manifest, and `repair`/`recoverPendingGenerations` arbitrate. Do not add new core write paths that bypass both mechanisms.
+- Security baseline: namespace/root fields no longer gate file paths (the v1 `assertValidNs` model was removed in v2; workspace confinement is enforced by `resolveWorkspacePath`/`assertWorkspaceRel` instead); any injection path must pass `sanitizeForInjection`; any write path must pass `redactSecrets`; query text in audit records must be redacted; event/session fields must pass the envelope length + control-character validation (`src/core/events.ts`).
 
 ## 3. Testing guidelines
 

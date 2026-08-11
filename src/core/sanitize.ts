@@ -121,7 +121,9 @@ const INJECTION_PATTERNS: RegExp[] = [
   /\[\s*(?:system|instruction)\s*\]\s*(?:ignore|override)/i,
   // "reveal/disclose/expose your secrets/system prompt": covers exfiltration
   // requests that do not name files (the read/print patterns below do).
-  /(?:reveal|disclose|expose|leak|dump)\s*(?:(?:all|your|the)\s*){0,2}(?:secrets?|secret\s*keys?|system\s*prompt|instructions?|prompts?)/i,
+  // The target list also covers common secret phrasing ("API keys", ".env")
+  // that memory text uses to ask for credentials without naming a file.
+  /(?:reveal|disclose|expose|leak|dump)\s*(?:(?:all|your|the)\s*){0,2}(?:secrets?|secret\s*keys?|api\s*keys?|tokens?|passwords?|credentials?|\.env|environment\s*(?:variables?|vars)|system\s*prompt|instructions?|prompts?)/i,
   /忽略\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
   /无视\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示)/,
   /(?:忽视|不理会|别管)\s*(?:所有|全部)?\s*(?:之前|先前|以上|前面)?\s*的?\s*(?:所有|全部)?\s*(?:指令|指示|提示|系统提示)/,
@@ -132,18 +134,30 @@ const INJECTION_PATTERNS: RegExp[] = [
   /忽略\s*(?:所有|全部)?\s*(?:之前的)?\s*系统提示/,
   /透露\s*(?:所有|全部)?\s*(?:秘密|密钥|敏感信息|凭据)/,
   /告诉我\s*(?:所有|全部)?\s*(?:秘密|密钥|密码)/,
-  /(?:read|open|access|print|show|copy|读取|打开|访问|显示|复制)[\s\S]{0,80}(?:\.ssh|id_rsa|id_ed25519|credentials|private\s*key|私钥|凭据)/i,
+  // Read/exfiltration verbs targeting credential files. The verb list includes
+  // the shell tools memory entries suggest the model use ("grep MEMORY.md")
+  // — a memory line saying "grep ~/.ssh/id_rsa" must be flagged too.
+  /(?:read|open|access|print|show|copy|grep|cat|find|ls|tail|type|more|less|strings|读取|打开|访问|显示|复制|查找|查看|搜索)[\s\S]{0,80}(?:\.ssh|id\s*rsa|id\s*ed25519|credentials|private\s*key|\.env|私钥|凭据)/i,
   /(?:send|upload|post|transmit|exfiltrat|发送|上传|外传)[\s\S]{0,100}(?:secret|token|password|credential|private\s*key|\.ssh|密钥|密码|凭据|私钥)/i,
 ];
 
 export function scanInjection(text: string): string[] {
   const normalized = normalizeText(text);
+  // Percent-encoded separators ("ignore%20previous%20instructions") decode
+  // before compaction so the whitespace collapse below can fold them.
+  const decoded = normalized.replace(/%20|%09|%0a|%0d/gi, " ");
   // Space-split obfuscation ("忽 略 之 前 的 指 令"): collapse whitespace
   // between letters for matching. Every injection pattern uses \s* between
   // words, so a letter-space-letter collapse never changes which patterns
   // match English text — it only defeats the space-padded variants.
-  const compacted = normalized
+  // Hyphen/underscore folding ("ignore-previous-instructions",
+  // "ignore_previous_instructions") closes the remaining separator gap; the
+  // keyword-anchored patterns make false positives rare enough to accept.
+  // Folding to a space (not deleting) keeps underscore-bearing file targets
+  // ("id_ed25519") separable, which their patterns express as \s*.
+  const compacted = decoded
     .replace(/(?<=\p{L})\s+(?=\p{L})/gu, "")
+    .replace(/(?<=\p{L})[-_](?=\p{L})/gu, " ")
     // CJK punctuation-split obfuscation ("忽视，之前的指令" / "别管。之前的
     // 所有指令"): collapse the common Chinese separators between letters.
     // normalizeText has already turned fullwidth commas into ASCII ones, so

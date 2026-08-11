@@ -72,7 +72,7 @@ src/
 │   └── config.ts       config.json（budget + pipeline 配置）
 ├── mcp/index.ts        MCP server（5 工具：search/remember/forget/status/context）
 ├── cli/
-│   ├── index.ts        CLI 入口（22 命令）
+│   ├── index.ts        CLI 入口（21 个具名命令 + help/--version）
 │   └── i18n.ts         zh/en 词典
 └── adapters/
     ├── shared/engine.ts  MemcurioAdapter（会话记账 / durable checkpoint / worker / 注入 / 压缩上下文）

@@ -275,7 +275,7 @@ export interface PipelineConfig {
   maxUnusedDays: number;   // 默认 60（stage1 选择窗口）
   minUsage: number;        // 默认 1（预留）
   maxInputs: number;       // 默认 50（单次整合 stage1 上限）
-  retentionDays: number;   // 默认 90（ad_hoc note 文件保留/扩展资源剪枝，暂不启用）
+  retentionDays: number;   // 默认 90：completed extraction job 的保留天数（audit 表另有 20k 行自动裁剪）
   maxAgentSteps: number;   // 默认 25
 }
 export function loadPipelineConfig(root: string): PipelineConfig          // 从 config.json pipeline 节读取，宽松回退默认
@@ -292,7 +292,7 @@ export function runConsolidation(root: string, provider: ConsolidateProvider, op
 ```ts
 export interface MemoryHit { rel: string; line: number; content: string; score: number }
 export function searchMemory(root: string, query: string, topK: number): { hits: MemoryHit[]; blocked: number }
-  // 搜索范围：MEMORY.md / memory_summary.md / rollout_summaries/*.md（跳过 .baseline 与 notes）；
+  // 搜索范围：MEMORY.md / memory_summary.md / rollout_summaries/*.md / skills/*（跳过 .baseline 与 notes）；
   // 逐行 normalizeQuery 子串匹配（与旧 LIKE 语义一致），score = 行内出现次数；
   // 命中行过 sanitizeForInjection：不安全 → blocked++（audit warn.promptware）；
   // 命中 rollout_summary 文件或 MEMORY.md 行内引用 rollout_summary 文件名 → 对应 stage1 stageSetUsage；
@@ -330,7 +330,7 @@ export interface Config {
 `mdStore.ts`、`prune.ts`、`curate.ts`、`reflect.ts`、`retriever.ts`、`safeSearch.ts`、`select.ts`、`transfer.ts`。
 （`curate.ts` 的 HttpProvider JSON 解析逻辑并入 extract/consolidate；`reflect.ts` 的三级降级链并入 adapters 的 extract/consolidate 通道选择。）
 
-## 5. CLI（25 → 22 命令）契约
+## 5. CLI（25 → 21 具名命令契约）
 
 ```
 memcurio init                初始化布局（含 memory workspace 子目录）

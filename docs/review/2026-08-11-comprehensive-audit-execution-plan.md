@@ -106,7 +106,7 @@
 | `bun run pack:check` | 通过 | clean build、OpenCode bundle、71 个 tarball 文件 allowlist 和 dist 清洁度均通过 |
 | Codex 插件生成契约检查 | 通过 | 生成 `.codex-plugin/plugin.json`、`hooks/hooks.json`、`.mcp.json` 和 TOML fallback；0.147.0 marketplace 安装已记录 |
 | Codex/OpenCode 真实 local smoke | 通过 | 详见 [`docs/verification/2026-08-11-harness-smoke.md`](../verification/2026-08-11-harness-smoke.md)；不含真实模型调用 |
-| `bun run eval:lexical` | 通过 | Recall@5=1.00（3/3），injection blocking=1/1，secret leakage checks=4/4；非 LLM 质量结论 |
+| `bun run eval:lexical` | 通过 | Recall@5=1.00（4/4），injection blocking=1/1，secret leakage checks=5/5（含含秘密行的阳性对照）；非 LLM 质量结论 |
 
 当前 Codex 插件规范要求 `.codex-plugin/plugin.json`，并通过 manifest 关联 `.mcp.json` 与 Hook 配置；当前 Hook TOML 使用 `[[hooks.<Event>]]` 结构。参见 [OpenAI 插件打包规范](https://developers.openai.com/plugins/build/plugins) 与 [Codex Hooks 文档](https://developers.openai.com/codex/hooks)。OpenCode 官方插件文档将 `session.idle` 用作 session completion 事件示例，参见 [OpenCode Plugins](https://dev.opencode.ai/docs/plugins/)。
 

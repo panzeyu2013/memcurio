@@ -2,6 +2,11 @@ import { appendFileSync, chmodSync, closeSync, fsyncSync, mkdirSync, openSync, r
 import { randomBytes, randomUUID } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 
+// Process start time for lock staleness: a lock whose recorded pid matches
+// ours but whose acquisition timestamp predates our process could only have
+// been left by a dead process whose pid was reused (see isStaleLock).
+export const processStartedAt = Date.now();
+
 // >= SQLite's busy_timeout (20000) so a competitor holding the md lock while
 // committing to SQLite never trips a false lock timeout.
 export const LOCK_TIMEOUT_MS = 20_000;
@@ -162,7 +167,11 @@ export function isStaleLock(lockPath: string): boolean {
     return Date.now() - mtimeMs > STALE_LOCK_MS;
   }
   if (pid === process.pid) {
-    return false;
+    // A lock this process genuinely holds records an acquisition timestamp no
+    // earlier than our own start; an older one belongs to a dead process whose
+    // pid was reused, and must not wedge the file forever.
+    const heldSince = Number(parts[1]);
+    return Number.isFinite(heldSince) && heldSince > 0 && heldSince < processStartedAt;
   }
   const age = Date.now() - mtimeMs;
   // A crash leaves the pid dead (ESRCH): reclaim immediately. EPERM means the

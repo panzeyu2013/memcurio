@@ -26,6 +26,28 @@ export interface EventEnvelope {
   ts: string;
 }
 
+// sessionId is embedded verbatim into rollout keys and raw_memories.md
+// markers, so it must not carry newlines or control characters; actor and
+// workdir get the same treatment for consistency with the import path.
+const MAX_ACTOR_CHARS = 200;
+const MAX_SESSION_ID_CHARS = 500;
+const MAX_WORKDIR_CHARS = 2000;
+
+function validTextField(value: string | undefined, fallback: string, max: number, field: string): string {
+  const text = value ?? fallback;
+  if (text.length > max) {
+    throw new Error(`invalid envelope field: ${field} exceeds ${max} characters`);
+  }
+  const hasControl = Array.from(text).some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+  if (hasControl) {
+    throw new Error(`invalid envelope field: ${field} contains control characters`);
+  }
+  return text;
+}
+
 export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
   const host = (input.host ?? "cli") as Host;
   const event = (input.event ?? "") as EventName;
@@ -37,9 +59,9 @@ export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
   }
   const env: EventEnvelope = {
     host,
-    actor: input.actor ?? "agent",
-    sessionId: input.sessionId ?? "",
-    workdir: input.workdir ?? "",
+    actor: validTextField(input.actor, "agent", MAX_ACTOR_CHARS, "actor"),
+    sessionId: validTextField(input.sessionId, "", MAX_SESSION_ID_CHARS, "sessionId"),
+    workdir: validTextField(input.workdir, "", MAX_WORKDIR_CHARS, "workdir"),
     event,
     // A non-object payload would crash downstream payload access; treat it as
     // absent rather than propagating an untrusted shape.

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
+import { processStartedAt } from "../src/core/transaction.js";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -215,6 +216,23 @@ describe("isStaleLock", () => {
     const old = new Date(Date.now() - 2 * STALE_LOCK_MS);
     utimesSync(lock, old, old);
     expect(isStaleLock(lock)).toBe(true);
+  });
+
+  test("lock carrying our own pid from before this process started is reclaimed (own-pid reuse)", () => {
+    const lock = join(dir, "x.lock");
+    // The acquisition timestamp predates this process: the same pid belonged
+    // to a crashed predecessor, and the lock must not wedge the file forever.
+    const beforeStart = processStartedAt - 60_000;
+    writeFileSync(lock, `${process.pid}|${beforeStart}`);
+    const old = new Date(beforeStart);
+    utimesSync(lock, old, old);
+    expect(isStaleLock(lock)).toBe(true);
+  });
+
+  test("lock carrying our own pid acquired after our start is re-entrant, not stale", () => {
+    const lock = join(dir, "x.lock");
+    writeFileSync(lock, `${process.pid}|${Date.now()}`);
+    expect(isStaleLock(lock)).toBe(false);
   });
 });
 

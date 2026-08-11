@@ -56,7 +56,14 @@ export function createServer(): McpServer {
         const result = await searchMemory(root, args.query, args.topK);
         const safeQuery = redactSecrets(args.query).text;
         idx.audit("mcp.search", "-", `${safeQuery} -> ${result.hits.length} hits${result.blocked ? ` (${result.blocked} filtered)` : ""}`);
-        return text({ hits: result.hits, blocked: result.blocked });
+        // Cap the response size: a workspace line can reach the 1 MiB file
+        // limit and topK can be 50, so untruncated hits would balloon the
+        // tool response into tens of MiBs.
+        const hits = result.hits.map((hit) => ({
+          ...hit,
+          content: hit.content.length > 500 ? `${hit.content.slice(0, 500)}…` : hit.content,
+        }));
+        return text({ hits, blocked: result.blocked });
       } finally {
         idx.close();
       }

@@ -28,9 +28,10 @@ worker（lease/retry）→ Phase 1 codex exec（`--disable hooks`）→ stage1
 - hook 失败时向 stderr 输出可操作信息并追加 `state/hook.log`
 - daemon 对 `PostToolUse`/`UserPromptSubmit` 按 `tool_use_id`/`turn_id` 去重（10 分钟窗口），hook 重试不会重复记账
 - `SessionStart` 去重键含 `source`（startup/resume/compact）：codex 压缩后在同一 session 再次触发 `SessionStart(source=compact)` 时会重新注入静态记忆，不会被 10 分钟窗口吞掉
-- `PostCompact` 按 `turn_id+transcript_path+trigger` 去重（窗口 130s，覆盖抽取最长耗时），两次独立压缩（不同 turn_id）都会更新会话压缩摘要（内存 snapshot.summary）
-- daemon 单实例由 `state/codex.sock.pid` pid 锁保证（存活 pid 绝不抢锁、绝不删除其 socket）；token 首写者胜
+- `PostCompact` 按 `turn_id+transcript_path+trigger` 去重（窗口 130s，覆盖抽取最长耗时）；两次独立压缩（不同 turn_id）都会标记会话已压缩并追加 transcript 证据。注意 codex 路径不提供压缩摘要，内存 snapshot.summary 仅由 opencode 侧填充
+- daemon 单实例由 `state/codex-daemon.pid` pid 锁保证（存活 pid 绝不抢锁、绝不删除其 socket）；token 首写者胜
 - daemon 无连接 6 小时自动退出（防孤儿残留）；下次 hook 调用自动拉起
+- 注意：daemon 启动会关闭本 host 在该 root 下所有未结束的会话行（崩溃恢复）；同一 root 不应同时运行两个 codex daemon（socket/pid 锁只保护 socket 路径，不保护 root）
 - 客户端中途断开不会影响 daemon（连接级 error 处理），会话状态在内存中持续；daemon 启动时会恢复过期/到期的 durable queue，并为未来的 backoff/lease expiry 安排下一次唤醒
 - 会话 checkpoint：Hook 先将 SessionEnd spool 原子落盘；daemon 再把 Stop/SessionEnd 的有界、脱敏事件与 transcript 尾部写入 provider-scoped SQLite `extraction_jobs`，由 worker 经 `codex exec --json --ephemeral --skip-git-repo-check`（`codexExecExtract`）用 codex 自身模型跑 Phase 1 抽取；任务使用幂等键、claim token fencing、lease 续租、指数退避和 dead-letter，`MEMCURIO_CODEX_REFLECT=0` 关闭该通道，`MEMCURIO_CODEX_BIN` 指定 codex 路径
 - 抽取子会话使用 Codex 当前支持的 `codex exec --disable hooks`，避免项目、插件和 managed hook 配置回打本 daemon；fake CLI 回归测试会断言该参数存在

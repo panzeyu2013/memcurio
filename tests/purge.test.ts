@@ -57,6 +57,7 @@ describe("hard purge", () => {
       `${readWorkspaceText(root, "MEMORY.md")}\n# Task Group: legacy citation\n\n### rollout_summary_files\n\n- rollout_summaries/same-readable-slug.md\n\n# Task Group: mixed sensitive facts\n\nprivate fact A\n\n### rollout_summary_files\n\n- rollout_summaries/same-readable-slug.md\n- rollout_summaries/other-rollout.md\n\n# Task Group: citationless legacy output\n\nPRIVATE_SOURCE_FACT\n`,
     );
     writeWorkspaceText(root, "skills/private/SKILL.md", "# Private skill\n\nPRIVATE_SOURCE_FACT\n");
+    writeWorkspaceText(root, "skills/related/SKILL.md", "# Related skill\n\nSee rollout_summaries/same-readable-slug.md\n");
     const exportPath = join(root, "backup.jsonl");
     writeFileSync(exportPath, `${JSON.stringify({ type: "stage1", rolloutKey: "codex|s-purge", rawMemory: "secret" })}\n`);
 
@@ -85,10 +86,14 @@ describe("hard purge", () => {
     expect(rolloutSlugs(root)).toEqual([]);
     expect(readWorkspaceText(root, "raw_memories.md")).toBe("");
     expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("Task Group: purge");
-    expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("private fact A");
-    expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("mixed sensitive facts");
-    expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("PRIVATE_SOURCE_FACT");
-    expect(readWorkspaceText(root, "skills/private/SKILL.md")).toBe("");
+    // Blocks citing only the purged artifact are removed; mixed and
+    // citationless blocks are preserved so unrelated content survives.
+    expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("legacy citation");
+    expect(readWorkspaceText(root, "MEMORY.md")).toContain("mixed sensitive facts");
+    expect(readWorkspaceText(root, "MEMORY.md")).toContain("PRIVATE_SOURCE_FACT");
+    expect(readWorkspaceText(root, "skills/private/SKILL.md")).toBe("# Private skill\n\nPRIVATE_SOURCE_FACT\n");
+    expect(readWorkspaceText(root, "skills/related/SKILL.md")).toBe("");
+    expect(result?.skillsRemoved).toBe(1);
 
     const idx2 = await Index.create(indexDb(root));
     try {

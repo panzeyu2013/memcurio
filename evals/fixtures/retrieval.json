@@ -12,6 +12,10 @@
     {
       "rel": "rollout_summaries/rollout-0123456789abcdef01234567.md",
       "content": "# Session recap\n\nCodex SessionEnd closes the session and queues extraction.\n"
+    },
+    {
+      "rel": "rollout_summaries/rollout-fedcba9876543210fedcba98.md",
+      "content": "# Session recap\n\napi_key = abcdefghijklmnopqrstuvwxyz123456\n"
     }
   ],
   "cases": [
@@ -36,6 +40,12 @@
       "expectedRel": "MEMORY.md",
       "expectBlocked": true,
       "unsafeMarker": "reveal secrets"
+    },
+    {
+      "id": "secret-is-redacted",
+      "query": "api_key",
+      "expectedRel": "rollout_summaries/rollout-fedcba9876543210fedcba98.md",
+      "expectRedacted": ["abcdefghijklmnopqrstuvwxyz123456"]
     }
   ]
 }

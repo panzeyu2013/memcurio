@@ -22,7 +22,7 @@
 | `tool.execute.after` | 统计工具使用/涉及文件（Phase 1 抽取的 snapshot 输入） |
 | `session.idle` | 组装有界、脱敏 EvidenceSnapshot 并幂等写入 durable extraction queue；worker 异步消费 |
 | `session.compacted` | 拉取最终 messages，刷新有界 EvidenceSnapshot，并把摘要存入内存 snapshot（`adapter.sessionCompacted`） |
-| `experimental.session.compacting` | 注入"长期记忆上下文"（static + 最近 search 命中，即 `adapter.buildCompactionContext`）；`MEMCURIO_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词 |
+| `experimental.session.compacting` | 注入"长期记忆上下文"（static 记忆上下文 + 会话触及文件列表，即 `adapter.buildCompactionContext`）；`MEMCURIO_REPLACE_COMPACTION=1` 时改为整体替换压缩提示词 |
 | `session.deleted` | 写入最终 checkpoint 并关闭会话；作为 idle checkpoint 的补充，不依赖用户主动删除才产生任务 |
 
 > Phase 1 抽取：输入是最终 messages 加内存中的会话统计与压缩摘要（`buildExtractPrompt`），回复经 `parseExtractReply` 解析入库，**不再向磁盘写 SESSION.md/COMPACT.md**。OpenCode 当前使用独立 HTTP provider；没有 `MEMCURIO_LLM_API_KEY` 时任务进入不计 attempts 的 `blocked`，配置恢复后重新激活；临时 provider 失败保持 pending/processing 并按 lease/backoff 重试。只有结构合法的全空 JSON 是 no-op，无效或被注入策略拒绝的输出会重试/死信，不会伪装成 completed。抽取失败不阻塞会话结束。

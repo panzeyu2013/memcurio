@@ -467,6 +467,97 @@ describe("extraction_jobs", () => {
     }
   });
 
+  test("superseded checkpoints are skipped instead of claimed", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const older = idx.extractionEnqueue({
+        idempotencyKey: "superseded-a",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-superseded",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:a",
+        contentHash: "a",
+        snapshotJson: JSON.stringify({ sessionId: "s-superseded" }),
+        createdAt: "2026-08-11T00:00:00.000Z",
+      });
+      const newer = idx.extractionEnqueue({
+        idempotencyKey: "superseded-b",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-superseded",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:b",
+        contentHash: "b",
+        snapshotJson: JSON.stringify({ sessionId: "s-superseded" }),
+        createdAt: "2026-08-11T00:00:01.000Z",
+      });
+      // Claim skips the stale idle checkpoint and takes the newer one.
+      const claim = idx.extractionClaim("http", "2026-08-11T00:00:02.000Z");
+      expect(claim?.jobId).toBe(newer.jobId);
+      expect(idx.extractionList("completed").some((job) => job.jobId === older.jobId)).toBe(true);
+      expect(idx.extractionList("completed").find((job) => job.jobId === older.jobId)?.lastError).toContain("superseded");
+      // A final session_end supersedes a pending idle checkpoint too.
+      idx.extractionEnqueue({
+        idempotencyKey: "superseded-idle-before-end",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-end",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:idle",
+        contentHash: "idle",
+        snapshotJson: JSON.stringify({ sessionId: "s-end" }),
+        createdAt: "2026-08-11T00:00:00.000Z",
+      });
+      idx.extractionEnqueue({
+        idempotencyKey: "superseded-end",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-end",
+        sourceEvent: "session_end",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:end",
+        contentHash: "end",
+        snapshotJson: JSON.stringify({ sessionId: "s-end" }),
+        createdAt: "2026-08-11T00:00:01.000Z",
+      });
+      expect(idx.extractionClaim("http", "2026-08-11T00:00:02.000Z")?.sourceEvent).toBe("session_end");
+      // A dead newer job does NOT supersede: the older checkpoint remains the
+      // claimable fallback so dead-lettered work can still be retried.
+      idx.extractionEnqueue({
+        idempotencyKey: "superseded-fallback",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-fallback",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:fallback-old",
+        contentHash: "fallback-old",
+        snapshotJson: JSON.stringify({ sessionId: "s-fallback" }),
+        createdAt: "2026-08-11T00:00:00.000Z",
+      });
+      const dead = idx.extractionEnqueue({
+        idempotencyKey: "superseded-dead",
+        host: "codex",
+        provider: "http",
+        sessionId: "s-fallback",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:fallback-dead",
+        contentHash: "fallback-dead",
+        snapshotJson: JSON.stringify({ sessionId: "s-fallback" }),
+        createdAt: "2026-08-11T00:00:01.000Z",
+      });
+      idx.rawAll("UPDATE extraction_jobs SET status='dead' WHERE job_id=?", [dead.jobId]);
+      expect(idx.extractionClaim("http", "2026-08-11T00:00:02.000Z")?.sourceEvent).toBe("idle");
+    } finally {
+      idx.close();
+    }
+  });
+
   test("a stale worker cannot acknowledge a job after lease takeover", async () => {
     const idx = await Index.create(dbPath);
     try {

@@ -431,6 +431,76 @@ describe("codex transcript evidence", () => {
     expect((await import("node:fs")).readdirSync(join(dir, "state", "codex-spool"))).toEqual([]);
   });
 
+  test("spool replay is dropped when a live job already covers the session (SessionEnd race)", async () => {
+    // The hook spooled this SessionEnd while the daemon was still able to
+    // accept it directly; the direct delivery created a job with a different
+    // evidence hash than the replay would. The drain must not create a second.
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.extractionEnqueue({
+        idempotencyKey: "direct-session-end",
+        host: "codex",
+        provider: "codex-exec",
+        sessionId: "raced",
+        sourceEvent: "session_end",
+        workdir: "/tmp/project",
+        evidenceRef: "sha256:direct",
+        contentHash: "direct",
+        snapshotJson: JSON.stringify({ sessionId: "raced" }),
+      });
+    } finally {
+      idx.close();
+    }
+    writeCodexSessionEndSpool(
+      dir,
+      { hook_event_name: "SessionEnd", session_id: "raced", cwd: "/tmp/project" },
+      [{ kind: "assistant", text: "spool-only evidence" }],
+    );
+    let replayed = false;
+    const drained = await drainCodexSpool(dir, async () => {
+      replayed = true;
+      return { continue: true };
+    });
+    expect(drained).toBe(0);
+    expect(replayed).toBe(false);
+    expect((await import("node:fs")).readdirSync(join(dir, "state", "codex-spool"))).toEqual([]);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      const jobs = idx2.extractionList().filter((job) => job.sessionId === "raced");
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.contentHash).toBe("direct");
+    } finally {
+      idx2.close();
+    }
+  });
+
+  test("spool replay is retried when the only existing job is dead", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const dead = idx.extractionEnqueue({
+        idempotencyKey: "dead-session-end",
+        host: "codex",
+        provider: "codex-exec",
+        sessionId: "dead-raced",
+        sourceEvent: "session_end",
+        workdir: "/tmp/project",
+        evidenceRef: "sha256:dead",
+        contentHash: "dead",
+        snapshotJson: JSON.stringify({ sessionId: "dead-raced" }),
+      });
+      idx.rawAll("UPDATE extraction_jobs SET status='dead' WHERE job_id=?", [dead.jobId]);
+    } finally {
+      idx.close();
+    }
+    writeCodexSessionEndSpool(
+      dir,
+      { hook_event_name: "SessionEnd", session_id: "dead-raced", cwd: "/tmp/project" },
+      [],
+    );
+    const drained = await drainCodexSpool(dir, async () => ({ continue: true }));
+    expect(drained).toBe(1);
+  });
+
   test("spool rejects an oversized record and reports bounded usage", () => {
     expect(() => writeCodexSessionEndSpool(
       dir,

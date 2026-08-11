@@ -4,6 +4,7 @@ import type { ExtractionJobRow } from "./db.js";
 import { extractJsonObject, llmChat, llmEnv } from "./llm.js";
 import { indexDb, ensureLayout } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
+import { pipelineConfig } from "./config.js";
 
 export interface RolloutSnapshot {
   sessionId: string;
@@ -453,7 +454,7 @@ export async function processExtractionQueue(
         // and this completion are rolled back instead of letting an expired
         // worker commit a result.
         const completedAt = new Date().toISOString();
-        if (!idx.extractionComplete(claimed.jobId, completedAt, claimed.claimToken)) {
+        if (!idx.extractionComplete(claimed.jobId, completedAt, claimed.claimToken, pipelineConfig(root).retentionDays)) {
           throw new LeaseFencedError();
         }
         idx.audit("extract.queue_complete", claimed.host, `${claimed.jobId} (${claimed.sourceEvent}; provider=${claimed.provider})`);
@@ -587,8 +588,13 @@ export async function stageSession(
   const final = normalizeStageOutput(out, snapshot);
   const idx = await Index.create(indexDb(root));
   try {
-    const applied = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
-    idx.audit(applied ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
+    // Same fenced transaction as the durable queue path: the stage write and
+    // its audit either commit together or not at all.
+    let applied = false;
+    idx.withTransaction(() => {
+      applied = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
+      idx.audit(applied ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
+    });
   } finally {
     idx.close();
   }

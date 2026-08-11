@@ -36,6 +36,13 @@ const unexpectedDist = filesUnder(distRoot).filter((file) => !expectedDist.has(f
 if (unexpectedDist.length) {
   throw new Error(`unexpected build files in dist/: ${unexpectedDist.join(", ")}`);
 }
+// Reverse check: a tsc config change could silently stop emitting a module
+// without leaving any unexpected file behind. Every expected artifact must
+// actually exist in dist/.
+const missingDist = [...expectedDist].filter((file) => !existsSync(join(repoRoot, file)));
+if (missingDist.length) {
+  throw new Error(`missing build files in dist/: ${missingDist.join(", ")}`);
+}
 
 const result = Bun.spawnSync([process.execPath, "pm", "pack", "--dry-run", "--ignore-scripts"], {
   cwd: repoRoot,

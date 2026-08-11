@@ -17,6 +17,10 @@ interface FixtureCase {
   expectedRel: string;
   expectBlocked?: boolean;
   unsafeMarker?: string;
+  /** Raw secret substrings that must never survive redaction in any hit. The
+   *  fixture line containing them must still MATCH (proving the redaction
+   *  path ran instead of the line being dropped). */
+  expectRedacted?: string[];
 }
 
 interface Fixture {
@@ -48,7 +52,15 @@ try {
     const result = await searchMemory(root, item.query, 5);
     const matched = result.hits.some((hit) => hit.rel === item.expectedRel);
     const blockedOk = item.expectBlocked ? result.blocked > 0 && !result.hits.some((hit) => hit.content.includes(item.unsafeMarker ?? "")) : true;
-    const leakageOk = !result.hits.some((hit) => /(?:sk|api[_ -]?key|password|secret)\s*[:=]/i.test(hit.content));
+    // Positive control: a matching line that contained a secret must come
+    // back redacted ([REDACTED]) and never carry the raw value.
+    const redactionTargets = item.expectRedacted ?? [];
+    const redactedOk = redactionTargets.length
+      ? matched
+        && result.hits.some((hit) => hit.content.includes("[REDACTED]"))
+        && !result.hits.some((hit) => redactionTargets.some((raw) => hit.content.includes(raw)))
+      : true;
+    const leakageOk = redactedOk && !result.hits.some((hit) => /(?:sk|api[_ -]?key|password|secret)\s*[:=]/i.test(hit.content));
     if (!item.expectBlocked && matched) {
       retrieved += 1;
     }
@@ -58,7 +70,7 @@ try {
     if (leakageOk) {
       leakagePassed += 1;
     }
-    details.push({ id: item.id, matched, blocked: result.blocked, blockedOk, leakageOk });
+    details.push({ id: item.id, matched, blocked: result.blocked, blockedOk, redactedOk, leakageOk });
   }
 
   const recallAt5 = retrievalCases.length ? retrieved / retrievalCases.length : 1;

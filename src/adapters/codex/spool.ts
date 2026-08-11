@@ -3,6 +3,8 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, 
 import { join } from "node:path";
 
 import type { EvidenceInput } from "../../core/extract.js";
+import { Index } from "../../core/db.js";
+import { indexDb } from "../../core/paths.js";
 import { atomicWrite, withFileLock } from "../../core/transaction.js";
 
 const SPOOL_RELATIVE_DIR = "state/codex-spool";
@@ -221,6 +223,52 @@ export function removeCodexSpool(path: string): void {
   }
 }
 
+/** Map a hook event name to the engine's queue sourceEvent naming. */
+function queueSourceEvent(hookEventName: string): string {
+  if (hookEventName === "SessionEnd") {
+    return "session_end";
+  }
+  if (hookEventName === "Stop") {
+    return "idle";
+  }
+  if (hookEventName === "PostCompact") {
+    return "post_compact";
+  }
+  return hookEventName.toLowerCase();
+}
+
+/** True when a live job for the same host/session/source event already exists.
+ *  The SessionEnd hook writes its spool record before knowing whether the
+ *  daemon accepted the event directly; when the daemon did, the replayed
+ *  record would otherwise create a second job whose evidence hash differs
+ *  from the direct delivery (transcript-only vs full snapshot), defeating
+ *  the queue's idempotency key. Dead jobs are deliberately NOT matched: a
+ *  dead-lettered delivery deserves a fresh attempt from the spool. */
+async function hasLiveJob(root: string, host: string, sessionId: string, sourceEvent: string): Promise<boolean> {
+  if (!sessionId || !sourceEvent) {
+    return false;
+  }
+  try {
+    const idx = await Index.create(indexDb(root));
+    try {
+      const rows = idx.rawAll<{ job_id: string }>(
+        `SELECT job_id FROM extraction_jobs
+         WHERE host=? AND session_id=? AND source_event=?
+           AND status IN ('pending','processing','completed','blocked')
+         LIMIT 1`,
+        [host, sessionId, sourceEvent],
+      );
+      return rows.length > 0;
+    } finally {
+      idx.close();
+    }
+  } catch {
+    // A locked/unavailable store must not block the drain; the spool record
+    // stays and the next daemon start retries it.
+    return false;
+  }
+}
+
 /** Drain records after the daemon is listening. The handler remains the single
  * source of session/queue idempotency; a record is removed only after a
  * non-error handler response. */
@@ -239,6 +287,14 @@ export async function drainCodexSpool(
     const path = join(dir, name);
     const record = readSpoolRecord(path, log);
     if (!record) {
+      continue;
+    }
+    const hookEventName = typeof record.input.hook_event_name === "string" ? record.input.hook_event_name : "";
+    const sessionId = typeof record.input.session_id === "string" ? record.input.session_id : "";
+    const sourceEvent = queueSourceEvent(hookEventName);
+    if (await hasLiveJob(root, "codex", sessionId, sourceEvent)) {
+      log("Codex spool record already processed; dropping replay", { id: record.id });
+      removeCodexSpool(path);
       continue;
     }
     try {

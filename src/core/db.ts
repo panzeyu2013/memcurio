@@ -643,7 +643,13 @@ export class Index {
    *  processing leases are safely reclaimed after a worker crash; the
    *  incremented attempt count makes the retry/dead-letter decision durable.
    *  Provider is mandatory so a worker can never accidentally consume another
-   *  adapter's queue. */
+   *  adapter's queue.
+   *  Superseded checkpoints are skipped instead of claimed: an idle/stop job
+   *  whose session already has a NEWER live job (another idle checkpoint or
+   *  the final session_end) would be extracted for stale evidence only.
+   *  Skipping happens without incrementing attempts; the newer job remains
+   *  the single live extraction. Dead jobs are not superseding, so a
+   *  dead-lettered attempt leaves the older checkpoint claimable as fallback. */
   extractionClaim(provider: string, now = new Date().toISOString(), leaseMs = 120_000): ExtractionJobRow | undefined {
     const normalizedProvider = provider.trim();
     if (!normalizedProvider) {
@@ -651,40 +657,61 @@ export class Index {
     }
     let claimed: ExtractionJobRow | undefined;
     const leaseUntil = new Date(Date.parse(now) + leaseMs).toISOString();
-    const claimToken = randomUUID();
     this.withTransaction(() => {
-      const row = this.driver.get<ExtractionJobSqlRow>(
-        `SELECT * FROM extraction_jobs
-         WHERE provider = ? AND next_attempt_at <= ?
-           AND (
-             status = 'pending'
-             OR (status = 'processing' AND (lease_until IS NULL OR lease_until <= ?))
-           )
-         ORDER BY next_attempt_at ASC, created_at ASC
-         LIMIT 1`,
-        [normalizedProvider, now, now],
-      );
-      if (!row) {
+      for (;;) {
+        const row = this.driver.get<ExtractionJobSqlRow>(
+          `SELECT * FROM extraction_jobs
+           WHERE provider = ? AND next_attempt_at <= ?
+             AND (
+               status = 'pending'
+               OR (status = 'processing' AND (lease_until IS NULL OR lease_until <= ?))
+             )
+           ORDER BY next_attempt_at ASC, created_at ASC
+           LIMIT 1`,
+          [normalizedProvider, now, now],
+        );
+        if (!row) {
+          return;
+        }
+        const superseded = this.driver.get<{ job_id: string }>(
+          `SELECT job_id FROM extraction_jobs
+           WHERE host=? AND session_id=? AND created_at > ?
+             AND status IN ('pending','processing','completed','blocked')
+             AND (source_event='session_end' OR source_event=?)
+           LIMIT 1`,
+          [row.host, row.session_id, row.created_at, row.source_event],
+        );
+        if (superseded) {
+          this.driver.run(
+            `UPDATE extraction_jobs
+             SET status='completed', lease_until=NULL, claim_token=NULL,
+                 last_error='superseded by newer checkpoint', completed_at=?
+             WHERE job_id=? AND status IN ('pending','processing')`,
+            [now, row.job_id],
+          );
+          continue;
+        }
+        const claimToken = randomUUID();
+        this.driver.run(
+          `UPDATE extraction_jobs
+           SET status='processing', attempts=attempts+1, lease_until=?, claim_token=?, last_error=NULL
+           WHERE job_id=?`,
+          [leaseUntil, claimToken, row.job_id],
+        );
+        const updated = this.driver.get<ExtractionJobSqlRow>(
+          "SELECT * FROM extraction_jobs WHERE job_id = ?",
+          [row.job_id],
+        );
+        if (updated) {
+          claimed = rowToExtractionJob(updated);
+        }
         return;
-      }
-      this.driver.run(
-        `UPDATE extraction_jobs
-         SET status='processing', attempts=attempts+1, lease_until=?, claim_token=?, last_error=NULL
-         WHERE job_id=?`,
-        [leaseUntil, claimToken, row.job_id],
-      );
-      const updated = this.driver.get<ExtractionJobSqlRow>(
-        "SELECT * FROM extraction_jobs WHERE job_id = ?",
-        [row.job_id],
-      );
-      if (updated) {
-        claimed = rowToExtractionJob(updated);
       }
     });
     return claimed;
   }
 
-  extractionComplete(jobId: string, completedAt = new Date().toISOString(), expectedClaimToken?: string | null): boolean {
+  extractionComplete(jobId: string, completedAt = new Date().toISOString(), expectedClaimToken?: string | null, retentionDays = 30): boolean {
     const result = expectedClaimToken === undefined
       ? (() => {
         this.driver.run(
@@ -705,7 +732,7 @@ export class Index {
         return (this.driver.get<{ c: number }>("SELECT changes() AS c")?.c ?? 0) > 0;
       })();
     if (result) {
-      this.extractionPruneCompleted(completedAt);
+      this.extractionPruneCompleted(completedAt, retentionDays);
     }
     return result;
   }

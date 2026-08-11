@@ -45,6 +45,21 @@ export async function addAdHocNote(root: string, content: string, kind: AdHocKin
   }
   const redacted = redactSecrets(cleaned);
   const flags = sanitizeForInjection(redacted.text);
+  // Reject injection payloads at the entry point (same policy as import):
+  // storing them would make every later consolidation fail, because the rule
+  // provider must not write them and validateEdits rejects them at commit.
+  if (!flags.safe) {
+    ensureLayout(root);
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.withTransaction(() => {
+        idx.audit("warn.promptware", kind, `note rejected for injection pattern: ${flags.flags[0] ?? "unsafe"}`);
+      });
+    } finally {
+      idx.close();
+    }
+    throw new Error(`ad-hoc note rejected: contains an injection pattern (${flags.flags[0] ?? "unsafe"})`);
+  }
   const now = new Date();
   ensureLayout(root);
   const id = newEntryId();
@@ -70,9 +85,6 @@ export async function addAdHocNote(root: string, content: string, kind: AdHocKin
       opened.audit("adhoc.note", kind, filename);
       if (redacted.redacted) {
         opened.audit("warn.redacted", kind, `secret redacted in note ${filename}`);
-      }
-      if (!flags.safe) {
-        opened.audit("warn.promptware", kind, `injection pattern in note ${filename}: ${flags.flags[0] ?? ""}`);
       }
     });
   } catch (err) {

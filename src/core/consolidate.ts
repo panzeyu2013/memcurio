@@ -97,19 +97,39 @@ export async function planConsolidation(root: string, cfg?: Partial<PipelineConf
     const outside = idx.stageOutsideWindow(config.maxUnusedDays);
     const pruned = outside.filter((r) => !rows.some((s) => s.rolloutKey === r.rolloutKey));
     const notes = idx.noteList().filter((n) => !n.applied);
+    // Summary files are kept for EVERY active row (selected + pending inside
+    // the window, including pendings beyond maxInputs). Deleting a file when
+    // its row merely fell out of this batch would make the next batch re-add
+    // it (and remove MEMORY.md blocks with live evidence along the way), so
+    // only rows that actually leave the window or get deleted lose their file.
+    const activeRows = idx.stageList().filter(
+      (r) => r.status !== "deleted" && !outside.some((o) => o.rolloutKey === r.rolloutKey),
+    );
 
     const artifacts: Record<string, string> = {};
     artifacts["raw_memories.md"] = renderRawMemories(rows);
-    for (const r of rows) {
+    for (const r of activeRows) {
       const body = r.rolloutSummary.trim();
       artifacts[`rollout_summaries/${r.artifactFilename}`] = body ? `${body}\n` : "";
     }
 
     const baseline = loadBaseline(root);
     // Docs owned by the consolidator stay as-is on disk; rollout summaries
-    // falling out of selection become deletions in the diff.
+    // become deletions only when their stage-1 row is actually gone (pruned
+    // or explicitly deleted). A pending row beyond maxInputs keeps its
+    // summary file: it is still inside the window and will be selected in a
+    // later batch, so deleting its file would churn every run and make the
+    // rule provider drop MEMORY.md blocks that still have live evidence.
+    const prunedFilenames = new Set(pruned.map((r) => r.artifactFilename));
+    const deletedFilenames = new Set(
+      idx.stageList().filter((r) => r.status === "deleted").map((r) => r.artifactFilename),
+    );
     for (const rel of Object.keys(baseline)) {
-      if (rel.startsWith("rollout_summaries/") && !(rel in artifacts)) {
+      if (!rel.startsWith("rollout_summaries/")) {
+        continue;
+      }
+      const name = rel.slice("rollout_summaries/".length);
+      if (!(rel in artifacts) && (prunedFilenames.has(name) || deletedFilenames.has(name))) {
         artifacts[rel] = "";
       }
     }
@@ -187,7 +207,12 @@ export async function planConsolidation(root: string, cfg?: Partial<PipelineConf
 
 /** Apply the artifact part of a plan to disk (raw_memories.md, rollout
  *  summaries, deletions). Docs (MEMORY.md / memory_summary.md) are owned by
- *  the consolidator and applied later via validateEdits. */
+ *  the consolidator and applied later via validateEdits.
+ *  Concurrency semantics: must only be invoked while holding
+ *  WORKSPACE_WRITE_LEASE_KEY (every current caller — CLI reindex/repair —
+ *  does); it shares the generation-protocol stage with runConsolidation and
+ *  purgeRollout, so a caller that skips the lease interleaves writes with an
+ *  active consolidation. */
 export function syncArtifacts(root: string, plan: ConsolidatePlan): void {
   ensureLayout(root);
   const beforeWorkspace = snapshotWorkspace(root);
@@ -273,8 +298,15 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
       const blocks = splitRawBlocks(added);
       for (const block of blocks) {
         const groupHeader = `# Task Group: ${block.taskGroup}`;
-        const citation = block.slug ? `\n### rollout_summary_files\n\n- rollout_summaries/${block.slug}` : "";
-        const body = `${block.body}${citation}`;
+        const citation = block.slug ? `- rollout_summaries/${block.slug}` : "";
+        // A raw block that reappears after being dropped from a projection is
+        // already ingested when its citation is present anywhere in MEMORY.md
+        // (e.g. a row that fell out of a maxInputs batch and returned).
+        // Appending again would duplicate the block's content.
+        if (citation && memory.includes(citation)) {
+          continue;
+        }
+        const body = `${block.body}${citation ? `\n\n### rollout_summary_files\n\n${citation}` : ""}`;
         if (!memory.includes(groupHeader)) {
           const applies = block.cwd && block.cwd !== "unknown" ? `applies_to: cwd=${block.cwd}` : "applies_to: cwd=all";
           const head = memory.trimEnd();
@@ -300,7 +332,14 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
     // Apply notes after ingesting and pruning source material. In particular,
     // a forget note must also remove matching facts introduced by this run's
     // raw-memory diff instead of being undone moments later by ingestion.
+    // Notes with injection payloads (pre-dating the entry-point rejection)
+    // are skipped rather than written: validateEdits would reject them and
+    // brick every later consolidation.
     for (const note of input.notes) {
+      if (!sanitizeForInjection(note.content).safe) {
+        report.push(`note skipped (injection pattern): ${note.filename}`);
+        continue;
+      }
       if (note.kind === "remember") {
         const line = `- ${note.content.replaceAll("\n", " ")}`;
         const already = memory.split("\n").some((l) => l.trim() === line.trim());
@@ -450,7 +489,10 @@ function appendToGroup(memory: string, groupHeader: string, body: string): strin
   return lines.join("\n");
 }
 
-function removeBlocksCitingOnly(memory: string, deleted: Set<string>, report: string[]): string {
+/** Drop MEMORY.md blocks whose rollout_summary_files citations cover only the
+ *  deleted set. Mixed blocks (citing surviving evidence too) are kept, so
+ *  hard purge removes exactly the blocks uniquely supported by purged input. */
+export function removeBlocksCitingOnly(memory: string, deleted: Set<string>, report: string[]): string {
   const lines = memory.split("\n");
   const out: string[] = [];
   let inBlock = false;

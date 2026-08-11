@@ -50,6 +50,6 @@ bun run eval:lexical
 bun run pack:check
 ```
 
-本轮最终结果：`bun test` 通过 318 tests / 1003 assertions（24 files，0 failed）；`bun run typecheck`、`bun run lint`、`bun run build` 均通过；`bun run pack:check` 与 `bun pm pack --dry-run` 通过，tarball allowlist 为 71 个文件；`bun run eval:lexical` 的 Recall@5 为 1.00（3/3），注入拦截 1/1，泄漏检查 4/4。Codex 生成插件另通过“删除源 `dist` 后从迁移插件根启动 MCP”的自包含回归。
+本轮最终结果：`bun test` 通过 332 tests / 1047 assertions（24 files，0 failed）；`bun run typecheck`、`bun run lint`、`bun run build` 均通过；`bun run pack:check` 与 `bun pm pack --dry-run` 通过，tarball allowlist 为 71 个文件；`bun run eval:lexical` 的 Recall@5 为 1.00（4/4），注入拦截 1/1，泄漏检查 5/5（含含秘密行的阳性对照 fixture）。Codex 生成插件另通过“删除源 `dist` 后从迁移插件根启动 MCP”的自包含回归。
 
 真实 Harness smoke 需要使用隔离 `CODEX_HOME` / `HOME` / `XDG_*` 和临时 `MEMCURIO_ROOT`，禁止直接改动用户已有 Codex/OpenCode 配置。完整操作记录和剩余清单以本文及两个 integration 文档为准。

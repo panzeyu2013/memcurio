@@ -106,6 +106,23 @@ describe("memcurio MCP server", () => {
     });
   });
 
+  test("memory_search caps hit content length", async () => {
+    const longLine = `- ${"长".repeat(900)} bun\n`;
+    writeWorkspaceText(dir, "MEMORY.md", `# Task Group: project\n${longLine}`);
+    await withClient(async (client) => {
+      const hits = parseText(
+        (await client.callTool({
+          name: "memory_search",
+          arguments: { query: "bun", topK: 5 },
+        })) as CallResult,
+      ) as { hits: Array<{ content: string }>; blocked: number };
+      expect(hits.blocked).toBe(0);
+      expect(hits.hits).toHaveLength(1);
+      expect(hits.hits[0]?.content.length).toBeLessThanOrEqual(501);
+      expect(hits.hits[0]?.content.endsWith("…")).toBe(true);
+    });
+  });
+
   test("memory_search filters injection lines", async () => {
     writeWorkspaceText(
       dir,

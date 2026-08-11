@@ -13,6 +13,7 @@ import {
 import type { GenerationFileSnapshot } from "./generation.js";
 import {
   renderRawMemories,
+  removeBlocksCitingOnly,
   RuleConsolidateProvider,
   withWorkspaceWriteLease,
 } from "./consolidate.js";
@@ -27,6 +28,7 @@ export interface PurgeResult {
   sessionRows: number;
   auditRows: number;
   exportRecords: number;
+  skillsRemoved: number;
 }
 
 function snapshotWorkspace(root: string): Record<string, GenerationFileSnapshot> {
@@ -156,25 +158,47 @@ export async function purgeRollout(root: string, rolloutKey: string, exportPaths
 
       // MEMORY.md, its summary, and skills can contain facts without complete
       // provenance (including output written by older providers). Rebuild the
-      // aggregate documents only from the surviving published raw projection
-      // and independently authored, already-applied notes. This is deliberately
-      // conservative: privacy deletion takes precedence over preserving an
-      // unattributed model rewrite.
+      // aggregate documents from the surviving published raw projection,
+      // independently authored applied notes, and the MEMORY.md blocks that do
+      // NOT cite the purged artifact (blocks citing only it are dropped, mixed
+      // and uncited user blocks are preserved). This keeps unrelated
+      // hand-written content while still removing every block uniquely
+      // supported by the purged rollout.
+      const currentMemory = beforeWorkspace["MEMORY.md"]?.content ?? "";
+      const currentSummary = beforeWorkspace["memory_summary.md"]?.content ?? "";
+      // Bare filenames: removeBlocksCitingOnly compares citations (which are
+      // prefixed "rollout_summaries/<file>") against this set after stripping
+      // the prefix.
+      const purgedRefs = new Set([row.artifactFilename]);
+      if (legacyFilename !== row.artifactFilename && idx.stageBySlug(row.rolloutSlug)?.rolloutKey === rolloutKey) {
+        purgedRefs.add(legacyFilename);
+      }
+      const report: string[] = [];
+      const keptMemory = removeBlocksCitingOnly(currentMemory, purgedRefs, report);
       const rebuilt = await new RuleConsolidateProvider().consolidate({
-        workspace: { "MEMORY.md": "", "memory_summary.md": "" },
+        workspace: { "MEMORY.md": keptMemory, "memory_summary.md": currentSummary },
         diff: remainingRaw ? [diffWorkspace("raw_memories.md", "", remainingRaw)] : [],
         notes: idx.noteList()
           .filter((note) => note.applied)
           .map((note) => ({ kind: note.kind, filename: note.filename, content: note.content })),
         memoryRoot: root,
       });
-      const rebuiltMemory = rebuilt.edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? "";
-      const rebuiltSummary = rebuilt.edits.find((edit) => edit.rel === "memory_summary.md")?.content ?? "";
+      const rebuiltMemory = rebuilt.edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? keptMemory;
+      const rebuiltSummary = rebuilt.edits.find((edit) => edit.rel === "memory_summary.md")?.content ?? currentSummary;
       afterWorkspace["MEMORY.md"] = { present: true, content: rebuiltMemory };
       afterWorkspace["memory_summary.md"] = { present: true, content: rebuiltSummary };
+      // Skills are model-written; only remove the ones that reference the
+      // purged rollout (by key, artifact id/filename, or legacy slug filename)
+      // so unrelated reusable procedures survive a single-rollout purge.
+      const skillRefs = new Set([rolloutKey, row.artifactId, row.artifactFilename, legacyFilename]);
+      let skillsRemoved = 0;
       for (const rel of Object.keys(afterWorkspace)) {
         if (rel.startsWith("skills/") && rel.endsWith("/SKILL.md")) {
-          delete afterWorkspace[rel];
+          const content = afterWorkspace[rel]?.content ?? "";
+          if ([...skillRefs].some((ref) => ref && content.includes(ref))) {
+            delete afterWorkspace[rel];
+            skillsRemoved += 1;
+          }
         }
       }
       const generation = prepareGeneration(
@@ -209,7 +233,7 @@ export async function purgeRollout(root: string, rolloutKey: string, exportPaths
           auditRows += idx.purgeAuditExact([sessionId]);
           idx.metaSet("consolidation_generation", generation.id);
           // Record the operation without re-introducing any purged identifier.
-          idx.audit("purge.hard", "-", `exports=${exportRecords}; jobs=${extractionJobs}; sessions=${sessionRows}; audit=${auditRows}`);
+          idx.audit("purge.hard", "-", `exports=${exportRecords}; jobs=${extractionJobs}; sessions=${sessionRows}; audit=${auditRows}; skills=${skillsRemoved}`);
         });
         const committed = markGenerationCommitted(root, generation);
         discardGeneration(root, committed.id);
@@ -222,6 +246,7 @@ export async function purgeRollout(root: string, rolloutKey: string, exportPaths
           sessionRows,
           auditRows,
           exportRecords,
+          skillsRemoved,
         };
       } catch (err) {
         recoverPendingGenerations(root, generationMarkerFromMeta(idx.metaGet("consolidation_generation")));

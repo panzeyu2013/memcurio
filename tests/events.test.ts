@@ -22,6 +22,17 @@ describe("makeEnvelope", () => {
       makeEnvelope({ host: "cli", event: "nope" as unknown as Partial<EventEnvelope>["event"] }),
     ).toThrow(/unknown event/);
   });
+
+  test("rejects control characters in session fields", () => {
+    expect(() => makeEnvelope({ host: "cli", event: "use", sessionId: "s1\nfake" })).toThrow(/control characters/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", workdir: "/tmp/\u0000" })).toThrow(/control characters/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", actor: "a\u0007b" })).toThrow(/control characters/);
+  });
+
+  test("rejects over-long session fields", () => {
+    expect(() => makeEnvelope({ host: "cli", event: "use", sessionId: "s".repeat(501) })).toThrow(/exceeds/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", workdir: "/w".repeat(2001) })).toThrow(/exceeds/);
+  });
 });
 
 describe("parseEnvelope", () => {
@@ -42,5 +53,10 @@ describe("parseEnvelope", () => {
     expect(() => parseEnvelope("123")).toThrow(/invalid envelope JSON/);
     expect(() => parseEnvelope('["a"]')).toThrow(/invalid envelope JSON/);
     expect(() => parseEnvelope('"str"')).toThrow(/invalid envelope JSON/);
+  });
+
+  test("rejects oversized input before parsing", () => {
+    const huge = JSON.stringify({ host: "cli", event: "use", sessionId: "x".repeat(2 * 1024 * 1024) });
+    expect(() => parseEnvelope(huge)).toThrow(/size limit/);
   });
 });

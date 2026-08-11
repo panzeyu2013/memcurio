@@ -84,14 +84,13 @@ const zh: Record<string, Entry> = {
   "remember.tooLong": (n: string) => `内容过长（上限 ${n} 字符）`,
   "remember.done": (f: string) => `已写入记忆 note: ${f}`,
   "remember.applyNote": "执行整合后写入 MEMORY.md；未整合前可 memcurio curate --execute 手动触发",
-  "remember.promptware": (f: string) => `警告: 内容命中注入模式（${f}），已记审计但仍写入（引擎会在注入时过滤）`,
 
   "forget.missing": "缺少要遗忘的文本（用法: memcurio forget <文本>）",
   "forget.done": (f: string) => `已写入 forget note: ${f}`,
   "purge.missingKey": "缺少 --rollout-key（用法: memcurio purge --rollout-key HOST|SESSION --execute）",
   "purge.requiresExecute": "物理清除必须显式使用 --execute；可先检查 rollout-key 和 export 路径",
   "purge.notFound": (k: string) => `未找到 rollout: ${k}`,
-  "purge.done": (k: string, f: string, e: string) => `已物理清除 ${k}（artifact=${f}，清理 export 记录 ${e} 条）；远端/其他备份仍需按保留策略处理`,
+  "purge.done": (k: string, f: string, e: string, s: string) => `已物理清除 ${k}（artifact=${f}，清理 export 记录 ${e} 条，移除引用该 rollout 的 skill ${s} 个）；远端/其他备份仍需按保留策略处理`,
 
   "list.empty": "（暂无记忆）",
   "list.groups": "MEMORY.md task groups:",
@@ -246,14 +245,13 @@ Commands:
   "remember.tooLong": (n: string) => `content too long (max ${n} chars)`,
   "remember.done": (f: string) => `memory note written: ${f}`,
   "remember.applyNote": "applied to MEMORY.md after consolidation; run memcurio curate --execute to trigger now",
-  "remember.promptware": (f: string) => `warning: content matches an injection pattern (${f}); audited and stored (filtered at injection time)`,
 
   "forget.missing": "missing forget target (usage: memcurio forget <text>)",
   "forget.done": (f: string) => `forget note written: ${f}`,
   "purge.missingKey": "missing --rollout-key (usage: memcurio purge --rollout-key HOST|SESSION --execute)",
   "purge.requiresExecute": "hard purge requires explicit --execute; inspect the rollout key and export path first",
   "purge.notFound": (k: string) => `rollout not found: ${k}`,
-  "purge.done": (k: string, f: string, e: string) => `hard-purged ${k} (artifact=${f}, scrubbed ${e} export record(s)); remote/other backups still follow their retention policy`,
+  "purge.done": (k: string, f: string, e: string, s: string) => `hard-purged ${k} (artifact=${f}, scrubbed ${e} export record(s), removed ${s} skill(s) referencing the rollout); remote/other backups still follow their retention policy`,
 
   "list.empty": "(no memories yet)",
   "list.groups": "MEMORY.md task groups:",

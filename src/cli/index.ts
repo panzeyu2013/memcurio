@@ -160,14 +160,10 @@ async function cmdRemember(rest: string[]): Promise<number> {
   if (content.length > MAX_NOTE_CHARS) {
     return failUsage(t("remember.tooLong", String(MAX_NOTE_CHARS)));
   }
-  const flags = sanitizeForInjection(content);
   const root = rootDir();
   ensureLayout(root);
   const note = await addAdHocNote(root, content, "remember");
   console.log(t("remember.done", note.filename));
-  if (!flags.safe) {
-    console.error(t("remember.promptware", flags.flags[0] ?? "?"));
-  }
   if (values.apply) {
     console.log(await runRuleConsolidation(root));
   } else {
@@ -311,9 +307,9 @@ async function cmdPurge(rest: string[]): Promise<number> {
   const result = await purgeRollout(root, rolloutKey, values.export ? [values.export] : []);
   if (!result) {
     console.log(t("purge.notFound", rolloutKey));
-    return 0;
+    return 1;
   }
-  console.log(t("purge.done", result.rolloutKey, result.artifactFilename, String(result.exportRecords)));
+  console.log(t("purge.done", result.rolloutKey, result.artifactFilename, String(result.exportRecords), String(result.skillsRemoved)));
   return 0;
 }
 
