@@ -70,7 +70,7 @@ describe("init / status / doctor", () => {
   });
 });
 
-describe("remember / forget", () => {
+describe("remember / removed forget", () => {
   test("remember writes an ad-hoc note", async () => {
     const r = await runCli("remember", "用户喜欢简洁的回答");
     expect(r.code).toBe(0);
@@ -92,15 +92,9 @@ describe("remember / forget", () => {
     expect(r.code).toBe(2);
   });
 
-  test("forget --apply removes the matching line", async () => {
-    await runCli("remember", "要保留的行", "--apply");
-    await runCli("remember", "要被遗忘的内容", "--apply");
-    expect(memoryFile("MEMORY.md")).toContain("要被遗忘的内容");
-    const r = await runCli("forget", "要被遗忘的内容", "--apply");
-    expect(r.code).toBe(0);
-    const memory = memoryFile("MEMORY.md");
-    expect(memory).not.toContain("要被遗忘的内容");
-    expect(memory).toContain("要保留的行");
+  test("forget is no longer a command (exit 2)", async () => {
+    const r = await runCli("forget", "要被遗忘的内容");
+    expect(r.code).toBe(2);
   });
 
   test("remember rejects injection patterns with exit 1 and audits", async () => {
@@ -348,7 +342,7 @@ describe("event / help / version", () => {
   test("help lists all commands", async () => {
     const r = await runCli("help");
     expect(r.code).toBe(0);
-    for (const cmd of ["init", "remember", "forget", "search", "prune", "curate", "baseline", "reindex", "repair", "doctor", "audit", "event", "export", "import", "retry-extraction", "mcp", "codex-daemon", "codex-plugin"]) {
+    for (const cmd of ["init", "remember", "search", "prune", "curate", "baseline", "reindex", "repair", "doctor", "audit", "event", "export", "import", "retry-extraction", "mcp"]) {
       expect(r.out).toContain(cmd);
     }
   });

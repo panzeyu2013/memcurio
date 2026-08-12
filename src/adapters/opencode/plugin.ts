@@ -120,6 +120,26 @@ function evidenceFromMessages(messages: SessionMessage[]): Array<{
   return out;
 }
 
+/** Collect assistant text containing <memcurio-citation> blocks so the
+ *  adapter can count the cited memory files as used (codex-style telemetry). */
+function citationTextsFromMessages(messages: SessionMessage[]): string {
+  const out: string[] = [];
+  messages.forEach((message) => {
+    if (messageKind(message.info?.role) !== "assistant") {
+      return;
+    }
+    for (const part of message.parts) {
+      if (part.type !== "text" || typeof part.text !== "string") {
+        continue;
+      }
+      if (part.text.includes("<memcurio-citation>")) {
+        out.push(part.text);
+      }
+    }
+  });
+  return out.join("\n");
+}
+
 async function fetchMessages(client: unknown, sessionId: string): Promise<SessionMessage[] | undefined> {
   const session = (client as { session?: SessionClient }).session;
   if (!session?.messages) {
@@ -164,7 +184,7 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
       .catch(() => {});
   };
   // Close this host's session rows left open by a crashed/restarted harness
-  // process (codex's daemon does the same at startup).
+  // process (the durable worker drains the same queue at startup).
   try {
     const idx = await Index.create(indexDb(root));
     try {
@@ -204,13 +224,18 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
             const messages = await fetchMessages(client, id);
             if (messages) {
               adapter.messageSnapshot(id, evidenceFromMessages(messages));
+              void adapter.memoryUsageFromCitations(citationTextsFromMessages(messages)).catch(report);
             }
             await adapter.sessionIdle(id);
             void adapter.processPendingExtractions().catch(report);
+            // Automatic Phase 2 also fires on idle (the normal pause point of
+            // a kept session), not only on session.deleted.
+            void adapter.maybeConsolidate().catch(report);
           } else if (type === "session.compacted") {
             const messages = await fetchMessages(client, id);
             if (messages) {
               adapter.messageSnapshot(id, evidenceFromMessages(messages));
+              void adapter.memoryUsageFromCitations(citationTextsFromMessages(messages)).catch(report);
             }
             const summary = messages ? summaryFromMessages(messages) : undefined;
             const fingerprint = summary ?? "<no-summary>";
@@ -234,9 +259,13 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
             const messages = await fetchMessages(client, id);
             if (messages) {
               adapter.messageSnapshot(id, evidenceFromMessages(messages));
+              void adapter.memoryUsageFromCitations(citationTextsFromMessages(messages)).catch(report);
             }
             await adapter.sessionEnded(id);
             void adapter.processPendingExtractions().catch(report);
+            // Codex-style automatic Phase 2: consolidate what the finished
+            // session produced instead of waiting for a manual curate.
+            void adapter.maybeConsolidate().catch(report);
             recentCompactions.delete(id);
             queues.delete(id);
           } else if (type === "message.updated") {

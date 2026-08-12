@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { Index } from "./db.js";
 import type { AdHocNoteRow } from "./db.js";
+import { pendingAdHocNotes } from "./adhoc.js";
 import {
   applyGeneration,
   discardGeneration,
@@ -96,7 +99,7 @@ export async function planConsolidation(root: string, cfg?: Partial<PipelineConf
     const rows = idx.stageSelectRows({ maxUnusedDays: config.maxUnusedDays, maxInputs: config.maxInputs });
     const outside = idx.stageOutsideWindow(config.maxUnusedDays);
     const pruned = outside.filter((r) => !rows.some((s) => s.rolloutKey === r.rolloutKey));
-    const notes = idx.noteList().filter((n) => !n.applied);
+    const notes = await pendingAdHocNotes(root);
     // Summary files are kept for EVERY active row (selected + pending inside
     // the window, including pendings beyond maxInputs). Deleting a file when
     // its row merely fell out of this batch would make the next batch re-add
@@ -275,8 +278,9 @@ export interface ConsolidateProvider {
 const ADHOC_GROUP = "# Task Group: ad hoc (memcurio remember)";
 
 /** Deterministic consolidation for tests and for runs without an LLM. Never
- *  invents facts; deletes only what a forget note or a pruned summary
- *  explicitly targets. */
+ *  invents facts and never deletes memory mechanically: remember notes are
+ *  applied, forget/update notes are left pending (agent-only), and pruning
+ *  only removes blocks whose sole supporting summary was pruned. */
 export class RuleConsolidateProvider implements ConsolidateProvider {
   readonly name = "rule";
 
@@ -329,9 +333,8 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
       memory = removeBlocksCitingOnly(memory, deletedSummaries, report);
     }
 
-    // Apply notes after ingesting and pruning source material. In particular,
-    // a forget note must also remove matching facts introduced by this run's
-    // raw-memory diff instead of being undone moments later by ingestion.
+    // Apply notes after ingesting and pruning source material: remember notes
+    // add knowledge, forget/update notes stay pending for the LLM agent.
     // Notes with injection payloads (pre-dating the entry-point rejection)
     // are skipped rather than written: validateEdits would reject them and
     // brick every later consolidation.
@@ -353,19 +356,11 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
         }
         consumedNoteFilenames.push(note.filename);
         report.push(`remember note applied: ${note.filename}`);
-      } else if (note.kind === "forget") {
-        const needle = note.content.toLowerCase();
-        const removeMatching = (text: string): string =>
-          text
-            .split("\n")
-            .filter((l) => !l.toLowerCase().includes(needle))
-            .join("\n");
-        memory = removeMatching(memory);
-        summary = removeMatching(summary);
-        consumedNoteFilenames.push(note.filename);
-        report.push(`forget note applied: ${note.filename}`);
       } else {
-        report.push(`update note ignored (needs an LLM provider): ${note.filename}`);
+        // forget/update notes are only actionable by the LLM consolidation
+        // agent (codex-style note semantics). The deterministic rule provider
+        // must not delete memory mechanically, so it leaves them pending.
+        report.push(`note ignored (needs an LLM provider): ${note.filename}`);
       }
     }
 
@@ -373,7 +368,7 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
     // when there is actual work (notes other than update, new raw memories, or
     // an existing handbook) — a pristine store stays untouched.
     const hasRealWork =
-      input.notes.some((n) => n.kind !== "update") || rawDiff !== undefined || memory.trim() !== "";
+      input.notes.some((n) => n.kind === "remember") || rawDiff !== undefined || memory.trim() !== "";
     if (hasRealWork && !summary?.startsWith("v1")) {
       summary = renderMinimalSummary(memory);
       report.push("memory_summary.md regenerated (missing or schema-incompatible)");
@@ -739,6 +734,11 @@ function buildConsolidationSystemPrompt(input: ConsolidateInput): string {
     "  only the MEMORY.md blocks/sections uniquely supported by deleted inputs. Keep mixed blocks,",
     "  removing only stale references.",
     "- Apply pending notes: remember notes add knowledge; forget notes remove the targeted content.",
+    "- Reduce noise: remove stale, duplicated, or low-signal blocks and bullets; let signal decide",
+    "  granularity (do not target fixed counts).",
+    "- Ordering: surface the most useful and most recently-updated validated memories near the top of",
+    "  MEMORY.md and memory_summary.md.",
+    "- Keep the memory_summary.md index current: drop topics that were only supported by removed content.",
     "- Keep memory_summary.md starting with exactly 'v1'.",
     "- write_file may target only MEMORY.md, memory_summary.md, or an approved skills/<name>/SKILL.md; never write raw_memories.md, rollout summaries, notes, config, or state.",
     "- Respond with ONE JSON object per turn: {\"tool\": \"read_file|write_file|list_files|finish\", \"args\": {...}}",
@@ -839,8 +839,50 @@ function sanitizeConsolidateInput(input: ConsolidateInput): ConsolidateInput {
   };
 }
 
-export const WORKSPACE_WRITE_LEASE_KEY = "workspace";
-export const WORKSPACE_WRITE_LEASE_MS = 15 * 60_000;
+/** Codex-style extension-resource retention: remove markdown resources under
+ *  extensions/<name>/resources/ that are older than the retention window.
+ *  Matches codex's pruning contract: only extensions that carry an
+ *  instructions.md are considered, only `.md` files with the timestamp
+ *  filename prefix `YYYY-MM-DDTHH-MM-SS` are eligible, and the age is taken
+ *  from the filename timestamp (not mtime), so a copied resource keeps its
+ *  original age. The deletions are reported but not diffed into the
+ *  consolidation baseline. */
+export function pruneExtensionResources(root: string, retentionDays: number): string[] {
+  const base = join(memoryWorkspace(root), "extensions");
+  if (!existsSync(base)) {
+    return [];
+  }
+  const cutoff = Date.now() - retentionDays * 86_400_000;
+  const removed: string[] = [];
+  for (const name of readdirSync(base)) {
+    const resources = join(base, name, "resources");
+    if (!existsSync(resources) || !existsSync(join(base, name, "instructions.md"))) {
+      continue;
+    }
+    for (const file of readdirSync(resources)) {
+      if (!file.endsWith(".md")) {
+        continue;
+      }
+      const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/.exec(file);
+      if (!match) {
+        continue;
+      }
+      try {
+        const [, date, hh, mm, ss] = match;
+        const ts = Date.parse(`${date}T${hh}:${mm}:${ss}Z`);
+        if (Number.isFinite(ts) && ts < cutoff) {
+          rmSync(join(resources, file), { force: true });
+          removed.push(`extensions/${name}/resources/${file}`);
+        }
+      } catch {
+        // best effort; a concurrent writer may have removed the file
+      }
+    }
+  }
+  return removed;
+}
+
+export const WORKSPACE_WRITE_LEASE_KEY = "workspace";export const WORKSPACE_WRITE_LEASE_MS = 15 * 60_000;
 const WORKSPACE_WRITE_RENEW_MS = 60_000;
 
 /** Serialize operational artifact writers against Phase 2 and hard purge.
@@ -1052,16 +1094,25 @@ export async function runConsolidation(
       applyGeneration(root, generation, "after");
       idx.withTransaction(() => {
         const consumed = new Set(result.consumedNoteFilenames ?? []);
-        idx.noteMarkApplied(freshPlan.notes.filter((note) => consumed.has(note.filename)).map((note) => note.id));
+        for (const note of freshPlan.notes.filter((n) => consumed.has(n.filename))) {
+          idx.noteMarkApplied([note.id]);
+          // Record the merged file content so an in-place edit of the note
+          // file is detected as new work next time (codex-style).
+          idx.noteSyncContent(note.id, note.content);
+        }
         idx.stageMarkSelected(freshPlan.selected.map((s) => s.rolloutKey));
         for (const p of freshPlan.pruned) {
           idx.stageMarkDeleted([p.rolloutKey]);
         }
+        // Codex-style retention cleanup: pruned rows are dead weight now.
+        const retentionPruned = idx.stagePruneRetention();
+        // Codex-style extension-resource retention.
+        const resourcesPruned = pruneExtensionResources(root, opts.config?.retentionDays ?? DEFAULT_PIPELINE_CONFIG.retentionDays).length;
         idx.metaSet("consolidation_generation", generation?.id ?? "");
         idx.audit(
           "consolidate.done",
           "-",
-          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, rejected=${result.rejected.length}`,
+          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}`,
         );
         for (const r of result.rejected) {
           idx.audit("consolidate.rejected", r.rel, r.reason);

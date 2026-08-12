@@ -1,7 +1,7 @@
 {
   "name": "memcurio",
   "version": "0.1.0",
-  "description": "Harness-agnostic, language-agnostic memory and context management for AI coding agents (opencode / codex)",
+  "description": "Harness-agnostic, language-agnostic memory and context management for AI coding agents (opencode)",
   "license": "MIT",
   "author": "memcurio contributors",
   "repository": {
@@ -17,7 +17,6 @@
     "context",
     "agent",
     "opencode",
-    "codex",
     "mcp",
     "sqlite",
     "llm"

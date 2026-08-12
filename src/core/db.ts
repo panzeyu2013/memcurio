@@ -491,8 +491,27 @@ export class Index {
 
   stageMarkDeleted(keys: string[]): void {
     for (const key of keys) {
-      this.driver.run("UPDATE stage1_outputs SET status = 'deleted', selected_for_phase2 = 0 WHERE rollout_key = ?", [key]);
+      // Keep the selected marker: rows that were once consolidated stay in
+      // the DB for audit/revival (codex keeps integrated rows); only rows
+      // that were never selected are physically recycled by stagePruneRetention.
+      this.driver.run("UPDATE stage1_outputs SET status = 'deleted' WHERE rollout_key = ?", [key]);
     }
+  }
+
+  /** Codex-style retention cleanup: physically delete rows that were pruned
+   *  AND never selected for Phase 2 (their artifacts and MEMORY.md support
+   *  were removed by the pruning consolidation; the rows are dead weight).
+   *  Rows that were once consolidated are kept. Batch-capped like codex's
+   *  PRUNE_BATCH_SIZE so one cleanup never stalls the transaction. */
+  stagePruneRetention(batch = 200): number {
+    const rows = this.driver.all<{ rollout_key: string }>(
+      "SELECT rollout_key FROM stage1_outputs WHERE status = 'deleted' AND selected_for_phase2 = 0 LIMIT ?",
+      [batch],
+    );
+    for (const row of rows) {
+      this.driver.run("DELETE FROM stage1_outputs WHERE rollout_key = ?", [row.rollout_key]);
+    }
+    return rows.length;
   }
 
   stageSetUsage(key: string): void {
@@ -544,6 +563,13 @@ export class Index {
     for (const id of ids) {
       this.driver.run("UPDATE ad_hoc_notes SET applied = 1 WHERE id = ?", [id]);
     }
+  }
+
+  /** Record the file's current content after a note was merged, so an
+   *  in-place edit of the note file is detected as new work on the next
+   *  consolidation (codex-style: note edits are diff input). */
+  noteSyncContent(id: string, content: string): void {
+    this.driver.run("UPDATE ad_hoc_notes SET content = ? WHERE id = ?", [content, id]);
   }
 
   // -------------------------------------------------------------- sessions

@@ -51,9 +51,8 @@ Reviewers are read-only; output "issue + file:line + suggestion". After a fix, r
 
 ## 6. Documentation guidelines
 
-- `docs/` is living documentation: when implementation and design diverge, the docs must be updated (see the capability-matrix correction footnote pattern in `docs/integration-codex.md`).
-- External protocols (codex hooks / opencode plugin API) follow source code or official documentation — never write contracts from memory.
-- Mark implementation status (✅/⏳) and "verified against source" provenance in docs; stale content takes priority for updates over new content.
+- `docs/` is living documentation: when implementation and design diverge, the docs must be updated (mark implementation status ✅/⏳ and "verified against source" provenance; stale content takes priority over new content).
+- External protocols (the opencode plugin API) follow source code or official documentation — never write contracts from memory.
 
 ## 7. Explicitly out of scope (for now)
 

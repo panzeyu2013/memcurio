@@ -111,9 +111,9 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions
         throw new Error(`re-entrant file lock: ${lockPath}`);
       }
       // Bounded synchronous sleep. The wait is capped at LOCK_TIMEOUT_MS (20s),
-      // so the worst-case freeze is short even on the single-threaded codex
-      // daemon, where contention (another process holding the md lock) briefly
-      // stalls socket handling. Contention is rare: writers serialize on the
+      // so the worst-case freeze is short even on a single-threaded host
+      // process, where contention (another process holding the md lock) briefly
+      // stalls event handling. Contention is rare: writers serialize on the
       // same md file, and the daemon itself holds each lock only briefly.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       continue;

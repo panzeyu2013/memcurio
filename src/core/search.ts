@@ -10,6 +10,65 @@ export interface MemoryHit {
   score: number;
 }
 
+/** Codex-style usage telemetry: register that memory artifacts were actually
+ *  reused (read by the model / cited / hit by search). Each referenced
+ *  rollout summary (or rollout key) bumps its stage-1
+ *  `usage_count`/`last_usage`, which drives the Phase 2 selection window.
+ *  Entries may be workspace-relative paths (optionally with a `:line` or
+ *  `:line-end` suffix), text containing `rollout_summaries/<file>.md`
+ *  citations, or bare rollout keys. */
+export async function registerMemoryUsage(root: string, rels: readonly string[]): Promise<void> {
+  const usedKeys = new Set<string>();
+  const pathKeys: string[] = [];
+  for (const raw of rels) {
+    const entry = raw.trim();
+    if (!entry) {
+      continue;
+    }
+    // Strip a trailing `:line` / `:line-end` suffix from citation entries.
+    const stripped = entry.replace(/:\d+(?:-\d+)?$/, "");
+    if (stripped.startsWith("rollout_summaries/")) {
+      const name = stripped.slice("rollout_summaries/".length);
+      if (name) {
+        usedKeys.add(name);
+      }
+      continue;
+    }
+    if (stripped.includes("/") || /\s/.test(stripped)) {
+      // A workspace path (MEMORY.md, memory_summary.md, skills/…) or text:
+      // scan for embedded rollout_summaries/ citations.
+      for (const m of stripped.matchAll(/rollout_summaries\/([^\s()]+\.md)/g)) {
+        const name = m[1];
+        if (name) {
+          usedKeys.add(name);
+        }
+      }
+    } else if (!stripped.startsWith("<") && !stripped.includes("| note=")) {
+      // Bare rollout key (host|sessionId): match the stage-1 row directly.
+      pathKeys.push(stripped);
+    }
+  }
+  if (!usedKeys.size && !pathKeys.length) {
+    return;
+  }
+  const idx = await Index.create(indexDb(root));
+  try {
+    for (const filename of usedKeys) {
+      const row = idx.stageByArtifactFilename(filename.replace(/:\d+(?:-\d+)?$/, ""));
+      if (row) {
+        idx.stageSetUsage(row.rolloutKey);
+      }
+    }
+    for (const key of pathKeys) {
+      if (idx.stageGet(key)) {
+        idx.stageSetUsage(key);
+      }
+    }
+  } finally {
+    idx.close();
+  }
+}
+
 /** Line-oriented search over the memory workspace. Scoring counts query-word
  *  occurrences per line; hits are injection-filtered and re-redacted at read
  *  time. Matches against rollout summary files bump the corresponding
@@ -35,7 +94,7 @@ export async function searchMemory(
   }
   const lowerWords = words.map((w) => w.toLowerCase());
 
-  const usedKeys = new Set<string>();
+  const usedRels: string[] = [];
   for (const rel of searchableRels(listWorkspaceFiles(root))) {
     const text = readWorkspaceText(root, rel);
     const lines = text.split("\n");
@@ -62,31 +121,14 @@ export async function searchMemory(
       // Usage tracking: a hit on a rollout summary (or a MEMORY.md line
       // citing one) counts as reuse of that stage-1 output.
       if (rel.startsWith("rollout_summaries/")) {
-        usedKeys.add(rel.replace(/^rollout_summaries\//, ""));
+        usedRels.push(rel);
       } else {
-        for (const m of line.matchAll(/rollout_summaries\/([^\s()]+\.md)/g)) {
-          const name = m[1];
-          if (name) {
-            usedKeys.add(name);
-          }
-        }
+        usedRels.push(line);
       }
     }
   }
 
-  if (usedKeys.size) {
-    const idx = await Index.create(indexDb(root));
-    try {
-      for (const filename of usedKeys) {
-        const row = idx.stageByArtifactFilename(filename);
-        if (row) {
-          idx.stageSetUsage(row.rolloutKey);
-        }
-      }
-    } finally {
-      idx.close();
-    }
-  }
+  await registerMemoryUsage(root, usedRels);
 
   const sorted = hits.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel) || a.line - b.line);
   return { hits: sorted.slice(0, Math.max(1, topK)), blocked };

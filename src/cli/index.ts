@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import { addAdHocNote, listAdHocNotes } from "../core/adhoc.js";
+import { addAdHocNote, pendingAdHocNotes } from "../core/adhoc.js";
 import { loadConfig, pipelineConfig, validateConfig } from "../core/config.js";
 import {
   HttpLoopConsolidateProvider,
@@ -27,9 +27,6 @@ import { Transaction, truncateLog } from "../core/transaction.js";
 import { generationMarkerFromMeta, inspectGenerationManifests, recoverPendingGenerations } from "../core/generation.js";
 import { deleteAdHocNoteFile, hasWorkspaceChanges, NOTE_FILENAME_RE, noteFilePath, readWorkspaceText, rolloutSlugs, writeAdHocNoteFile } from "../core/workspace.js";
 import { purgeRollout } from "../core/purge.js";
-import { generateCodexPlugin } from "../adapters/codex/generate.js";
-import { defaultSocketPath, runCodexDaemon } from "../adapters/codex/daemon.js";
-import { inspectCodexSpool } from "../adapters/codex/spool.js";
 import { MemcurioAdapter } from "../adapters/shared/engine.js";
 import { runServer } from "../mcp/index.js";
 import { t } from "./i18n.js";
@@ -172,30 +169,6 @@ async function cmdRemember(rest: string[]): Promise<number> {
   return 0;
 }
 
-async function cmdForget(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: { apply: { type: "boolean" } },
-  });
-  const content = positionals[0];
-  if (!content) {
-    return failUsage(t("forget.missing"));
-  }
-  warnExtraArgs("forget", positionals, 1);
-  if (content.length > MAX_NOTE_CHARS) {
-    return failUsage(t("remember.tooLong", String(MAX_NOTE_CHARS)));
-  }
-  const root = rootDir();
-  ensureLayout(root);
-  const note = await addAdHocNote(root, content, "forget");
-  console.log(t("forget.done", note.filename));
-  if (values.apply) {
-    console.log(await runRuleConsolidation(root));
-  }
-  return 0;
-}
-
 async function cmdList(rest: string[]): Promise<number> {
   warnExtraArgs("list", rest, 0);
   const root = rootDir();
@@ -203,7 +176,7 @@ async function cmdList(rest: string[]): Promise<number> {
   const memory = readWorkspaceText(root, "MEMORY.md");
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
   const rollouts = rolloutSlugs(root);
-  const notes = (await listAdHocNotes(root)).filter((n) => !n.applied);
+  const notes = (await pendingAdHocNotes(root)).filter((n) => !n.applied);
   if (!groups.length && !rollouts.length && !notes.length) {
     console.log(t("list.empty"));
     return 0;
@@ -857,36 +830,6 @@ async function cmdRetryExtraction(rest: string[]): Promise<number> {
   return 0;
 }
 
-async function cmdCodexDaemon(): Promise<number> {
-  const root = rootDir();
-  ensureLayout(root);
-  const socketPath = process.env.MEMCURIO_CODEX_SOCKET
-    ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
-    : defaultSocketPath(root);
-  const daemon = await runCodexDaemon({ socketPath, root });
-  console.log(t("daemon.listening", socketPath));
-  await daemon.closed;
-  return 0;
-}
-
-async function cmdCodexPlugin(rest: string[]): Promise<number> {
-  const { positionals } = parseArgs({ args: rest, allowPositionals: true });
-  warnExtraArgs("codex-plugin", positionals, 1);
-  const root = rootDir();
-  ensureLayout(root);
-  const outDir = positionals[0] ?? join(root, "codex-plugin");
-  const generated = await generateCodexPlugin(outDir);
-  console.log(t("codexPlugin.generated", generated.outDir));
-  console.log(`  daemon  : ${generated.daemonPath}`);
-  console.log(`  hook    : ${generated.hookPath}`);
-  console.log(`  manifest: ${generated.pluginJsonPath}`);
-  console.log(`  hooks   : ${generated.hooksJsonPath}`);
-  console.log(`  mcp     : ${generated.mcpJsonPath}`);
-  console.log(`  snippet : ${generated.snippetPath}${t("codexPlugin.snippet")}`);
-  console.log(t("codexPlugin.hint"));
-  return 0;
-}
-
 async function cmdMcp(): Promise<number> {
   return (await runServer()) ? 0 : 1;
 }
@@ -939,23 +882,6 @@ async function cmdDoctor(): Promise<number> {
   } catch (err) {
     check(t("doctor.index"), false, String(err));
   }
-  const socketPath = process.env.MEMCURIO_CODEX_SOCKET
-    ? resolve(process.env.MEMCURIO_CODEX_SOCKET)
-    : defaultSocketPath(root);
-  const pluginDir = join(root, "codex-plugin");
-  const spool = inspectCodexSpool(root);
-  check(
-    t("doctor.codexSpool"),
-    !spool.overCapacity,
-    `${spool.active} active, ${spool.dead} quarantined, ${spool.activeBytes} bytes`,
-  );
-  console.log(`· codex daemon${existsSync(socketPath) ? "" : t("doctor.daemonIdle")}: ${socketPath}`);
-  const pluginReady = [
-    join(pluginDir, ".codex-plugin", "plugin.json"),
-    join(pluginDir, "hooks", "hooks.json"),
-    join(pluginDir, ".mcp.json"),
-  ].every((path) => existsSync(path));
-  console.log(`${t("doctor.pluginLabel")}${pluginReady ? "" : t("doctor.pluginMissing")}: ${pluginDir}`);
   console.log(ok ? t("doctor.ok") : t("doctor.bad"));
   return ok ? 0 : 1;
 }
@@ -964,7 +890,6 @@ const HELP_CMDS = new Set([
   "init",
   "status",
   "remember",
-  "forget",
   "list",
   "search",
   "prune",
@@ -980,8 +905,6 @@ const HELP_CMDS = new Set([
   "import",
   "retry-extraction",
   "mcp",
-  "codex-daemon",
-  "codex-plugin",
   "help",
 ]);
 
@@ -1035,8 +958,6 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdStatus();
       case "remember":
         return await cmdRemember(rest);
-      case "forget":
-        return await cmdForget(rest);
       case "list":
         return await cmdList(rest);
       case "search":
@@ -1067,10 +988,6 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdRetryExtraction(rest);
       case "mcp":
         return await cmdMcp();
-      case "codex-daemon":
-        return await cmdCodexDaemon();
-      case "codex-plugin":
-        return await cmdCodexPlugin(rest);
       default:
         console.error(`${t("error.prefix")}${t("help.unknown", cmd)}`);
         return 2;

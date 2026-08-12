@@ -93,27 +93,6 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
-    "memory_forget",
-    {
-      title: "Forget a memory",
-      description: "写下一条“忘掉”note：下次整合时移除包含该文本（子串匹配，大小写不敏感）的条目。",
-      inputSchema: {
-        text: z.string().trim().min(1).max(20_000).describe("要从记忆中移除的文本"),
-      },
-    },
-    async (args) => {
-      const root = rootDir();
-      const idx = await openIndex(root);
-      try {
-        const note = await addAdHocNote(root, args.text, "forget");
-        return text({ filename: note.filename, kind: note.kind });
-      } finally {
-        idx.close();
-      }
-    },
-  );
-
-  server.registerTool(
     "memory_status",
     {
       title: "Memory pipeline status",

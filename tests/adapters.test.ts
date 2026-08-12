@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/adapters/shared/engine.js";
+import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
 import { Index } from "../src/core/db.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
 import { indexDb } from "../src/core/paths.js";
-import { listWorkspaceFiles, writeWorkspaceText } from "../src/core/workspace.js";
+import { listWorkspaceFiles, readWorkspaceText, writeWorkspaceText } from "../src/core/workspace.js";
 
 let dir: string;
 let prevRoot: string | undefined;
@@ -155,6 +156,118 @@ describe("MemcurioAdapter", () => {
     expect(idx.stageList()).toEqual([]);
     expect(idx.rawAll<{ action: string }>("SELECT action FROM audit WHERE action = 'extract.noop'")).toHaveLength(1);
     idx.close();
+  });
+
+  test("maybeConsolidate runs an automatic Phase 2 after the session ends", async () => {
+    const fake = new FakeExtractProvider(STAGE);
+    const adapter = new MemcurioAdapter({ extract: fake, durableQueue: true });
+    await adapter.sessionCreated("s1", PROJ, "opencode");
+    await adapter.messageSeen("s1", "p1", { kind: "user", text: "decide on FTS5 trigram" });
+    await adapter.sessionEnded("s1");
+    await adapter.maybeConsolidate();
+    const memory = readWorkspaceText(dir, "MEMORY.md");
+    expect(memory).toContain("# Task Group: general");
+    expect(memory).toContain("keep the FTS5 trigram");
+  });
+
+  test("maybeConsolidate is a no-op without pending work", async () => {
+    const adapter = new MemcurioAdapter({ extract: new FakeExtractProvider(null), durableQueue: true });
+    await adapter.sessionCreated("s1", PROJ, "opencode");
+    await adapter.messageSeen("s1", "p1");
+    await adapter.sessionEnded("s1");
+    await adapter.maybeConsolidate();
+    expect(readWorkspaceText(dir, "MEMORY.md")).toBe("");
+  });
+
+  test("maybeConsolidate honors the post-success cooldown", async () => {
+    const fake = new FakeExtractProvider(STAGE);
+    const adapter = new MemcurioAdapter({ extract: fake, durableQueue: true });
+    await adapter.sessionCreated("s1", PROJ, "opencode");
+    await adapter.messageSeen("s1", "p1", { kind: "user", text: "decide on FTS5 trigram" });
+    await adapter.sessionEnded("s1");
+    await adapter.maybeConsolidate();
+    expect(readWorkspaceText(dir, "MEMORY.md")).toContain("keep the FTS5 trigram");
+    // A second session ending immediately must not trigger another run.
+    await adapter.sessionCreated("s2", PROJ, "opencode");
+    await adapter.messageSeen("s2", "p1", { kind: "user", text: "more work" });
+    await adapter.sessionEnded("s2");
+    const auditBefore = await Index.create(indexDb(dir));
+    let autoRuns = 0;
+    try {
+      autoRuns = auditBefore.rawAll<{ action: string }>("SELECT action FROM audit WHERE action = 'consolidate.auto'").length;
+    } finally {
+      auditBefore.close();
+    }
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const after = idx.rawAll<{ action: string }>("SELECT action FROM audit WHERE action = 'consolidate.auto'").length;
+      expect(after).toBe(autoRuns);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("read-only tools reading a memory file bump usage; write tools do not", async () => {
+    const adapter = new MemcurioAdapter();
+    await adapter.sessionCreated("s1", PROJ, "opencode");
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "opencode|usage-1",
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "usage",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("opencode|usage-1"));
+    const filePath = join(dir, "memory", "rollout_summaries", artifactFilename);
+    writeWorkspaceText(dir, `rollout_summaries/${artifactFilename}`, "summary content");
+    await adapter.toolExecuted("s1", "edit", { filePath });
+    await adapter.toolExecuted("s1", "read", { filePath });
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      expect(idx2.stageGet("opencode|usage-1")?.usageCount).toBe(1);
+    } finally {
+      idx2.close();
+    }
+  });
+
+  test("citation telemetry strips line numbers and maps rollout_ids", async () => {
+    const adapter = new MemcurioAdapter();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "opencode|cite-1",
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "cite",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("opencode|cite-1"));
+    await adapter.memoryUsageFromCitations([
+      "<memcurio-citation>",
+      "citation_entries:",
+      `rollout_summaries/${artifactFilename}:2-5 | note=[used it]`,
+      "MEMORY.md:3-4",
+      "rollout_ids:",
+      "opencode|cite-1",
+      "</memcurio-citation>",
+    ].join("\n"));
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      // Two distinct references to the same rollout: path with line suffix +
+      // bare rollout id -> exactly 2 usages.
+      expect(idx2.stageGet("opencode|cite-1")?.usageCount).toBe(2);
+    } finally {
+      idx2.close();
+    }
   });
 
   test("sessionCompacted keeps only the summary in memory (no file writes)", async () => {

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 
 import { Index } from "./db.js";
 import { indexDb, ensureLayout } from "./paths.js";
 import { newEntryId } from "./ids.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
-import { deleteAdHocNoteFile, writeAdHocNoteFile } from "./workspace.js";
+import { deleteAdHocNoteFile, listAdHocNoteFiles, noteFilePath, readAdHocNoteFile, writeAdHocNoteFile } from "./workspace.js";
 
 export type AdHocKind = "remember" | "forget" | "update";
 
@@ -111,8 +112,60 @@ export async function listAdHocNotes(root: string): Promise<AdHocNote[]> {
   }
 }
 
+/** Notes that still need consolidation: never-applied rows plus rows whose
+ *  note file was edited after they were applied (codex-style: a note edit is
+ *  new diff input and must be re-merged). The file is the source of truth for
+ *  content. Deleted note files are skipped (nothing to merge) and orphan note
+ *  files without a DB row (e.g. hand-written) are adopted as pending remember
+ *  notes instead of being silently dropped. */
 export async function pendingAdHocNotes(root: string): Promise<AdHocNote[]> {
-  return (await listAdHocNotes(root)).filter((n) => !n.applied);
+  const rows = await listAdHocNotes(root);
+  const out: AdHocNote[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    seen.add(row.filename);
+    if (!existsSync(noteFilePath(root, row.filename))) {
+      // Note file deleted: nothing to merge. Skipping is the conservative
+      // choice — the rule provider cannot interpret a deletion.
+      continue;
+    }
+    if (!row.applied) {
+      out.push(row);
+      continue;
+    }
+    const fileText = readAdHocNoteFile(root, row.filename);
+    if (fileText !== row.content) {
+      out.push({ ...row, content: fileText });
+    }
+  }
+  const orphans = listAdHocNoteFiles(root).filter((name) => !seen.has(name));
+  if (orphans.length) {
+    const idx = await Index.create(indexDb(root));
+    try {
+      for (const filename of orphans) {
+        const redacted = redactSecrets(readAdHocNoteFile(root, filename)).text.trim();
+        if (!redacted) {
+          continue;
+        }
+        const note: AdHocNote = {
+          id: createHash("sha1").update(filename).digest("hex").slice(0, 32),
+          filename,
+          kind: "remember",
+          content: redacted,
+          createdAt: new Date().toISOString(),
+          applied: false,
+        };
+        idx.withTransaction(() => {
+          idx.noteAdd(note);
+          idx.audit("adhoc.adopt", "remember", filename);
+        });
+        out.push(note);
+      }
+    } finally {
+      idx.close();
+    }
+  }
+  return out;
 }
 
 export async function markAdHocNotesApplied(root: string, ids: string[]): Promise<void> {

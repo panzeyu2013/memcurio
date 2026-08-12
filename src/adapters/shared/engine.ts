@@ -1,12 +1,29 @@
 import { fitContext } from "../../core/budget.js";
 import { resolve } from "node:path";
 import { loadConfig } from "../../core/config.js";
+import { pipelineConfig } from "../../core/config.js";
+import { HttpLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "../../core/consolidate.js";
 import { Index } from "../../core/db.js";
 import type { ExtractProvider, EvidenceInput, RolloutSnapshot } from "../../core/extract.js";
 import { createEvidenceSnapshot, enqueueExtractionJob, HttpExtractProvider, processExtractionQueue, stageSession } from "../../core/extract.js";
 import { renderMemoryContext, renderReadPathInstructions } from "../../core/inject.js";
-import { rootDir as coreRoot, ensureLayout, indexDb } from "../../core/paths.js";
-import { searchMemory } from "../../core/search.js";
+import { llmEnv } from "../../core/llm.js";
+import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "../../core/paths.js";
+import { searchMemory, registerMemoryUsage } from "../../core/search.js";
+
+/** Resolve an absolute path against a base; returns the relative path when
+ *  the target lives inside the base, otherwise undefined. */
+function pathIsInside(target: string, base: string): string | undefined {
+  const baseResolved = resolve(base);
+  const targetResolved = resolve(target);
+  if (targetResolved === baseResolved) {
+    return undefined;
+  }
+  if (targetResolved.startsWith(`${baseResolved}/`)) {
+    return targetResolved.slice(baseResolved.length + 1);
+  }
+  return undefined;
+}
 
 export interface SessionState {
   sessionId: string;
@@ -39,6 +56,14 @@ const MAX_TRACKED_TOOLS = 256;
 const MAX_TRACKED_FILES = 256;
 const MAX_SUMMARY_CHARS = 4000;
 const DEFAULT_INJECT_BUDGET = 1500;
+// Codex-style scheduling: after a successful automatic consolidation, wait
+// before running another; after a failure, back off before retrying.
+const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
+
+// Only read-only tools count as memory reuse (codex only counts safe reads;
+// writes must never inflate usage stats or be able to fake telemetry).
+const READ_TOOLS = new Set(["read", "grep", "rg", "glance", "list", "search", "view"]);
 
 export interface AdapterOptions {
   log?: AdapterLog;
@@ -84,7 +109,7 @@ export class MemcurioAdapter {
     ensureLayout(root);
     const existing = this.sessions.get(sessionId);
     if (existing) {
-      // Codex re-emits SessionStart(source=compact). Do not reset the
+      // Hosts re-emit SessionStart after compaction. Do not reset the
       // in-memory evidence/counts accumulated before compaction.
       existing.workdir = workdir || existing.workdir;
       return;
@@ -259,6 +284,68 @@ export class MemcurioAdapter {
       s.touchedFiles.add(filePath);
     }
     this.addEvidence(s, { kind: "tool", name: tool, path: details?.filePath });
+    // Codex-style usage telemetry: only read-only tools that actually read a
+    // memory file count as reuse of the referenced rollouts (feeds the
+    // selection window). Writes must never inflate usage stats.
+    if (details?.filePath && READ_TOOLS.has(toolName)) {
+      await this.memoryUsageFromPath(details.filePath);
+    }
+  }
+
+  /** Map a read-path file (or citation-bearing text) to stage-1 usage. Paths
+   *  must be absolute workspace paths; text is scanned for rollout_summaries/
+   *  citations. */
+  async memoryUsageFromPath(filePath: string): Promise<void> {
+    const workspace = memoryWorkspace(this.root);
+    const rel = pathIsInside(filePath, workspace);
+    if (!rel) {
+      return;
+    }
+    await registerMemoryUsage(this.root, [rel]);
+  }
+
+  /** Codex-style citation telemetry: parse <memcurio-citation> blocks from
+   *  assistant text and count the referenced memory files (and rollout keys)
+   *  as used. The block has two sections:
+   *    citation_entries: <path>[:<line>[-<line>]] [| note=[...]]
+   *    rollout_ids:      <host|sessionId> per line
+   */
+  async memoryUsageFromCitations(text: string): Promise<void> {
+    const entries: string[] = [];
+    for (const block of text.matchAll(/<memcurio-citation>([\s\S]*?)<\/memcurio-citation>/g)) {
+      const body = block[1] ?? "";
+      let inEntries = false;
+      let inIds = false;
+      for (const line of body.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        if (/^citation_entries:/.test(trimmed)) {
+          inEntries = true;
+          inIds = false;
+          continue;
+        }
+        if (/^rollout_ids:/.test(trimmed)) {
+          inEntries = false;
+          inIds = true;
+          continue;
+        }
+        if (inIds) {
+          entries.push(trimmed);
+          continue;
+        }
+        if (inEntries) {
+          const ref = trimmed.split("|")[0]?.trim() ?? "";
+          if (ref) {
+            entries.push(ref);
+          }
+        }
+      }
+    }
+    if (entries.length) {
+      await registerMemoryUsage(this.root, entries);
+    }
   }
 
   async sessionIdle(sessionId: string): Promise<void> {
@@ -380,6 +467,84 @@ export class MemcurioAdapter {
       return await work;
     } finally {
       this.workerPromise = null;
+    }
+  }
+
+  /** Codex-style automatic Phase 2: after a session ends (or idles), drain
+   *  pending extractions first, then run a consolidation when there is pending
+   *  work (unapplied notes or never-selected stage-1 rows inside the window).
+   *  Runs at most once per cooldown after a success / backoff after a failure
+   *  (codex-style scheduling). Best-effort and detached: failures are logged,
+   *  never thrown into the host event path; the workspace lease still
+   *  serializes against manual curate runs. */
+  async maybeConsolidate(): Promise<void> {
+    const root = this.root;
+    try {
+      const idx = await Index.create(indexDb(root));
+      let cooldownMs: number | undefined;
+      try {
+        const last = idx.metaGet("consolidation_auto_last");
+        const failed = idx.metaGet("consolidation_auto_failed");
+        const now = Date.now();
+        if (last !== undefined) {
+          const elapsed = now - Date.parse(last);
+          if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
+            cooldownMs = AUTO_CONSOLIDATE_COOLDOWN_MS - elapsed;
+          }
+        }
+        if (cooldownMs === undefined && failed !== undefined) {
+          const elapsed = now - Date.parse(failed);
+          if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_RETRY_MS) {
+            cooldownMs = AUTO_CONSOLIDATE_RETRY_MS - elapsed;
+          }
+        }
+      } finally {
+        idx.close();
+      }
+      if (cooldownMs !== undefined) {
+        this.log("debug", "automatic consolidation in cooldown", { retryInMs: cooldownMs });
+        return;
+      }
+      await this.processPendingExtractions();
+      const cfg = pipelineConfig(root);
+      const idx2 = await Index.create(indexDb(root));
+      let work = false;
+      try {
+        work = idx2.noteList().some((n) => !n.applied);
+        if (!work) {
+          const rows = idx2.stageList();
+          work = rows.some((r) => r.status === "pending" && !r.selectedForPhase2);
+        }
+      } finally {
+        idx2.close();
+      }
+      if (!work) {
+        return;
+      }
+      const env = llmEnv();
+      const provider = env.apiKey ? new HttpLoopConsolidateProvider() : new RuleConsolidateProvider();
+      await runConsolidation(root, provider, { execute: true, config: cfg });
+      const idx3 = await Index.create(indexDb(root));
+      try {
+        idx3.metaSet("consolidation_auto_last", new Date().toISOString());
+        idx3.audit("consolidate.auto", "-", "automatic Phase 2 completed");
+      } finally {
+        idx3.close();
+      }
+      this.log("info", "automatic consolidation completed");
+    } catch (err) {
+      try {
+        const idx = await Index.create(indexDb(root));
+        try {
+          idx.metaSet("consolidation_auto_failed", new Date().toISOString());
+          idx.audit("consolidate.auto_failed", "-", String(err).slice(0, 300));
+        } finally {
+          idx.close();
+        }
+      } catch {
+        // best effort
+      }
+      this.log("warn", "automatic consolidation skipped", { error: String(err) });
     }
   }
 

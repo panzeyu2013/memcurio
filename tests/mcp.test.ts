@@ -68,7 +68,6 @@ describe("memcurio MCP server", () => {
       const names = tools.map((t) => t.name).sort();
       expect(names).toEqual([
         "memory_context",
-        "memory_forget",
         "memory_remember",
         "memory_search",
         "memory_status",
@@ -196,16 +195,10 @@ describe("memcurio MCP server", () => {
     });
   });
 
-  test("memory_forget writes a forget note", async () => {
+  test("memory_forget is no longer exposed", async () => {
     await withClient(async (client) => {
-      const note = parseText(
-        (await client.callTool({
-          name: "memory_forget",
-          arguments: { text: "旧剪枝策略" },
-        })) as CallResult,
-      ) as { filename: string; kind: string };
-      expect(note.kind).toBe("forget");
-      expect(listAdHocNoteFiles(dir)).toContain(note.filename);
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).not.toContain("memory_forget");
     });
   });
 
