@@ -10,7 +10,11 @@
 - **写记忆的决策交给模型**：Phase 1 抽取（模型判断"什么值得记"），Phase 2 整合（模型直接改写 MEMORY.md 文档）；
 - **遗忘 = 选择窗口 + diff 驱动的外科删除**：不再有 active/stale/archived 状态机；
 - **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
-- **用户显式操作（remember/forget）走 ad-hoc note**，下次整合时生效。
+- **用户显式操作（remember）走 ad-hoc note**，下次整合时生效；note 文件为真源，永不删除，编辑过的已应用 note 会被重新合并（codex 式 diff 语义）；forget/update 为遗留 kind，仅 LLM 整合 agent 语义执行；
+- **Phase 2 自动触发**：会话结束/闲置后由适配器自动运行整合（codex 式 startup 链的对应物），成功冷却 6h、失败退避 1h（meta 键 `consolidation_auto_last`/`_failed`）；无需手动 curate；
+- **使用遥测**：只读工具实际读取记忆文件 + 模型输出 `<memcurio-citation>` 块（`citation_entries` + `rollout_ids` 两节，条目剥行号、rollout key 直配）→ stage-1 `usage_count`/`last_usage`，驱动选择窗口；写工具不计；
+- **保留清理**：整合时物理删除"已剪枝且从未 selected"的 stage-1 行（批次 200；曾整合行保留）与符合 codex 契约的过期 `extensions/*/resources/` 文件（须有 instructions.md、`.md`、`YYYY-MM-DDTHH-MM-SS` 文件名前缀、按文件名时间戳计龄）；
+- **note 真源**：孤儿 note 文件（无 DB 行）被采纳为 pending remember note；删除的 note 文件跳过不再合并。
 
 ## 1. 存储布局
 
@@ -22,7 +26,7 @@
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 artifact id；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
-│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember/forget 的 note（append-only）
+│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember 的 note（append-only；forget/update 遗留，仅 agent 执行）
 │   └── .baseline/                   # 上次成功整合后的快照（MEMORY.md / memory_summary.md / raw_memories.md / rollout_summaries/），用于 diff
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v10）
 ├── config.json
@@ -53,7 +57,7 @@ CREATE TABLE stage1_outputs(
 CREATE TABLE ad_hoc_notes(
   id TEXT PRIMARY KEY,               -- UUIDv4
   filename TEXT NOT NULL,            -- YYYY-MM-DDTHH-MM-SS-<slug>.md
-  kind TEXT NOT NULL,                -- remember|forget|update
+  kind TEXT NOT NULL,                -- remember|forget|update（forget/update 仅 LLM agent 执行）
   content TEXT NOT NULL,
   created_at TEXT NOT NULL,
   applied INTEGER NOT NULL DEFAULT 0
@@ -177,7 +181,11 @@ export function addAdHocNote(root: string, content: string, kind?: AdHocNote["ki
   // 文件写入 extensions/ad_hoc/notes/ + DB 行 + audit("adhoc.note", kind, filename)
 export function listAdHocNotes(root: string): AdHocNote[]                    // DB 行，created_at ASC
 export function pendingAdHocNotes(root: string): AdHocNote[]
+  // 未应用行 + 文件内容与 DB 行不一致（被原地编辑）的行 → 重新合并（codex 式 diff 语义）；
+  // 文件缺失（被删除）的行跳过；无 DB 行的孤儿 note 文件 → 采纳为 pending remember（redact 内容、sha1(filename) 作 id）；
+  // 文件是内容真源。
 export function markAdHocNotesApplied(root: string, ids: string[]): void
+  // 应用时同步 noteSyncContent(id, 文件当前内容)，编辑才能被检测
 ```
 
 ### src/core/extract.ts（新，Phase 1）
@@ -264,9 +272,8 @@ export interface ConsolidateProvider {
 }
 export class RuleConsolidateProvider implements ConsolidateProvider {}
   // 确定性规则整合（无 LLM 降级/测试后端），规则：
-  // 1) 对每张未应用 note：remember → 追加到 MEMORY.md 的 "# Task Group: ad hoc (memcurio remember)" 块（无则建）的 "## Reusable knowledge" 下一条 "- <content>"；
-  //    forget → 从 MEMORY.md 与 memory_summary.md 逐行删除包含子串（大小写不敏感）的 bullet；并删除因此完全为空的块；
-  //    update → 忽略（report 注明需 LLM provider）；
+  // 1) 对每张待合并 note：remember → 追加到 MEMORY.md 的 "# Task Group: ad hoc (memcurio remember)" 块（无则建）的 "## Reusable knowledge" 下一条 "- <content>"（内容去重，幂等）；
+  //    forget/update → 忽略并保持 pending（report 注明 needs an LLM provider）；规则整合器不做任何机械删除；
   // 2) raw_memories 增量：对 artifacts.raw_memories.md 中新增（即 diff 的 add 行）的每个 "### Task N" 段，按 task_group 归入 "# Task Group: <task_group>" 块（无则建），
   //    保留原结构（Preference signals/Reusable knowledge/Failures/References 原样抄入）；块头带 applies_to: cwd=<raw_memory.cwd> 与 scope；
   // 3) 剪除清理：MEMORY.md 中引用已剪除 rollout_summary 文件名的块（rollout_summary_files 行只含已删文件）整块删除；
@@ -275,22 +282,28 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class HttpLoopConsolidateProvider implements ConsolidateProvider {}
   // 工具循环代理：llmChat + JSON tool calls；工具：read_file{rel} / write_file{rel,content} / list_files{} / finish{report}；
-  // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、红action）；
+  // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、红action），
+  // 含降噪条款：删除 stale/重复/低信号内容、不设固定数量目标、最有用的记忆排前、摘要索引清理失效主题；
   // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
   // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；校验 memory_summary 若存在首行须为 "v1"。
 export interface PipelineConfig {
   maxUnusedDays: number;   // 默认 60（stage1 选择窗口）
   minUsage: number;        // 默认 1（预留）
   maxInputs: number;       // 默认 50（单次整合 stage1 上限）
-  retentionDays: number;   // 默认 90：completed extraction job 的保留天数（audit 表另有 20k 行自动裁剪）
+  retentionDays: number;   // 默认 90：completed extraction job 的保留天数 + extensions/*/resources 清理窗口（audit 表另有 20k 行自动裁剪）
   maxAgentSteps: number;   // 默认 25
 }
 export function loadPipelineConfig(root: string): PipelineConfig          // 从 config.json pipeline 节读取，宽松回退默认
+export function pruneExtensionResources(root: string, retentionDays: number): string[]
+  // codex 契约：仅含 instructions.md 的扩展、仅 .md、文件名须匹配 YYYY-MM-DDTHH-MM-SS 前缀、
+  // 按文件名时间戳计龄（保留窗口 retentionDays），best-effort，返回 rel 列表
 export function runConsolidation(root: string, provider: ConsolidateProvider, opts: { execute: boolean }): Promise<{
   plan: ConsolidatePlan; result: ConsolidateResult | null; applied: boolean; message: string;
 }>
   // execute=true：取得 workspace lease → syncArtifacts → provider.consolidate → revision/edits 校验 → 文件快照恢复保护下应用（audit + DB transaction + saveBaseline）
-  //   → note 标记 applied → stageSelect 标记 selected → audit("consolidate.done", "-", ...)
+  //   → note 标记 applied + noteSyncContent（记录合并后的文件内容，编辑可被再次检测）
+  //   → stageSelect 标记 selected；剪枝行标记 deleted（保留 selected 标记）后 stagePruneRetention 物理回收未 selected 行（批次 200）
+  //   → pruneExtensionResources（retention 窗口）→ audit("consolidate.done", "-", ...)
   // execute=false：仅 plan + preview（不写盘）。
 ```
 
@@ -304,6 +317,8 @@ export function searchMemory(root: string, query: string, topK: number): { hits:
   // 命中行过 sanitizeForInjection：不安全 → blocked++（audit warn.promptware）；
   // 命中 rollout_summary 文件或 MEMORY.md 行内引用 rollout_summary 文件名 → 对应 stage1 stageSetUsage；
   // 返回时 re-redactSecrets。
+export function registerMemoryUsage(root: string, rels: readonly string[]): Promise<void>
+  // codex 式使用遥测的公共入口：rollout_summaries/* 路径或含引用的文本 → stageSetUsage
 ```
 
 ### src/core/inject.ts（新，读路径）
@@ -313,7 +328,9 @@ export function renderMemoryContext(root: string, budgetTokens?: number): string
   // 读 memory_summary.md（sanitize 过滤：注入命中→整体跳过并 audit）→ redact → fitContext 裁剪（默认 1500）；
   // 若无 summary：返回简短指引（"尚未整合记忆，可运行 memcurio curate --execute"）。
 export function renderReadPathInstructions(root: string): string
-  // 与 summary 拼接用的指引文本：说明 MEMORY.md 位置、如何 grep、引用规则、验证规则（改编自 codex read_path.md 精简版）。
+  // 完整 read_path（改编自 codex read_path.md）：
+  // 决策边界（何时跳过/何时用）→ 快速检索流程与预算（≤4-6 步）→ verify 防漂移指引
+  // → <memcurio-citation> 引用块输出要求（遥测输入）→ 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
 export function renderBaselineSection(root: string, maxTokens?: number): string
   // AGENTS.md 注入块（复用现有 START/END marker 机制）：untrusted 声明 + memory_summary 内容 + MEMORY.md 路径 + MCP 工具列表。
 export function updateAgentsMd(workdir: string, section: string): void     // 保留现有实现（从 baseline.ts 迁移）
@@ -337,13 +354,12 @@ export interface Config {
 `mdStore.ts`、`prune.ts`、`curate.ts`、`reflect.ts`、`retriever.ts`、`safeSearch.ts`、`select.ts`、`transfer.ts`。
 （`curate.ts` 的 HttpProvider JSON 解析逻辑并入 extract/consolidate；`reflect.ts` 的三级降级链并入 adapters 的 extract/consolidate 通道选择。）
 
-## 5. CLI（25 → 21 具名命令契约）
+## 5. CLI（25 → 20 具名命令契约）
 
 ```
 memcurio init                初始化布局（含 memory workspace 子目录）
 memcurio status              管线状态：stage1 计数（pending/selected/deleted）、ad-hoc notes、最后整合时间、audit 数、pending txn
 memcurio remember <text>     写 ad-hoc remember note（脱敏+注入扫描记审计）；--apply 立即跑 rule 整合
-memcurio forget <text>       写 ad-hoc forget note（文本为子串匹配目标）；--apply 立即跑 rule 整合
 memcurio list                列出 MEMORY.md Task Group 标题 + rollout_summaries + pending notes
 memcurio search <query>      搜索记忆（searchMemory），[--top-k N]
 memcurio prune               选择窗口 dry-run（列出将被剪除的 stage1 + 摘要文件）；--execute 标记 deleted + 跑 rule 整合清理 MEMORY.md
@@ -358,18 +374,17 @@ memcurio export [--output F] stage1 + notes 的 JSONL 备份
 memcurio import <file>       恢复 JSONL（冲突按 rollout_key 跳过）
 memcurio retry-extraction    消费 durable extraction queue（--limit N；--dead 重置 dead-letter）
 memcurio event [--json]      事件投递（sessions 记账）
-memcurio mcp / codex-daemon / codex-plugin / help / --version
-// 删除：pin / revive / compact / index / merge（--ns/--kind 相关 flag 全部移除）
+memcurio mcp / help / --version
+// 删除：pin / revive / compact / index / merge / codex-daemon / codex-plugin（--ns/--kind 相关 flag 全部移除）
 ```
 
 退出码不变：0 成功 / 1 数据错误 / 2 用法错误。
 
-## 6. MCP 工具契约（5 个）
+## 6. MCP 工具契约（4 个）
 
 ```
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
 memory_remember { content }           → ad-hoc remember note（返回 filename）
-memory_forget { text }                → ad-hoc forget note（返回 filename）
 memory_status {}                      → pipeline 状态
 memory_context {}                     → renderMemoryContext + read path 指引（模型自行检索入口）
 ```
@@ -390,14 +405,19 @@ export class MemcurioAdapter {
   sessionCreated(id, workdir, host): Promise<void>          // 记 sessions 表
   messageSeen(id, partId, evidence?): Promise<void>          // 计数 + 有界证据
   transcriptEvidence(id, items): void                      // adapter reader 提供的脱敏证据
-  toolExecuted(id, tool, {filePath?}): Promise<void>        // 计数 + 触碰文件 + 工具证据
+  toolExecuted(id, tool, {filePath?}): Promise<void>        // 计数 + 触碰文件 + 工具证据；仅只读工具（read/grep/rg/glance/list/search/view）触及记忆文件时记使用遥测
   sessionCompacted(id, summary?): Promise<void>             // 存内存 snapshot.summary + 证据
   sessionEnded(id): Promise<{staged: boolean; queued: boolean}> // durable 模式原子入队+结束 sessions
   processPendingExtractions(limit?): Promise<QueueDrainResult[]> // worker drain，非 Hook 请求路径；返回 completed/retry/dead 结果
-  buildStaticContext(workdir, budgetTokens?): Promise<string>  // renderMemoryContext + 指引（用于 SessionStart 注入）
+  maybeConsolidate(): Promise<void>                         // 会话结束后自动 Phase 2（codex 式 startup 链对应物）：
+                                                             // 冷却检查（成功 6h / 失败 1h）→ drain 队列 → 有 pending notes 或
+                                                             // 未 selected 的 pending stage1 则整合（env key ? HttpLoop : Rule）；
+                                                             // best-effort，失败仅 log + 记录退避时间；与手动 curate 由 workspace lease 串行化
+  memoryUsageFromPath(filePath): Promise<void>              // 只读工具读取记忆文件（绝对路径）→ registerMemoryUsage
+  memoryUsageFromCitations(text): Promise<void>             // 解析 <memcurio-citation>（citation_entries: 路径[|note=] + rollout_ids: 裸 key）→ registerMemoryUsage
+  buildStaticContext(workdir, budgetTokens?): Promise<string>  // renderMemoryContext + 完整 read_path 指引（用于 SessionStart 注入）
   buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory top-8 命中拼接（sanitized）
   buildCompactionContext(id, workdir): Promise<string>      // static + dynamic(最近 query? 无则 static)
-  runConsolidationIfDue(workdir): Promise<void>             // 可选：session_end 后若 pending notes/未应用 stage1 存在 → rule 整合（预算内）
   buildReplacePrompt(sessionId, context): string            // 保留（compaction 替换）
 }
 ```
@@ -406,22 +426,18 @@ export class MemcurioAdapter {
 - 事件绑定不变；`session.compacted` → `adapter.sessionCompacted(id, summary)`（不再写 COMPACT.md/reflect）；
 - `session.idle` → durable checkpoint；`session.deleted` → 读取最终 messages、最终 checkpoint + `adapter.sessionEnded(id)`；插件重启后即使未重放 `session.created`，任一带 session id 的事件也会重建 envelope；
 - 移除 reflect 通道；Phase 1 抽取默认走 `HttpExtractProvider`（`MEMCURIO_LLM_*`，无 key 时 durable job 进入不计 attempts 的 `blocked`；配置恢复后重新激活；临时失败按 lease/backoff 重试）；idle/删会话前拉取最终 messages，覆盖流式 part 更新；
-- `experimental.session.compacting` → `adapter.buildCompactionContext`（同现状）。
+- `experimental.session.compacting` → `adapter.buildCompactionContext`（同现状）；
+- idle/compacted/deleted 的 messages snapshot 后解析 `<memcurio-citation>` 块 → `memoryUsageFromCitations`；
+- `session.deleted` 后 `adapter.maybeConsolidate()`（自动 Phase 2，detached）。
 
-### codex/daemon.ts + hook.ts（改）
-- SessionStart → `sessionCreated` + `buildStaticContext` 注入（同现状）；
-- UserPromptSubmit → `messageSeen` + `buildDynamicContext`（search 后端）；
-- PostCompact → `sessionCompacted`；
-- Stop/SessionEnd → EvidenceSnapshot 入 durable queue；worker 再触发 `stageSession`，用 `codexExecExtract` 通道或 HTTP；
-- `codexExecReflect` 重命名为 `codexExecExtract`（同 spawn 结构，prompt = buildExtractPrompt，解析走 parseExtractReply；环境变量 `MEMCURIO_CODEX_REFLECT=0` 仍禁用）；
-- hook.ts 事件注册列表不变（7 事件）。
+> codex 适配器（daemon/hook/spool/transcript/plugin 生成）已整体移除：codex 用户直接使用 codex 原生 memory 机制，memcurio 不再提供 codex 插件。
 
 ## 8. 测试契约
 
 重写/新增（bun test，`MEMCURIO_ROOT` 指向临时目录）：
 - workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + Loop 用 mock chat）/ search.test.ts / inject.test.ts
 - db.test.ts（v8/v9→v10 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation/purge.test.ts、config.test.ts、paths.test.ts、sanitize/budget/transaction/events/ids/llm 保持
-- cli.test.ts（全部新命令 + exit codes + i18n）、mcp.test.ts（5 工具）、adapters.test.ts（engine 用 FakeExtractProvider 断言 direct/durable queue 与证据）、codex.test.ts（socket 事件→queue、transcript reader、codexExecExtract 端到端）、opencode.test.ts（idle/deleted queue 与消息证据）、fixes.test.ts（repair/doctor 新语义）
+- cli.test.ts（全部新命令 + exit codes + i18n）、mcp.test.ts（4 工具）、adapters.test.ts（engine 用 FakeExtractProvider 断言 direct/durable queue 与证据、maybeConsolidate 自动整合）、opencode.test.ts（idle/deleted queue 与消息证据）、fixes.test.ts（repair/doctor 新语义）
 - 删除：mdStore/retriever/safeSearch/prune/curate/compact/transfer/baseline/select 相关测试
 
 ## 9. 验收标准

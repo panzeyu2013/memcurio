@@ -11,7 +11,7 @@
 | 核心单元测试与静态质量 | ✅ Green | 346 tests / 1101 assertions / 24 files、typecheck、lint、clean build、pack allowlist（71 文件 + dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
-| Codex 真实集成 | 🟡 本地 smoke 通过 | 0.147.0 marketplace 安装、Hook/daemon 生命周期；真实模型、信任策略、重启恢复未验收 |
+| Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle；真实消息证据、compaction、重启恢复未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
@@ -22,8 +22,7 @@
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
 | Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
-| MCP stdio | tested locally | 五个工具（search/remember/forget/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
-| Codex adapter/plugin | experimental | 0.147.0 marketplace 安装、Hook/daemon SessionStart/Stop/SessionEnd、fake CLI、transcript reader、durable queue、spool 重放去重、陈旧 checkpoint 跳过 | 动态 prompt/transcript、真实模型、信任策略、重启恢复、多进程 E2E |
+| MCP stdio | tested locally | 四个工具（search/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
 | OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、重启恢复 |
 
 ## 3. 已完成
@@ -40,18 +39,15 @@
 - [x] 资源上限：消息/角色/工具/文件缓存、LLM 响应、workspace 文件/数量、raw 投影、audit 行数、envelope 大小、spool 容量
 - [x] 修复：`atomicWrite` 权限保留、workspace 符号链接逃逸、pid 复用锁永久卡死
 
-### 3.2 Codex / OpenCode 集成
+### 3.2 OpenCode 集成（codex 适配器已移除）
 
-- [x] Codex 插件结构符合当前官方规范（`.codex-plugin/plugin.json` + `hooks/hooks.json` + `.mcp.json` + TOML fallback），MCP 自包含 bundle（删除源 dist 后可启动）
-- [x] 子进程递归防护：`codex exec --disable hooks`，fake CLI 断言
 - [x] SessionEnd 原子 spool → daemon drain → provider-scoped SQLite queue；Hook 快速返回
 - [x] 队列语义：claim-token fencing、租约续期、指数退避、dead-letter、blocked 不消耗 attempts、terminal retention
 - [x] spool 重放去重（按 host+session+source_event 查活 job；dead job 保留重试）
 - [x] 陈旧 checkpoint 跳过（claim 时被更新 idle/session_end 取代的 job 直接完成，不耗 attempts）
-- [x] root 级单实例锁、token 鉴权、Unix socket 回归
 - [x] OpenCode `session.idle` checkpoint、`session.deleted` 最终清理、重启续接重建 envelope、最终 messages 快照
 - [x] Evidence Snapshot：有界/脱敏/内容哈希/注入标记；transcript 尾部读取（2MiB/256 行）
-- [x] 真实本地 smoke（Codex 0.147.0 / OpenCode 1.18.13）见 §6 记录
+- [x] 真实本地 smoke（OpenCode 1.18.13）见 §6 记录
 
 ### 3.3 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -74,11 +70,11 @@
 
 ## 4. 待办（Release Gate R1）
 
-> 只有以下全部满足，才可将 Codex/OpenCode 从 experimental 提升为 tested 并发布"自动记忆闭环"。
+> 只有以下全部满足，才可将 OpenCode 从 experimental 提升为 tested 并发布"自动记忆闭环"。
 
-- [ ] **真实 Harness E2E**：Codex/OpenCode 受支持版本完整用户旅程（安装/发现/信任、SessionStart/compact/SessionEnd、daemon 中断与恢复、子提取 Hook 禁用、实际对话证据进入 stage1、手动 curate 进入长期记忆），留存 verification record；`tests/e2e/` 可重复脚本
-- [ ] **跨进程故障注入**：Hook 超时、daemon 停止/重启、worker 恢复、SIGKILL、重复事件均不丢任务、不重复落库；多进程并发压力与真实断电/文件系统语义验证
-- [ ] **真实对话证据**：Codex/OpenCode 都能采集有界、脱敏、可追溯的实际对话证据（transcript 格式质量验证）
+- [ ] **真实 Harness E2E**：OpenCode 受支持版本完整用户旅程（安装/发现/信任、SessionStart/compact/SessionEnd、插件中断与恢复、实际对话证据进入 stage1、自动 curate 进入长期记忆），留存 verification record；`tests/e2e/` 可重复脚本
+- [ ] **跨进程故障注入**：插件超时、worker 恢复、SIGKILL、重复事件均不丢任务、不重复落库；多进程并发压力与真实断电/文件系统语义验证
+- [ ] **真实对话证据**：OpenCode 采集有界、脱敏、可追溯的实际对话证据（transcript 格式质量验证）
 - [ ] **真实模型质量门槛**：Phase 5 评测（extraction/consolidation 分项评分），指标达到经批准门槛（提取 precision ≥0.90、false-memory ≤0.01、Recall@5 ≥0.80、pinned 100%、leakage 0、injection 0）
 - [ ] **远端备份/retention 策略**：SQLite/Markdown source-of-truth 与备份恢复规范、远端保留策略文档化并测试
 - [ ] **正式审核决策**：见 §5 开放决策，审核通过后本文拆分为正式路线
@@ -107,22 +103,23 @@ bun run pack:check
 
 ### 6.2 最新结果（2026-08-11，第二轮修复后）
 
-- `bun test`：346 pass / 1101 expect / 24 files / 0 failed
+- `bun test`：311 pass / 973 expect / 23 files / 0 failed（codex 适配器与测试已移除；含自动整合冷却、遥测只读门、citation 行号剥离、孤儿 note 采纳、保留清理语义、扩展资源契约测试）
 - `bun test --coverage`：lines 91.80%，functions 87.36%
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：71 文件，dist 干净且预期产物齐全
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
-- Codex 插件"删除源 dist 后从迁移插件根启动 MCP"自包含回归通过
 
 ### 6.3 环境（真实 Harness 本地 smoke）
 
 | 组件 | 版本 | 已验证 |
 |---|---|---|
 | Bun | 1.3.14 | 构建、bundle、脚本、Unix socket smoke |
-| Codex CLI | 0.147.0 | marketplace 发现/安装、Hook/daemon SessionStart/Stop/SessionEnd、spool→durable queue 连通 |
+| Codex CLI | 0.147.0 | 已移除适配器（codex 使用原生 memory）；历史 smoke 记录保留于 git 历史 |
+
+smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
 | OpenCode | 1.18.13 | 全局插件目录加载、空 session create/delete、`session_end` queue completed |
 
-smoke 注意事项：须使用隔离 `CODEX_HOME` / `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
+smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
 
 ## 7. 参考文档
 
@@ -130,7 +127,6 @@ smoke 注意事项：须使用隔离 `CODEX_HOME` / `HOME` / `XDG_*` 与临时 `
 |---|---|
 | [docs/architecture.md](architecture.md) | v2 分层架构、存储布局、数据流 |
 | [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 实现契约（数据格式、模块接口、schema v10） |
-| [docs/integration-codex.md](integration-codex.md) | Codex 接入、事件映射、已知限制 |
 | [docs/integration-opencode.md](integration-opencode.md) | OpenCode 接入、事件映射、已知限制 |
 | [README.md](../README.md) | 英文用户入口与支持矩阵 |
 | [docs/README_cn.md](README_cn.md) | 中文用户入口 |

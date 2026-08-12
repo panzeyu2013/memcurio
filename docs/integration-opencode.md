@@ -62,6 +62,6 @@ memcurio baseline .           # 在项目根目录生成/更新 AGENTS.md 记忆
 
 ```
 opencode ── 插件（dist 单文件）── 进程内 import（打包时内联）── 核心引擎
-opencode ── MCP server（stdio）── memory_search / remember / forget / status
+opencode ── MCP server（stdio）── memory_search / remember / status / context
 项目 AGENTS.md（memcurio baseline 注入）── 静态通道兜底
 ```
