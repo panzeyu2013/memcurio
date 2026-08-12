@@ -101,8 +101,11 @@ stageSetUsage(key: string): void                           // usage_count+1, las
 stageGet(key: string): Stage1OutputRow | undefined
 noteAdd(n: AdHocNote): void; noteList(): AdHocNote[]; noteMarkApplied(ids: string[]): void
 extractionEnqueue(job): { jobId: string; inserted: boolean } // 幂等 checkpoint
-extractionClaim(provider, now?, leaseMs?): ExtractionJobRow | undefined // provider 隔离 + claim token lease
-extractionComplete(jobId, completedAt, claimToken): boolean // fencing 保护
+extractionClaim(provider, now?, leaseMs?): ExtractionJobRow | undefined // provider 隔离 + claim token lease；
+//   被更新 checkpoint 取代的陈旧 idle/stop job 直接标 completed（last_error=superseded，
+//   不消耗 attempts；session_end 可取代 idle；dead job 永不取代），避免每 turn 浪费模型调用
+extractionComplete(jobId, completedAt, claimToken, retentionDays?): boolean // fencing 保护；
+//   retentionDays 默认 30，实际由 pipeline.retentionDays（默认 90）驱动 completed 保留
 extractionFail(jobId, error, maxAttempts, now, claimToken): { status; nextAttemptAt } // fencing 保护
 extractionList(status?): ExtractionJobRow[]
 extractionRequeueDead(jobId?): number
@@ -158,6 +161,8 @@ export function recoverPendingGenerations(root, marker?: GenerationMarker): void
 
 export function purgeRollout(root, rolloutKey, exportPaths?): Promise<PurgeResult | null>
 // hard purge 本地 stage1、稳定 artifact、raw/MEMORY 支持、queue/session/audit 引用；
+// 破坏半径收敛：只删除引用目标 rollout 的 skills（key/artifact/legacy 引用）与
+// 唯一引用其 artifact 的 MEMORY.md 块，mixed/无引用块与无关 skill 保留；
 // 仅对显式指定且格式正确的 JSONL export 做 scrub，远端/未列出的备份不在本地权限范围。
 ```
 
@@ -166,7 +171,9 @@ export function purgeRollout(root, rolloutKey, exportPaths?): Promise<PurgeResul
 ```ts
 export interface AdHocNote { id: string; filename: string; kind: "remember"|"forget"|"update"; content: string; createdAt: string; applied: boolean }
 export function addAdHocNote(root: string, content: string, kind?: AdHocNote["kind"]): AdHocNote
-  // 内容先 redactSecrets；文件名 <ts>-<slug>.md（slug 取自内容前 12 词，非法字符→-）；
+  // 内容先 redactSecrets；注入模式内容在入口直接拒绝（审计 warn.promptware 后抛错，
+  // 不写文件不入库，与 import 策略一致，避免整合阶段被卡死）；
+  // 文件名 <ts>-<slug>.md（slug 取自内容前 12 词，非法字符→-）；
   // 文件写入 extensions/ad_hoc/notes/ + DB 行 + audit("adhoc.note", kind, filename)
 export function listAdHocNotes(root: string): AdHocNote[]                    // DB 行，created_at ASC
 export function pendingAdHocNotes(root: string): AdHocNote[]

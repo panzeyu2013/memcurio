@@ -32,7 +32,7 @@ The design deliberately favors human ownership and low infrastructure cost:
 - Harness differences stay in adapters; the core engine remains harness- and language-agnostic.
 - Destructive operations default to dry-run and all writes are protected by sanitization, locking, atomic writes, and audit records.
 
-The current product direction and competitor review are maintained in [the repository review](docs/review/2026-08-11-repository-review.md).
+The product direction, release gates, and the consolidated progress/todo tracker are maintained in [docs/todo.md](docs/todo.md).
 
 ## Installation
 
@@ -136,8 +136,7 @@ memcurio --version            Print version
 | [docs/integration-opencode.md](docs/integration-opencode.md) | opencode plugin integration |
 | [docs/integration-codex.md](docs/integration-codex.md) | codex adapter integration contract, 0.147.0 local smoke and remaining limitations |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
-| [docs/review/2026-08-11-repository-review.md](docs/review/2026-08-11-repository-review.md) | Current review, competitor comparison, and pending roadmap |
-| [docs/verification/2026-08-11-harness-smoke.md](docs/verification/2026-08-11-harness-smoke.md) | Reproducible Codex/OpenCode local smoke evidence and remaining external gates |
+| [docs/todo.md](docs/todo.md) | Consolidated progress/todo tracker: support matrix, completed work, Release Gate R1, open decisions, verification records |
 
 ## Development
 

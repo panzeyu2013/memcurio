@@ -17,7 +17,7 @@ bun link           # 全局可用 memcurio 命令
 # 1. 初始化（数据在 ~/.memcurio，可用 MEMCURIO_ROOT 覆盖）
 bun run src/cli/index.ts init
 
-# 2. 写入记忆（写入即脱敏密钥、审计注入模式）
+# 2. 写入记忆（写入即脱敏密钥；注入模式内容直接拒绝并记审计）
 memcurio remember "项目 A 使用 SQLite FTS5 trigram 做检索"
 memcurio remember "用户偏好简洁回答"
 
@@ -59,8 +59,7 @@ memcurio audit            # 全部变更留痕
 | `docs/memory-pipeline-v2.md` | v2 记忆管线契约（模块职责、数据格式、行为规则） |
 | `docs/integration-opencode.md` | opencode 插件接入 |
 | `docs/integration-codex.md` | codex 适配器接入契约、已完成的 0.147.0 smoke 与剩余限制 |
-| `docs/review/2026-08-11-repository-review.md` | 当前仓库综合评审、竞品比较和待审核发展方向 |
-| `docs/verification/2026-08-11-harness-smoke.md` | Codex/OpenCode 本地真实 smoke 记录与剩余验收门槛 |
+| `docs/todo.md` | 进度与待办跟踪：支持矩阵、已完成工作、Release Gate R1、开放决策、验证记录 |
 
 ## 开发
 

@@ -66,7 +66,7 @@ src/
 │   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（不变）
 │   ├── transaction.ts  原子写 + 文件锁 + 事务日志（不变）
 │   ├── generation.ts   workspace + baseline generation manifest、提交标记和故障恢复
-│   ├── purge.ts        本地 rollout hard purge 与显式 JSONL export scrub
+│   ├── purge.ts        本地 rollout hard purge（只删引用目标的 skills/块）与显式 JSONL export scrub
 │   ├── workspace.ts    工作区读写/快照/diff/baseline（MEMORY_DOCS / snapshot / diffTexts / saveBaseline）
 │   ├── budget.ts       token 估算 + 裁剪（不变）
 │   └── config.ts       config.json（budget + pipeline 配置）

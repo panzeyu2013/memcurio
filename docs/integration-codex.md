@@ -1,6 +1,6 @@
 # codex 适配器（M4）
 
-> 当前状态：**实验性 / NO-GO for release**。Codex 0.147.0 已在隔离环境完成 marketplace 发现/安装、生成插件缓存校验、SessionStart、Stop、SessionEnd Hook/daemon smoke；真实模型抽取、长会话、多进程故障恢复和生产信任策略仍待独立验收。记录见 [Harness smoke](verification/2026-08-11-harness-smoke.md)。
+> 当前状态：**实验性 / NO-GO for release**。Codex 0.147.0 已在隔离环境完成 marketplace 发现/安装、生成插件缓存校验、SessionStart、Stop、SessionEnd Hook/daemon smoke；真实模型抽取、长会话、多进程故障恢复和生产信任策略仍待独立验收。进度跟踪见 [docs/todo.md](todo.md)。
 > 生成工具：`memcurio codex-plugin [out-dir]`；daemon：`memcurio codex-daemon`。
 
 ## 1. 架构：1 daemon + N 薄壳（规避 hook 冷启动）
