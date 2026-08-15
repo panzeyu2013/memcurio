@@ -1,0 +1,8 @@
+- insert:
+    - id: memcurio
+      name: '@memcurio/dsh-plugin'
+      inject: [tools, llm]
+      config:
+        scope: workspace
+        injectContext: true
+        registerTools: true

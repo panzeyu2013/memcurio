@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib",
+    "noEmit": false,
+    "baseUrl": ".",
+    "paths": {
+      "memcurio/integration": ["../../dist/integration.d.ts"]
+    }
+  },
+  "include": ["src"]
+}

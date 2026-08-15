@@ -43,17 +43,23 @@
     "./cli": {
       "types": "./dist/cli/index.d.ts",
       "import": "./dist/cli/index.js"
+    },
+    "./integration": {
+      "types": "./dist/integration.d.ts",
+      "import": "./dist/integration.js"
     }
   },
   "bin": {
     "memcurio": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "bun run scripts/clean-dist.ts && tsc && bun run scripts/chmod-cli.ts",
+    "build": "bun run scripts/clean-dist.ts && tsc && bun run scripts/chmod-cli.ts && bun run build:dsh",
+    "build:dsh": "tsc -p packages/dsh-plugin/tsconfig.json",
     "prepare": "node scripts/prepare.mjs",
     "test": "bun test",
-    "lint": "biome lint src tests scripts",
-    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "lint": "biome lint src tests scripts packages/dsh-plugin/src packages/dsh-plugin/tests",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && bun run typecheck:dsh",
+    "typecheck:dsh": "tsc --noEmit -p packages/dsh-plugin/tsconfig.json",
     "dev": "bun run src/cli/index.ts",
     "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts",
     "pack:check": "bun run build && bun run bundle:plugin && bun run scripts/pack-check.ts",

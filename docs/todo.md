@@ -2,17 +2,18 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-08-13（第十一轮：第二轮全量扫描——clip-then-scan 注入漏检回归修复（先扫原文后截断）、purge 降级后 plan 仍抛错（renderRawMemories truncate 模式）、provenance 计划删除集校验（deletedSummaries）、purge 悬空引用收敛（mixed 块剔除已删 citation）、raw_memory 结构标记注入（inBody 守卫+空行块头+无 citation 块跳过三层）、数学希腊/普通希腊同形折叠、双重编码/HTML 实体解码、worker 会话删除顺序竞态、harness 通道回复 2MB 上限、validateTs 严格 ISO、setup 备份/写回 0600、instructions.md 注入跳过；.gitignore `cli` 目录吞噬修复（/cli 锚定）、CI 漂移检查移至 pack:check 后、exports "." types 条件；测试质量修复（cap-8 空转/chat.message 空转/结构标记测试补断言）；第十轮见下）
+> 最近更新：2026-08-15（第十二轮：新增 DeepSeek Harness Cordis 独立包、稳定 `memcurio/integration` 边界、workspace 隔离、原生生命周期/工具/上下文注入与 `ctx.llm` 通道；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 450 tests / 1515 assertions / 26 files、typecheck、lint、clean build、pack allowlist（69 文件 + dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 470 tests / 1580 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle、插件启动 backfill（重启恢复）已实现；真实消息证据、compaction、跨进程故障注入未验收 |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 独立包已完成首批实现：workspace 隔离、Cordis 生命周期、上下文注入、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -24,6 +25,7 @@
 | Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
 | MCP stdio | tested locally | 六个工具（search/list/read/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
 | OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
+| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离、公共 integration 读写面、DSH 事件/工具/模型通道静态契约 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc 升级兼容性 |
 
 ## 3. 已完成
 
@@ -55,7 +57,17 @@
 - [x] Evidence Snapshot：有界/脱敏/内容哈希/注入标记；宿主 API 拉取尾部 transcript ≤50 条消息（plugin.ts MESSAGES_LIMIT），证据上限 256 项 / 单 JSON ≤64KB / 单字段 ≤4000 字符（name/path 500）
 - [x] 真实本地 smoke（OpenCode 1.18.13）见 §6 记录
 
-### 3.3 安全与隐私加固（第二轮多 agent 扫描修复）
+### 3.3 DeepSeek Harness 独立包（开发者预览）
+
+- [x] 在同一仓库建立 `packages/dsh-plugin` 独立包；DSH peer dependencies、Cordis patch、构建产物与发布文件不进入核心包运行时依赖
+- [x] 新增 `memcurio/integration` 稳定边界，DSH 包不直接导入 `src/core/*`
+- [x] 默认按绝对 workspace 路径的 SHA-256 摘要隔离存储；显式 `scope: global` 才共享
+- [x] 映射 session created/event/flush/disposed、turn end、compaction 与成功工具遥测；resume seed 恢复消息证据和模型路由
+- [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
+- [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
+- [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
+
+### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
 - [x] 注入 note 入口拒绝（`addAdHocNote` 审计后抛错，不写文件不入库）；rule provider 跳过存量注入 note，整合不再被卡死
 - [x] 注入扫描词表扩充：grep/cat/find/ls/tail/type/more/less/strings 读取动词、API keys/tokens/.env/env vars 措辞；连字符/下划线/百分号编码折叠
@@ -67,7 +79,7 @@
 - [x] 集中 audit 脱敏（CLI/MCP/daemon/worker）、HTTP provider 出站脱敏、错误信息 redact
 - [x] 回归测试：每个修复均有复现旧行为的测试（`tests/fixes.test.ts` 组织）
 
-### 3.4 验证与质量基建
+### 3.5 验证与质量基建
 
 - [x] `evals/fixtures/retrieval.json` + `bun run eval:lexical`：Recall@5=1.00（4/4）、注入拦截 1/1、泄漏检查 5/5（含含秘密行的阳性对照）
 - [x] `scripts/pack-check.ts`：69 文件 allowlist + dist 预期产物反向校验
@@ -109,10 +121,10 @@ bun run pack:check
 
 ### 6.2 最新结果（2026-08-12，第六轮修复后）
 
-- `bun test`：466 pass / 1569 expect / 26 files / 0 failed（第十一轮新增 5 用例：注入尾部拒绝、双重编码/希腊同形、结构标记毒化、mixed 块 citation 收敛、chat.message 正向注入；修复 cap-8 空转测试与 chat.message 空转断言）
+- `bun test`：470 pass / 1580 expect / 28 files / 0 failed（第十二轮新增 public integration 与 DSH workspace 隔离测试；第十一轮安全回归保持通过）
 - `bun test --coverage`：lines 88.78%，functions 93.78%
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：69 文件，dist 干净且预期产物齐全（含提交产物反向校验）
+- `bun run pack:check`：72 文件，dist 干净且预期产物齐全（含提交产物反向校验）；DSH 子包 dry-run 为 7 文件，双 tarball 离线解包后 Node 入口导入通过
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）

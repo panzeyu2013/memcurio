@@ -92,6 +92,7 @@ memcurio status
 | Harness | How it connects | Details |
 |---|---|---|
 | **opencode** | Experimental npm plugin | `memcurio setup --apply --source=github` (or `opencode plugin add github:panzeyu2013/memcurio`) writes `"plugin": ["github:panzeyu2013/memcurio"]` into `~/.config/opencode/opencode.json`; opencode auto-installs it with its built-in Bun into `~/.cache/opencode/node_modules/` (pin a tag with `#v0.1.0` once tags exist; `#main` tracks the latest). Runs the memory pipeline on session lifecycle events, injects static context via `system.transform` and dynamic top-8 hits via `chat.message`, and calls the user's own model through a dedicated tool-less worker session (harness-native channel; HTTP only as fallback); OpenCode 1.18.13 local lifecycle smoke passed; real-harness E2E remains a separate gate; see [docs/integration-opencode.md](docs/integration-opencode.md) |
+| **DeepSeek Harness** | Developer-preview Cordis package | `packages/dsh-plugin` contains an independently buildable `@memcurio/dsh-plugin`: workspace-isolated stores, native lifecycle capture/context injection, six native tools, and `ctx.llm` worker calls. Install from a local tarball during preview and merge its `cordis.patch.yml`; see [docs/integration-dsh.md](docs/integration-dsh.md) |
 | **Any harness** | Baseline + MCP stdio (host-configured) | `memcurio setup --apply --no-plugin --mcp --source=github` registers the server in opencode; for other clients use `memcurio mcp` (after `npm install -g github:panzeyu2013/memcurio`) in the client's MCP config (`.mcp.json` / `claude_desktop_config.json` / `codex mcp add memcurio`); no automatic session extraction is promised |
 
 ## CLI reference
@@ -190,6 +191,7 @@ The MCP server (`memcurio mcp`) exposes `memory_search`, `memory_list`, `memory_
 | [docs/architecture.md](docs/architecture.md) | Current architecture (layers / data flow / module map / storage layout / milestones) |
 | [docs/memory-pipeline-v2.md](docs/memory-pipeline-v2.md) | v2 pipeline contract: module responsibilities, exports, formats, behavior rules |
 | [docs/installation.md](docs/installation.md) | Installation walkthrough: prerequisites, scenarios, `setup` reference, verification, MCP config per harness, upgrade/rollback, FAQ |
+| [docs/integration-dsh.md](docs/integration-dsh.md) | DeepSeek Harness developer-preview package, Cordis patch, isolation model, and validation boundary |
 | [docs/integration-opencode.md](docs/integration-opencode.md) | opencode plugin integration |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
 | [docs/todo.md](docs/todo.md) | Consolidated progress/todo tracker: support matrix, completed work, Release Gate R1, open decisions, verification records |

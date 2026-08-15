@@ -14,7 +14,7 @@ This document defines the contribution guidelines for memcurio. All commits, rev
 - TypeScript strict mode; `tsc --noEmit` must pass with zero errors; **no `any`** (enforced by `bun run lint`, rule `noExplicitAny`; if a relaxation is truly needed, use an explicit type assertion and explain why).
 - **No comments** (unless explaining security/concurrency semantics that are not self-evident); prefer self-documenting names over comments.
 - ESM; all local imports must use the `.js` extension; single-responsibility modules; no cross-layer imports (CLI may call core/adapters/mcp, core must not depend on upper layers).
-- After adding files or changing core paths, run: `bun test` (all green) + `bun run typecheck` (covers src/tests/scripts) + `bun run lint` (biome, zero diagnostics) + `bun run build` + `bun run bundle:plugin`.
+- After adding files or changing core paths, run: `bun test` (all green) + `bun run typecheck` (covers src/tests/scripts and the DSH package) + `bun run lint` (biome, zero diagnostics) + `bun run build` + `bun run bundle:plugin`.
 - Biome is lint-only in this repo (formatter disabled — the codebase uses a compact single-line style); do not run `biome format`, and keep that style in new code.
 - Concurrency safety: all md writes go through the workspace lock + atomic write helpers (`withFileLock`/`atomicWrite`, `src/core/transaction.ts`) and SQLite `withTransaction`; never bypass `withTransaction`.
 - Transaction journal (`transactions.jsonl`, `src/core/transaction.ts`) covers CLI-level destructive operations only. Core write paths are protected by the SQLite `withTransaction` boundary plus the generation manifest protocol (`src/core/generation.ts`): cross-file Markdown + baseline commits are recoverable to "complete old or complete new" from the manifest, and `repair`/`recoverPendingGenerations` arbitrate. Do not add new core write paths that bypass both mechanisms.
@@ -35,7 +35,7 @@ This document defines the contribution guidelines for memcurio. All commits, rev
   - `scope`: `core` / `mcp` / `cli` / `adapter` / `docs` / `test`, etc.
 - Example: `fix(core): clip oversized rollout summaries so readers never wedge`
 - One commit does one thing; no unrelated files, secrets, or debug artifacts.
-- Before committing, self-check with `git status` / `git diff`; `.gitignore` already excludes `node_modules/ .memcurio/ .env` (note: `dist/` IS committed — build artifacts are the git-install distribution medium; keep them in sync with source, CI diffs them).
+- Before committing, self-check with `git status` / `git diff`; `.gitignore` already excludes `node_modules/ .memcurio/ .env` (note: `dist/` and `packages/dsh-plugin/lib/` ARE committed build artifacts; keep them in sync with source, CI diffs them).
 
 ## 5. Review guidelines
 

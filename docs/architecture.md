@@ -50,6 +50,7 @@ Harness 层          opencode / pi / cli / mcp（或其他任何 harness）
 
 ```
 src/
+├── integration.ts      稳定的宿主集成边界（生命周期引擎 + 6 个记忆操作；独立适配包不穿透 core 内部路径）
 ├── core/
 │   ├── adhoc.ts        ad-hoc notes（add/list/pending/markApplied + 脱敏）
 │   ├── consolidate.ts  Phase 2 整合（planConsolidation / syncArtifacts / Rule + LlmLoop provider / runConsolidation）
@@ -85,6 +86,8 @@ docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档
 └── integration-opencode.md opencode 接入说明
+packages/
+└── dsh-plugin/             DeepSeek Harness Cordis 独立包（生命周期、上下文注入、原生工具、ctx.llm 通道）
 ```
 
 ## 4. 数据流
@@ -92,7 +95,7 @@ docs/
 ### 写路径
 
 ```
-session 事件（host-specific；OpenCode idle/deleted）
+session 事件（host-specific；OpenCode idle/deleted 或 DSH session/event + turn/end）
   → 适配器组装有界、脱敏 EvidenceSnapshot（消息/工具/文件/压缩摘要）
   → SQLite extraction_jobs（幂等键 + lease + retry/dead-letter）
   → worker 执行 Phase 1 抽取：模型判断 no-op 门 → stage1_outputs（raw_memory / rollout_summary / slug）
