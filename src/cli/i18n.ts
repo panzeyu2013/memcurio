@@ -36,6 +36,7 @@ const zh: Record<string, Entry> = {
   retry-extraction    消费本地提取队列（可用 --limit N、--dead 重置死信）
   event [--json]      投递统一事件
   mcp                 启动 MCP server（stdio）
+  setup               配置 harness 集成（opencode 插件 / MCP）[--apply] [--project] [--mcp] [--source npm|github|local]
   help [cmd]          命令帮助
 `,
 
@@ -54,9 +55,10 @@ const zh: Record<string, Entry> = {
   "help.audit": "memcurio audit [--limit N]\n  最近审计记录",
   "help.export": "memcurio export [--output FILE]\n  导出 stage1 输出与 ad-hoc notes 的 JSONL（默认 stdout）",
   "help.import": "memcurio import <file.jsonl>\n  导入 JSONL 备份（stage1 按 rollout_key 去重；notes 按 id 去重并恢复 note 文件）",
-  "help.retry-extraction": "memcurio retry-extraction [--limit N] [--dead]\n  使用当前 HTTP provider 消费 durable extraction queue；--dead 将 dead-letter 重置为 pending 后重试",
+  "help.retry-extraction": "memcurio retry-extraction [--limit N] [--dead] [--provider NAME]\n  消费 durable extraction queue（默认 HTTP provider）；--dead 将 dead-letter 重置为 pending 后重试；\n  --provider 指定队列命名空间（opencode 插件入队的 job provider 为 opencode，CLI 默认 http 不会认领）",
   "help.event": "memcurio event [--json '{...}']\n  投递统一事件（stdin 或 --json），记录 sessions/审计",
-  "help.mcp": "memcurio mcp\n  启动 MCP server（stdio）：memory_search / memory_remember / memory_status / memory_context",
+  "help.mcp": "memcurio mcp\n  启动 MCP server（stdio）：memory_search / memory_list / memory_read / memory_remember / memory_status / memory_context",
+  "help.setup": "memcurio setup [--apply] [--project] [--mcp] [--no-plugin] [--source npm|github|local] [--mcp-command '<json数组>']\n  配置 harness 集成。默认：全局 opencode 配置写入插件（npm 源）。\n  --apply 实际写盘（默认干跑预览）；--project 写项目级 opencode.json；\n  --mcp 同时注册 MCP server（npm 源用 npx -y memcurio@latest mcp，github 源用 memcurio mcp，local 源用 node dist/cli）；\n  --source github 用 GitHub 分发（插件 spec + MCP 走 PATH 命令），local 用当前源码目录；--mcp-command 自定义 MCP 命令",
   "help.help": "memcurio help [cmd]\n  命令帮助",
 
   "init.done": (r: string) => `已初始化 ${r}`,
@@ -144,6 +146,23 @@ const zh: Record<string, Entry> = {
   "import.conflict": (k: string) => `跳过（已存在）: ${k}`,
   "extract.retryDone": (n: string, s: string, r: string, d: string, b: string, q: string) => `提取队列处理 ${n} 个：staged=${s} retry=${r} dead=${d} blocked=${b} requeued=${q}`,
 
+  "setup.scopeGlobal": "全局（~/.config/opencode/opencode.json）",
+  "setup.scopeProject": "项目（./opencode.json）",
+  "setup.planPlugin": (s: string) => `opencode 插件: ${s}`,
+  "setup.planMcp": (c: string) => `MCP server: ${c}`,
+  "setup.dryRunHeader": "setup 计划（干跑；--apply 写盘）:",
+  "setup.dryRunHint": "执行 memcurio setup --apply 写盘（先备份原文件为 .memcurio.bak）",
+  "setup.applied": "已写入",
+  "setup.noop": "无需改动",
+  "setup.invalidJson": (f: string) => `配置不是合法 JSON: ${f}（请手工修复后重试）`,
+  "setup.localMissing": (p: string) => `--source local 需要已构建的产物: ${p}（先运行 npm install && npm run build && npm run bundle:plugin）`,
+  "setup.invalidSource": (v: string) => `无效的 --source: ${v}（可选 npm | github | local）`,
+  "setup.sourceRequiresValue": "--source 需要值（npm | github | local）",
+  "setup.nothingToDo": "--no-plugin 与 --mcp 都未启用时没有可写内容（至少启用其一）",
+  "setup.githubMcpHint": "提示: --source github 时 MCP 命令为 \"memcurio mcp\"——请先用 npm 从仓库安装（npm install -g github:panzeyu2013/memcurio）或把 memcurio 放入 PATH，或改用 --mcp-command '[\"/path/memcurio\",\"mcp\"]' 指定路径",
+  "setup.mcpCommandRequiresValue": "--mcp-command 需要值（JSON 数组如 '[\"/path/memcurio\",\"mcp\"]'，或按空白拆分的字符串）",
+  "setup.invalidMcpCommand": "--mcp-command 值无效（需要 JSON 字符串数组或非空命令）",
+
   "error.prefix": "memcurio: ",
   "help.unknown": (c: string) => `未知命令: ${c}（memcurio help 查看命令列表）`,
   "version": (v: string) => `memcurio ${v}`,
@@ -180,6 +199,7 @@ Commands:
   retry-extraction    Drain the local extraction queue (--limit N, --dead to reset dead-letter jobs)
   event [--json]      Submit a unified event
   mcp                 Start the MCP server (stdio)
+  setup               Configure harness integration (opencode plugin / MCP) [--apply] [--project] [--mcp] [--source npm|github|local]
   help [cmd]          Command help
 `,
 
@@ -198,9 +218,10 @@ Commands:
   "help.audit": "memcurio audit [--limit N]\n  Recent audit records",
   "help.export": "memcurio export [--output FILE]\n  Export stage-1 outputs and ad-hoc notes as JSONL (stdout by default)",
   "help.import": "memcurio import <file.jsonl>\n  Import a JSONL backup (stage-1 deduped by rollout_key; notes deduped by id and files restored)",
-  "help.retry-extraction": "memcurio retry-extraction [--limit N] [--dead]\n  Drain durable extraction jobs with the configured HTTP provider; --dead resets dead-letter jobs before retrying",
+  "help.retry-extraction": "memcurio retry-extraction [--limit N] [--dead] [--provider NAME]\n  Drain durable extraction jobs (HTTP provider by default); --dead resets dead-letter jobs before retrying;\n  --provider selects the queue namespace (jobs enqueued by the opencode plugin carry provider \"opencode\", which the CLI's default \"http\" never claims)",
   "help.event": "memcurio event [--json '{...}']\n  Submit a unified event (stdin or --json), recording sessions/audit",
-  "help.mcp": "memcurio mcp\n  Start the MCP server (stdio): memory_search / memory_remember / memory_status / memory_context",
+  "help.mcp": "memcurio mcp\n  Start the MCP server (stdio): memory_search / memory_list / memory_read / memory_remember / memory_status / memory_context",
+  "help.setup": "memcurio setup [--apply] [--project] [--mcp] [--no-plugin] [--source npm|github|local] [--mcp-command '<json array>']\n  Configure harness integration. Default: write the plugin entry (npm source) into the global opencode config.\n  --apply actually writes (dry-run preview by default); --project targets ./opencode.json;\n  --mcp also registers the MCP server (npm: npx -y memcurio@latest mcp; github: memcurio mcp; local: node dist/cli);\n  --source github uses GitHub distribution (plugin spec + MCP via a PATH command), local uses the current source checkout; --mcp-command overrides the MCP command",
   "help.help": "memcurio help [cmd]\n  Command help",
 
   "init.done": (r: string) => `initialized ${r}`,
@@ -287,6 +308,23 @@ Commands:
   "import.done": (a: string, s: string) => `import done: +${a}, skipped ${s}`,
   "import.conflict": (k: string) => `skipped (already exists): ${k}`,
   "extract.retryDone": (n: string, s: string, r: string, d: string, b: string, q: string) => `processed ${n} extraction job(s): staged=${s} retry=${r} dead=${d} blocked=${b} requeued=${q}`,
+
+  "setup.scopeGlobal": "global (~/.config/opencode/opencode.json)",
+  "setup.scopeProject": "project (./opencode.json)",
+  "setup.planPlugin": (s: string) => `opencode plugin: ${s}`,
+  "setup.planMcp": (c: string) => `MCP server: ${c}`,
+  "setup.dryRunHeader": "setup plan (dry run; --apply writes):",
+  "setup.dryRunHint": "run memcurio setup --apply to write (originals are backed up as .memcurio.bak)",
+  "setup.applied": "wrote",
+  "setup.noop": "no change",
+  "setup.invalidJson": (f: string) => `config is not valid JSON: ${f} (fix it manually and retry)`,
+  "setup.localMissing": (p: string) => `--source local requires a built checkout: ${p} (run npm install && npm run build && npm run bundle:plugin first)`,
+  "setup.invalidSource": (v: string) => `invalid --source: ${v} (choose npm | github | local)`,
+  "setup.sourceRequiresValue": "--source requires a value (npm | github | local)",
+  "setup.nothingToDo": "nothing to write when neither --no-plugin nor --mcp leaves anything enabled",
+  "setup.githubMcpHint": "hint: with --source github the MCP command is \"memcurio mcp\" — install it from the repo first (npm install -g github:panzeyu2013/memcurio) or put memcurio on PATH, or use --mcp-command '[\"/path/memcurio\",\"mcp\"]' to point at a specific path",
+  "setup.mcpCommandRequiresValue": "--mcp-command requires a value (JSON array like '[\"/path/memcurio\",\"mcp\"]', or a whitespace-split string)",
+  "setup.invalidMcpCommand": "invalid --mcp-command value (need a JSON string array or a non-empty command)",
 
   "error.prefix": "memcurio: ",
   "help.unknown": (c: string) => `unknown command: ${c} (memcurio help for the command list)`,

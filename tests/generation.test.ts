@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
   applyGeneration,
+  inspectGenerationManifests,
   prepareGeneration,
   recoverPendingGenerations,
 } from "../src/core/generation.js";
@@ -94,5 +95,53 @@ describe("generation commit protocol", () => {
     expect(recoverPendingGenerations(root, generation.id)).toEqual([`${generation.id}:forward`]);
     expect(readWorkspaceText(root, "MEMORY.md")).toBe("new\n");
     expect(readdirSync(join(root, "state", "consolidation"))).toEqual([]);
+  });
+
+  test("a malformed target does not wedge recovery of later generations", () => {
+    root = mkdtempSync(join("/tmp", "memcurio-generation-"));
+    ensureLayout(root);
+    const good = prepareGeneration(
+      root,
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      { "MEMORY.md": snapshot(false) },
+      { "MEMORY.md": snapshot(true, "new\n") },
+      {},
+      {},
+    );
+    const badId = "ffffffffffffffffffffffffffffffff";
+    const badDir = join(root, "state", "consolidation", badId);
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(
+      join(badDir, "manifest.json"),
+      JSON.stringify({
+        version: 1,
+        id: badId,
+        phase: "prepared",
+        createdAt: "2026-08-10T00:00:00.000Z",
+        // Structurally legal JSON, but the target is malformed (no before/after).
+        targets: [{ kind: "workspace", rel: "MEMORY.md" }],
+      }),
+    );
+    // The malformed manifest is rejected by structural validation, so it
+    // never enters the recovery loop (nor wedges it): the good generation is
+    // still rolled back, and the malformed one stays behind for doctor/repair.
+    const recovered = recoverPendingGenerations(root);
+    expect(recovered.some((item) => item.startsWith(`${good.id}:`))).toBe(true);
+    expect(recovered.some((item) => item.startsWith(`${badId}:`))).toBe(false);
+    // The good generation is gone (recovered), the malformed one still present
+    // so doctor/repair can surface it.
+    expect(existsSync(join(root, "state", "consolidation", good.id))).toBe(false);
+    expect(existsSync(badDir)).toBe(true);
+  });
+
+  test("a JSON-level malformed manifest is reported as invalid, not wedging", () => {
+    root = mkdtempSync(join("/tmp", "memcurio-generation-"));
+    ensureLayout(root);
+    const badId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const badDir = join(root, "state", "consolidation", badId);
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(join(badDir, "manifest.json"), "{ broken");
+    expect(recoverPendingGenerations(root)).toEqual([]);
+    expect(inspectGenerationManifests(root)).toEqual([{ id: badId, phase: "invalid" }]);
   });
 });

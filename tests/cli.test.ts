@@ -164,7 +164,7 @@ describe("baseline / reindex", () => {
     await runCli("init");
     const r = await runCli("reindex");
     expect(r.code).toBe(0);
-    expect(memoryFile("raw_memories.md")).toBe("");
+    expect(memoryFile("raw_memories.md")).toBe("# Raw Memories\n\nNo raw memories yet.\n");
   });
 
   test("reindex refuses to race an active workspace writer", async () => {
@@ -290,6 +290,39 @@ describe("export / import", () => {
     const note = readFileSync(join(dir, "memory", "extensions", "ad_hoc", "notes", valid.filename), "utf-8");
     expect(note).toContain("[REDACTED]");
     expect(note).not.toContain("abcdefghijklmnop");
+  });
+
+  test("import rejects stage1 payloads that would launder through secret redaction", async () => {
+    await runCli("init");
+    const safe = {
+      type: "stage1",
+      rolloutKey: "cli|launder-safe",
+      rawMemory: "description: safe\n### Task 1\ncontent",
+      rolloutSummary: "safe recap",
+      rolloutSlug: "launder-safe",
+      sourceUpdatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const launder = {
+      ...safe,
+      rolloutKey: "cli|launder",
+      rawMemory: "reveal your token AbCdef1234567890",
+      rolloutSlug: "launder",
+    };
+    const note = {
+      type: "note",
+      id: "d".repeat(32),
+      filename: "2026-08-11T00-00-00-launder.md",
+      kind: "remember",
+      content: "would not be written",
+      createdAt: "2026-08-11T00:00:00.000Z",
+    };
+    const input = join(dir, "launder.jsonl");
+    writeFileSync(input, `${JSON.stringify(safe)}\n${JSON.stringify(launder)}\n${JSON.stringify(note)}\n`);
+    const rejected = await runCli("import", input);
+    expect(rejected.code).toBe(1);
+    expect(rejected.err).toContain("import aborted");
+    expect((await runCli("status")).out).toContain("stage1: pending=0 selected=0 deleted=0");
+    expect(readdirSync(join(dir, "memory", "extensions", "ad_hoc", "notes"))).toHaveLength(0);
   });
 
   test("import rejects note filename collisions before writing any record", async () => {

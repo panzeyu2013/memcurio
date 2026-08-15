@@ -1,9 +1,18 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { Index } from "../../core/db.js";
 import { indexDb, rootDir } from "../../core/paths.js";
+import type { AdapterLog, HarnessToolPreset } from "../contract.js";
 import { MemcurioAdapter } from "../shared/engine.js";
+import { WORKER_METADATA_KEY, cleanupStaleWorkers, createOpencodeChannel, type OpencodeSessionClient } from "./channel.js";
 
 const REPLACE_COMPACTION = process.env.MEMCURIO_REPLACE_COMPACTION === "1";
+
+export function shouldSkipInjection(id: string, isWorker: boolean): boolean {
+  if (!id || isWorker) {
+    return true;
+  }
+  return process.env.MEMCURIO_DISABLE_INJECT === "1";
+}
 
 function properties(event: { properties?: unknown }): Record<string, unknown> {
   return (event.properties ?? {}) as Record<string, unknown>;
@@ -169,14 +178,23 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
     queues.set(id, next.catch(() => {}));
     return next;
   };
+  const log: AdapterLog = (level, message, extra) => {
+    void client.app
+      .log({ body: { service: "memcurio", level, message, extra } })
+      .catch(() => {});
+  };
+  const toolPreset: HarnessToolPreset = {
+    readTools: ["read", "grep", "rg", "glob", "ls", "list", "search", "view"],
+    shellTools: ["bash"],
+  };
+  const channel = createOpencodeChannel(client as unknown as OpencodeSessionClient, log);
   const adapter = new MemcurioAdapter({
     durableQueue: true,
     root,
-    log: (level, message, extra) => {
-      void client.app
-        .log({ body: { service: "memcurio", level, message, extra } })
-        .catch(() => {});
-    },
+    host: "opencode",
+    channel,
+    toolPreset,
+    log,
   });
   const report = (err: unknown): void => {
     void client.app
@@ -184,11 +202,36 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
       .catch(() => {});
   };
   // Close this host's session rows left open by a crashed/restarted harness
-  // process (the durable worker drains the same queue at startup).
+  // process (the durable worker drains the same queue at startup). Scoped to
+  // THIS project's workdir: the data root is global (~/.memcurio), and other
+  // opencode instances (one per project) own their own live sessions — closing
+  // those would end live sessions and trigger spurious backfill extraction.
   try {
     const idx = await Index.create(indexDb(root));
     try {
-      idx.closeAllSessions(new Date().toISOString(), "opencode");
+      const orphaned = idx.rawAll<{ session_id: string }>(
+        "SELECT session_id FROM sessions WHERE ended_at IS NULL AND host = 'opencode' AND workdir = ?",
+        [directory],
+      );
+      idx.closeAllSessions(new Date().toISOString(), "opencode", directory);
+      if (orphaned.length > 0) {
+        // A1 crash/lost-session backfill: sessions killed before
+        // idle/deleted never enqueued a durable checkpoint. Re-fetch the
+        // transcript from the host API (best effort; the host may have pruned
+        // it) and enqueue through the normal idempotent queue. Duplicate-safe
+        // by the queue's idempotency key; a second init after the job exists
+        // is a no-op.
+        const evidenceFor = async (sessionId: string): Promise<ReturnType<typeof evidenceFromMessages> | undefined> => {
+          const messages = await fetchMessages(client, sessionId);
+          return messages ? evidenceFromMessages(messages) : undefined;
+        };
+        void adapter
+          .backfillUnprocessedSessions(
+            orphaned.map((r) => r.session_id),
+            evidenceFor,
+          )
+          .catch(report);
+      }
     } finally {
       idx.close();
     }
@@ -198,11 +241,23 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
   // Resume jobs left by a previous plugin process. The call is deliberately
   // detached so plugin initialization never waits for a model/provider.
   void adapter.processPendingExtractions().catch(report);
+  // Detached: drop worker sessions left behind by a crashed harness process.
+  void cleanupStaleWorkers(client as unknown as OpencodeSessionClient, log).catch(report);
   return {
     event: async ({ event }) => {
       const type = event.type;
       const id = sessionIdFor(event);
       if (!id) {
+        return;
+      }
+      if (type === "session.created" || type === "session.updated" || type === "session.deleted") {
+        const info = properties(event).info as { metadata?: Record<string, unknown> } | undefined;
+        if (info?.metadata?.[WORKER_METADATA_KEY] === true) {
+          channel.registerWorker(id);
+          return;
+        }
+      }
+      if (channel.isWorkerSession(id)) {
         return;
       }
       return runSerial(id, async () => {
@@ -260,6 +315,15 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
             if (messages) {
               adapter.messageSnapshot(id, evidenceFromMessages(messages));
               void adapter.memoryUsageFromCitations(citationTextsFromMessages(messages)).catch(report);
+            } else {
+              // The host API may no longer serve the transcript (session
+              // cleaned up before our fetch). Fall back to the bounded
+              // in-memory evidence so the final checkpoint is not an empty
+              // shell that supersedes the richer idle evidence.
+              const memory = adapter.memoryEvidenceSnapshot(id);
+              if (memory.length > 0) {
+                adapter.messageSnapshot(id, memory);
+              }
             }
             await adapter.sessionEnded(id);
             void adapter.processPendingExtractions().catch(report);
@@ -303,7 +367,7 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
     "tool.execute.after": async (input) => {
       try {
         const id = String((input as { sessionID?: string }).sessionID ?? "");
-        if (!id) {
+        if (!id || channel.isWorkerSession(id)) {
           return;
         }
         if (!adapter.state(id)) {
@@ -320,7 +384,15 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
             : typeof (input as { filePath?: string }).filePath === "string"
               ? (input as { filePath?: string }).filePath
               : undefined;
-        await adapter.toolExecuted(id, tool, { filePath });
+        // Pass the raw args fields so the engine can harvest C1 usage
+        // telemetry: args.path for grep/rg/search/list directory reads and
+        // args.command for shell tools (bash/exec) whose reads the model
+        // performed without a filePath.
+        await adapter.toolExecuted(id, tool, {
+          filePath,
+          path: typeof args.path === "string" ? args.path : undefined,
+          command: typeof args.command === "string" ? args.command : undefined,
+        });
         void adapter.processPendingExtractions().catch(report);
       } catch (err) {
         report(err);
@@ -329,6 +401,9 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
     "experimental.session.compacting": async (input, output) => {
       try {
         const id = String((input as { sessionID?: string }).sessionID ?? "");
+        if (channel.isWorkerSession(id)) {
+          return;
+        }
         const context = await adapter.buildCompactionContext(id, directory);
         if (context) {
           if (REPLACE_COMPACTION) {
@@ -336,6 +411,43 @@ export const MemcurioPlugin: Plugin = async ({ directory, client }) => {
           } else {
             output.context.push(context);
           }
+        }
+      } catch (err) {
+        report(err);
+      }
+    },
+    "experimental.chat.system.transform": async (input, output) => {
+      const id = String((input as { sessionID?: string }).sessionID ?? "");
+      if (shouldSkipInjection(id, channel.isWorkerSession(id))) {
+        return;
+      }
+      try {
+        const ctx = await adapter.buildStaticContext(directory);
+        if (ctx) {
+          output.system.push(ctx);
+        }
+      } catch (err) {
+        report(err);
+      }
+    },
+    "chat.message": async (input, output) => {
+      const id = String((input as { sessionID?: string }).sessionID ?? "");
+      if (shouldSkipInjection(id, channel.isWorkerSession(id))) {
+        return;
+      }
+      try {
+        const parts = (output as { parts?: Array<{ type?: string; text?: string }> }).parts ?? [];
+        const text = parts
+          .filter((p) => p.type === "text")
+          .map((p) => p.text ?? "")
+          .join("\n")
+          .trim();
+        if (!text) {
+          return;
+        }
+        const ctx = await adapter.buildDynamicContext(directory, text);
+        if (ctx) {
+          (output as { parts: unknown[] }).parts = [{ type: "text", text: ctx }, ...parts];
         }
       } catch (err) {
         report(err);

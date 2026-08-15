@@ -1,7 +1,15 @@
 node_modules/
-dist/
 .memcurio/
 coverage/
+
+# dist/ is fully committed: git-spec installs (npm install -g
+# github:panzeyu2013/memcurio and opencode's `github:` plugin specs) must work
+# without a build step. CI guards against drift with a fresh-build diff check.
+# A clean build is reproducible with the pinned toolchain (bun 1.3.14 + tsc 5.5).
+# The root `cli` binary is a leftover of the old compile-binary plan; ignore
+# it (root-anchored — a bare `cli` pattern would also swallow src/cli/ and
+# dist/cli/ directories).
+/cli
 
 # Secrets: MEMCURIO_LLM_API_KEY etc. are read from the environment, and a
 # local .env should never be committed.

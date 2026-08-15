@@ -1,25 +1,26 @@
-#!/usr/bin/env bun
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+#!/usr/bin/env node
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { addAdHocNote, pendingAdHocNotes } from "../core/adhoc.js";
+import { LlmExtractProvider } from "../core/extract.js";
 import { loadConfig, pipelineConfig, validateConfig } from "../core/config.js";
 import {
-  HttpLoopConsolidateProvider,
+  LlmLoopConsolidateProvider,
   RuleConsolidateProvider,
   planConsolidation,
   runConsolidation,
   syncArtifacts,
   withWorkspaceWriteLease,
 } from "../core/consolidate.js";
+import { resolveChannel } from "../core/channel.js";
 import { Index } from "../core/db.js";
 import type { AdHocNoteRow, Stage1OutputRow } from "../core/db.js";
 import { makeEnvelope, parseEnvelope, MAX_ENVELOPE_BYTES } from "../core/events.js";
 import type { EventEnvelope } from "../core/events.js";
 import { injectBaseline } from "../core/inject.js";
-import { llmEnv } from "../core/llm.js";
 import { configPath, ensureLayout, indexDb, rootDir, txnLog } from "../core/paths.js";
 import { redactSecrets, sanitizeForInjection } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
@@ -29,6 +30,7 @@ import { deleteAdHocNoteFile, hasWorkspaceChanges, NOTE_FILENAME_RE, noteFilePat
 import { purgeRollout } from "../core/purge.js";
 import { MemcurioAdapter } from "../adapters/shared/engine.js";
 import { runServer } from "../mcp/index.js";
+import { cmdSetup } from "./setup.js";
 import { t } from "./i18n.js";
 
 // exit code convention: 2 = usage errors (unknown command/option, missing
@@ -302,12 +304,12 @@ async function cmdCurate(rest: string[]): Promise<number> {
     console.log(t("curate.dryRun"));
     return 0;
   }
-  const env = llmEnv();
+  const channel = resolveChannel();
   const maxSteps = values["max-steps"] ? positiveInt(values["max-steps"], cfg.maxAgentSteps, 1000, "max-steps") : cfg.maxAgentSteps;
-  const provider = env.apiKey ? new HttpLoopConsolidateProvider(maxSteps) : new RuleConsolidateProvider();
+  const provider = channel ? new LlmLoopConsolidateProvider(maxSteps, channel) : new RuleConsolidateProvider();
   const run = await runConsolidation(root, provider, { execute: true, config: cfg });
   console.log(t("curate.applied", run.message));
-  if (!env.apiKey) {
+  if (!channel) {
     console.log(t("curate.noKeyNote"));
   }
   return 0;
@@ -608,15 +610,20 @@ function validateImportRecord(value: unknown): ValidatedImportRecord | null {
   const record = value as ExportRecord;
   if (record.type === "stage1") {
     const rolloutKey = safeImportScalar(record.rolloutKey, 500, true);
-    const rawMemory = typeof record.rawMemory === "string" ? redactSecrets(record.rawMemory).text.trim() : null;
-    const rolloutSummary = typeof record.rolloutSummary === "string" ? redactSecrets(record.rolloutSummary).text.trim() : null;
-    if (!rolloutKey || rawMemory === null || rolloutSummary === null) {
+    const rawMemoryText = typeof record.rawMemory === "string" ? record.rawMemory : null;
+    const rolloutSummaryText = typeof record.rolloutSummary === "string" ? record.rolloutSummary : null;
+    if (!rolloutKey || rawMemoryText === null || rolloutSummaryText === null) {
       return null;
     }
+    const rawMemory = redactSecrets(rawMemoryText).text.trim();
+    const rolloutSummary = redactSecrets(rolloutSummaryText).text.trim();
     if (rawMemory.length > MAX_IMPORT_TEXT_CHARS || rolloutSummary.length > MAX_IMPORT_TEXT_CHARS) {
       return null;
     }
-    if ((!rawMemory && !rolloutSummary) || !sanitizeForInjection(`${rawMemory}\n${rolloutSummary}`).safe) {
+    if ((!rawMemory && !rolloutSummary) || !sanitizeForInjection(`${rawMemoryText}\n${rolloutSummaryText}`).safe) {
+      // The injection gate must see the RAW pre-redaction fields: scanning
+      // the redacted form would launder payloads like "reveal your token
+      // AbCdef…" whose secret value was already replaced by "[REDACTED]".
       return null;
     }
     const suppliedSlug = record.rolloutSlug === undefined ? "rollout" : safeImportScalar(record.rolloutSlug, 80);
@@ -668,14 +675,15 @@ function validateImportRecord(value: unknown): ValidatedImportRecord | null {
   if (record.type === "note") {
     const id = safeImportScalar(record.id, 128, true);
     const filename = safeImportScalar(record.filename, 128, true);
-    const content = typeof record.content === "string" ? redactSecrets(record.content).text.trim() : null;
+    const contentText = typeof record.content === "string" ? record.content : null;
+    const content = contentText === null ? null : redactSecrets(contentText).text.trim();
     const kind = record.kind;
     if (
       !id || !/^[A-Za-z0-9_-]{1,128}$/.test(id) ||
       !filename || !NOTE_FILENAME_RE.test(filename) ||
       content === null || !content || content.length > MAX_NOTE_CHARS ||
       (kind !== "remember" && kind !== "forget" && kind !== "update") ||
-      !sanitizeForInjection(content).safe
+      (contentText !== null && !sanitizeForInjection(contentText).safe)
     ) {
       return null;
     }
@@ -806,7 +814,11 @@ async function cmdRetryExtraction(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { limit: { type: "string" }, dead: { type: "boolean" } },
+    options: {
+      limit: { type: "string" },
+      dead: { type: "boolean" },
+      provider: { type: "string" },
+    },
   });
   warnExtraArgs("retry-extraction", positionals, 0);
   const limit = positiveInt(values.limit, 8, 100, "limit");
@@ -820,7 +832,16 @@ async function cmdRetryExtraction(rest: string[]): Promise<number> {
       return count;
     });
   }
-  const adapter = new MemcurioAdapter({ durableQueue: true, root: rootDir() });
+  const providerName = typeof values.provider === "string" ? values.provider.trim() : undefined;
+  // Jobs enqueued by the opencode plugin carry provider "opencode"; the CLI
+  // has no harness channel, so its default provider name is "http" and would
+  // silently never claim plugin jobs. --provider lets the operator drain the
+  // plugin queue explicitly (extraction still runs over the HTTP channel).
+  const adapter = new MemcurioAdapter({
+    durableQueue: true,
+    root: rootDir(),
+    extract: providerName ? new LlmExtractProvider(undefined, providerName) : undefined,
+  });
   const results = await adapter.processPendingExtractions(limit);
   const staged = results.filter((result) => result.staged).length;
   const retried = results.filter((result) => result.status === "retry").length;
@@ -905,6 +926,7 @@ const HELP_CMDS = new Set([
   "import",
   "retry-extraction",
   "mcp",
+  "setup",
   "help",
 ]);
 
@@ -988,6 +1010,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdRetryExtraction(rest);
       case "mcp":
         return await cmdMcp();
+      case "setup":
+        return await cmdSetup(rest);
       default:
         console.error(`${t("error.prefix")}${t("help.unknown", cmd)}`);
         return 2;
@@ -1016,7 +1040,13 @@ export async function main(argv: string[]): Promise<number> {
 
 const isMain = (() => {
   try {
-    return pathToFileURL(process.argv[1] ?? "").href === import.meta.url;
+    const argv1 = process.argv[1];
+    if (!argv1) {
+      return false;
+    }
+    // npm bin entries are symlinks; node resolves the main module's realpath
+    // while argv[1] keeps the link path, so compare realpaths.
+    return pathToFileURL(realpathSync(argv1)).href === import.meta.url;
   } catch {
     return false;
   }

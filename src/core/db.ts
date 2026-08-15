@@ -10,9 +10,24 @@ function isBusy(err: unknown): boolean {
   return err instanceof Error && /database is locked|database table is locked|busy/i.test(err.message);
 }
 
+/** Flatten line/column control characters into a space. redactSecrets leaves
+ *  \n, \r and \t intact, so a hand-placed note filename or session id could
+ *  otherwise forge audit log lines and break `memcurio audit` rendering.
+ *  U+2028/U+2029 (line/paragraph separators) and U+0085 (NEL) are legal in
+ *  Linux filenames but split audit CLI output, so they are flattened too. */
+function stripLineControls(text: string): string {
+  return text.replace(/[\t\n\r\u2028\u2029\u0085]+/g, " ");
+}
+
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+
+// Codex CONCURRENCY_LIMIT (8): the global running-jobs cap enforced at claim
+// time. memcurio's per-process drain cap alone would let two plugin processes
+// run 16 extractions concurrently; the SQL-side count in extractionClaim makes
+// the cap global across processes.
+const MAX_RUNNING_EXTRACTIONS = 8;
 
 const BASE = `
 CREATE TABLE IF NOT EXISTS stage1_outputs(
@@ -452,17 +467,19 @@ export class Index {
   /** Selection rules (mirrors codex phase-2 selection), read-only: only
    *  non-deleted rows inside the unused-days window qualify; ranking is
    *  usage_count first, then recency of last_usage (falling back to
-   *  generated_at). Rows inside the window but beyond maxInputs are dropped
-   *  from this batch (not deleted). */
+   *  source_updated_at, codex memories.rs:468-475 — generated_at is not the
+   *  recency authority: a backlogged upsert can carry an ancient
+   *  source_updated_at under a fresh generated_at). Rows inside the window but
+   *  beyond maxInputs are dropped from this batch (not deleted). */
   stageSelectRows(cfg: { maxUnusedDays: number; maxInputs: number }): Stage1OutputRow[] {
     const cutoff = daysAgo(cfg.maxUnusedDays);
     const rows = this.driver.all<Stage1Row>(
       `SELECT * FROM stage1_outputs WHERE status != 'deleted' ORDER BY usage_count DESC,
-        COALESCE(last_usage, generated_at) DESC`,
+        COALESCE(last_usage, source_updated_at) DESC`,
     );
     const active = rows
       .map(rowToStage1)
-      .filter((r) => withinWindow(r.lastUsage ?? r.generatedAt, cutoff));
+      .filter((r) => withinWindow(r.lastUsage ?? r.sourceUpdatedAt, cutoff));
     // Already-consolidated rows remain in raw_memories/artifacts so a later
     // run cannot mistake their omission from a new pending batch for a prune.
     // maxInputs limits only new pending rows; selected rows are retained until
@@ -472,12 +489,25 @@ export class Index {
     return [...retained, ...pending];
   }
 
-  /** Rows that fall outside the unused-days window (candidates for pruning). */
+  /** Rows that fall outside the unused-days window (candidates for pruning).
+   *  Recency falls back to source_updated_at (codex memories.rs:468-475). */
   stageOutsideWindow(maxUnusedDays: number): Stage1OutputRow[] {
     const cutoff = daysAgo(maxUnusedDays);
     return this.stageList().filter(
-      (r) => r.status !== "deleted" && !withinWindow(r.lastUsage ?? r.generatedAt, cutoff),
+      (r) => r.status !== "deleted" && !withinWindow(r.lastUsage ?? r.sourceUpdatedAt, cutoff),
     );
+  }
+
+  /** The set of artifact filenames still referenced by stage1_outputs rows:
+   *  the keep-set for the entry-side rollout-summary orphan sweep (codex
+   *  storage.rs:80 prune_rollout_summaries semantics — files whose row is gone
+   *  are orphans; rows still in the DB are never touched). */
+  stageArtifactFilenames(): string[] {
+    return this.driver
+      .all<{ artifact_filename: string }>(
+        "SELECT artifact_filename FROM stage1_outputs WHERE artifact_filename IS NOT NULL",
+      )
+      .map((r) => r.artifact_filename);
   }
 
   stageMarkSelected(keys: string[]): void {
@@ -502,16 +532,37 @@ export class Index {
    *  AND never selected for Phase 2 (their artifacts and MEMORY.md support
    *  were removed by the pruning consolidation; the rows are dead weight).
    *  Rows that were once consolidated are kept. Batch-capped like codex's
-   *  PRUNE_BATCH_SIZE so one cleanup never stalls the transaction. */
-  stagePruneRetention(batch = 200): number {
-    const rows = this.driver.all<{ rollout_key: string }>(
-      "SELECT rollout_key FROM stage1_outputs WHERE status = 'deleted' AND selected_for_phase2 = 0 LIMIT ?",
-      [batch],
+   *  PRUNE_BATCH_SIZE so one cleanup never stalls the transaction. Rows are
+   *  recycled stalest-first (COALESCE(last_usage, source_updated_at) ASC,
+   *  source_updated_at ASC), matching codex's memories.rs ordering (memories
+   *  alignment ⑯, memories.rs:403-424), so a bounded run always reclaims the
+   *  least recently used rows first.
+   *
+   *  When maxUnusedDays is provided AND > 0, never-selected rows whose
+   *  COALESCE(last_usage, source_updated_at) is older than now - maxUnusedDays
+   *  days are also recycled (age-based retention). When it is omitted or <= 0
+   *  only status='deleted' rows qualify — a 0 default must never wipe pending
+   *  rows. Returns the recycled rows so callers can clean up their artifacts. */
+  stagePruneRetention(batch = 200, maxUnusedDays?: number): { rollout_key: string; artifact_filename: string | null }[] {
+    // Single statement (DELETE ... RETURNING) so the prune is atomic even
+    // outside an explicit transaction: a concurrent commit cannot mark a
+    // row selected between the scan and the delete (cross-process race).
+    // ISO strings compare lexicographically in the same format as
+    // last_usage/source_updated_at (see stageSetUsage).
+    // Guard the cutoff arithmetic: a direct-API caller can pass days ~1e7
+    // whose Date arithmetic overflows toISOString's year range (RangeError).
+    // Clamp to the config contract (36_500d, the config.ts validInteger upper
+    // bound) as defense-in-depth, and require > 0 so a 0/NaN default still
+    // only recycles deleted rows — never pending ones.
+    const safeDays =
+      maxUnusedDays !== undefined && maxUnusedDays > 0 && Number.isFinite(maxUnusedDays)
+        ? Math.min(Math.max(1, maxUnusedDays), 36_500)
+        : undefined;
+    const cutoff = safeDays !== undefined ? new Date(Date.now() - safeDays * 86_400_000).toISOString() : null;
+    return this.driver.all<{ rollout_key: string; artifact_filename: string | null }>(
+      "DELETE FROM stage1_outputs WHERE rollout_key IN (SELECT rollout_key FROM stage1_outputs WHERE selected_for_phase2 = 0 AND (status = 'deleted' OR (? IS NOT NULL AND COALESCE(last_usage, source_updated_at) < ?)) ORDER BY COALESCE(last_usage, source_updated_at) ASC, source_updated_at ASC LIMIT ?) RETURNING rollout_key, artifact_filename",
+      [cutoff, cutoff, batch],
     );
-    for (const row of rows) {
-      this.driver.run("DELETE FROM stage1_outputs WHERE rollout_key = ?", [row.rollout_key]);
-    }
-    return rows.length;
   }
 
   stageSetUsage(key: string): void {
@@ -577,13 +628,25 @@ export class Index {
   /** Close session rows left open by a crashed/terminated process. When `host`
    *  is given, only that host's sessions are closed, so one adapter never
    *  marks another adapter's live sessions as ended. A misspelled host would
-   *  silently close nothing (and leak the crashed sessions), so it is rejected. */
-  closeAllSessions(ts: string, host?: string): void {
+   *  silently close nothing (and leak the crashed sessions), so it is rejected.
+   *  When `workdir` is given too, only sessions of that project are closed:
+   *  multiple harness instances (one per project) share the same data root,
+   *  and one instance must never mark another instance's live sessions ended. */
+  closeAllSessions(ts: string, host?: string, workdir?: string): void {
     if (host) {
       if (!HOSTS.includes(host as (typeof HOSTS)[number])) {
         throw new Error(`closeAllSessions: unknown host ${JSON.stringify(host)} (expected one of ${HOSTS.join("|")})`);
       }
-      this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL AND host = ?", [ts, host]);
+      if (workdir !== undefined) {
+        // Match both explicit workdirs and legacy NULL rows (normalized to
+        // the empty string), so a scoped close never silently skips them.
+        this.driver.run(
+          "UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL AND host = ? AND (workdir = ? OR (workdir IS NULL AND ? = ''))",
+          [ts, host, workdir, workdir],
+        );
+      } else {
+        this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL AND host = ?", [ts, host]);
+      }
     } else {
       this.driver.run("UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL", [ts]);
     }
@@ -684,6 +747,20 @@ export class Index {
     let claimed: ExtractionJobRow | undefined;
     const leaseUntil = new Date(Date.parse(now) + leaseMs).toISOString();
     this.withTransaction(() => {
+      // Global running cap for this provider (codex CONCURRENCY_LIMIT,
+      // enforced at claim time in SQL). Live processing leases count against
+      // it; expired leases free their slot for a reclaiming worker. When the
+      // cap is reached the claim returns undefined immediately and leaves the
+      // jobs for a later drain instead of running beyond the limit.
+      const running = this.driver.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM extraction_jobs
+         WHERE provider = ? AND status = 'processing'
+           AND (lease_until IS NULL OR lease_until > ?)`,
+        [normalizedProvider, now],
+      );
+      if ((running?.n ?? 0) >= MAX_RUNNING_EXTRACTIONS) {
+        return;
+      }
       for (;;) {
         const row = this.driver.get<ExtractionJobSqlRow>(
           `SELECT * FROM extraction_jobs
@@ -1064,9 +1141,9 @@ export class Index {
   // ---------------------------------------------------------------- audit
 
   audit(action: string, ns: string, detail: string): void {
-    const safeAction = redactSecrets(action).text.slice(0, 200);
-    const safeNs = redactSecrets(ns).text.slice(0, 500);
-    const safeDetail = redactSecrets(detail).text.slice(0, 4000);
+    const safeAction = stripLineControls(redactSecrets(action).text).slice(0, 200);
+    const safeNs = stripLineControls(redactSecrets(ns).text).slice(0, 500);
+    const safeDetail = stripLineControls(redactSecrets(detail).text).slice(0, 4000);
     this.driver.run("INSERT INTO audit(ts, action, ns, detail) VALUES (?,?,?,?)", [
       new Date().toISOString(),
       safeAction,
@@ -1267,5 +1344,17 @@ function migrate(driver: DbDriver): void {
     // stores that already persisted the incorrect v9 value.
     driver.run("UPDATE extraction_jobs SET provider='codex-exec' WHERE host='codex' AND provider='http'");
     driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10')");
+  }
+  if (current < 11) {
+    // v11: composite indexes covering the retention cleanup
+    // (stagePruneRetention filters status/selected_for_phase2 and orders by
+    // last_usage/source_updated_at) and the backfill per-row lookup
+    // (extraction_jobs(host, session_id)). Both columns sets exist in every
+    // schema since v9, so the indexes can be created unconditionally here.
+    driver.exec(
+      "CREATE INDEX IF NOT EXISTS idx_stage1_retention ON stage1_outputs(status, selected_for_phase2, last_usage, source_updated_at)",
+    );
+    driver.exec("CREATE INDEX IF NOT EXISTS idx_extraction_jobs_host_session ON extraction_jobs(host, session_id)");
+    driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '11')");
   }
 }

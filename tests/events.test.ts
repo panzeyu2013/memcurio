@@ -27,6 +27,24 @@ describe("makeEnvelope", () => {
     expect(() => makeEnvelope({ host: "cli", event: "use", sessionId: "s1\nfake" })).toThrow(/control characters/);
     expect(() => makeEnvelope({ host: "cli", event: "use", workdir: "/tmp/\u0000" })).toThrow(/control characters/);
     expect(() => makeEnvelope({ host: "cli", event: "use", actor: "a\u0007b" })).toThrow(/control characters/);
+    // U+2028/U+2029 render as line breaks in markdown (sessionId lands in
+    // raw_memories.md headers) and must be rejected like C0 controls.
+    expect(() => makeEnvelope({ host: "cli", event: "use", sessionId: "s1\u2028fake" })).toThrow(/control characters/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", workdir: "/tmp/\u2029" })).toThrow(/control characters/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", actor: "a\u0085b" })).toThrow(/control characters/);
+  });
+
+  test("rejects non-ISO timestamps", () => {
+    expect(() => makeEnvelope({ host: "cli", event: "use", ts: "not-a-date" })).toThrow(/ts/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", ts: "2026-13-99T99:99:99Z" })).toThrow(/ts/);
+    // Strict ISO: loose-but-parseable values are rejected too (they would
+    // break lexicographic time ordering in retention predicates).
+    expect(() => makeEnvelope({ host: "cli", event: "use", ts: "2026-08-10" })).toThrow(/ts/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", ts: "2026" })).toThrow(/ts/);
+    expect(() => makeEnvelope({ host: "cli", event: "use", ts: "Aug 10 2026" })).toThrow(/ts/);
+    expect(makeEnvelope({ host: "cli", event: "use", ts: "2026-08-10T00:00:00.000Z" }).ts).toBe(
+      "2026-08-10T00:00:00.000Z",
+    );
   });
 
   test("rejects over-long session fields", () => {

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { searchMemory } from "../src/core/search.js";
-import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
+import { searchMemory, registerMemoryUsage } from "../src/core/search.js";
 import { ensureLayout } from "../src/core/paths.js";
+import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
 import { writeRolloutSummary, writeWorkspaceText } from "../src/core/workspace.js";
@@ -79,5 +79,27 @@ describe("searchMemory", () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]?.content).not.toContain("sk-abcdef");
     expect(hits[0]?.content).toContain("[REDACTED]");
+  });
+
+  test("a repeated bare rollout key in one citation block counts once", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "test|dup",
+        rawMemory: "x",
+        rolloutSummary: "y",
+        rolloutSlug: "dup",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+    await registerMemoryUsage(dir, ["test|dup", "test|dup", "test|dup"]);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      expect(idx2.stageGet("test|dup")?.usageCount).toBe(1);
+    } finally {
+      idx2.close();
+    }
   });
 });

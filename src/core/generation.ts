@@ -249,8 +249,31 @@ function parseManifest(root: string, id: string): GenerationManifest | undefined
       return undefined;
     }
     const manifest = value as GenerationManifest;
-    if (manifest.version !== 1 || manifest.id !== id || (manifest.phase !== "prepared" && manifest.phase !== "committed") || !Array.isArray(manifest.targets)) {
+    if (
+      manifest.version !== 1 ||
+      manifest.id !== id ||
+      (manifest.phase !== "prepared" && manifest.phase !== "committed") ||
+      !Array.isArray(manifest.targets)
+    ) {
       return undefined;
+    }
+    // Structural validation of every target: a manifest that parses as JSON
+    // but has malformed targets would crash applyGeneration deep inside
+    // recovery and wedge every subsequent start (recovery has no per-item
+    // guard). Treat such manifests as invalid instead — doctor/repair can
+    // then report them instead of wedging.
+    for (const target of manifest.targets) {
+      const t = target as Partial<GenerationTarget>;
+      if (
+        (t.kind !== "workspace" && t.kind !== "baseline") ||
+        typeof t.rel !== "string" ||
+        typeof t.before?.present !== "boolean" ||
+        typeof t.before?.hash !== "string" ||
+        typeof t.after?.present !== "boolean" ||
+        typeof t.after?.hash !== "string"
+      ) {
+        return undefined;
+      }
     }
     return manifest;
   } catch {
@@ -331,9 +354,15 @@ export function recoverPendingGenerations(root: string, committedGeneration?: st
   }
   for (const manifest of pendingManifests(root)) {
     const forward = committedGeneration === manifest.id || manifest.phase === "committed";
-    applyGeneration(root, manifest, forward ? "after" : "before");
-    discardGeneration(root, manifest.id);
-    recovered.push(`${manifest.id}:${forward ? "forward" : "rollback"}`);
+    try {
+      applyGeneration(root, manifest, forward ? "after" : "before");
+      discardGeneration(root, manifest.id);
+      recovered.push(`${manifest.id}:${forward ? "forward" : "rollback"}`);
+    } catch (err) {
+      // One broken manifest must not wedge the remaining generations (nor
+      // every future startup); skip it and let doctor/repair surface it.
+      recovered.push(`${manifest.id}:skip-failed:${String(err)}`);
+    }
   }
   return recovered;
 }

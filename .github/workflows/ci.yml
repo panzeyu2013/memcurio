@@ -18,9 +18,13 @@ jobs:
           bun-version: 1.3.14
           cache: true
 
-      # prepare (build + bundle) runs inside install; the lockfile must be
-      # committed and in sync with package.json.
+      # prepare only verifies committed artifacts (git-spec plugin installs
+      # must not trigger a tsc build on user machines), so CI builds
+      # explicitly. The lockfile must be committed and in sync with
+      # package.json.
       - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun run bundle:plugin
 
       - run: bun run typecheck
       - run: bun run lint
@@ -28,12 +32,28 @@ jobs:
       - run: bun test
         env:
           LANG: C.UTF-8
-      # Explicitly verify the build artifacts exist (prepare already built
-      # them, so this is a no-op guard against a broken prepare).
+      # Explicitly verify the build artifacts exist (prepare only warned).
       - run: test -f dist/cli/index.js -a -f dist/opencode-memcurio-plugin.js
       - run: bun run pack:check
       - run: bun run eval:lexical
+      # Committed dist/ must stay in sync with source. This check runs AFTER
+      # pack:check (which rebuilds dist): a fresh build must not change the
+      # committed artifacts — including the rebuild pack:check itself produced.
+      - run: git diff --exit-code -- dist/
       # Validate the published tarball contents (files list / prepare) so a
       # broken `files` field is caught in CI, not at publish time. Note: the
       # command is `bun pm pack` — plain `bun pack` is not a bun subcommand.
       - run: bun pm pack --dry-run
+      # The shipped CLI/MCP run on node (node:sqlite); verify the committed
+      # dist actually runs under node, not just under bun. node_modules and
+      # dist are already in place from the steps above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node dist/cli/index.js --version
+      - run: node dist/cli/index.js init
+        env:
+          HOME: /tmp/memcurio-smoke-home
+      - run: node dist/cli/index.js doctor
+        env:
+          HOME: /tmp/memcurio-smoke-home

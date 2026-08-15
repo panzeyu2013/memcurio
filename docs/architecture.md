@@ -39,7 +39,7 @@ Harness 层          opencode / pi / cli / mcp（或其他任何 harness）
 │   ├── skills/                      # 可选：模型创建的可复用流程包
 │   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember 的 note（append-only；forget/update 遗留，仅 agent 执行）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
-├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v10）
+├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 ├── config.json
 └── state/                           # 事务日志 / 锁 / socket（不变）
 ```
@@ -52,31 +52,35 @@ Harness 层          opencode / pi / cli / mcp（或其他任何 harness）
 src/
 ├── core/
 │   ├── adhoc.ts        ad-hoc notes（add/list/pending/markApplied + 脱敏）
-│   ├── consolidate.ts  Phase 2 整合（planConsolidation / syncArtifacts / Rule + HttpLoop provider / runConsolidation）
+│   ├── consolidate.ts  Phase 2 整合（planConsolidation / syncArtifacts / Rule + LlmLoop provider / runConsolidation）
 │   ├── artifacts.ts    rollout key → stable artifact id/filename
-│   ├── db.ts           stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v10）
+│   ├── channel.ts      LlmChannel / HttpChannel / resolveChannel（harness 内嵌优先 → HTTP 兜底 → null）
+│   ├── db.ts           stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 │   ├── events.ts       事件模型（host/event 校验，不变）
-│   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；Noop/Http provider + 提示词 + 解析）
+│   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；Noop/Llm provider + 提示词 + 解析）
 │   ├── ids.ts          UUIDv4 id（含 newNoteId）
 │   ├── inject.ts       读路径注入（renderMemoryContext / 指引 / baseline 区块 / updateAgentsMd）
 │   ├── llm.ts          共享 OpenAI 兼容客户端 + JSON 提取（extract/consolidate 复用）
 │   ├── paths.ts        布局（0700）+ memory workspace 路径（ns 逻辑移除）
 │   ├── sanitize.ts     注入扫描 + 密钥脱敏（不变）
 │   ├── search.ts       读路径检索（searchMemory：MEMORY.md / summary / rollout_summaries，注入过滤 + usage 记账）
-│   ├── sqlite.ts       驱动探测 bun:sqlite → node:sqlite（不变）
+│   ├── sqlite.ts       驱动按运行时分流：bun → bun:sqlite，node（>=22.5）→ node:sqlite（双驱动，第九轮）
 │   ├── transaction.ts  原子写 + 文件锁 + 事务日志（不变）
 │   ├── generation.ts   workspace + baseline generation manifest、提交标记和故障恢复
 │   ├── purge.ts        本地 rollout hard purge（只删引用目标的 skills/块）与显式 JSONL export scrub
 │   ├── workspace.ts    工作区读写/快照/diff/baseline（MEMORY_DOCS / snapshot / diffTexts / saveBaseline）
 │   ├── budget.ts       token 估算 + 裁剪（不变）
 │   └── config.ts       config.json（budget + pipeline 配置）
-├── mcp/index.ts        MCP server（4 工具：search/remember/status/context）
+├── mcp/index.ts        MCP server（6 工具：search/list/read/remember/status/context）
 ├── cli/
-│   ├── index.ts        CLI 入口（21 个具名命令 + help/--version）
+│   ├── index.ts        CLI 入口（20 个具名命令 + help/--version）
 │   └── i18n.ts         zh/en 词典
 └── adapters/
-    ├── shared/engine.ts  MemcurioAdapter（会话记账 / durable checkpoint / worker / 注入 / 压缩上下文）
-    └── opencode/plugin.ts opencode 插件（打包单文件；idle/deleted→最终 messages snapshot→队列→Phase 1 worker）
+    ├── contract.ts        HarnessAdapter 契约（capabilities / toolPreset / createChannel / start）
+    ├── shared/engine.ts   MemcurioAdapter（会话记账 / durable checkpoint / worker / 注入 / 压缩上下文；消费契约，harness 无关）
+    └── opencode/
+        ├── channel.ts     OpencodeChannel（官方 SDK 驱动无工具 worker 会话借宿主模型；防递归集合；遗留 worker 清扫）
+        └── plugin.ts      opencode 插件（打包单文件；事件→队列→Phase 1；system.transform 静态注入 + chat.message 动态 top-8；compaction 注入）
 docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档
@@ -105,9 +109,9 @@ session 事件（host-specific；OpenCode idle/deleted）
 
 ```
 恒注入：memory_summary.md（脱敏 + 注入扫描 + 预算裁剪）→ session 启动上下文
-模型自检索：完整 read_path 指引（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 输出要求）→ 模型按需 grep / memory_search
+模型自检索：完整 read_path 指引（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / codex 式 citation 输出要求）→ 模型按需 grep / memory_search / memory_list / memory_read
 动态注入（每次用户输入 / opencode compacting）：searchMemory top-K 命中拼接
-使用遥测：工具实际读取记忆文件 + 解析 <memcurio-citation> 引用块 + search 命中
+使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ 解析 <memcurio-citation> 引用块（<citation_entries>/<rollout_ids>）+ search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）
 ```
 
@@ -129,5 +133,5 @@ prune：选择窗口（maxUnusedDays / usage）dry-run 列出将被剪除的 sta
 | v1 M2 | 剪枝状态机 + pin/revive + JSONL 导入导出 + 合并 | ✅ 完成（v1 体系，已被 v2 替代） |
 | v1 M3 | opencode 高集成适配器 | ✅ 完成（v1 体系，已被 v2 替代） |
 | v1 M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 完成（v1 体系，v2 中已移除，改用 codex 原生 memory） |
-| v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ provider-scoped durable extraction queue + 有界证据 + 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v10 + stable artifact ID + generation recovery + CLI/MCP + consolidation lease | ✅ 已完成首批实现与本地回归 |
+| v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ provider-scoped durable extraction queue + 有界证据 + 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v11 + stable artifact ID + generation recovery + CLI/MCP + consolidation lease | ✅ 已完成首批实现与本地回归 |
 | 真实 harness 验证 | OpenCode 1.18.13 全局插件与 session lifecycle | ✅ 本地 smoke 已通过；真实模型质量、长会话、崩溃恢复仍待独立验收 |

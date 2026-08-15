@@ -13,4 +13,3 @@ export function artifactFilenameForId(artifactId: string): string {
   }
   return `rollout-${artifactId}.md`;
 }
-

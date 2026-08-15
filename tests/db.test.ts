@@ -27,8 +27,8 @@ const stage = {
   sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
 };
 
-describe("Index schema v10", () => {
-  test("create migrates legacy stores and sets schema_version 10", async () => {
+describe("Index schema v11", () => {
+  test("create migrates legacy stores and sets schema_version 11", async () => {
     // Simulate a legacy v4 store with the old tables.
     const driver = await openDb(dbPath);
     try {
@@ -44,7 +44,7 @@ describe("Index schema v10", () => {
     const idx = await Index.create(dbPath);
     try {
       const schema = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
-      expect(schema?.value).toBe("10");
+      expect(schema?.value).toBe("11");
       const legacy = idx.driver.get<{ c: number }>(
         "SELECT count(*) AS c FROM sqlite_master WHERE name IN ('entries', 'fts', 'contradictions')",
       );
@@ -100,7 +100,7 @@ describe("Index schema v10", () => {
 
     const migrated = await Index.create(dbPath);
     try {
-      expect(migrated.metaGet("schema_version")).toBe("10");
+      expect(migrated.metaGet("schema_version")).toBe("11");
       expect(migrated.extractionList().map((job) => [job.host, job.provider])).toEqual([
         ["codex", "codex-exec"],
         ["opencode", "http"],
@@ -143,7 +143,7 @@ describe("Index schema v10", () => {
 
     const migrated = await Index.create(dbPath);
     try {
-      expect(migrated.metaGet("schema_version")).toBe("10");
+      expect(migrated.metaGet("schema_version")).toBe("11");
       expect(migrated.extractionList().map((job) => [job.host, job.provider])).toEqual([
         ["codex", "codex-exec"],
         ["opencode", "http"],
@@ -174,10 +174,49 @@ describe("Index schema v10", () => {
 
     const repaired = await Index.create(dbPath);
     try {
-      expect(repaired.metaGet("schema_version")).toBe("10");
+      expect(repaired.metaGet("schema_version")).toBe("11");
       expect(repaired.stageGet(stage.rolloutKey)?.artifactFilename).toMatch(/^rollout-[0-9a-f]{24}\.md$/);
     } finally {
       repaired.close();
+    }
+  });
+
+  test("v11 adds the retention and backfill indexes to upgraded stores", async () => {
+    const initial = await Index.create(dbPath);
+    try {
+      initial.stageUpsert(stage);
+    } finally {
+      initial.close();
+    }
+    const legacy = await openDb(dbPath);
+    try {
+      // Drop the v11 indexes first: otherwise the upgraded store still holds
+      // them and CREATE INDEX IF NOT EXISTS no-ops, making the assertion below
+      // vacuous even if the v11 migration itself were broken.
+      legacy.exec("DROP INDEX IF EXISTS idx_stage1_retention");
+      legacy.exec("DROP INDEX IF EXISTS idx_extraction_jobs_host_session");
+      legacy.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '10')");
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = await Index.create(dbPath);
+    try {
+      expect(migrated.metaGet("schema_version")).toBe("11");
+      const indexes = migrated.driver
+        .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_stage1_retention', 'idx_extraction_jobs_host_session')")
+        .map((r) => r.name)
+        .sort();
+      expect(indexes).toEqual(["idx_extraction_jobs_host_session", "idx_stage1_retention"]);
+      // A fresh store gets them from BASE-adjacent migration path too.
+      expect(migrated.driver.get<{ c: number }>(
+        "SELECT count(*) AS c FROM pragma_index_info('idx_stage1_retention') WHERE name IN ('status', 'selected_for_phase2', 'last_usage', 'source_updated_at')",
+      )?.c).toBe(4);
+      expect(migrated.driver.get<{ c: number }>(
+        "SELECT count(*) AS c FROM pragma_index_info('idx_extraction_jobs_host_session') WHERE name IN ('host', 'session_id')",
+      )?.c).toBe(2);
+    } finally {
+      migrated.close();
     }
   });
 });
@@ -243,7 +282,10 @@ describe("stage1_outputs", () => {
       idx.stageUpsert({ ...stage, rolloutKey: "a", sourceUpdatedAt: old });
       idx.stageUpsert({ ...stage, rolloutKey: "b", sourceUpdatedAt: recent });
       idx.stageUpsert({ ...stage, rolloutKey: "c", sourceUpdatedAt: recent });
-      idx.driver.run("UPDATE stage1_outputs SET generated_at = ? WHERE rollout_key = 'a'", [old]);
+      // a has a RECENT generated_at but an ancient source_updated_at: the
+      // selection window must fall back to source_updated_at (codex
+      // memories.rs:468-475), not generated_at, so a stays outside.
+      idx.driver.run("UPDATE stage1_outputs SET generated_at = ? WHERE rollout_key = 'a'", [recent]);
       idx.stageSetUsage("c");
       idx.stageSetUsage("c");
 
@@ -289,6 +331,128 @@ describe("stage1_outputs", () => {
       idx.close();
     }
   });
+
+  test("stagePruneRetention recycles deleted rows stalest-first", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      // DROP the retention index for this test: with idx_stage1_retention
+      // present the planner can satisfy LIMIT 2 directly from the index scan
+      // order, so these assertions would pass even if the ORDER BY were
+      // removed from the SQL (revert-insensitive). Without the index the
+      // recycle order proves the ORDER BY is real. Fresh temp store per test,
+      // so dropping it here cannot leak into other tests.
+      idx.driver.exec("DROP INDEX IF EXISTS idx_stage1_retention");
+      // Insert the freshest row FIRST: an unordered LIMIT 2 would select c and
+      // a (insertion order), so these assertions prove stalest-first ordering
+      // is real rather than an artifact of rowid order.
+      idx.stageUpsert({ ...stage, rolloutKey: "c", sourceUpdatedAt: "2026-03-01T00:00:00.000Z" });
+      idx.stageUpsert({ ...stage, rolloutKey: "a", sourceUpdatedAt: "2026-01-01T00:00:00.000Z" });
+      idx.stageUpsert({ ...stage, rolloutKey: "b", sourceUpdatedAt: "2026-02-01T00:00:00.000Z" });
+      idx.stageSetUsage("c"); // last_usage newest → c is the freshest
+      // A deleted row that was selected for phase 2 must never be recycled.
+      idx.stageUpsert({ ...stage, rolloutKey: "d", sourceUpdatedAt: "2026-04-01T00:00:00.000Z" });
+      idx.stageMarkSelected(["d"]);
+      idx.stageMarkDeleted(["a", "b", "c", "d"]);
+      expect(idx.stagePruneRetention(2).map((r) => r.rollout_key)).toEqual(["a", "b"]);
+      // Stalest-first: a (no usage, Jan 1) then b (no usage, Feb 1) are
+      // recycled before c (recently used), despite c being inserted first.
+      expect(idx.stageList().map((r) => r.rolloutKey).sort()).toEqual(["c", "d"]);
+      // The default batch (200) recycles the remaining never-selected row.
+      expect(idx.stagePruneRetention()).toHaveLength(1);
+      // The selected-for-phase-2 row survives every retention pass.
+      expect(idx.stageList().map((r) => r.rolloutKey)).toEqual(["d"]);
+      expect(idx.stagePruneRetention()).toHaveLength(0);
+      expect(idx.stageList().map((r) => r.rolloutKey)).toEqual(["d"]);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("stagePruneRetention clamps giant maxUnusedDays instead of overflowing", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      // A direct-API caller can pass days ~1e7: unguarded Date arithmetic
+      // overflows toISOString's year range and throws RangeError. The clamp
+      // (36_500d, the config.ts upper bound) must keep the prune working.
+      idx.stageUpsert({ ...stage, rolloutKey: "giant", sourceUpdatedAt: "2026-01-01T00:00:00.000Z" });
+      expect(() => idx.stagePruneRetention(200, 1e7)).not.toThrow();
+      // The clamped cutoff (~100y ago) keeps the 2026 pending row inside the
+      // window: only the deleted-row predicate would recycle it.
+      expect(idx.stageGet("giant")?.status).toBe("pending");
+      idx.stageMarkDeleted(["giant"]);
+      expect(() => idx.stagePruneRetention(200, 1e7)).not.toThrow();
+      expect(idx.stageGet("giant")).toBeUndefined();
+      // Non-finite days degrade to the no-cutoff path (deleted rows only).
+      idx.stageUpsert({ ...stage, rolloutKey: "nan-row", sourceUpdatedAt: "2026-01-01T00:00:00.000Z" });
+      idx.stageMarkDeleted(["nan-row"]);
+      expect(() => idx.stagePruneRetention(200, Number.NaN)).not.toThrow();
+      expect(idx.stageGet("nan-row")).toBeUndefined();
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("stageArtifactFilenames returns the keep-set of referenced artifacts", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      idx.stageUpsert({ ...stage, rolloutKey: "keep|a" });
+      idx.stageUpsert({ ...stage, rolloutKey: "keep|b" });
+      const names = idx.stageArtifactFilenames();
+      const aFilename = idx.stageGet("keep|a")?.artifactFilename ?? "";
+      const bFilename = idx.stageGet("keep|b")?.artifactFilename ?? "";
+      expect(names).toHaveLength(2);
+      expect(names).toContain(aFilename);
+      expect(names).toContain(bFilename);
+      idx.stagePurge("keep|a");
+      expect(idx.stageArtifactFilenames()).toEqual([bFilename]);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("stagePruneRetention recycles age-expired pending rows only when maxUnusedDays is given", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const old = "2026-01-01T00:00:00.000Z";
+      const recent = new Date().toISOString();
+      // Pending (never deleted, never selected) with an old source_updated_at
+      // and no usage: recycled only when maxUnusedDays ages it out.
+      idx.stageUpsert({ ...stage, rolloutKey: "pending-old", sourceUpdatedAt: old });
+      // Same vintage but recently used: COALESCE picks last_usage → survives.
+      idx.stageUpsert({ ...stage, rolloutKey: "pending-used-recent", sourceUpdatedAt: old });
+      idx.stageSetUsage("pending-used-recent");
+      // Deleted rows are recycled regardless of age.
+      idx.stageUpsert({ ...stage, rolloutKey: "deleted-old", sourceUpdatedAt: old });
+      idx.stageMarkDeleted(["deleted-old"]);
+      idx.stageUpsert({ ...stage, rolloutKey: "deleted-recent", sourceUpdatedAt: recent });
+      idx.stageMarkDeleted(["deleted-recent"]);
+      // A selected row must survive even when deleted AND old.
+      idx.stageUpsert({ ...stage, rolloutKey: "selected-old", sourceUpdatedAt: old });
+      idx.stageMarkSelected(["selected-old"]);
+      idx.stageMarkDeleted(["selected-old"]);
+      const pendingOldFilename = idx.stageGet("pending-old")?.artifactFilename ?? null;
+
+      // maxUnusedDays omitted → current predicate: only deleted rows recycle,
+      // stalest-first. Pending rows (even 90+ days old) must survive.
+      expect(idx.stagePruneRetention().map((r) => r.rollout_key)).toEqual(["deleted-old", "deleted-recent"]);
+      expect(idx.stageList().map((r) => r.rolloutKey).sort()).toEqual(["pending-old", "pending-used-recent", "selected-old"]);
+
+      // maxUnusedDays given → the old never-used pending row ages out too; the
+      // recently-used pending row survives; returned rows carry artifact_filename.
+      const rows = idx.stagePruneRetention(200, 60);
+      expect(rows).toEqual([{ rollout_key: "pending-old", artifact_filename: pendingOldFilename }]);
+      expect(idx.stageList().map((r) => r.rolloutKey).sort()).toEqual(["pending-used-recent", "selected-old"]);
+
+      // maxUnusedDays <= 0 must NOT wipe pending rows (guard against a 0
+      // default being read as "recycle everything").
+      expect(idx.stagePruneRetention(200, 0)).toHaveLength(0);
+      expect(idx.stageList().map((r) => r.rolloutKey).sort()).toEqual(["pending-used-recent", "selected-old"]);
+      expect(idx.stagePruneRetention(200, -1)).toHaveLength(0);
+      expect(idx.stageList().map((r) => r.rolloutKey).sort()).toEqual(["pending-used-recent", "selected-old"]);
+    } finally {
+      idx.close();
+    }
+  });
 });
 
 describe("ad_hoc_notes", () => {
@@ -330,6 +494,27 @@ describe("sessions + audit", () => {
     }
   });
 
+  test("closeAllSessions with a workdir only closes that project's sessions", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      idx.recordSession("live-other", "opencode", "/other/proj", "2026-08-10T00:00:00.000Z");
+      idx.recordSession("live-mine", "opencode", "/my/proj", "2026-08-10T00:00:00.000Z");
+      idx.recordSession("ended-other", "opencode", "/other/proj", "2026-08-10T00:00:00.000Z");
+      idx.endSession("ended-other", "2026-08-10T01:00:00.000Z");
+      idx.closeAllSessions("2026-08-10T02:00:00.000Z", "opencode", "/my/proj");
+      const rows = idx.rawAll<{ session_id: string; ended_at: string | null }>(
+        "SELECT session_id, ended_at FROM sessions",
+      );
+      const byId = Object.fromEntries(rows.map((row) => [row.session_id, row.ended_at]));
+      expect(byId["live-mine"]).toBe("2026-08-10T02:00:00.000Z");
+      // Other projects' live sessions must not be touched by this instance.
+      expect(byId["live-other"]).toBeNull();
+      expect(byId["ended-other"]).toBe("2026-08-10T01:00:00.000Z");
+    } finally {
+      idx.close();
+    }
+  });
+
   test("audit purge treats wildcards literally and does not overmatch identifier prefixes", async () => {
     const idx = await Index.create(dbPath);
     try {
@@ -353,6 +538,33 @@ describe("sessions + audit", () => {
       }
       expect(idx.auditPrune(2)).toBe(4);
       expect(idx.auditRecent(10).map((row) => row.action)).toEqual(["event-5", "event-4"]);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("audit flattens line and tab control characters at write time", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      // A hand-placed note filename or session id must not be able to forge
+      // extra audit log lines (or break `memcurio audit` rendering).
+      idx.audit("a\nforge", "safe", "note\n2026-01-01T00-00-00.md\tcontent");
+      idx.audit("safe", "s\nx", "line1\r\nline2");
+      // U+2028/U+2029 (line/paragraph separators) and U+0085 (NEL) are legal
+      // in Linux filenames but split `memcurio audit` CLI output; they must
+      // be flattened too, not just \n \r \t.
+      idx.audit("safe", "u\u20282028", "note\u2028mid\u2029end\u0085tab\tcontent");
+      const rows = idx.auditRecent(10);
+      expect(rows.map((row) => String(row.action))).toEqual(["safe", "safe", "a forge"]);
+      expect(rows.map((row) => String(row.ns))).toEqual(["u 2028", "s x", "safe"]);
+      expect(rows.map((row) => String(row.detail))).toEqual([
+        "note mid end tab content",
+        "line1 line2",
+        "note 2026-01-01T00-00-00.md content",
+      ]);
+      expect(
+        rows.some((row) => /[\n\r\t\u2028\u2029\u0085]/.test(String(row.detail))),
+      ).toBe(false);
     } finally {
       idx.close();
     }
@@ -462,6 +674,57 @@ describe("extraction_jobs", () => {
       });
       expect(idx.extractionClaim("codex-exec")?.jobId).toBe(codex.jobId);
       expect(idx.extractionList("pending").map((job) => job.provider)).toEqual(["http"]);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("claim is refused once the provider hits the global running cap (8)", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const queued: string[] = [];
+      for (let n = 0; n < 8; n += 1) {
+        const job = idx.extractionEnqueue({
+          idempotencyKey: `cap-${n}`,
+          host: "opencode",
+          provider: "cap-test",
+          sessionId: `cap-${n}`,
+          sourceEvent: "idle",
+          workdir: "/tmp/proj",
+          evidenceRef: `sha256:cap-${n}`,
+          contentHash: `cap-${n}`,
+          snapshotJson: JSON.stringify({ sessionId: `cap-${n}` }),
+          createdAt: "2026-08-11T00:00:00.000Z",
+        });
+        queued.push(job.jobId);
+        // Each claim sees the previously claimed jobs with live leases.
+        expect(idx.extractionClaim("cap-test", "2026-08-11T00:00:00.000Z", 60_000)?.status).toBe("processing");
+      }
+      const ninth = idx.extractionEnqueue({
+        idempotencyKey: "cap-9",
+        host: "opencode",
+        provider: "cap-test",
+        sessionId: "cap-9",
+        sourceEvent: "idle",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:cap-9",
+        contentHash: "cap-9",
+        snapshotJson: JSON.stringify({ sessionId: "cap-9" }),
+        // Same timestamp as the claim: the time-based next_attempt_at filter
+        // must NOT be what refuses this claim — the running cap must be.
+        createdAt: "2026-08-11T00:00:00.000Z",
+      });
+      // Ninth claim refused: 8 jobs already processing with live leases. The
+      // job stays pending for a later drain, and the other providers' queues
+      // are unaffected.
+      expect(idx.extractionClaim("cap-test", "2026-08-11T00:00:00.000Z", 60_000)).toBeUndefined();
+      expect(idx.extractionList("processing")).toHaveLength(8);
+      expect(idx.extractionList("pending")).toHaveLength(1);
+      // Completing one job frees a slot while the other leases are alive.
+      idx.extractionComplete(queued[0] ?? "", "2026-08-11T00:00:30.000Z");
+      expect(idx.extractionClaim("cap-test", "2026-08-11T00:00:30.000Z", 60_000)?.jobId).toBe(ninth.jobId);
+      // Expired leases also free slots: a crashed worker's job is reclaimable.
+      expect(idx.extractionClaim("cap-test", "2026-08-11T02:00:00.000Z", 60_000)).toBeDefined();
     } finally {
       idx.close();
     }

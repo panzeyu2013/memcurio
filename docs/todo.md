@@ -2,17 +2,17 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-08-11（第二轮多 agent 扫描修复已并入）
+> 最近更新：2026-08-13（第十一轮：第二轮全量扫描——clip-then-scan 注入漏检回归修复（先扫原文后截断）、purge 降级后 plan 仍抛错（renderRawMemories truncate 模式）、provenance 计划删除集校验（deletedSummaries）、purge 悬空引用收敛（mixed 块剔除已删 citation）、raw_memory 结构标记注入（inBody 守卫+空行块头+无 citation 块跳过三层）、数学希腊/普通希腊同形折叠、双重编码/HTML 实体解码、worker 会话删除顺序竞态、harness 通道回复 2MB 上限、validateTs 严格 ISO、setup 备份/写回 0600、instructions.md 注入跳过；.gitignore `cli` 目录吞噬修复（/cli 锚定）、CI 漂移检查移至 pack:check 后、exports "." types 条件；测试质量修复（cap-8 空转/chat.message 空转/结构标记测试补断言）；第十轮见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 346 tests / 1101 assertions / 24 files、typecheck、lint、clean build、pack allowlist（71 文件 + dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 450 tests / 1515 assertions / 26 files、typecheck、lint、clean build、pack allowlist（69 文件 + dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
-| OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle；真实消息证据、compaction、重启恢复未验收 |
+| OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle、插件启动 backfill（重启恢复）已实现；真实消息证据、compaction、跨进程故障注入未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -22,8 +22,8 @@
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
 | Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
-| MCP stdio | tested locally | 四个工具（search/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
-| OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、重启恢复 |
+| MCP stdio | tested locally | 六个工具（search/list/read/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
+| OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
 
 ## 3. 已完成
 
@@ -37,16 +37,22 @@
 - [x] 稳定 artifact ID/filename、stage1 状态机统一、slug collision 迁移
 - [x] import/export 保真（selected/deleted、usage、checkpoint、生成时间、note applied）
 - [x] 资源上限：消息/角色/工具/文件缓存、LLM 响应、workspace 文件/数量、raw 投影、audit 行数、envelope 大小、spool 容量
+- [x] codex 对齐（第六轮）：raw_memories.md codex 式 "# Raw Memories" 头 + "## Rollout" 段 + 空占位；引用块 `<citation_entries>`/`<rollout_ids>` 块结构（旧行式兼容）；artifact 文件名保持 rollout-<artifact-id>.md（评估结论：文件名是不透明键，codex 式命名纯装饰性且引入 checkpoint 改名 churn，不采纳）
+- [x] 通用化（第七轮）：LlmChannel 通道链（`resolveChannel`：auto=harness→http→none）；HarnessAdapter 契约 + toolPreset 外置（遥测工具名不再硬编码）；opencode 插件借宿主模型（OpencodeChannel：无工具 worker 会话 + metadata 标记防递归 + 启动清扫）、system.transform 静态注入 + chat.message 动态 top-8、`MEMCURIO_DISABLE_INJECT` 开关；抽取/整合 provider 通道化（LlmExtractProvider / LlmLoopConsolidateProvider，旧名保留别名）
+- [x] MCP `memory_list`/`memory_read`（codex list/read 语义：隐藏条目/符号链接拒绝、cursor 分页、行/token 截断、读取重脱敏、rollout 读计遥测）；`resourceRetentionDays` 默认 7 对齐 codex RETENTION_DAYS，与 retentionDays 解耦
 - [x] 修复：`atomicWrite` 权限保留、workspace 符号链接逃逸、pid 复用锁永久卡死
 
 ### 3.2 OpenCode 集成（codex 适配器已移除）
 
+- [x] Review 修复（第十轮）：多 agent 全面审查的 3 个分发硬伤 + 9 个 High + 12 个 Medium/Low 全部闭环（详见 §6.4）；新增 11 个回归测试
+- [x] 运行时迁移 node（第九轮）：放弃编译二进制方案与 npm 发布计划；CLI/MCP 以 `node:sqlite` 运行（engines node >= 22.5；22.5–23.3 实验警告已实测）；opencode 插件保持 bun bundle（bun 1.3.14 实测不支持 node:sqlite → sqlite.ts 双驱动按运行环境自动分流：bun → bun:sqlite、node → node:sqlite）；GitHub 为唯一分发介质——dist 全量（tsc 产物 + 插件 bundle）提交 git（.gitignore + CI diff 防漂移 + node smoke 步骤）；`prepare` 为纯 node 轻量校验（git 安装零构建）；setup MCP 命令按源选择：npm→`npx -y memcurio@latest mcp`、github→`memcurio mcp`（PATH 命令）、local→`node <repo>/dist/cli/index.js mcp`；`--mcp-command '<json>'` 自定义
+- [x] 分发与安装（第八轮）：npm 单包 `memcurio` 同时分发 CLI/MCP/opencode 插件（`main` + `exports["./server"]` 双入口，兼容新旧 opencode 加载器）；插件 bundle 提交入 git（.gitignore 白名单例外），`"plugin": ["github:panzeyu2013/memcurio"]` git 安装无需构建；`memcurio setup` 命令（`--apply` 干跑/写盘、`--project`/`--global`、`--mcp`、`--no-plugin`、`--source npm|github|local`，写前备份 `.memcurio.bak`，合并保留既有键，幂等）；MCP 配置一行启动（第九轮改为三源策略：npm→npx、github→memcurio mcp、local→node dist）；配置只写命令/包名不写绝对路径；新增 [installation.md](installation.md) 完整安装指南（前置条件/三场景/setup 详解/验证/各 harness MCP 样例/升级回滚卸载/源码安装/FAQ），README 两版安装节改为场景化 + 链接
 - [x] SessionEnd 原子 spool → daemon drain → provider-scoped SQLite queue；Hook 快速返回
 - [x] 队列语义：claim-token fencing、租约续期、指数退避、dead-letter、blocked 不消耗 attempts、terminal retention
 - [x] spool 重放去重（按 host+session+source_event 查活 job；dead job 保留重试）
 - [x] 陈旧 checkpoint 跳过（claim 时被更新 idle/session_end 取代的 job 直接完成，不耗 attempts）
 - [x] OpenCode `session.idle` checkpoint、`session.deleted` 最终清理、重启续接重建 envelope、最终 messages 快照
-- [x] Evidence Snapshot：有界/脱敏/内容哈希/注入标记；transcript 尾部读取（2MiB/256 行）
+- [x] Evidence Snapshot：有界/脱敏/内容哈希/注入标记；宿主 API 拉取尾部 transcript ≤50 条消息（plugin.ts MESSAGES_LIMIT），证据上限 256 项 / 单 JSON ≤64KB / 单字段 ≤4000 字符（name/path 500）
 - [x] 真实本地 smoke（OpenCode 1.18.13）见 §6 记录
 
 ### 3.3 安全与隐私加固（第二轮多 agent 扫描修复）
@@ -64,9 +70,9 @@
 ### 3.4 验证与质量基建
 
 - [x] `evals/fixtures/retrieval.json` + `bun run eval:lexical`：Recall@5=1.00（4/4）、注入拦截 1/1、泄漏检查 5/5（含含秘密行的阳性对照）
-- [x] `scripts/pack-check.ts`：71 文件 allowlist + dist 预期产物反向校验
+- [x] `scripts/pack-check.ts`：69 文件 allowlist + dist 预期产物反向校验
 - [x] CI 接入 typecheck/lint/test/pack:check/eval:lexical；`LANG=C.UTF-8` 保证 i18n 确定性
-- [x] 文档一致性：命令数（21 具名）、search 契约（含 skills/）、pid 文件名、compaction 上下文、CONTRIBUTING 安全基线、事务日志职责边界
+- [x] 文档一致性：命令数（20 具名）、search 契约（含 skills/）、pid 文件名、compaction 上下文、CONTRIBUTING 安全基线、事务日志职责边界
 
 ## 4. 待办（Release Gate R1）
 
@@ -101,13 +107,35 @@ bun run eval:lexical
 bun run pack:check
 ```
 
-### 6.2 最新结果（2026-08-11，第二轮修复后）
+### 6.2 最新结果（2026-08-12，第六轮修复后）
 
-- `bun test`：311 pass / 973 expect / 23 files / 0 failed（codex 适配器与测试已移除；含自动整合冷却、遥测只读门、citation 行号剥离、孤儿 note 采纳、保留清理语义、扩展资源契约测试）
-- `bun test --coverage`：lines 91.80%，functions 87.36%
+- `bun test`：466 pass / 1569 expect / 26 files / 0 failed（第十一轮新增 5 用例：注入尾部拒绝、双重编码/希腊同形、结构标记毒化、mixed 块 citation 收敛、chat.message 正向注入；修复 cap-8 空转测试与 chat.message 空转断言）
+- `bun test --coverage`：lines 88.78%，functions 93.78%
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：71 文件，dist 干净且预期产物齐全
+- `bun run pack:check`：69 文件，dist 干净且预期产物齐全（含提交产物反向校验）
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
+
+### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
+
+| 严重性 | 修复 | 位置 |
+|---|---|---|
+| Critical | dist 全量提交（59 文件，git 安装零构建真正成立）| .gitignore、ci.yml diff 覆盖全 dist |
+| Critical | prepare 改纯 node（scripts/prepare.mjs，无 bun 用户可安装）| package.json:50 |
+| Critical | node smoke 并入 test job（依赖已就位）| ci.yml |
+| High | 写侧大小上限：extract 字段 200KB 截断 / rollout summary 裁剪 / writeWorkspaceText 校验 / purge 超限降级 | extract.ts、consolidate.ts、workspace.ts、purge.ts |
+| High | LLM 整合循环 read/write_file 路径校验软拒绝（不再整轮废弃）| consolidate.ts |
+| High | orphan 关闭 + backfill 按 workdir 限定（多实例互不误伤）| db.ts closeAllSessions、plugin.ts |
+| High | worker chat 超时 120s（挂起 job 可重试/死信，finally 删会话终止）| channel.ts |
+| Medium | openDb checkpoint + sidecar chmod（WAL 权限收敛）| sqlite.ts |
+| Medium | generation manifest 逐 target 结构校验 + 恢复逐项容错 | generation.ts |
+| Medium | 注入折叠补 %2d/%5f + 数学字母数字同形符（13 变体块映射）| sanitize.ts |
+| Medium | raw_memory 正文 `# Task Group:` 行转义（防块结构毒化）+ provenance 校验真实文件存在 | consolidate.ts |
+| Medium | retry-extraction 加 --provider（可消费 opencode 插件队列）| cli/index.ts、extract.ts |
+| Medium | session.deleted 证据抓取失败回退内存证据 | plugin.ts、engine.ts |
+| Medium | setup：spec 精确幂等（lookalike 不误判）、备份轮转 .bak.N、干跑预检 JSON | setup.ts |
+| Medium | 事件 ts ISO 校验、U+2028/2029/U+0085 拒绝；rollout 字段控制字符清洗 | events.ts、extract.ts |
+| Low | compacting 钩子 worker 短路；根目录 96MB 残留删除+忽略 | plugin.ts、.gitignore |
+| 文档 | 4→6 工具、21→20 命令、schema v10→v11、pack 文件数统一 69、tag 表述改 #main、缓存路径统一、CONTRIBUTING v1 残留、退出码说明、dev bun 版本 | i18n.ts、architecture、integration-opencode、todo、README×2、installation、CONTRIBUTING |
 
 ### 6.3 环境（真实 Harness 本地 smoke）
 
@@ -126,7 +154,8 @@ smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`�
 | 文档 | 用途 |
 |---|---|
 | [docs/architecture.md](architecture.md) | v2 分层架构、存储布局、数据流 |
-| [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 实现契约（数据格式、模块接口、schema v10） |
+| [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 实现契约（数据格式、模块接口、schema v11） |
+| [docs/installation.md](installation.md) | 安装指南：前置条件、三种场景、setup 详解、验证、各 harness MCP 配置、升级/回滚/卸载、源码安装、FAQ |
 | [docs/integration-opencode.md](integration-opencode.md) | OpenCode 接入、事件映射、已知限制 |
 | [README.md](../README.md) | 英文用户入口与支持矩阵 |
 | [docs/README_cn.md](README_cn.md) | 中文用户入口 |

@@ -63,9 +63,15 @@ export function readWorkspaceText(root: string, rel: string): string {
   }
 }
 
-/** Write a workspace file atomically under its lock. */
+/** Write a workspace file atomically under its lock. Enforces the same size
+ *  limit as the read side: writers must not be able to produce a file that
+ *  would then throw on every reader (that would wedge the pipeline with no
+ *  self-healing path). */
 export function writeWorkspaceText(root: string, rel: string, content: string): void {
   const safe = assertWorkspaceRel(rel);
+  if (Buffer.byteLength(content, "utf-8") > MAX_WORKSPACE_FILE_BYTES) {
+    throw new Error(`workspace file exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit: ${safe}`);
+  }
   const path = resolveWorkspacePath(root, safe);
   withFileLock(lockPathFor(root, safe), () => {
     atomicWrite(path, content);
@@ -216,7 +222,15 @@ export function diffWorkspace(rel: string, before: string, after: string): Works
 // -------------------------------------------------------------- baseline
 
 export function saveBaseline(root: string): void {
-  for (const rel of [...MEMORY_DOCS, ...listWorkspaceFiles(root, "rollout_summaries")]) {
+  // Codex diffs the whole memory root including skills/: snapshot them too so
+  // planConsolidation's diff loop (non-artifact rels read from disk against
+  // the baseline) surfaces skills edits automatically. Skills files count
+  // toward MAX_WORKSPACE_FILES — acceptable.
+  for (const rel of [
+    ...MEMORY_DOCS,
+    ...listWorkspaceFiles(root, "rollout_summaries"),
+    ...listWorkspaceFiles(root, "skills"),
+  ]) {
     const content = readWorkspaceText(root, rel);
     const target = resolveWorkspacePath(root, `.baseline/${rel}`);
     // Copy with the same atomic-write discipline (tmp + rename) so a crash
@@ -289,12 +303,24 @@ export function restoreBaseline(root: string, snapshot: Record<string, string>):
   }
 }
 
-/** True when any managed doc differs from the last successful baseline. */
+/** True when any managed doc differs from the last successful baseline.
+ *  Covers MEMORY_DOCS plus skills/ (codex diffs the whole memory root); the
+ *  skills comparison is only meaningful when the baseline actually covers
+ *  skills (saveBaseline snapshots them; the consolidator's generation
+ *  protocol intentionally resets the baseline to docs + rollout summaries,
+ *  after which skills drift is out of its authority). */
 export function hasWorkspaceChanges(root: string): boolean {
   const baseline = loadBaseline(root);
   for (const rel of MEMORY_DOCS) {
     if (readWorkspaceText(root, rel) !== (baseline[rel] ?? "")) {
       return true;
+    }
+  }
+  if (Object.keys(baseline).some((rel) => rel.startsWith("skills/"))) {
+    for (const rel of listWorkspaceFiles(root, "skills")) {
+      if (readWorkspaceText(root, rel) !== (baseline[rel] ?? "")) {
+        return true;
+      }
     }
   }
   return false;

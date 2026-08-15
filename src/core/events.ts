@@ -38,9 +38,13 @@ function validTextField(value: string | undefined, fallback: string, max: number
   if (text.length > max) {
     throw new Error(`invalid envelope field: ${field} exceeds ${max} characters`);
   }
+  // U+2028/U+2029 (line/paragraph separators) and U+0085 (NEL) are valid
+  // JSON/文件名 characters that render as line breaks in markdown — sessionId
+  // is embedded into raw_memories.md headers, so they get the same treatment
+  // as C0 controls.
   const hasControl = Array.from(text).some((char) => {
     const code = char.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
+    return code <= 0x1f || code === 0x7f || code === 0x85 || code === 0x2028 || code === 0x2029;
   });
   if (hasControl) {
     throw new Error(`invalid envelope field: ${field} contains control characters`);
@@ -68,9 +72,22 @@ export function makeEnvelope(input: Partial<EventEnvelope>): EventEnvelope {
     payload: typeof input.payload === "object" && input.payload !== null && !Array.isArray(input.payload)
       ? input.payload
       : {},
-    ts: input.ts ?? new Date().toISOString(),
+    ts: validateTs(input.ts ?? new Date().toISOString()),
   };
   return env;
+}
+
+/** Timestamps must be strict ISO-8601 (with time and timezone): garbage or
+ *  loose values ("Aug 10 2026", plain years, date-only strings) would poison
+ *  time-ordered listings and break retention predicates, whose ISO strings
+ *  sort lexicographically only when every value has the same shape. */
+const ISO_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function validateTs(ts: string): string {
+  if (typeof ts !== "string" || !ISO_TS_RE.test(ts) || Number.isNaN(Date.parse(ts))) {
+    throw new Error("invalid envelope field: ts is not a valid ISO-8601 timestamp");
+  }
+  return ts;
 }
 
 /** Legit envelopes are a few KB; cap parse input so an untrusted socket or

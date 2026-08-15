@@ -2,14 +2,19 @@ import { fitContext } from "../../core/budget.js";
 import { resolve } from "node:path";
 import { loadConfig } from "../../core/config.js";
 import { pipelineConfig } from "../../core/config.js";
-import { HttpLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "../../core/consolidate.js";
+import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "../../core/consolidate.js";
 import { Index } from "../../core/db.js";
 import type { ExtractProvider, EvidenceInput, RolloutSnapshot } from "../../core/extract.js";
-import { createEvidenceSnapshot, enqueueExtractionJob, HttpExtractProvider, processExtractionQueue, stageSession } from "../../core/extract.js";
+import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, processExtractionQueue, stageSession } from "../../core/extract.js";
 import { renderMemoryContext, renderReadPathInstructions } from "../../core/inject.js";
-import { llmEnv } from "../../core/llm.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "../../core/paths.js";
 import { searchMemory, registerMemoryUsage } from "../../core/search.js";
+import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "../../core/workspace.js";
+import { resolveChannel } from "../../core/channel.js";
+import type { LlmChannel } from "../../core/channel.js";
+import { DEFAULT_READ_TOOLS, DEFAULT_SHELL_TOOLS, type AdapterLog, type HarnessToolPreset } from "../contract.js";
+
+export type { AdapterLog } from "../contract.js";
 
 /** Resolve an absolute path against a base; returns the relative path when
  *  the target lives inside the base, otherwise undefined. */
@@ -42,11 +47,14 @@ export interface SessionState {
   messageRoles: Map<string, EvidenceInput["kind"]>;
 }
 
-export type AdapterLog = (
-  level: "debug" | "info" | "warn" | "error",
-  message: string,
-  extra?: Record<string, unknown>,
-) => void;
+/** Transcript item re-fetched by the harness for crash/lost-session backfill
+ *  (same shape as the messageSnapshot input). */
+export interface BackfillEvidenceItem {
+  partId: string;
+  messageId?: string;
+  kind: EvidenceInput["kind"];
+  text?: string;
+}
 
 /** Bounds on per-session in-memory tracking. */
 const MAX_SEEN_PARTS = 4_096;
@@ -61,9 +69,128 @@ const DEFAULT_INJECT_BUDGET = 1500;
 const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
 
-// Only read-only tools count as memory reuse (codex only counts safe reads;
-// writes must never inflate usage stats or be able to fake telemetry).
-const READ_TOOLS = new Set(["read", "grep", "rg", "glance", "list", "search", "view"]);
+// Codex-style read-only shell whitelist (mirrors codex memories/read usage.rs
+// known-safe set: cat cd cut echo expr false grep head id ls nl paste pwd rev
+// seq stat tail tr true uname uniq wc which whoami, plus rg and the restricted
+// find/base64). Only exact command names followed by path operands may yield
+// memory usage; anything else is ignored so a write or unknown tool can never
+// fake telemetry.
+const SHELL_READ_COMMANDS = new Set([
+  "base64",
+  "cat",
+  "cd",
+  "cut",
+  "echo",
+  "expr",
+  "false",
+  "find",
+  "grep",
+  "head",
+  "id",
+  "ls",
+  "nl",
+  "paste",
+  "pwd",
+  "rev",
+  "rg",
+  "seq",
+  "stat",
+  "tail",
+  "tr",
+  "true",
+  "uname",
+  "uniq",
+  "wc",
+  "which",
+  "whoami",
+]);
+// Commands whose operands are actual reads (codex ParsedCommand::Read/Search).
+// The remaining whitelist commands (cd echo expr false id pwd seq tr true uname
+// which whoami) stay in the safe set for tool detection but harvest nothing:
+// their operands are never file reads (echo x.md, cd rollout_summaries and
+// expr x y must not inflate usage_count, which is model-steerable via prompt
+// text). cut stays a READ to match codex: its operand is a file and a cut of a
+// memory file is still a read, even if it virtually never targets one.
+const SHELL_OPERAND_COMMANDS = new Set([
+  "base64",
+  "cat",
+  "cut",
+  "find",
+  "grep",
+  "head",
+  "ls",
+  "nl",
+  "paste",
+  "rev",
+  "rg",
+  "stat",
+  "tail",
+  "uniq",
+  "wc",
+]);
+// Search-type commands treat a directory operand as a read of the whole
+// subtree; plain read commands treat a directory operand as a no-op.
+// Accepted divergence from codex: find/base64 are counted without option
+// filtering (codex excludes -exec/-o compound forms); the delimiter/flag scan
+// below already bounds what a single command string can count.
+const SHELL_DIR_COMMANDS = new Set(["grep", "rg", "find", "ls"]);
+// Shell metacharacters terminate the current command; scanning stops at them
+// so `cat > file` (a write) can never count its output path as a read.
+const SHELL_DELIMITERS = new Set([">", ">>", "<", "|", "||", "&&", ";", "&"]);
+// Single-character prefixes of SHELL_DELIMITERS, used to detect a delimiter
+// glued to a path (`cat a.md&&b.md`) where the exact-token set above misses it.
+const SHELL_DELIMITER_CHARS = new Set([...SHELL_DELIMITERS].map((d) => d[0] ?? ""));
+// Quoted segments are protected by NUL-based placeholders. NUL is the only
+// byte that cannot appear in a Linux filename or in a JSON command string, so
+// a file literally named like a placeholder can never be rewritten into the
+// quoted text (U+E000 private-use placeholders were legal in filenames and
+// could fake usage attribution). Built at runtime: biome forbids control
+// characters inside regex/string literals, so String.fromCharCode(0) it is.
+const NUL = String.fromCharCode(0);
+const quotePlaceholder = (n: number): string => `${NUL}q${n}${NUL}`;
+// Bounds on shell-command harvesting (mirroring the toolName/filePath caps):
+// a command string longer than this is truncated before parsing and a command
+// counts at most this many unique resolved paths, so a pathological bash blob
+// cannot turn one tool.execute.after into thousands of workspace walks.
+const MAX_COMMAND_CHARS = 8_192;
+const MAX_COMMAND_PATHS = 50;
+// Chunk size for the backfill session-id IN-list: SQLite caps bind variables
+// (999), so thousands of orphaned sessions must never reach one query.
+const BACKFILL_ID_CHUNK = 500;
+// listWorkspaceFiles is a full workspace walk; short-lived reuse of one
+// listing keeps a burst of tool events (or one event with many operands) to a
+// single walk without letting the index drift stale for long.
+const WORKSPACE_LIST_TTL_MS = 5_000;
+
+/** Extract a `<tag>...</tag>` block body from citation text (codex
+ *  citations.rs extract_block). Returns undefined when the block is absent. */
+function extractTagBlock(text: string, tag: string): string | undefined {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = text.indexOf(open);
+  if (start < 0) {
+    return undefined;
+  }
+  const bodyStart = start + open.length;
+  const end = text.indexOf(close, bodyStart);
+  if (end < 0) {
+    return undefined;
+  }
+  return text.slice(bodyStart, end);
+}
+
+/** Parse one citation entry line (`<file>:<start>-<end>|note=[...]`) into its
+ *  file reference. codex citations.rs strips the trailing note; entry lines
+ *  without a note are accepted too (lenient telemetry). */
+function citationEntryRef(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const noteAt = trimmed.lastIndexOf("|note=[");
+  const location = (noteAt >= 0 ? trimmed.slice(0, noteAt) : trimmed).trim();
+  return location || undefined;
+}
 
 export interface AdapterOptions {
   log?: AdapterLog;
@@ -74,6 +201,17 @@ export interface AdapterOptions {
   /** Phase-1 extraction channel; defaults to HTTP. Missing configuration is
    *  a retryable provider failure for durable queue consumers. */
   extract?: ExtractProvider;
+  /** Harness-embedded model channel. When present the engine builds its
+   *  default providers around it (extraction + automatic consolidation);
+   *  an explicit `extract` provider override still wins for Phase 1. */
+  channel?: LlmChannel;
+  /** Harness-specific read/shell tool-name sets for usage telemetry; the
+   *  engine defaults to the codex-style superset. */
+  toolPreset?: HarnessToolPreset;
+  /** This adapter's host (e.g. "opencode"). Used to scope host-wide scans
+   *  (backfill without explicit session ids) to sessions this adapter owns;
+   *  when omitted it is derived from the first sessionCreated call. */
+  host?: string;
   injectBudgetTokens?: number;
   /** Harness adapters enable this so hooks only persist a checkpoint and the
    * model runs in the durable worker. Direct core callers retain the legacy
@@ -85,17 +223,36 @@ export class MemcurioAdapter {
   private readonly sessions = new Map<string, SessionState>();
   private readonly root: string;
   private readonly log: AdapterLog;
-  private readonly extract: ExtractProvider;
+  /** Phase-1 provider (harness-channel default or explicit override);
+   *  public so harness adapters can inspect the resolved provider name. */
+  readonly extract: ExtractProvider;
+  /** Harness-embedded model channel (hostModel capability); undefined for
+   *  direct core callers that rely on the process-wide HTTP channel. */
+  private readonly channel: LlmChannel | undefined;
+  /** Read-only tool names that count as memory reuse (usage telemetry).
+   *  Harness-specific overrides come from the adapter's toolPreset; the
+   *  default is the codex-style superset. Writes must never inflate usage
+   *  stats or be able to fake telemetry, so only these names ever count. */
+  private readonly readTools: Set<string>;
+  /** Shell tool names whose command string is parsed lexically for
+   *  memory-file reads (never executed). */
+  private readonly shellTools: Set<string>;
+  private host: string;
   private readonly injectBudgetTokens: number | undefined;
   private readonly durableQueue: boolean;
   private workerPromise: Promise<QueueDrainResult[]> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDueAt: number | undefined;
+  private workspaceListCache: { at: number; files: string[] } | undefined;
 
   constructor(opts: AdapterOptions = {}) {
     this.root = resolve(opts.root ?? coreRoot());
     this.log = opts.log ?? (() => {});
-    this.extract = opts.extract ?? new HttpExtractProvider();
+    this.extract = opts.extract ?? new LlmExtractProvider(opts.channel);
+    this.channel = opts.channel;
+    this.readTools = new Set(opts.toolPreset?.readTools ?? DEFAULT_READ_TOOLS);
+    this.shellTools = new Set(opts.toolPreset?.shellTools ?? DEFAULT_SHELL_TOOLS);
+    this.host = opts.host ?? "";
     this.injectBudgetTokens = opts.injectBudgetTokens;
     this.durableQueue = opts.durableQueue === true;
   }
@@ -107,6 +264,9 @@ export class MemcurioAdapter {
   async sessionCreated(sessionId: string, workdir: string, host: string): Promise<void> {
     const root = this.root;
     ensureLayout(root);
+    // Derive the adapter host from the first session the host reports; it
+    // scopes host-wide scans (backfill without explicit ids) later.
+    this.host = this.host || host;
     const existing = this.sessions.get(sessionId);
     if (existing) {
       // Hosts re-emit SessionStart after compaction. Do not reset the
@@ -245,6 +405,23 @@ export class MemcurioAdapter {
     s.messageCount = s.messageEvidence.size;
   }
 
+  /** In-memory evidence collected from streamed parts (bounded). Harnesses
+   *  fall back to this when the host API no longer serves the final
+   *  transcript (e.g. a session was deleted before the fetch) so the final
+   *  checkpoint is not an empty shell that supersedes richer idle evidence. */
+  memoryEvidenceSnapshot(sessionId: string): ReadonlyArray<{ partId: string; messageId?: string; kind: EvidenceInput["kind"]; text?: string }> {
+    const s = this.sessions.get(sessionId);
+    if (!s) {
+      return [];
+    }
+    return [...s.messageEvidence.entries()].map(([partId, record]) => ({
+      partId,
+      messageId: record.messageId,
+      kind: record.item.kind,
+      text: record.item.text,
+    }));
+  }
+
   /** Add host-owned transcript evidence to the in-memory checkpoint. The
    * reader is adapter-specific; this shared method only applies the bounded
    * collection guard before the next durable snapshot is written. */
@@ -259,7 +436,11 @@ export class MemcurioAdapter {
     }
   }
 
-  async toolExecuted(sessionId: string, tool: string, details?: { filePath?: string }): Promise<void> {
+  async toolExecuted(
+    sessionId: string,
+    tool: string,
+    details?: { filePath?: string; path?: string; command?: string },
+  ): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("debug", "toolExecuted: unknown session, ignoring", { sessionId, tool });
@@ -287,58 +468,340 @@ export class MemcurioAdapter {
     // Codex-style usage telemetry: only read-only tools that actually read a
     // memory file count as reuse of the referenced rollouts (feeds the
     // selection window). Writes must never inflate usage stats.
-    if (details?.filePath && READ_TOOLS.has(toolName)) {
+    if (details?.filePath && this.readTools.has(toolName)) {
       await this.memoryUsageFromPath(details.filePath);
     }
+    // grep/rg/search/list pass the scanned directory in args.path; a directory
+    // read of a memory folder counts the memory files under it.
+    if (details?.path && this.readTools.has(toolName)) {
+      await this.memoryUsageFromPath(details.path);
+    }
+    // Shell tools (bash/exec) pass the raw command string. Parse it for
+    // read-only whitelist commands and count any memory-workspace paths they
+    // read; never execute anything. The command is capped before parsing, and
+    // at most MAX_COMMAND_PATHS unique paths are counted per command.
+    if (details?.command && this.shellTools.has(toolName)) {
+      const command = details.command.slice(0, MAX_COMMAND_CHARS);
+      if (!command) {
+        // Empty after capping (or genuinely empty): nothing to harvest, mirror
+        // the toolUsage no-op behavior for empty tool names.
+        return;
+      }
+      const parsed = this.pathsFromShellCommand(command);
+      if (parsed.length === 0) {
+        return;
+      }
+      const workspace = memoryWorkspace(this.root);
+      const counted = new Set<string>();
+      const candidates: Array<{ path: string; subtree: boolean }> = [];
+      for (const { raw, subtree } of parsed) {
+        if (counted.size >= MAX_COMMAND_PATHS) {
+          break;
+        }
+        // Relative operands resolve against the session workdir first, then
+        // against the adapter process cwd (the harness usually runs there).
+        for (const candidate of [resolve(s.workdir ?? "", raw), resolve(raw)]) {
+          if (counted.size >= MAX_COMMAND_PATHS) {
+            break;
+          }
+          const rel = pathIsInside(candidate, workspace);
+          if (rel && !counted.has(candidate)) {
+            counted.add(candidate);
+            candidates.push({ path: candidate, subtree });
+          }
+        }
+      }
+      if (candidates.length > 0) {
+        // One workspace walk + one Index open/close (one registerMemoryUsage
+        // call) for the whole command instead of one walk + one Index per
+        // candidate or per subtree list.
+        await this.memoryUsageFromPaths(this.workspaceFiles(), candidates);
+      }
+    }
+  }
+
+  /** Workspace listing with a short TTL so a burst of tool events reuses one
+   *  walk; the listing only feeds usage counts and refreshes within 5s. */
+  private workspaceFiles(): string[] {
+    const now = Date.now();
+    if (this.workspaceListCache && now - this.workspaceListCache.at < WORKSPACE_LIST_TTL_MS) {
+      return this.workspaceListCache.files;
+    }
+    const files = listWorkspaceFiles(this.root);
+    this.workspaceListCache = { at: now, files };
+    return files;
   }
 
   /** Map a read-path file (or citation-bearing text) to stage-1 usage. Paths
    *  must be absolute workspace paths; text is scanned for rollout_summaries/
-   *  citations. */
+   *  citations. A directory read (grep/list on a memory folder) counts every
+   *  memory file under that folder, mirroring codex's kind-level search usage. */
   async memoryUsageFromPath(filePath: string): Promise<void> {
     const workspace = memoryWorkspace(this.root);
     const rel = pathIsInside(filePath, workspace);
     if (!rel) {
       return;
     }
+    const children = this.workspaceFiles().filter((r) => r === rel || r.startsWith(`${rel}/`));
+    if (children.length > 0) {
+      await registerMemoryUsage(this.root, children);
+      return;
+    }
     await registerMemoryUsage(this.root, [rel]);
+  }
+
+  /** Batched single-walk usage registration: resolve every candidate against
+   *  one workspace listing and ONE Index open/close (one registerMemoryUsage
+   *  call) so one toolExecuted with many shell operands never walks the
+   *  workspace or opens SQLite per candidate. A directory operand expands to
+   *  its subtree only for search-type commands (caller sets subtree=true);
+   *  plain read commands treat it as a no-op. */
+  private async memoryUsageFromPaths(
+    workspaceFiles: readonly string[],
+    candidates: ReadonlyArray<{ path: string; subtree: boolean }>,
+  ): Promise<void> {
+    if (candidates.length === 0) {
+      return;
+    }
+    const workspace = memoryWorkspace(this.root);
+    const files = new Set(workspaceFiles);
+    const rels: string[] = [];
+    for (const { path, subtree } of candidates) {
+      const rel = pathIsInside(path, workspace);
+      if (!rel) {
+        continue;
+      }
+      if (files.has(rel)) {
+        rels.push(rel);
+        continue;
+      }
+      if (subtree) {
+        for (const file of workspaceFiles) {
+          if (file.startsWith(`${rel}/`)) {
+            rels.push(file);
+          }
+        }
+      }
+    }
+    if (rels.length === 0) {
+      return;
+    }
+    await registerMemoryUsage(this.root, rels);
+  }
+
+  /** Entry-side retention recycle. Calls the shared stagePruneRetention with
+   *  the configured maxUnusedDays; the shared db.ts change also recycles
+   *  never-selected rows older than the window and RETURNS the deleted rows
+   *  ({ rollout_key, artifact_filename }) so the entry side can unlink their
+   *  artifacts. The cast keeps this compiling against both the old
+   *  count-return and the new rows-return signature; at runtime a plain
+   *  number means the old API, whose rows were already unlinked by the
+   *  pruning consolidation (fallback still recycles stale pending rows so
+   *  behavior is identical once the shared change lands). */
+  private stagePruneRetentionWithRows(
+    idx: Index,
+    maxUnusedDays: number,
+  ): { rows: Array<{ rollout_key: string; artifact_filename: string | null }>; count: number } {
+    const result = (idx.stagePruneRetention as (
+      batch?: number,
+      maxUnusedDays?: number,
+    ) => number | Array<{ rollout_key: string; artifact_filename: string | null }>)(200, maxUnusedDays);
+    if (Array.isArray(result)) {
+      return { rows: result, count: result.length };
+    }
+    // Old count-only API: recycle stale never-selected pending rows here
+    // (stalest-first, matching stagePruneRetention's ordering), so the entry
+    // side closes the window even before the shared db.ts change lands.
+    const cutoff = new Date(Date.now() - maxUnusedDays * 86_400_000).toISOString();
+    const rows = idx.driver.all<{ rollout_key: string; artifact_filename: string | null }>(
+      `DELETE FROM stage1_outputs
+       WHERE rollout_key IN (
+         SELECT rollout_key FROM stage1_outputs
+         WHERE status = 'pending' AND selected_for_phase2 = 0
+           AND COALESCE(last_usage, source_updated_at) < ?
+         ORDER BY COALESCE(last_usage, source_updated_at) ASC, source_updated_at ASC
+         LIMIT ?
+       ) RETURNING rollout_key, artifact_filename`,
+      [cutoff, 200],
+    );
+    return { rows, count: result + rows.length };
+  }
+
+  /** Conservatively extract path operands of whitelisted read-only commands
+   *  from a shell command string. Tokens are never executed: the command text
+   *  is only split on whitespace, and a path must be a plain operand of an
+   *  exact whitelisted command name to be considered. Quoted segments
+   *  ("a b.md") are extracted first so a quoted path with spaces survives
+   *  whitespace splitting as one token and embedded metacharacters (e.g.
+   *  "a; b") never act as delimiters. */
+  private pathsFromShellCommand(command: string): Array<{ raw: string; subtree: boolean }> {
+    // Quoted segments become NUL-based placeholders. NUL cannot appear in a
+    // Linux filename or a JSON command string, so no file can ever collide
+    // with a placeholder (U+E000 private-use placeholders were legal
+    // filename bytes: a file literally named `\uE000q0\uE000` could be
+    // rewritten into arbitrary quoted text and fake usage attribution).
+    const quoted: string[] = [];
+    const text = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (match) => {
+      quoted.push(match.slice(1, -1));
+      return quotePlaceholder(quoted.length - 1);
+    });
+    const tokens = text.split(/\s+/).filter(Boolean);
+    // Restore a placeholder only when it spans the ENTIRE token: the
+    // placeholder is always inserted as a full token, so restoring inside a
+    // larger token (e.g. `"a b"x` -> `\0q0\0x`) would fabricate a path the
+    // command never used and must not happen.
+    const restore = (token: string): string => {
+      if (token.length >= 3 && token[0] === NUL && token[token.length - 1] === NUL) {
+        const inner = token.slice(1, -1);
+        const n = inner.startsWith("q") ? Number(inner.slice(1)) : NaN;
+        if (Number.isInteger(n) && n >= 0 && n < quoted.length) {
+          return quoted[n] ?? "";
+        }
+      }
+      return token;
+    };
+    const paths: Array<{ raw: string; subtree: boolean }> = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      const cmd = tokens[i] ?? "";
+      if (!SHELL_READ_COMMANDS.has(cmd)) {
+        continue;
+      }
+      // Detection-only commands (cd echo expr …) harvest nothing; their
+      // operands are never reads.
+      if (!SHELL_OPERAND_COMMANDS.has(cmd)) {
+        continue;
+      }
+      const subtree = SHELL_DIR_COMMANDS.has(cmd);
+      // grep/rg: the first non-flag operand is the PATTERN, not a path, and
+      // counting it (e.g. `grep -r rollout_summaries/x.md .` resolving the
+      // pattern to a memory subtree) would fabricate usage. So for grep/rg
+      // the first non-flag operand is skipped; a pattern supplied via
+      // -e/--regexp/-f/--file (bare flag + next token, or a glued form like
+      // -efoo/--regexp=foo) suppresses the implicit-pattern rule entirely and
+      // its value is skipped as well. All other commands count every operand.
+      const grepLike = cmd === "grep" || cmd === "rg";
+      const gluedPatternFlag = (token: string): boolean =>
+        (token.startsWith("-e") && token.length > 2) ||
+        (token.startsWith("-f") && token.length > 2) ||
+        token.startsWith("--regexp=") ||
+        token.startsWith("--file=");
+      let patternPending = false;
+      let patternSpecified = false;
+      let firstOperandSeen = false;
+      // accept a potential operand after the pattern bookkeeping; the
+      // closure state makes grep/rg skip patterns while other commands pass
+      // every operand through unchanged.
+      const accept = (raw: string): void => {
+        if (grepLike) {
+          if (patternPending) {
+            patternPending = false;
+            return;
+          }
+          if (!patternSpecified && !firstOperandSeen) {
+            firstOperandSeen = true;
+            return;
+          }
+        }
+        paths.push({ raw: restore(raw), subtree });
+      };
+      for (let j = i + 1; j < tokens.length; j += 1) {
+        const token = tokens[j] ?? "";
+        if (SHELL_READ_COMMANDS.has(token)) {
+          break;
+        }
+        // A delimiter glued to a path (`cat a.md&&b.md`, `cat f>out`) ends
+        // this command at the delimiter: only the text before the first
+        // delimiter can be an operand, and scanning stops there so the glued
+        // next command's paths never count as reads of this one. Quoted
+        // segments are placeholder-protected and never trigger this.
+        let delimAt: number | undefined;
+        for (let k = 0; k < token.length; k += 1) {
+          if (SHELL_DELIMITER_CHARS.has(token[k] ?? "")) {
+            delimAt = k;
+            break;
+          }
+        }
+        if (delimAt !== undefined) {
+          const prefix = token.slice(0, delimAt);
+          if (prefix && !prefix.startsWith("-")) {
+            accept(prefix);
+          }
+          break;
+        }
+        if (token.startsWith("-")) {
+          if (grepLike && (token === "-e" || token === "--regexp" || token === "-f" || token === "--file")) {
+            patternPending = true;
+            patternSpecified = true;
+          } else if (grepLike && gluedPatternFlag(token)) {
+            // -efoo / -fFILE / --regexp=foo / --file=foo: value is glued on.
+            patternSpecified = true;
+          }
+          continue;
+        }
+        accept(token);
+      }
+    }
+    return paths;
   }
 
   /** Codex-style citation telemetry: parse <memcurio-citation> blocks from
    *  assistant text and count the referenced memory files (and rollout keys)
-   *  as used. The block has two sections:
-   *    citation_entries: <path>[:<line>[-<line>]] [| note=[...]]
-   *    rollout_ids:      <host|sessionId> per line
+   *  as used. The block mirrors codex citations.rs: a <citation_entries>
+   *  section of `<file>:<start>-<end>|note=[...]` lines and a <rollout_ids>
+   *  section of bare rollout keys. The legacy line-style sections
+   *  (`citation_entries:` / `rollout_ids:`) are still accepted for
+   *  backward compatibility with sessions in flight.
    */
   async memoryUsageFromCitations(text: string): Promise<void> {
     const entries: string[] = [];
     for (const block of text.matchAll(/<memcurio-citation>([\s\S]*?)<\/memcurio-citation>/g)) {
       const body = block[1] ?? "";
-      let inEntries = false;
-      let inIds = false;
-      for (const line of body.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-        if (/^citation_entries:/.test(trimmed)) {
-          inEntries = true;
-          inIds = false;
-          continue;
-        }
-        if (/^rollout_ids:/.test(trimmed)) {
-          inEntries = false;
-          inIds = true;
-          continue;
-        }
-        if (inIds) {
-          entries.push(trimmed);
-          continue;
-        }
-        if (inEntries) {
-          const ref = trimmed.split("|")[0]?.trim() ?? "";
+      const entriesBlock = extractTagBlock(body, "citation_entries");
+      const idsBlock = extractTagBlock(body, "rollout_ids");
+      if (entriesBlock !== undefined) {
+        for (const line of entriesBlock.split("\n")) {
+          const ref = citationEntryRef(line);
           if (ref) {
             entries.push(ref);
+          }
+        }
+      }
+      if (idsBlock !== undefined) {
+        for (const line of idsBlock.split("\n")) {
+          const id = line.trim();
+          if (id && !id.startsWith("<")) {
+            entries.push(id);
+          }
+        }
+      }
+      if (entriesBlock === undefined && idsBlock === undefined) {
+        // Legacy line-style sections.
+        let inEntries = false;
+        let inIds = false;
+        for (const line of body.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          if (/^citation_entries:/.test(trimmed)) {
+            inEntries = true;
+            inIds = false;
+            continue;
+          }
+          if (/^rollout_ids:/.test(trimmed)) {
+            inEntries = false;
+            inIds = true;
+            continue;
+          }
+          if (inIds) {
+            entries.push(trimmed);
+            continue;
+          }
+          if (inEntries) {
+            const ref = trimmed.split("|")[0]?.trim() ?? "";
+            if (ref) {
+              entries.push(ref);
+            }
           }
         }
       }
@@ -431,6 +894,108 @@ export class MemcurioAdapter {
     return { staged, queued };
   }
 
+  /** Crash/lost-session catch-up (A1): a session whose process died before
+   *  `session.idle`/`session.deleted` never got a durable checkpoint (the host
+   *  only enqueues on those events). Scan persisted session rows that have no
+   *  extraction job at all and enqueue a `backfill` checkpoint through the
+   *  normal queue. Duplicate-safe: the queue's unique idempotency key and the
+   *  stale-checkpoint-superseded rule in extractionClaim() already guard
+   *  against double work, and a session that ever produced a job is never
+   *  re-enqueued (completed work is never replayed).
+   *  LIMITATION: raw evidence lives only in the harness process (in-memory),
+   *  so a crash loses it; the optional `evidenceFor` callback lets the harness
+   *  re-fetch the transcript from its own API (best effort). Without it the
+   *  checkpoint carries just the persisted session row (workdir/summary) and
+   *  the LLM decides whether that alone is worth remembering. No schema
+   *  changes: sessions + extraction_jobs are the only tables involved. */
+  async backfillUnprocessedSessions(
+    sessionIds?: readonly string[],
+    evidenceFor?: (sessionId: string) => Promise<readonly BackfillEvidenceItem[] | undefined>,
+  ): Promise<number> {
+    if (!this.durableQueue) {
+      return 0;
+    }
+    const root = this.root;
+    const idx = await Index.create(indexDb(root));
+    let inserted = 0;
+    try {
+      interface BackfillRow {
+        session_id: string;
+        host: string;
+        workdir: string | null;
+        started_at: string;
+        ended_at: string | null;
+        summary: string | null;
+      }
+      const rowSql = "SELECT session_id, host, workdir, started_at, ended_at, summary FROM sessions";
+      const processRow = async (row: BackfillRow): Promise<void> => {
+        const hasJob = idx.driver.get<{ job_id: string }>(
+          "SELECT job_id FROM extraction_jobs WHERE host = ? AND session_id = ? LIMIT 1",
+          [row.host, row.session_id],
+        );
+        if (hasJob) {
+          return;
+        }
+        const items = evidenceFor ? await evidenceFor(row.session_id) : undefined;
+        const evidence = items?.length
+          ? createEvidenceSnapshot(items.map((item) => ({ kind: item.kind, text: item.text })))
+          : undefined;
+        const snapshot: RolloutSnapshot = {
+          sessionId: row.session_id,
+          workdir: row.workdir ?? "",
+          host: row.host,
+          sourceEvent: "backfill",
+          summary: row.summary ?? undefined,
+          messages: items?.length ?? 0,
+          tools: [],
+          files: [],
+          startedAt: row.started_at,
+          endedAt: row.ended_at ?? new Date().toISOString(),
+          evidence,
+        };
+        let queued: ReturnType<typeof enqueueExtractionJob> | undefined;
+        idx.withTransaction(() => {
+          queued = enqueueExtractionJob(idx, snapshot, "backfill", this.extract.name);
+          idx.audit("extract.backfill", row.host, `${queued.jobId} (${row.session_id}; messages=${snapshot.messages})`);
+        });
+        if (queued?.inserted) {
+          inserted += 1;
+        }
+      };
+      if (sessionIds && sessionIds.length > 0) {
+        // Chunk the IN-list: SQLite caps bind variables (~999), so thousands
+        // of orphaned session ids would otherwise fail the whole scan.
+        for (let start = 0; start < sessionIds.length; start += BACKFILL_ID_CHUNK) {
+          const chunk = sessionIds.slice(start, start + BACKFILL_ID_CHUNK);
+          const rows = idx.rawAll<BackfillRow>(
+            `${rowSql} WHERE session_id IN (${chunk.map(() => "?").join(",")}) ORDER BY started_at ASC`,
+            [...chunk],
+          );
+          for (const row of rows) {
+            await processRow(row);
+          }
+        }
+      } else {
+        // Without explicit ids the scan is scoped to this adapter's own host:
+        // sessions consumed by another adapter/provider (different host) must
+        // never be enqueued through our provider, or we would fabricate
+        // usage/rollouts for work this adapter never served. The per-row
+        // hasJob lookup stays keyed on the row's own host+session.
+        if (!this.host) {
+          this.log("debug", "backfill skipped: adapter host unknown, cannot scope the scan");
+          return 0;
+        }
+        const rows = idx.rawAll<BackfillRow>(`${rowSql} WHERE host = ? ORDER BY started_at ASC`, [this.host]);
+        for (const row of rows) {
+          await processRow(row);
+        }
+      }
+      return inserted;
+    } finally {
+      idx.close();
+    }
+  }
+
   /** Drain durable jobs outside the host event request. Only one drain runs
    * per adapter; a failed job remains pending/dead in SQLite and schedules its
    * next retry without blocking future Hook responses. */
@@ -480,9 +1045,61 @@ export class MemcurioAdapter {
   async maybeConsolidate(): Promise<void> {
     const root = this.root;
     try {
+      // The pipeline config is loaded before the entry prune: the retention
+      // recycle needs maxUnusedDays to also drop never-selected rows whose
+      // window has closed (previously cfg was only loaded after the cooldown
+      // check, too late for the prune).
+      const cfg = pipelineConfig(root);
       const idx = await Index.create(indexDb(root));
       let cooldownMs: number | undefined;
       try {
+        // A1-extra: retention cleanup must not depend on a successful
+        // consolidation commit. Pruned-but-never-selected stage-1 rows are
+        // dead weight; without this, a consolidation that never succeeds (or
+        // never runs) grows stage1_outputs unbounded. Idempotent with the
+        // same call inside the consolidation transaction. The shared db.ts
+        // stagePruneRetention additionally recycles never-selected pending
+        // rows older than maxUnusedDays and returns the deleted rows so the
+        // entry side can unlink their artifacts: the next consolidation's
+        // workspace diff then surfaces the deletion and removes dependent
+        // MEMORY.md blocks (codex-style).
+        try {
+          const pruned = this.stagePruneRetentionWithRows(idx, cfg.maxUnusedDays);
+          if (pruned.count > 0) {
+            idx.audit("prune.retention", "-", `${pruned.count} row(s) pruned by retention cleanup`);
+          }
+          for (const row of pruned.rows) {
+            if (row.artifact_filename) {
+              try {
+                deleteRolloutSummary(root, row.artifact_filename);
+              } catch {
+                // best effort: a missing/unlinked artifact must never block
+                // the entry prune or surface a failure to the host path.
+              }
+            }
+          }
+          // Codex storage.rs:80 prune_rollout_summaries keep-set discipline:
+          // the DB's artifact-filename set IS the keep-set, and every
+          // rollout_summaries file outside it (row age-pruned, explicitly
+          // deleted, or lost in a crash between the row DELETE and the
+          // unlink above) is an orphan that would keep stale MEMORY.md
+          // citations alive forever. Sweep it on the next entry prune.
+          // Pending rows (still in the DB) are never touched. Best effort.
+          const keepFilenames = new Set(idx.stageArtifactFilenames());
+          for (const rel of listWorkspaceFiles(root, "rollout_summaries")) {
+            if (keepFilenames.has(rel.slice("rollout_summaries/".length))) {
+              continue;
+            }
+            try {
+              deleteRolloutSummary(root, rel.slice("rollout_summaries/".length));
+            } catch {
+              // best effort, same discipline as the artifact unlink above
+            }
+          }
+        } catch {
+          // best effort: retention cleanup must never block consolidation
+          // scheduling or surface a failure to the host event path.
+        }
         const last = idx.metaGet("consolidation_auto_last");
         const failed = idx.metaGet("consolidation_auto_failed");
         const now = Date.now();
@@ -506,7 +1123,6 @@ export class MemcurioAdapter {
         return;
       }
       await this.processPendingExtractions();
-      const cfg = pipelineConfig(root);
       const idx2 = await Index.create(indexDb(root));
       let work = false;
       try {
@@ -515,24 +1131,46 @@ export class MemcurioAdapter {
           const rows = idx2.stageList();
           work = rows.some((r) => r.status === "pending" && !r.selectedForPhase2);
         }
+        // Codex's authority is the git diff of the whole memory root, not
+        // just the DB flags: a manual MEMORY.md edit (no pending rows or
+        // notes) is real work the automatic consolidation must fold in, or
+        // user edits would drift forever between consolidations. The
+        // cooldown/backoff checks above stay unchanged; when the workspace
+        // already matches the baseline, runConsolidation's own diff/commit
+        // handles the true no-op case.
+        if (!work) {
+          work = hasWorkspaceChanges(root);
+        }
       } finally {
         idx2.close();
       }
       if (!work) {
         return;
       }
-      const env = llmEnv();
-      const provider = env.apiKey ? new HttpLoopConsolidateProvider() : new RuleConsolidateProvider();
+      const channel = resolveChannel(this.channel);
+      const provider = channel ? new LlmLoopConsolidateProvider(undefined, channel) : new RuleConsolidateProvider();
       await runConsolidation(root, provider, { execute: true, config: cfg });
       const idx3 = await Index.create(indexDb(root));
       try {
         idx3.metaSet("consolidation_auto_last", new Date().toISOString());
-        idx3.audit("consolidate.auto", "-", "automatic Phase 2 completed");
+        idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${channel?.name ?? "rule"})`);
       } finally {
         idx3.close();
       }
       this.log("info", "automatic consolidation completed");
     } catch (err) {
+      const message = String(err);
+      if (message.includes("already in progress")) {
+        // A3: another process holds the workspace lease (runConsolidation
+        // throws "consolidation already in progress for this workspace").
+        // Losing the race is not a failure: it must not arm the 1h retry
+        // backoff or audit consolidate.auto_failed, or every idle event from
+        // a competing process would suppress automatic Phase 2 for an hour.
+        this.log("debug", "automatic consolidation skipped: lease held by another process", {
+          error: message,
+        });
+        return;
+      }
       try {
         const idx = await Index.create(indexDb(root));
         try {

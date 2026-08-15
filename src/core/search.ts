@@ -19,7 +19,10 @@ export interface MemoryHit {
  *  citations, or bare rollout keys. */
 export async function registerMemoryUsage(root: string, rels: readonly string[]): Promise<void> {
   const usedKeys = new Set<string>();
-  const pathKeys: string[] = [];
+  // Bare rollout keys dedupe per call too: the same key twice in one citation
+  // block is one reference, not two (artifact filenames already dedupe via
+  // usedKeys). "One unique key counts once per call".
+  const pathKeys = new Set<string>();
   for (const raw of rels) {
     const entry = raw.trim();
     if (!entry) {
@@ -45,10 +48,10 @@ export async function registerMemoryUsage(root: string, rels: readonly string[])
       }
     } else if (!stripped.startsWith("<") && !stripped.includes("| note=")) {
       // Bare rollout key (host|sessionId): match the stage-1 row directly.
-      pathKeys.push(stripped);
+      pathKeys.add(stripped);
     }
   }
-  if (!usedKeys.size && !pathKeys.length) {
+  if (!usedKeys.size && !pathKeys.size) {
     return;
   }
   const idx = await Index.create(indexDb(root));

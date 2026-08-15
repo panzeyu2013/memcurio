@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { diffTexts, diffWorkspace, listWorkspaceFiles, MAX_WORKSPACE_FILE_BYTES, readWorkspaceText, rolloutSlugs, saveBaseline, loadBaseline, hasWorkspaceChanges, writeRolloutSummary, readRolloutSummary, deleteRolloutSummary, writeWorkspaceText, deleteWorkspaceText } from "../src/core/workspace.js";
 import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,7 +62,13 @@ describe("workspace text IO", () => {
   });
 
   test("rejects oversized managed files before loading them into memory", () => {
-    writeWorkspaceText(dir, "MEMORY.md", "x".repeat(MAX_WORKSPACE_FILE_BYTES + 1));
+    // writeWorkspaceText now enforces the limit on the write side too; an
+    // oversized file can still exist via external editing (or legacy data),
+    // so the read side keeps its own guard.
+    expect(() => writeWorkspaceText(dir, "MEMORY.md", "x".repeat(MAX_WORKSPACE_FILE_BYTES + 1))).toThrow(
+      /byte limit/,
+    );
+    writeFileSync(join(dir, "memory", "MEMORY.md"), "x".repeat(MAX_WORKSPACE_FILE_BYTES + 1));
     expect(() => readWorkspaceText(dir, "MEMORY.md")).toThrow(/byte limit/);
   });
 
@@ -114,6 +120,17 @@ describe("baseline", () => {
     // hasWorkspaceChanges is defined over MEMORY_DOCS; rollout summaries are
     // compared by the Phase-2 diff instead.
     writeRolloutSummary(dir, "s.md", "changed\n");
+    expect(hasWorkspaceChanges(dir)).toBe(false);
+  });
+
+  test("baseline covers skills/ and skills edits count as workspace changes", () => {
+    writeWorkspaceText(dir, "skills/SKILL.md", "# Skill v1\n");
+    saveBaseline(dir);
+    expect(hasWorkspaceChanges(dir)).toBe(false);
+    expect(loadBaseline(dir)["skills/SKILL.md"]).toBe("# Skill v1\n");
+    writeWorkspaceText(dir, "skills/SKILL.md", "# Skill v2\n");
+    expect(hasWorkspaceChanges(dir)).toBe(true);
+    writeWorkspaceText(dir, "skills/SKILL.md", "# Skill v1\n");
     expect(hasWorkspaceChanges(dir)).toBe(false);
   });
 

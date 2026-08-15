@@ -62,16 +62,22 @@ async function readAudit(): Promise<Array<{ action: string; detail: string }>> {
 }
 
 describe("memcurio MCP server", () => {
-  test("exposes the five memory tools", async () => {
+  test("exposes the seven memory tools", async () => {
     await withClient(async (client) => {
       const { tools } = await client.listTools();
       const names = tools.map((t) => t.name).sort();
       expect(names).toEqual([
         "memory_context",
+        "memory_list",
+        "memory_read",
         "memory_remember",
         "memory_search",
         "memory_status",
       ]);
+      // Pin the consent phrase in the tool description so a silent revert of
+      // the round-2 threshold edit (removing "不要自主写入") is caught.
+      const remember = tools.find((t) => t.name === "memory_remember");
+      expect(String(remember?.description ?? "")).toContain("不要自主写入");
     });
   });
 
@@ -192,6 +198,54 @@ describe("memcurio MCP server", () => {
       } finally {
         idx.close();
       }
+    });
+  });
+
+  test("memory_list lists workspace entries and rejects escapes/symlinks", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: x\n");
+    writeWorkspaceText(dir, "rollout_summaries/rollout-aaaaaaaaaaaaaaaaaaaaaaaa.md", "recap\n");
+    await withClient(async (client) => {
+      const root = parseText(
+        (await client.callTool({ name: "memory_list", arguments: {} })) as CallResult,
+      ) as { path: string; entries: Array<{ path: string; type: string }>; nextCursor: string | null; truncated: boolean };
+      expect(root.path).toBe("");
+      expect(root.entries.some((e) => e.path === "MEMORY.md" && e.type === "file")).toBe(true);
+      expect(root.entries.some((e) => e.path === "rollout_summaries" && e.type === "directory")).toBe(true);
+      expect(root.truncated).toBe(false);
+
+      const sub = parseText(
+        (await client.callTool({ name: "memory_list", arguments: { path: "rollout_summaries" } })) as CallResult,
+      ) as { entries: Array<{ path: string }> };
+      expect(sub.entries.map((e) => e.path)).toContain("rollout_summaries/rollout-aaaaaaaaaaaaaaaaaaaaaaaa.md");
+
+      const escapeAttempt = (await client.callTool({
+        name: "memory_list",
+        arguments: { path: "../outside" },
+      })) as CallResult;
+      expect(escapeAttempt.isError).toBe(true);
+    });
+  });
+
+  test("memory_read reads lines with caps and redacts secrets", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", "line one\nline two secret sk-proj-1234567890abcdefghijklmnop\nline three\n");
+    await withClient(async (client) => {
+      const read = parseText(
+        (await client.callTool({
+          name: "memory_read",
+          arguments: { path: "MEMORY.md", lineOffset: 2, maxLines: 1 },
+        })) as CallResult,
+      ) as { path: string; startLineNumber: number; content: string; truncated: boolean };
+      expect(read.path).toBe("MEMORY.md");
+      expect(read.startLineNumber).toBe(2);
+      expect(read.truncated).toBe(true);
+      expect(read.content).toContain("[REDACTED]");
+      expect(read.content).not.toContain("sk-proj-1234567890abcdefghijklmnop");
+
+      const bad = (await client.callTool({
+        name: "memory_read",
+        arguments: { path: "MEMORY.md", lineOffset: 0 },
+      })) as CallResult;
+      expect(bad.isError).toBe(true);
     });
   });
 

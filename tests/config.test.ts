@@ -69,4 +69,27 @@ describe("loadConfig", () => {
     writeFileSync(path, JSON.stringify({ pipeline: { maxUnusedDays: -1 } }));
     expect(() => validateConfig(dir)).toThrow(/maxUnusedDays/);
   });
+
+  test("retentionDays floor is 1 (0 would purge all extension resources)", () => {
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ pipeline: { retentionDays: 0 } }));
+    expect(loadConfig(dir).pipeline.retentionDays).toBe(DEFAULT_CONFIG.pipeline.retentionDays);
+    expect(() => validateConfig(dir)).toThrow(/retentionDays/);
+    writeFileSync(path, JSON.stringify({ pipeline: { retentionDays: 1 } }));
+    expect(loadConfig(dir).pipeline.retentionDays).toBe(1);
+    writeFileSync(path, JSON.stringify({ pipeline: { retentionDays: 36500 } }));
+    expect(loadConfig(dir).pipeline.retentionDays).toBe(36500);
+    writeFileSync(path, JSON.stringify({ pipeline: { retentionDays: 36501 } }));
+    expect(loadConfig(dir).pipeline.retentionDays).toBe(DEFAULT_CONFIG.pipeline.retentionDays);
+  });
+
+  test("resourceRetentionDays defaults to 7 (codex RETENTION_DAYS) with the same floor", () => {
+    const path = join(dir, "config.json");
+    expect(loadConfig(dir).pipeline.resourceRetentionDays).toBe(7);
+    writeFileSync(path, JSON.stringify({ pipeline: { resourceRetentionDays: 0 } }));
+    expect(loadConfig(dir).pipeline.resourceRetentionDays).toBe(DEFAULT_CONFIG.pipeline.resourceRetentionDays);
+    expect(() => validateConfig(dir)).toThrow(/resourceRetentionDays/);
+    writeFileSync(path, JSON.stringify({ pipeline: { resourceRetentionDays: 30 } }));
+    expect(loadConfig(dir).pipeline.resourceRetentionDays).toBe(30);
+  });
 });

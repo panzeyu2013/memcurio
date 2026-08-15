@@ -84,7 +84,7 @@ describe("hard purge", () => {
     expect(result?.exportRecords).toBe(1);
     expect(readFileSync(exportPath, "utf-8")).toBe("");
     expect(rolloutSlugs(root)).toEqual([]);
-    expect(readWorkspaceText(root, "raw_memories.md")).toBe("");
+    expect(readWorkspaceText(root, "raw_memories.md")).toBe("# Raw Memories\n\nNo raw memories yet.\n");
     expect(readWorkspaceText(root, "MEMORY.md")).not.toContain("Task Group: purge");
     // Blocks citing only the purged artifact are removed; mixed and
     // citationless blocks are preserved so unrelated content survives.

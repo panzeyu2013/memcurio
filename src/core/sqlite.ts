@@ -92,7 +92,11 @@ class NodeDriver implements DbDriver {
 }
 
 /** Keep the database (and its WAL/SHM sidecars) private; the file is created
- *  by the driver with umask-derived permissions, so tighten it after open. */
+ *  by the driver with umask-derived permissions, so tighten it after open.
+ *  Sidecars are created lazily by SQLite on first write and inherit the
+ *  process umask (typically 0644), so also checkpoint them away after open:
+ *  merging the WAL back into the 0600 main file removes the un-chmoddable
+ *  sidecar (it reappears on write, but the directory itself is 0700). */
 function chmodDbFiles(path: string): void {
   for (const p of [path, `${path}-wal`, `${path}-shm`]) {
     try {
@@ -103,6 +107,13 @@ function chmodDbFiles(path: string): void {
   }
 }
 
+/** SQLite driver selection is environment-driven, not preference-driven:
+ *  - bun runtimes (CLI under bun, the opencode plugin, the bun test suite)
+ *    MUST use `bun:sqlite` — bun cannot resolve `node:sqlite` (verified on
+ *    bun 1.3.14: import fails at resolution time).
+ *  - node runtimes (node >= 22.5) use `node:sqlite`; node 22.5–23.3 print an
+ *    ExperimentalWarning, 23.4+ is stable. No native compile step either way.
+ */
 export async function openDb(path: string): Promise<DbDriver> {
   let bunModule: { Database: new (path: string) => BunDatabase } | undefined;
   try {
@@ -111,7 +122,13 @@ export async function openDb(path: string): Promise<DbDriver> {
     bunModule = undefined;
   }
   if (bunModule) {
-    const driver = new BunDriver(new bunModule.Database(path));
+    const db = new bunModule.Database(path);
+    const driver = new BunDriver(db);
+    try {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      // busy with a live reader; sidecars stay 0600 via chmod below
+    }
     chmodDbFiles(path);
     return driver;
   }
@@ -122,11 +139,17 @@ export async function openDb(path: string): Promise<DbDriver> {
     nodeModule = undefined;
   }
   if (nodeModule) {
-    const driver = new NodeDriver(new nodeModule.DatabaseSync(path));
+    const db = new nodeModule.DatabaseSync(path);
+    const driver = new NodeDriver(db);
+    try {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      // busy with a live reader; sidecars stay 0600 via chmod below
+    }
     chmodDbFiles(path);
     return driver;
   }
   throw new Error(
-    "no sqlite driver available: need bun:sqlite (bun) or node:sqlite (node >= 23.4)",
+    "no sqlite driver available: need bun:sqlite (bun) or node:sqlite (node >= 22.5)",
   );
 }

@@ -63,17 +63,24 @@ function rawContainsManagedRow(raw: string, row: {
   rolloutKey: string;
   rolloutSlug: string;
   artifactFilename: string;
+  sourceUpdatedAt: string;
   rawMemory: string;
 }): boolean {
   const body = row.rawMemory.trim();
   if (!body) {
     return false;
   }
-  // Match the whole DB-backed block, not marker-looking lines in untrusted raw
-  // content. Legacy projections used the readable slug in this position.
+  // Match the whole DB-backed block (codex-style section: header + metadata
+  // lines + body), not marker-looking lines in untrusted raw content. The
+  // updated_at line may lag behind the row after a checkpoint re-upsert, so
+  // it matches any timestamp. Legacy projections used the readable slug in
+  // this position.
   const filenames = new Set([row.artifactFilename, row.rolloutSlug, `${row.rolloutSlug}.md`]);
+  const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return [...filenames].some((filename) =>
-    raw.includes(`<!-- rollout: ${row.rolloutKey} (${filename}) -->\n${body}`),
+    new RegExp(
+      `## Rollout \\\`${escapeRegex(row.rolloutKey)}\\\`\\nupdated_at: [^\\n]+\\nrollout_summary_file: ${escapeRegex(filename)}\\n\\n${escapeRegex(body)}`,
+    ).test(raw),
   );
 }
 
@@ -144,13 +151,16 @@ export async function purgeRollout(root: string, rolloutKey: string, exportPaths
         delete afterWorkspace[`rollout_summaries/${filename}`];
       }
       const currentRaw = beforeWorkspace["raw_memories.md"]?.content ?? "";
-      const remainingRaw = renderRawMemories(
-        idx.stageList().filter((candidate) =>
-          candidate.rolloutKey !== rolloutKey &&
-          candidate.status !== "deleted" &&
-          rawContainsManagedRow(currentRaw, candidate),
-        ),
+      const remainingRows = idx.stageList().filter((candidate) =>
+        candidate.rolloutKey !== rolloutKey &&
+        candidate.status !== "deleted" &&
+        rawContainsManagedRow(currentRaw, candidate),
       );
+      // Truncate the projection at the workspace cap instead of throwing:
+      // purge must succeed even when oversized rows exist (the read side
+      // throws above 1MB). Dropped rows stay in the stage DB; planConsolidation
+      // re-renders the same truncated projection through the normal path.
+      const remainingRaw = renderRawMemories(remainingRows, { truncate: true });
       afterWorkspace["raw_memories.md"] = {
         present: true,
         content: remainingRaw,
