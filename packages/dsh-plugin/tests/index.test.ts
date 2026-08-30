@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ import { Context } from "@deepseek-ai/cordis";
 import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import { CompactionId } from "@deepseek-ai/dsh-compaction";
-import LlmRuntime, { CallId, createUserMessage } from "@deepseek-ai/dsh-llm";
+import LlmRuntime, { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from "@deepseek-ai/dsh-session";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
@@ -200,7 +200,7 @@ describe("DSH plugin contract", () => {
       id,
       header: { version: SESSION_FORMAT_VERSION, id, createdAt: Date.now(), cwd: join(root, "workspace") },
       get events() { return events; },
-    } as Session;
+    } as unknown as Session;
     ctx.emit("session/created", session);
     const message = createUserMessage({ content: [{ type: "text", text: "one copy" }], source: { kind: "user" } });
     const event: SessionEvent<"user/message"> = {
@@ -382,13 +382,13 @@ describe("DSH plugin contract", () => {
     const carrier = { [Context.filter]: () => false } as never;
 
     const first = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
-    expect(first.kind).toBe("enter");
+    if (first.kind !== "enter") throw new Error("expected enter");
     expect(first.messages).toHaveLength(2); // real message + memory context
 
     // Unchanged content is not re-injected: the model already has it, and
     // every appended message grows the durable session log.
     const second = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
-    expect(second.kind).toBe("enter");
+    if (second.kind !== "enter") throw new Error("expected enter");
     expect(second.messages).toHaveLength(1);
 
     detach();
@@ -487,7 +487,7 @@ describe("DSH plugin contract", () => {
       // A memory-store hiccup must never fail the model step: the decision
       // is returned unchanged.
       const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
-      expect(decision.kind).toBe("enter");
+      if (decision.kind !== "enter") throw new Error("expected enter");
       expect(decision.messages).toHaveLength(1);
     } finally {
       console.warn = originalConsoleWarn;
@@ -618,6 +618,405 @@ describe("DSH plugin contract", () => {
     } finally {
       check.close();
     }
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("harvests citation telemetry from assistant messages at turn/end", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("citation-telemetry"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const rolloutKey = "dsh|cite-telemetry";
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "cite-telemetry",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+
+    // The injected read-path instructions tell the model to emit citation
+    // blocks; the turn/end worker must feed them to the usage window.
+    const citationText = `<memcurio-citation>\n<rollout_ids>\n${rolloutKey}\n</rollout_ids>\n</memcurio-citation>`;
+    ctx.emit("session/event", session, {
+      type: "assistant/message",
+      seq: 0,
+      time: Date.now(),
+      data: {
+        turn: 1,
+        step: 1,
+        message: createAssistantMessage({
+          content: [{ type: "text", text: citationText }],
+          source: { provider: "test", model: "test" },
+        }),
+      },
+      surfaceOp: "append",
+    });
+    ctx.emit("session/event", session, {
+      type: "turn/end",
+      seq: 1,
+      time: Date.now(),
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose(); // retire drain queues behind the turn/end worker
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+    } finally {
+      check.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("replays tool/call + tool/result telemetry from seed events", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+
+    const rolloutKey = "dsh|seed-tool";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "seed-tool",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+      expect(filename).not.toBe("");
+    } finally {
+      idx.close();
+    }
+    writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
+    const summaryPath = join(root, "memory", "rollout_summaries", filename);
+
+    // A session restored from disk carries tool/call + tool/result in its
+    // event log; the adoption replay must rebuild the usage telemetry.
+    const callId = CallId("seed-tool-call");
+    const events: SessionEvent[] = [
+      {
+        type: "tool/call",
+        seq: 0,
+        time: Date.now(),
+        data: { turn: 1, step: 1, callId, name: "read", arguments: JSON.stringify({ file_path: summaryPath }) },
+      },
+      {
+        type: "tool/result",
+        seq: 1,
+        time: Date.now(),
+        data: {
+          turn: 1,
+          step: 1,
+          message: createToolResultMessage({
+            callId,
+            content: [{ type: "text", text: "ok" }],
+            isError: false,
+          }),
+        },
+        surfaceOp: "append",
+      },
+    ];
+    const session = {
+      id: SessionId("seed-tool-session"),
+      header: { version: SESSION_FORMAT_VERSION, id: SessionId("seed-tool-session"), createdAt: Date.now(), cwd: join(root, "workspace") },
+      get events() {
+        return events;
+      },
+    } as unknown as Session;
+    ctx.emit("session/created", session);
+    await ctx.parallel("session/flush", session);
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      ctx.emit("session/disposed", session);
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+    } finally {
+      check.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("prunes evidence shadowed by model-free compaction/prune events", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prune-model-free"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const old = createUserMessage({ content: [{ type: "text", text: "PRUNED BY MODEL-FREE COMPACTION" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: old, surfaceOp: "append" });
+    ctx.emit("session/event", session, {
+      type: "compaction/prune",
+      seq: 1,
+      time: Date.now(),
+      data: { shadowedRange: { start: 0, end: 0 }, shadowedSeqs: [0], shadowedTokenCount: 0 },
+    });
+    await ctx.sessions.flush(session);
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const finalJob = index.extractionList().find((job) => job.sessionId === session.id && job.sourceEvent === "session_end");
+      const snapshot = JSON.parse(finalJob?.snapshotJson ?? "{}") as { evidence?: { items?: Array<{ text?: string }> } };
+      const texts = (snapshot.evidence?.items ?? []).map((item) => item.text ?? "");
+      expect(texts.some((text) => text.includes("PRUNED BY MODEL-FREE"))).toBe(false);
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("runs the turn/end worker chain (idle checkpoint, drain, consolidation)", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("worker-chain"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+    // Pending work so the automatic consolidation check fires.
+    await integration.integrationRemember(root, "worker-chain note");
+
+    const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, {
+      type: "turn/end",
+      seq: 1,
+      time: Date.now(),
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose(); // retire drain queues behind the turn/end worker
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      // The idle checkpoint was written (event lane) …
+      expect(index.extractionList().some((job) => job.sessionId === session.id && job.sourceEvent === "idle")).toBe(true);
+      // … and the detached worker ran the drain + maybeConsolidate (the
+      // consolidation attempt fails without an LLM adapter and records it).
+      expect(index.metaGet("consolidation_auto_failed")).toBeDefined();
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("does not count failed tool executions as usage", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("failed-tool"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const rolloutKey = "dsh|failed-tool";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "failed-tool",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+    } finally {
+      idx.close();
+    }
+    writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
+    const summaryPath = join(root, "memory", "rollout_summaries", filename);
+
+    ctx.emit("tools/result", {
+      name: "read",
+      arguments: { file_path: summaryPath },
+      agent: { session },
+    } as never, { isError: true } as never);
+    await ctx.sessions.flush(session);
+
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.stageGet(rolloutKey)?.usageCount ?? 0).toBe(0);
+    } finally {
+      check.close();
+    }
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("follows the session request/header route for worker calls", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("route-tracking"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    // No pinned provider/model: the worker must follow the logged route.
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: false });
+    await ctx.sessions.flush(session);
+
+    const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, {
+      type: "request/header",
+      seq: 1,
+      time: Date.now(),
+      data: { header: { config: { provider: "routed-provider", model: "routed-model" } }, reason: "initial" },
+    });
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      // The extraction attempt used the routed provider (no adapter is
+      // registered for it in this test runtime, so the failure records it).
+      const failed = index.extractionList().some((job) => (job.lastError ?? "").includes("routed-provider"));
+      expect(failed).toBe(true);
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("validates provider/model pairing and injection budget at apply", async () => {
+    expect(() => plugin.apply({} as never, { provider: "x" })).toThrow(/together/);
+    expect(() => plugin.apply({} as never, { model: "y" })).toThrow(/together/);
+    expect(() => plugin.apply({} as never, { injectBudgetTokens: 12 })).toThrow(/128/);
+  });
+
+  test("adopts sessions that exist before the plugin loads", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("pre-existing"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const msg = createUserMessage({ content: [{ type: "text", text: "pre-existing message" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const finalJob = index.extractionList().find((job) => job.sessionId === session.id && job.sourceEvent === "session_end");
+      const snapshot = JSON.parse(finalJob?.snapshotJson ?? "{}") as { evidence?: { items?: Array<{ text?: string }> } };
+      expect((snapshot.evidence?.items ?? []).some((item) => item.text === "pre-existing message")).toBe(true);
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("isolates stores per workspace through apply()", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const workdir = join(root, "w1");
+    const session = ctx.sessions.prepare(SessionId("workspace-isolated"), { meta: { cwd: workdir } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    // scope defaults to "workspace"
+    const pluginFiber = await ctx.plugin(plugin, { root, injectContext: false, provider: "test", model: "test" });
+    await ctx.sessions.flush(session);
+
+    const expected = workspaceStoreRoot(root, workdir, "workspace");
+    expect(existsSync(indexDb(expected))).toBe(true);
+    expect(existsSync(indexDb(join(root, "dsh", "no-cwd")))).toBe(false);
 
     detach();
     await pluginFiber.dispose();

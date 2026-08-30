@@ -244,6 +244,11 @@ export class MemcurioAdapter {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDueAt: number | undefined;
   private workspaceListCache: { at: number; files: string[] } | undefined;
+  /** Retired adapters must never drain again: their channel may be aborted
+   *  (harness dispose), so a late retry would burn job attempts into the
+   *  dead-letter path for a non-model reason. The durable queue waits for
+   *  the next live session's drain or the CLI instead. */
+  private disposed = false;
 
   constructor(opts: AdapterOptions = {}) {
     this.root = resolve(opts.root ?? coreRoot());
@@ -259,6 +264,19 @@ export class MemcurioAdapter {
 
   state(sessionId: string): SessionState | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /** Stop this adapter's autonomous work. Harness adapters call this when the
+   *  session they serve is retired: pending jobs stay durable in SQLite and
+   *  are drained by the next live session's adapter or the CLI. */
+  dispose(): void {
+    this.disposed = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+      this.retryDueAt = undefined;
+    }
+    this.workspaceListCache = undefined;
   }
 
   async sessionCreated(sessionId: string, workdir: string, host: string): Promise<void> {
@@ -1000,7 +1018,7 @@ export class MemcurioAdapter {
    * per adapter; a failed job remains pending/dead in SQLite and schedules its
    * next retry without blocking future Hook responses. */
   async processPendingExtractions(limit = 8): Promise<QueueDrainResult[]> {
-    if (!this.durableQueue) {
+    if (!this.durableQueue || this.disposed) {
       return [];
     }
     if (this.workerPromise) {
@@ -1044,6 +1062,9 @@ export class MemcurioAdapter {
    *  serializes against manual curate runs. */
   async maybeConsolidate(): Promise<void> {
     const root = this.root;
+    if (this.disposed) {
+      return;
+    }
     try {
       // The pipeline config is loaded before the entry prune: the retention
       // recycle needs maxUnusedDays to also drop never-selected rows whose
@@ -1310,6 +1331,9 @@ export class MemcurioAdapter {
   }
 
   private scheduleRetry(delayMs: number): void {
+    if (this.disposed) {
+      return;
+    }
     const delay = Math.max(100, Math.min(delayMs, 60 * 60_000));
     const dueAt = Date.now() + delay;
     // A recovery wake may discover an earlier job than the timer installed by

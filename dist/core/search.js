@@ -2,6 +2,14 @@ import { Index } from "./db.js";
 import { indexDb } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { listWorkspaceFiles, readWorkspaceText } from "./workspace.js";
+/** Per-call scan budget: the workspace can hold up to 4096 files × 1 MiB, and
+ *  a model can serialize many searches, so one call must never scan the whole
+ *  corpus (worst case ≈ 4 GiB). Files past the budget are skipped; normal
+ *  memory workspaces are orders of magnitude smaller and never hit it. */
+const MAX_SEARCH_SCAN_BYTES = 32 * 1024 * 1024;
+/** Bound the query-word count: a 10k-char query would otherwise score every
+ *  line against thousands of words (query × corpus blow-up). */
+const MAX_SEARCH_QUERY_WORDS = 32;
 /** Codex-style usage telemetry: register that memory artifacts were actually
  *  reused (read by the model / cited / hit by search). Each referenced
  *  rollout summary (or rollout key) bumps its stage-1
@@ -80,14 +88,20 @@ export async function searchMemory(root, query, topK) {
         .replace(/[^\p{L}\p{N}]+/gu, " ")
         .trim()
         .split(/\s+/)
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, MAX_SEARCH_QUERY_WORDS);
     if (!words.length) {
         return { hits, blocked };
     }
     const lowerWords = words.map((w) => w.toLowerCase());
     const usedRels = [];
+    let scannedBytes = 0;
     for (const rel of searchableRels(listWorkspaceFiles(root))) {
         const text = readWorkspaceText(root, rel);
+        scannedBytes += text.length;
+        if (scannedBytes > MAX_SEARCH_SCAN_BYTES) {
+            break;
+        }
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i] ?? "";

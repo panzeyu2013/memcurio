@@ -86,11 +86,17 @@ function slugify(content: string): string {
 
 /** Write an append-only ad-hoc memory note (mirrors codex's
  *  extensions/ad_hoc/notes). The note is consolidated on the next Phase 2 run;
- *  the model never edits memory files directly during sessions. */
+ *  the model never edits memory files directly during sessions. The content
+ *  cap lives in core so every entry point (CLI, plugin tools, MCP) shares it. */
+export const MAX_ADHOC_NOTE_CHARS = 20_000;
+
 export async function addAdHocNote(root: string, content: string, kind: AdHocKind = "remember"): Promise<AdHocNote> {
   const cleaned = content.trim();
   if (!cleaned) {
     throw new Error("ad-hoc note content must not be empty");
+  }
+  if (cleaned.length > MAX_ADHOC_NOTE_CHARS) {
+    throw new Error(`ad-hoc note content must contain at most ${MAX_ADHOC_NOTE_CHARS} characters`);
   }
   // Seed the extension contract first (cheap, create_new): hosts that write
   // notes but never run a plan still get the instructions file.

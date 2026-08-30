@@ -1,7 +1,7 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { memoryWorkspace } from "./paths.js";
-import { redactSecrets } from "./sanitize.js";
+import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { registerMemoryUsage } from "./search.js";
 import { MAX_WORKSPACE_FILE_BYTES } from "./workspace.js";
 import { estimateTokens } from "./budget.js";
@@ -167,6 +167,20 @@ export async function readMemory(root, opts) {
     const rel = opts.path;
     if (rel.startsWith("rollout_summaries/")) {
         await registerMemoryUsage(root, [rel]);
+    }
+    // The read path is the only memory->model output that would otherwise skip
+    // the injection gate: search filters per line, injection renders a blocked
+    // notice, but a raw read returns whole (possibly hand-edited) file content
+    // verbatim. Scan the exact content being returned and block it like the
+    // static context does.
+    const verdict = sanitizeForInjection(content);
+    if (!verdict.safe) {
+        return {
+            path: rel,
+            startLineNumber: start,
+            content: "(memcurio memory read blocked by injection scan)",
+            truncated: true,
+        };
     }
     return { path: rel, startLineNumber: start, content: redactSecrets(content).text, truncated };
 }

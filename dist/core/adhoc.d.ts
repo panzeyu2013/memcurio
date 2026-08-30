@@ -16,7 +16,9 @@ export interface AdHocNote {
 export declare function ensureAdHocInstructions(root: string): void;
 /** Write an append-only ad-hoc memory note (mirrors codex's
  *  extensions/ad_hoc/notes). The note is consolidated on the next Phase 2 run;
- *  the model never edits memory files directly during sessions. */
+ *  the model never edits memory files directly during sessions. The content
+ *  cap lives in core so every entry point (CLI, plugin tools, MCP) shares it. */
+export declare const MAX_ADHOC_NOTE_CHARS = 20000;
 export declare function addAdHocNote(root: string, content: string, kind?: AdHocKind): Promise<AdHocNote>;
 export declare function listAdHocNotes(root: string): Promise<AdHocNote[]>;
 export interface PendingAdHocNotesOptions {

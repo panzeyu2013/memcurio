@@ -81,8 +81,17 @@ export declare class MemcurioAdapter {
     private retryTimer;
     private retryDueAt;
     private workspaceListCache;
+    /** Retired adapters must never drain again: their channel may be aborted
+     *  (harness dispose), so a late retry would burn job attempts into the
+     *  dead-letter path for a non-model reason. The durable queue waits for
+     *  the next live session's drain or the CLI instead. */
+    private disposed;
     constructor(opts?: AdapterOptions);
     state(sessionId: string): SessionState | undefined;
+    /** Stop this adapter's autonomous work. Harness adapters call this when the
+     *  session they serve is retired: pending jobs stay durable in SQLite and
+     *  are drained by the next live session's adapter or the CLI. */
+    dispose(): void;
     sessionCreated(sessionId: string, workdir: string, host: string): Promise<void>;
     messageSeen(sessionId: string, partId: string, details?: {
         kind?: EvidenceInput["kind"];

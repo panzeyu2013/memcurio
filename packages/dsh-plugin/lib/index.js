@@ -17,6 +17,20 @@ export const Config = Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
 });
+/** Harvest codex-style `<memcurio-citation>` blocks from the assistant
+ *  messages seen so far and feed them to the usage window (opencode parity:
+ *  the injected read-path instructions tell the model to emit these). */
+async function harvestCitations(runtime) {
+    const citations = runtime.adapter
+        .memoryEvidenceSnapshot(runtime.session.id)
+        .filter((item) => item.kind === "assistant")
+        .map((item) => item.text ?? "")
+        .filter(Boolean)
+        .join("\n");
+    if (citations) {
+        await runtime.adapter.memoryUsageFromCitations(citations);
+    }
+}
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
  *  dsh-tool-pwsh; verified against DSH 0.1.1-rc.2). Only these names may
@@ -33,6 +47,9 @@ const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
  *  On expiry the runtime abort cancels in-flight model calls so dispose (and
  *  DSH shutdown) stays bounded; the durable queue retries the leftovers. */
 const DSH_RETIRE_WORK_BUDGET_MS = 30_000;
+/** Bounded self-retry for a rejected retirement (transient DB failures). */
+const DSH_RETIRE_MAX_ATTEMPTS = 3;
+const DSH_RETIRE_RETRY_MS = 5_000;
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -98,6 +115,25 @@ function isPluginMessage(message) {
 function partIdFor(eventType, seq) {
     return `${eventType}:${seq}`;
 }
+/** The evidence shape the plugin feeds to the engine for one message. */
+function messageEvidence(message) {
+    return {
+        kind: message.role === "assistant" ? "assistant" : "user",
+        text: textFromMessage(message),
+        messageId: message.id,
+    };
+}
+/** Shared compaction/end handling for the live event path AND the seed
+ *  replay: prune the shadowed evidence and record the summary, paired by
+ *  compactionId (summary/end arrive as separate events). */
+async function settleCompaction(runtime, sessionId, compactionId) {
+    const compaction = runtime.pendingCompactions.get(compactionId);
+    runtime.pendingCompactions.delete(compactionId);
+    if (!compaction)
+        return;
+    pruneShadowedEvidence(runtime.adapter, sessionId, compaction.shadowedSeqs);
+    await runtime.adapter.sessionCompacted(sessionId, compaction.summary);
+}
 /** Remove the evidence parts a compaction shadows. Their content survives in
  *  the compaction summary and the replacement message, so pruning keeps the
  *  bounded evidence window focused on the live surface instead of letting
@@ -113,8 +149,10 @@ function pruneShadowedEvidence(adapter, sessionId, shadowedSeqs) {
 function routeFromEvent(event) {
     if (event.type !== "request/header")
         return undefined;
+    // Optional chaining: this runs synchronously inside the session/event
+    // listener, and a future DSH shape change must not throw there.
     const config = event.data.header.config;
-    if (!config.provider || !config.model)
+    if (!config?.provider || !config.model)
         return undefined;
     return { provider: config.provider, model: config.model };
 }
@@ -370,7 +408,18 @@ export function apply(ctx, config = {}) {
             injectBudgetTokens: resolved.injectBudgetTokens,
             toolPreset: DSH_TOOL_PRESET,
             channel: dshChannel(ctx, () => runtime.route, () => runtime.abort.signal),
-            log: (level, message, details) => ctx.logger.debug(`memcurio[${level}]: ${message}`, details),
+            // Preserve warn/error levels: flattening them to debug would hide real
+            // failures ("staging failed", "consolidation skipped", "retry failed")
+            // under debug-filtered host logging. info stays at debug to keep the
+            // per-event noise down.
+            log: (level, message, details) => {
+                if (level === "warn" || level === "error") {
+                    ctx.logger[level](`memcurio[${level}]: ${message}`, details);
+                }
+                else {
+                    ctx.logger.debug(`memcurio[${level}]: ${message}`, details);
+                }
+            },
         });
         runtime = {
             session,
@@ -383,34 +432,58 @@ export function apply(ctx, config = {}) {
             route: seededRoute,
             pendingCompactions: new Map(),
             abort: new AbortController(),
+            retireAttempts: 0,
         };
         sessions.set(session.id, runtime);
         void enqueue(runtime, async () => {
             await adapter.sessionCreated(session.id, workdir, "dsh");
-            const summaries = new Map();
+            // Seed summaries live in the SAME map the live handler consumes, so a
+            // compaction whose summary was persisted pre-restart and whose end
+            // arrives live still pairs (and prunes) correctly.
+            const toolCalls = new Map();
             for (const event of seedEvents) {
                 const message = messageFromEvent(event);
-                if (message && !isPluginMessage(message)) {
-                    await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), {
-                        kind: message.role === "assistant" ? "assistant" : "user",
-                        text: textFromMessage(message),
-                        messageId: message.id,
-                    });
+                if (message) {
+                    if (!isPluginMessage(message)) {
+                        await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), messageEvidence(message));
+                    }
+                }
+                else if (event.type === "tool/call") {
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(event.data.arguments);
+                    }
+                    catch {
+                        parsed = undefined;
+                    }
+                    toolCalls.set(event.data.callId, { name: event.data.name, arguments: parsed });
+                }
+                else if (event.type === "tool/result") {
+                    // Rebuild tool telemetry + tool evidence for pre-restart activity.
+                    if (event.data.error === undefined) {
+                        const call = toolCalls.get(event.data.message.content[0]?.toolCallId ?? "");
+                        if (call) {
+                            const details = toolDetails(call.arguments);
+                            if (details?.filePath && !isAbsolute(details.filePath))
+                                details.filePath = resolve(workdir, details.filePath);
+                            if (details?.path && !isAbsolute(details.path))
+                                details.path = resolve(workdir, details.path);
+                            await adapter.toolExecuted(session.id, call.name, details);
+                        }
+                    }
                 }
                 else if (event.type === "compaction/summary") {
-                    summaries.set(event.data.compactionId, {
+                    runtime.pendingCompactions.set(event.data.compactionId, {
                         summary: textFromContent(event.data.summary),
                         shadowedSeqs: event.data.shadowedSeqs,
                     });
                 }
                 else if (event.type === "compaction/end") {
-                    const compaction = summaries.get(event.data.compactionId);
-                    summaries.delete(event.data.compactionId);
-                    if (event.data.error === undefined) {
-                        if (compaction)
-                            pruneShadowedEvidence(adapter, session.id, compaction.shadowedSeqs);
-                        await adapter.sessionCompacted(session.id, compaction?.summary);
-                    }
+                    if (event.data.error === undefined)
+                        await settleCompaction(runtime, session.id, event.data.compactionId);
+                }
+                else if (event.type === "compaction/prune") {
+                    pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
                 }
             }
         }, warn);
@@ -420,25 +493,35 @@ export function apply(ctx, config = {}) {
         if (runtime.retirement)
             return runtime.retirement;
         // The final checkpoint (sessionEnded) is durable and event-lane. The
-        // worker lane then drains pending extractions and runs the codex-style
-        // automatic Phase-2 consolidation under a wall-clock budget; on expiry
-        // the runtime abort cancels in-flight model calls so dispose (and DSH
-        // shutdown) stays bounded and the durable queue retries the leftovers.
+        // worker lane then harvests citations, drains pending extractions and
+        // runs the codex-style automatic Phase-2 consolidation.
         const ended = enqueue(runtime, async () => {
             await runtime.adapter.sessionEnded(runtime.session.id);
         }, warn);
+        // The wall-clock budget starts at RETIRE ENTRY so an in-flight turn/end
+        // worker task queued ahead of the drain is bounded too; on expiry the
+        // runtime abort cancels in-flight model calls so dispose (and DSH
+        // shutdown) stays bounded and the durable queue retries the leftovers.
+        let budgetTimer;
+        const budgetExpired = new Promise((resolve) => {
+            budgetTimer = setTimeout(() => {
+                runtime.abort.abort("memcurio: session retire work budget exceeded");
+                resolve();
+            }, DSH_RETIRE_WORK_BUDGET_MS);
+            budgetTimer.unref?.();
+        });
         const drain = enqueueWorker(runtime, async () => {
             await ended.catch(() => undefined);
-            let budgetTimer;
-            const budgetExpired = new Promise((resolve) => {
-                budgetTimer = setTimeout(() => {
-                    runtime.abort.abort("memcurio: session retire work budget exceeded");
-                    resolve();
-                }, DSH_RETIRE_WORK_BUDGET_MS);
-                budgetTimer.unref?.();
-            });
             try {
                 const work = (async () => {
+                    if (runtime.abort.signal.aborted)
+                        return;
+                    try {
+                        await harvestCitations(runtime);
+                    }
+                    catch {
+                        // best effort: citation telemetry must never break retirement
+                    }
                     await runtime.adapter.processPendingExtractions();
                     await runtime.adapter.maybeConsolidate();
                 })();
@@ -454,9 +537,15 @@ export function apply(ctx, config = {}) {
             finally {
                 if (budgetTimer)
                     clearTimeout(budgetTimer);
-                // Settled: cancel any leftover in-flight worker calls (e.g. a
-                // turn/end drain still running) so nothing keeps the process alive.
+                // Settled: cancel leftover in-flight worker calls and stop the
+                // adapter's autonomous retry/drain work (its permanent abort must
+                // never burn retry attempts into the dead-letter path). The durable
+                // queue waits for the next live session's drain or the CLI.
                 runtime.abort.abort("memcurio: session retired");
+                runtime.adapter.dispose();
+                // Let the abort settle the raced work so workerFailure is final
+                // before retirement resolves (observability, not durability).
+                await Promise.resolve();
             }
         }, warn);
         const retirement = Promise.all([ended, drain]).then(() => undefined);
@@ -467,6 +556,17 @@ export function apply(ctx, config = {}) {
         }, () => {
             if (runtime.retirement === retirement)
                 runtime.retirement = undefined;
+            // Bounded self-retry: a transient DB failure (e.g. SQLite busy)
+            // should not orphan the session's evidence forever. After the cap
+            // the runtime stays in the map so the plugin-dispose drain tries
+            // once more.
+            if (runtime.retireAttempts < DSH_RETIRE_MAX_ATTEMPTS && sessions.get(runtime.session.id) === runtime) {
+                runtime.retireAttempts += 1;
+                const timer = setTimeout(() => {
+                    void retireSession(runtime).catch(() => undefined);
+                }, DSH_RETIRE_RETRY_MS);
+                timer.unref?.();
+            }
         });
         return retirement;
     };
@@ -478,7 +578,8 @@ export function apply(ctx, config = {}) {
                 await retireSession(runtime);
             }
             catch {
-                await Promise.resolve();
+                // Retry once: retireSession's rejection path clears the memo, so the
+                // second call re-enqueues instead of re-awaiting the same failure.
                 if (sessions.get(runtime.session.id) === runtime)
                     await retireSession(runtime);
             }
@@ -506,18 +607,23 @@ export function apply(ctx, config = {}) {
         const message = messageFromEvent(event);
         if (message) {
             if (!isPluginMessage(message)) {
-                const text = textFromMessage(message);
-                void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partIdFor(event.type, event.seq), { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id }), warn);
+                void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partIdFor(event.type, event.seq), messageEvidence(message)), warn);
             }
         }
         else if (event.type === "turn/end") {
             // The idle checkpoint is a fast durable write (event lane, awaited by
-            // flush); the model drain and the codex-style automatic Phase-2
-            // consolidation run detached on the worker lane so a slow extraction
-            // never stalls the next pre-step or a flush boundary.
+            // flush); citation telemetry, the model drain and the codex-style
+            // automatic Phase-2 consolidation run detached on the worker lane so a
+            // slow extraction never stalls the next pre-step or a flush boundary.
             const idle = enqueue(runtime, () => runtime.adapter.sessionIdle(session.id), warn);
             void enqueueWorker(runtime, async () => {
                 await idle.catch(() => undefined);
+                try {
+                    await harvestCitations(runtime);
+                }
+                catch {
+                    // best effort: citation telemetry must never break the turn flow
+                }
                 await runtime.adapter.processPendingExtractions();
                 await runtime.adapter.maybeConsolidate();
             }, warn);
@@ -529,19 +635,20 @@ export function apply(ctx, config = {}) {
             });
         }
         else if (event.type === "compaction/end") {
-            const compaction = runtime.pendingCompactions.get(event.data.compactionId);
-            runtime.pendingCompactions.delete(event.data.compactionId);
             if (event.data.error === undefined) {
                 runtime.staticInjected = false;
                 // The log rewrite may have compacted the injected memory message
                 // away, so the next pre-step must re-inject even unchanged content.
                 runtime.lastInjectedContext = undefined;
-                void enqueue(runtime, () => {
-                    if (compaction)
-                        pruneShadowedEvidence(runtime.adapter, session.id, compaction.shadowedSeqs);
-                    return runtime.adapter.sessionCompacted(session.id, compaction?.summary);
-                }, warn);
+                void enqueue(runtime, () => settleCompaction(runtime, session.id, event.data.compactionId), warn);
             }
+        }
+        else if (event.type === "compaction/prune") {
+            // Model-free prune: the shadowed messages are gone from the surface
+            // (no summary to preserve them), so their evidence parts go too.
+            void enqueue(runtime, async () => {
+                pruneShadowedEvidence(runtime.adapter, session.id, event.data.shadowedSeqs);
+            }, warn);
         }
     }, { global: true });
     ctx.on("tools/result", (exec, result) => {
@@ -562,6 +669,11 @@ export function apply(ctx, config = {}) {
         void enqueue(runtime, () => runtime.adapter.toolExecuted(session.id, exec.name, details), warn);
     }, { global: true });
     ctx.on("session/flush", async (session) => {
+        // The flush boundary awaits the event lane only (checkpoints are durable
+        // there); model work is deliberately excluded. A flush racing
+        // session/disposed may resolve before sessionEnded runs — benign, since
+        // retire is unconditional and the last idle checkpoint covers the
+        // evidence unless the process crashes in that exact window.
         const runtime = sessions.get(session.id);
         if (runtime)
             await awaitRuntime(runtime);
@@ -581,6 +693,8 @@ export function apply(ctx, config = {}) {
             if (decision.kind !== "enter" || payload.signal.aborted)
                 return decision;
             const runtime = ensureSession(payload.agent.session);
+            if (runtime.retirement)
+                return decision;
             const agentRoute = payload.agent.options?.provider && payload.agent.options.model
                 ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
                 : undefined;
@@ -626,4 +740,14 @@ export function apply(ctx, config = {}) {
         registerMemoryTools(ctx, sessions);
     for (const session of ctx.sessions.list())
         ensureSession(session);
+    // Startup drain (opencode parity): pending durable jobs from a previous
+    // process run would otherwise sit until the first turn/end in the same
+    // store. One drain per distinct store root; claims are SQLite-fenced.
+    const drainedRoots = new Set();
+    for (const runtime of sessions.values()) {
+        if (drainedRoots.has(runtime.root))
+            continue;
+        drainedRoots.add(runtime.root);
+        void runtime.adapter.processPendingExtractions().catch(warn);
+    }
 }

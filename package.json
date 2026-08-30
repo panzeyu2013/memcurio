@@ -59,7 +59,7 @@
     "test": "bun test",
     "lint": "biome lint src tests scripts packages/dsh-plugin/src packages/dsh-plugin/tests",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && bun run typecheck:dsh",
-    "typecheck:dsh": "tsc --noEmit -p packages/dsh-plugin/tsconfig.json",
+    "typecheck:dsh": "tsc --noEmit -p packages/dsh-plugin/tsconfig.json && tsc --noEmit -p packages/dsh-plugin/tsconfig.typecheck.json",
     "dev": "bun run src/cli/index.ts",
     "bundle:plugin": "bun run scripts/bundle-opencode-plugin.ts",
     "pack:check": "bun run build && bun run bundle:plugin && bun run scripts/pack-check.ts",

@@ -35,6 +35,12 @@ export declare function integrationStatus(root: string): Promise<{
         total: number;
         pending: number;
     };
+    extraction: {
+        pending: number;
+        processing: number;
+        blocked: number;
+        dead: number;
+    };
     auditCount: number;
 }>;
 export declare function integrationContext(root: string, budgetTokens?: number): Promise<{

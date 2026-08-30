@@ -68,6 +68,7 @@ export async function integrationStatus(root: string) {
   return withIndex(root, (index) => {
     const stage1 = index.stageList();
     const notes = index.noteList();
+    const jobs = index.extractionList();
     return {
       root,
       stage1: {
@@ -76,6 +77,12 @@ export async function integrationStatus(root: string) {
         deleted: stage1.filter((row) => row.status === "deleted").length,
       },
       notes: { total: notes.length, pending: notes.filter((note) => !note.applied).length },
+      extraction: {
+        pending: jobs.filter((job) => job.status === "pending").length,
+        processing: jobs.filter((job) => job.status === "processing").length,
+        blocked: jobs.filter((job) => job.status === "blocked").length,
+        dead: jobs.filter((job) => job.status === "dead").length,
+      },
       auditCount: index.auditCount(),
     };
   });
