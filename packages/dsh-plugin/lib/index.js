@@ -85,6 +85,15 @@ function messageFromEvent(event) {
         return event.data.message;
     return undefined;
 }
+/** Plugin-injected messages — memcurio's own recall context, DSH's runtime
+ *  context projection, any other plugin's injection — are machine context,
+ *  not user conversation. The agent loop persists them as user/message
+ *  events in the durable log, so without this filter the plugin would
+ *  collect its own injected memories and instructions as extraction
+ *  evidence (self-referential feedback). */
+function isPluginMessage(message) {
+    return message.source.kind === "plugin";
+}
 function routeFromEvent(event) {
     if (event.type !== "request/header")
         return undefined;
@@ -365,7 +374,7 @@ export function apply(ctx, config = {}) {
             const summaries = new Map();
             for (const event of seedEvents) {
                 const message = messageFromEvent(event);
-                if (message) {
+                if (message && !isPluginMessage(message)) {
                     await adapter.messageSeen(session.id, `${event.type}:${event.seq}`, {
                         kind: message.role === "assistant" ? "assistant" : "user",
                         text: textFromMessage(message),
@@ -407,13 +416,18 @@ export function apply(ctx, config = {}) {
                 budgetTimer.unref?.();
             });
             try {
-                await Promise.race([
-                    (async () => {
-                        await runtime.adapter.processPendingExtractions();
-                        await runtime.adapter.maybeConsolidate();
-                    })(),
-                    budgetExpired,
-                ]);
+                const work = (async () => {
+                    await runtime.adapter.processPendingExtractions();
+                    await runtime.adapter.maybeConsolidate();
+                })();
+                // If the budget expires first, the raced work continues detached;
+                // record any late failure instead of letting it become an
+                // unhandled rejection (Node's default would crash the process).
+                void work.then(() => undefined, (error) => {
+                    runtime.workerFailure = error;
+                    warn(error);
+                });
+                await Promise.race([work, budgetExpired]);
             }
             finally {
                 if (budgetTimer)
@@ -469,8 +483,10 @@ export function apply(ctx, config = {}) {
             runtime.route = route;
         const message = messageFromEvent(event);
         if (message) {
-            const text = textFromMessage(message);
-            void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, `${event.type}:${event.seq}`, { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id }), warn);
+            if (!isPluginMessage(message)) {
+                const text = textFromMessage(message);
+                void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, `${event.type}:${event.seq}`, { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id }), warn);
+            }
         }
         else if (event.type === "turn/end") {
             // The idle checkpoint is a fast durable write (event lane, awaited by
@@ -492,6 +508,9 @@ export function apply(ctx, config = {}) {
             runtime.pendingCompactions.delete(event.data.compactionId);
             if (event.data.error === undefined) {
                 runtime.staticInjected = false;
+                // The log rewrite may have compacted the injected memory message
+                // away, so the next pre-step must re-inject even unchanged content.
+                runtime.lastInjectedContext = undefined;
                 void enqueue(runtime, () => runtime.adapter.sessionCompacted(session.id, summary), warn);
             }
         }
@@ -515,6 +534,9 @@ export function apply(ctx, config = {}) {
         void retireSession(runtime).catch(() => undefined);
     }, { global: true });
     if (resolved.injectContext) {
+        // global: true — agent/pre-step is dispatched through a scope carrier;
+        // every other listener in this plugin opts into global delivery, and
+        // this one must too so a tagged topology can never silently starve it.
         ctx.on("agent/pre-step", async (payload, next) => {
             const decision = await next();
             if (decision.kind !== "enter" || payload.signal.aborted)
@@ -538,8 +560,18 @@ export function apply(ctx, config = {}) {
                     parts.push(dynamic);
             }
             const context = parts.filter(Boolean).join("\n\n");
-            return context ? { ...decision, messages: [...decision.messages, memoryMessage(context)] } : decision;
-        });
+            if (!context)
+                return decision;
+            // The loop persists every decision message to the durable session log.
+            // Unchanged content is not re-injected (the model already has it from
+            // the previous step); only content changes append a new message, which
+            // bounds log growth and compaction pollution. compaction/end clears
+            // the marker because the log rewrite may have dropped the message.
+            if (context === runtime.lastInjectedContext)
+                return decision;
+            runtime.lastInjectedContext = context;
+            return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
+        }, { global: true });
     }
     if (resolved.registerTools)
         registerMemoryTools(ctx, sessions);

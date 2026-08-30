@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
 import type { Fiber } from "@deepseek-ai/cordis";
+import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import { CompactionId } from "@deepseek-ai/dsh-compaction";
 import LlmRuntime, { CallId, createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from "@deepseek-ai/dsh-session";
@@ -288,6 +289,111 @@ describe("DSH plugin contract", () => {
       idx.close();
       await disposeFibers(fibers);
     }
+  });
+
+  test("does not collect plugin-injected messages as extraction evidence", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("evidence-filter"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    // DSH's agent loop persists every pre-step decision message to the
+    // durable log as user/message — including memcurio's own injected
+    // recall context. Such messages must never become extraction evidence.
+    const injected = createUserMessage({
+      content: [{ type: "text", text: "INJECTED MEMORY CONTENT that must not be remembered" }],
+      source: { kind: "plugin", plugin: "@memcurio/dsh-plugin", form: "recall" },
+    });
+    const real = createUserMessage({ content: [{ type: "text", text: "real user text" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, {
+      type: "user/message",
+      seq: 0,
+      time: Date.now(),
+      data: injected,
+      surfaceOp: "append",
+    });
+    ctx.emit("session/event", session, {
+      type: "user/message",
+      seq: 1,
+      time: Date.now(),
+      data: real,
+      surfaceOp: "append",
+    });
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const finalJob = index.extractionList().find((job) => job.sessionId === session.id && job.sourceEvent === "session_end");
+      expect(finalJob).toBeDefined();
+      const snapshot = JSON.parse(finalJob?.snapshotJson ?? "{}") as { evidence?: { items?: Array<{ text?: string }> } };
+      const texts = (snapshot.evidence?.items ?? []).map((item) => item.text ?? "");
+      expect(texts).toContain("real user text");
+      expect(texts.some((text) => text.includes("INJECTED MEMORY CONTENT"))).toBe(false);
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("injects once per content change through the scoped pre-step dispatch", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prestep-dedupe"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    // The real DSH loop dispatches agent/pre-step through a scope carrier.
+    // A carrier whose filter rejects every tagged listener is the strictest
+    // possible topology: only `global: true` listeners may receive it.
+    const agent = { session, options: {} } as never;
+    const userMsg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    const payload = {
+      agent,
+      messages: [userMsg],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    } as never;
+    const defaultNext = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+    const carrier = { [Context.filter]: () => false } as never;
+
+    const first = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
+    expect(first.kind).toBe("enter");
+    expect(first.messages).toHaveLength(2); // real message + memory context
+
+    // Unchanged content is not re-injected: the model already has it, and
+    // every appended message grows the durable session log.
+    const second = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
+    expect(second.kind).toBe("enter");
+    expect(second.messages).toHaveLength(1);
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
   });
 
   test("counts native read-tool reads of memory files as usage telemetry", async () => {
