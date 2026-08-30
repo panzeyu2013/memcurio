@@ -1,6 +1,6 @@
 # DeepSeek Harness integration
 
-> Status: developer preview. This package targets the published DSH `0.1.0-rc.7` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
+> Status: developer preview. This package targets the published DSH `0.1.1-rc.2` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
 
 ## Why this is a separate package
 
@@ -23,6 +23,8 @@ The default `scope: workspace` derives an opaque SHA-256 key from the absolute w
 ```
 
 This prevents two DSH Web workspaces from sharing memories accidentally. Set `scope: global` only when deliberate cross-project memory is desired. `root` changes the base directory; `MEMCURIO_ROOT` remains the environment fallback.
+
+A session without a `header.cwd` (the field is optional in DSH) never falls back to the daemon process cwd — that would silently share memory across workspaces that happen to share a cwd. Instead it deterministically uses `~/.memcurio/dsh/no-cwd/` and logs a warning so the degraded isolation is visible.
 
 ## Build and install from this repository
 
@@ -54,4 +56,4 @@ Example configuration:
 
 ## Current validation boundary
 
-The repository validates strict TypeScript compilation against the published DSH packages, deterministic workspace isolation, lifecycle and compaction regressions, the public integration read/write surface, and all existing core regressions. A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+The repository validates strict TypeScript compilation against the published DSH `0.1.1-rc.2` packages, deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; dispose aborts in-flight worker calls), native read-tool usage telemetry, the public integration read/write surface, and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.

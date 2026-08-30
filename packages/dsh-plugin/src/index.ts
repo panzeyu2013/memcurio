@@ -53,18 +53,40 @@ interface SessionRuntime {
   adapter: MemcurioAdapter;
   root: string;
   workdir: string;
+  /** Event lane: fast checkpoint/event tasks (messageSeen, toolExecuted,
+   *  sessionIdle, adoption). pre-step, flush and memory tools wait on this;
+   *  it never contains model calls, so it drains in bounded I/O time. */
   queue: Promise<void>;
+  /** Worker lane: Phase-1/Phase-2 model work (processPendingExtractions).
+   *  Never awaited by pre-step/flush; failures are durable (jobs stay in
+   *  SQLite) and surface at the dispose drain instead. */
+  workerQueue: Promise<void>;
+  /** Last event-lane failure; thrown at flush/pre-step/tool boundaries. */
   failure?: unknown;
+  /** Last worker-lane failure; surfaced at the dispose drain. */
+  workerFailure?: unknown;
   staticInjected: boolean;
   route?: { provider: string; model: string };
   pendingCompactions: Map<string, string>;
+  /** Aborted once the session's final checkpoint is durable, cancelling any
+   *  in-flight worker model calls so dispose stays bounded. */
+  abort: AbortController;
   retirement?: Promise<void>;
 }
 
-const DSH_TOOL_PRESET = {
-  readTools: ["read_file", "grep", "glob"],
-  shellTools: ["bash", "pwsh", "run_command"],
+/** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
+ *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
+ *  dsh-tool-pwsh; verified against DSH 0.1.1-rc.2). Only these names may
+ *  count as memory reuse — a write or unknown tool can never fake telemetry. */
+export const DSH_TOOL_PRESET = {
+  readTools: ["read", "grep", "glob"],
+  shellTools: ["bash", "pwsh"],
 };
+
+/** Per-worker model-call cap. Mirrors the opencode channel's timeout: a hung
+ *  host model must not squat a bounded extraction slot forever. Kept below
+ *  the extraction job lease so the job falls back to a normal retry. */
+const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -144,18 +166,41 @@ function memoryMessage(text: string): UserMessage {
   });
 }
 
-function dshChannel(ctx: Context, route: () => { provider: string; model: string } | undefined): LlmChannel {
+function dshChannel(
+  ctx: Context,
+  route: () => { provider: string; model: string } | undefined,
+  abortSignal: () => AbortSignal | undefined,
+): LlmChannel {
   return {
     name: "dsh",
-    async chat(system, user) {
+    async chat(system, user, signal) {
       const selected = route();
       if (!selected) throw new Error("DSH model route is not available for the Memcurio worker yet");
       const messages = [memoryMessage(user)];
+      // Bound every worker call: the runtime abort (session retired) plus a
+      // wall-clock cap so a hung host model falls back to the durable
+      // retry path instead of squatting a bounded slot forever.
+      const signals: AbortSignal[] = [AbortSignal.timeout(DSH_WORKER_CHAT_TIMEOUT_MS)];
+      const runtimeSignal = abortSignal();
+      if (runtimeSignal) signals.push(runtimeSignal);
+      if (signal) signals.push(signal);
+      const combined = AbortSignal.any(signals);
       let output = "";
-      for await (const chunk of ctx.llm.stream({ ...selected, system, messages })) {
+      for await (const chunk of ctx.llm.stream({ ...selected, system, messages, signal: combined })) {
         if (chunk.type === "text-delta" && typeof chunk.text === "string") output += chunk.text;
-        if (chunk.type === "finish" && chunk.reason.kind === "error") {
-          throw new Error(chunk.reason.failure.message || "DSH model call failed");
+        if (chunk.type === "finish") {
+          if (chunk.reason.kind === "error") {
+            throw new Error(chunk.reason.failure.message || "DSH model call failed");
+          }
+          if (chunk.reason.kind === "aborted") {
+            throw new Error(chunk.reason.failure.message || "DSH model call aborted");
+          }
+          if (chunk.reason.kind === "max-tokens") {
+            throw new Error("DSH model call hit the max-tokens limit");
+          }
+          if (chunk.reason.kind === "tool-calls") {
+            throw new Error("DSH model call returned tool calls instead of text");
+          }
         }
       }
       if (!output.trim()) throw new Error("DSH model returned no text for the Memcurio worker");
@@ -164,18 +209,42 @@ function dshChannel(ctx: Context, route: () => { provider: string; model: string
   };
 }
 
-function enqueue(runtime: SessionRuntime, task: () => Promise<void>, onError: (error: unknown) => void): Promise<void> {
-  const outcome = runtime.queue.then(task, task);
-  runtime.queue = outcome.then(
+function enqueueOn(
+  runtime: SessionRuntime,
+  lane: "queue" | "workerQueue",
+  task: () => Promise<void>,
+  onError: (error: unknown) => void,
+): Promise<void> {
+  const outcome = runtime[lane].then(task, task);
+  runtime[lane] = outcome.then(
     () => undefined,
     (error: unknown) => {
-      runtime.failure ??= error;
+      if (lane === "workerQueue") {
+        runtime.workerFailure = error;
+      } else {
+        runtime.failure = error;
+      }
       onError(error);
     },
   );
   return outcome;
 }
 
+/** Event lane: fast checkpoint/event tasks that pre-step, flush and memory
+ *  tools wait on. Never contains model calls. */
+function enqueue(runtime: SessionRuntime, task: () => Promise<void>, onError: (error: unknown) => void): Promise<void> {
+  return enqueueOn(runtime, "queue", task, onError);
+}
+
+/** Worker lane: Phase-1/Phase-2 model work, run detached. Failures are
+ *  durable (jobs stay in SQLite) and surface at the dispose drain. */
+function enqueueWorker(runtime: SessionRuntime, task: () => Promise<void>, onError: (error: unknown) => void): Promise<void> {
+  return enqueueOn(runtime, "workerQueue", task, onError);
+}
+
+/** Wait for the event lane and rethrow its first failure. The worker lane is
+ *  deliberately NOT awaited: model calls must never stall a model step,
+ *  a flush boundary, or a memory tool. */
 async function awaitRuntime(runtime: SessionRuntime): Promise<void> {
   await runtime.queue;
   if (runtime.failure !== undefined) throw runtime.failure;
@@ -215,6 +284,9 @@ function integerArg(value: number | undefined, key: string, fallback?: number, m
 function toolDetails(args: unknown): { filePath?: string; path?: string; command?: string } | undefined {
   if (!isRecord(args)) return undefined;
   const details: { filePath?: string; path?: string; command?: string } = {};
+  // DSH's `read` tool takes `file_path` (snake_case); the other read tools
+  // (grep/glob) take `path` and the shell tools take `command`.
+  if (typeof args.file_path === "string") details.filePath = args.file_path;
   if (typeof args.filePath === "string") details.filePath = args.filePath;
   if (typeof args.path === "string") details.path = args.path;
   if (typeof args.command === "string") details.command = args.command;
@@ -332,7 +404,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     const existing = sessions.get(session.id);
     if (existing) return existing;
     const seedEvents = [...session.events];
-    const workdir = session.header.cwd ?? process.cwd();
+    // header.cwd is optional in DSH. Falling back to process.cwd() would tie
+    // the store key to wherever the daemon happens to run — silently sharing
+    // memory across workspaces whenever two sessions share that cwd. Instead,
+    // cwd-less sessions deterministically share one explicit "no-cwd" store
+    // and log a warning so the degraded isolation is visible.
+    const workdir = session.header.cwd ?? "";
+    if (!workdir) {
+      ctx.logger.warn(
+        "memcurio: session %s has no header.cwd; using the shared no-cwd store (workspace isolation unavailable)",
+        session.id,
+      );
+    }
     const root = workspaceStoreRoot(baseRoot, workdir, resolved.scope);
     const seededRoute = resolved.provider && resolved.model
       ? { provider: resolved.provider, model: resolved.model }
@@ -344,7 +427,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       durableQueue: true,
       injectBudgetTokens: resolved.injectBudgetTokens,
       toolPreset: DSH_TOOL_PRESET,
-      channel: dshChannel(ctx, () => runtime.route),
+      channel: dshChannel(ctx, () => runtime.route, () => runtime.abort.signal),
       log: (level: "debug" | "info" | "warn" | "error", message: string, details?: Record<string, unknown>) =>
         ctx.logger.debug(`memcurio[${level}]: ${message}`, details),
     });
@@ -354,9 +437,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       root,
       workdir,
       queue: Promise.resolve(),
+      workerQueue: Promise.resolve(),
       staticInjected: false,
       route: seededRoute,
       pendingCompactions: new Map(),
+      abort: new AbortController(),
     };
     sessions.set(session.id, runtime);
     void enqueue(runtime, async () => {
@@ -384,10 +469,19 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   const retireSession = (runtime: SessionRuntime): Promise<void> => {
     if (runtime.retirement) return runtime.retirement;
-    const retirement = enqueue(runtime, async () => {
+    // The final checkpoint (sessionEnded) is durable and event-lane; once it
+    // is written, abort in-flight worker model calls so the dispose drain
+    // (and DSH shutdown) stays bounded. The last extraction then stays a
+    // pending durable job and retries on the next drain trigger or CLI call.
+    const ended = enqueue(runtime, async () => {
       await runtime.adapter.sessionEnded(runtime.session.id);
+      runtime.abort.abort("memcurio: session retired");
+    }, warn);
+    const drain = enqueueWorker(runtime, async () => {
+      await ended.catch(() => undefined);
       await runtime.adapter.processPendingExtractions();
     }, warn);
+    const retirement = Promise.all([ended, drain]).then(() => undefined);
     runtime.retirement = retirement;
     void retirement.then(
       () => {
@@ -412,7 +506,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     }));
     for (const outcome of outcomes) if (outcome.status === "rejected") errors.add(outcome.reason);
-    for (const runtime of active) if (runtime.failure !== undefined) errors.add(runtime.failure);
+    for (const runtime of active) {
+      if (runtime.failure !== undefined) errors.add(runtime.failure);
+      if (runtime.workerFailure !== undefined) errors.add(runtime.workerFailure);
+    }
     if (errors.size > 0) throw new AggregateError([...errors], "memcurio: session drain failed");
   }, "memcurio session drain");
 
@@ -433,8 +530,12 @@ export function apply(ctx: Context, config: Config = {}): void {
         { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id },
       ), warn);
     } else if (event.type === "turn/end") {
-      void enqueue(runtime, async () => {
-        await runtime.adapter.sessionIdle(session.id);
+      // The idle checkpoint is a fast durable write (event lane, awaited by
+      // flush); the model drain runs detached on the worker lane so a slow
+      // extraction never stalls the next pre-step or a flush boundary.
+      const idle = enqueue(runtime, () => runtime.adapter.sessionIdle(session.id), warn);
+      void enqueueWorker(runtime, async () => {
+        await idle.catch(() => undefined);
         await runtime.adapter.processPendingExtractions();
       }, warn);
     } else if (event.type === "compaction/summary") {

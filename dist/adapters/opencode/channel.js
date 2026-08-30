@@ -34,7 +34,10 @@ export function createOpencodeChannel(client, log) {
                 workerSessions.add(id);
             }
         },
-        async chat(system, user) {
+        // The signal is deliberately unused: opencode worker prompts already run
+        // under WORKER_CHAT_TIMEOUT_MS, and mid-prompt cancellation is handled by
+        // the host when the worker session is deleted.
+        async chat(system, user, _signal) {
             const created = await client.session.create({
                 body: {
                     title: "memcurio-worker",

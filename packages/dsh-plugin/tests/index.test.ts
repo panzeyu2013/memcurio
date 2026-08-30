@@ -14,6 +14,7 @@ import ToolRuntime from "@deepseek-ai/dsh-tools";
 
 import { Index } from "../../../src/core/db.js";
 import { indexDb } from "../../../src/core/paths.js";
+import { writeWorkspaceText } from "../../../src/core/workspace.js";
 import * as integration from "../../../dist/integration.js";
 import { workspaceStoreRoot } from "../src/scope.js";
 
@@ -59,14 +60,39 @@ describe("workspaceStoreRoot", () => {
   test("supports one explicitly global store", () => {
     expect(workspaceStoreRoot("/tmp/memcurio", "/work/one", "global")).toBe("/tmp/memcurio");
   });
+
+  test("maps cwd-less sessions to one fixed store, never the process cwd", () => {
+    const fallback = workspaceStoreRoot("/tmp/memcurio", "", "workspace");
+    expect(fallback).toBe("/tmp/memcurio/dsh/no-cwd");
+    // Deterministic across calls and independent of the daemon cwd.
+    expect(fallback).toBe(workspaceStoreRoot("/tmp/memcurio", "", "workspace"));
+    expect(fallback).not.toBe(workspaceStoreRoot("/tmp/memcurio", process.cwd(), "workspace"));
+  });
 });
 
 describe("DSH plugin contract", () => {
   test("publishes an activatable bundle manifest", () => {
     const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
       dsh?: { bundle?: { patch?: string } };
+      peerDependencies?: Record<string, string>;
     };
     expect(manifest.dsh?.bundle?.patch).toBe("./cordis.patch.yml");
+    // Peer contracts must track the DSH release this package is validated
+    // against (bumped together with the root devDependencies).
+    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.1");
+    for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools"]) {
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.1-rc.2");
+    }
+  });
+
+  test("telemetry preset matches DSH's built-in read and shell tool names", () => {
+    // DSH registers `read` (arg `file_path`), `grep`/`glob` (arg `path`) and
+    // `bash`/`pwsh` (arg `command`). A stale name here silently disables
+    // usage telemetry for the most common memory reads, so pin the contract.
+    expect(plugin.DSH_TOOL_PRESET).toEqual({
+      readTools: ["read", "grep", "glob"],
+      shellTools: ["bash", "pwsh"],
+    });
   });
 
   test("exports a runtime config schema with defaults and validation", () => {
@@ -223,6 +249,61 @@ describe("DSH plugin contract", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.error?.info).toMatchObject({ code: "INVALID_ARGS" });
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("counts native read-tool reads of memory files as usage telemetry", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("read-telemetry"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    // Seed a stage-1 rollout plus its rollout_summaries artifact.
+    const rolloutKey = "dsh|read-telemetry";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "read-telemetry",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+      expect(filename).not.toBe("");
+    } finally {
+      idx.close();
+    }
+    writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
+    const summaryPath = join(root, "memory", "rollout_summaries", filename);
+
+    // DSH's native `read` tool reports its target as `file_path`.
+    ctx.emit("tools/result", {
+      name: "read",
+      arguments: { file_path: summaryPath },
+      agent: { session },
+    } as never, { isError: false } as never);
+    await ctx.sessions.flush(session);
+
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+    } finally {
+      check.close();
+    }
+
+    detach();
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });

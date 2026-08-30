@@ -5094,7 +5094,7 @@ function createOpencodeChannel(client, log) {
         workerSessions.add(id);
       }
     },
-    async chat(system, user) {
+    async chat(system, user, _signal) {
       const created = await client.session.create({
         body: {
           title: "memcurio-worker",

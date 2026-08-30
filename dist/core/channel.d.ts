@@ -6,8 +6,10 @@
 export interface LlmChannel {
     /** Stable identifier used in audits/reports (e.g. "opencode", "http"). */
     readonly name: string;
-    /** One stateless chat turn: system prompt + user payload → model text. */
-    chat(system: string, user: string): Promise<string>;
+    /** One stateless chat turn: system prompt + user payload → model text.
+     *  `signal` optionally cancels the call (harness adapters may abort their
+     *  host model call); core HTTP callers leave it undefined. */
+    chat(system: string, user: string, signal?: AbortSignal): Promise<string>;
 }
 /** The default channel: memcurio's own OpenAI-compatible HTTP client,
  * configured via MEMCURIO_LLM_API_KEY / MEMCURIO_LLM_BASE_URL /
