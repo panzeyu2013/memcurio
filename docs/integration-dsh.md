@@ -1,6 +1,6 @@
 # DeepSeek Harness integration
 
-> Status: developer preview. This package targets the DSH `0.1.0-rc.5` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
+> Status: developer preview. This package targets the published DSH `0.1.0-rc.7` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
 
 ## Why this is a separate package
 
@@ -28,11 +28,13 @@ This prevents two DSH Web workspaces from sharing memories accidentally. Set `sc
 
 ```bash
 bun run build
+npm pack
 cd packages/dsh-plugin
 npm pack
+dsh plugin --profile <profile> add ../../memcurio-0.1.0.tgz ./memcurio-dsh-plugin-0.1.0.tgz
 ```
 
-Install the resulting package together with `memcurio`, then add the row from `packages/dsh-plugin/cordis.patch.yml` to the selected DSH profile patch. Registry publication is not part of the developer-preview milestone, so the package must be installed from a local tarball during testing.
+The single `dsh plugin` command installs the unpublished core tarball and the DSH bundle together. The bundle manifest activates `cordis.patch.yml` automatically; do not copy the row into the profile manually. Registry publication is not part of the developer-preview milestone, so both packages must be installed from local tarballs during testing.
 
 Example configuration:
 
@@ -40,7 +42,7 @@ Example configuration:
 - insert:
     - id: memcurio
       name: '@memcurio/dsh-plugin'
-      inject: [tools, llm]
+      inject: [tools, llm, sessions]
       config:
         scope: workspace
         injectContext: true
@@ -52,4 +54,4 @@ Example configuration:
 
 ## Current validation boundary
 
-The repository validates strict TypeScript compilation, deterministic workspace isolation, the public integration read/write surface, and all existing core regressions. A real DSH lifecycle smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+The repository validates strict TypeScript compilation against the published DSH packages, deterministic workspace isolation, lifecycle and compaction regressions, the public integration read/write surface, and all existing core regressions. A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.

@@ -4,7 +4,13 @@ Native Cordis integration for DeepSeek Harness (DSH). The package keeps DSH-spec
 
 ## Install
 
-Install `memcurio` and `@memcurio/dsh-plugin`, then merge `cordis.patch.yml` into the DSH profile patch. Each workspace gets an isolated store under `~/.memcurio/dsh/<workspace-hash>` by default.
+Until both packages are published, build and pack the repository root and this directory, then install both tarballs in one command:
+
+```bash
+dsh plugin --profile <profile> add ./memcurio-0.1.0.tgz ./memcurio-dsh-plugin-0.1.0.tgz
+```
+
+The DSH bundle manifest activates `cordis.patch.yml` automatically. Each workspace gets an isolated store under `~/.memcurio/dsh/<workspace-hash>` by default.
 
 Configuration:
 

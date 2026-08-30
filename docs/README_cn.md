@@ -92,7 +92,7 @@ memcurio status
 | Harness | 连接方式 | 详情 |
 |---|---|---|
 | **opencode** | 实验性 npm 插件 | `memcurio setup --apply --source=github`（或 `opencode plugin add github:panzeyu2013/memcurio`）把 `"plugin": ["github:panzeyu2013/memcurio"]` 写入 `~/.config/opencode/opencode.json`；opencode 用内置 Bun 自动安装到 `~/.cache/opencode/node_modules/`（tag 发布后可用 `#v0.1.0` 锁 tag，`#main` 跟随主线）。运行两阶段管线、`system.transform` 静态注入 + `chat.message` 动态 top-8、借宿主默认模型的专用无工具 worker 会话（harness 内嵌通道优先，HTTP 兜底）；OpenCode 1.18.13 本地生命周期 smoke 已通过；真实 harness E2E 仍是独立验收门槛；见 [integration-opencode.md](integration-opencode.md) |
-| **DeepSeek Harness** | 开发者预览 Cordis 独立包 | `packages/dsh-plugin` 提供可独立构建的 `@memcurio/dsh-plugin`：按 workspace 隔离存储、原生生命周期采集/上下文注入、6 个原生工具及 `ctx.llm` worker 调用。预览期从本地 tarball 安装并合并 `cordis.patch.yml`；见 [integration-dsh.md](integration-dsh.md) |
+| **DeepSeek Harness** | 开发者预览 Cordis 独立包 | `packages/dsh-plugin` 提供可独立构建的 `@memcurio/dsh-plugin`：按 workspace 隔离存储、原生生命周期采集/上下文注入、6 个原生工具及 `ctx.llm` worker 调用。预览期同时安装 core 与 bundle tarball，DSH 会自动激活包内 patch；见 [integration-dsh.md](integration-dsh.md) |
 | **任何 harness** | 基线 + MCP stdio（宿主配置） | `memcurio setup --apply --no-plugin --mcp --source=github` 在 opencode 注册；其他客户端在各自 MCP 配置（`.mcp.json` / `claude_desktop_config.json` / `codex mcp add memcurio`）填 `memcurio mcp`（先 `npm install -g github:panzeyu2013/memcurio`）；不承诺自动会话抽取 |
 
 ## CLI 参考
