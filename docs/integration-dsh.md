@@ -13,6 +13,7 @@ DSH plugins are Cordis modules with a package manifest and profile patch, unlike
 - `tools/result` records successful filesystem and shell reads as usage telemetry.
 - Six native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`.
 - Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. The latest `request/header` route is used unless `provider` and `model` are pinned in plugin config.
+- Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.
 
 ## Storage isolation
 
@@ -56,4 +57,4 @@ Example configuration:
 
 ## Current validation boundary
 
-The repository validates strict TypeScript compilation against the published DSH `0.1.1-rc.2` packages, deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; dispose aborts in-flight worker calls), native read-tool usage telemetry, the public integration read/write surface, and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+The repository validates strict TypeScript compilation against the published DSH `0.1.1-rc.2` packages, deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget and aborts in-flight worker calls), automatic Phase-2 triggering, native read-tool usage telemetry, the public integration read/write surface, and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.

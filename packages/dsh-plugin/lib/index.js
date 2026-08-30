@@ -29,6 +29,10 @@ export const DSH_TOOL_PRESET = {
  *  host model must not squat a bounded extraction slot forever. Kept below
  *  the extraction job lease so the job falls back to a normal retry. */
 const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
+/** Wall-clock budget for the retire-time drain + automatic consolidation.
+ *  On expiry the runtime abort cancels in-flight model calls so dispose (and
+ *  DSH shutdown) stays bounded; the durable queue retries the leftovers. */
+const DSH_RETIRE_WORK_BUDGET_MS = 30_000;
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -384,17 +388,40 @@ export function apply(ctx, config = {}) {
     const retireSession = (runtime) => {
         if (runtime.retirement)
             return runtime.retirement;
-        // The final checkpoint (sessionEnded) is durable and event-lane; once it
-        // is written, abort in-flight worker model calls so the dispose drain
-        // (and DSH shutdown) stays bounded. The last extraction then stays a
-        // pending durable job and retries on the next drain trigger or CLI call.
+        // The final checkpoint (sessionEnded) is durable and event-lane. The
+        // worker lane then drains pending extractions and runs the codex-style
+        // automatic Phase-2 consolidation under a wall-clock budget; on expiry
+        // the runtime abort cancels in-flight model calls so dispose (and DSH
+        // shutdown) stays bounded and the durable queue retries the leftovers.
         const ended = enqueue(runtime, async () => {
             await runtime.adapter.sessionEnded(runtime.session.id);
-            runtime.abort.abort("memcurio: session retired");
         }, warn);
         const drain = enqueueWorker(runtime, async () => {
             await ended.catch(() => undefined);
-            await runtime.adapter.processPendingExtractions();
+            let budgetTimer;
+            const budgetExpired = new Promise((resolve) => {
+                budgetTimer = setTimeout(() => {
+                    runtime.abort.abort("memcurio: session retire work budget exceeded");
+                    resolve();
+                }, DSH_RETIRE_WORK_BUDGET_MS);
+                budgetTimer.unref?.();
+            });
+            try {
+                await Promise.race([
+                    (async () => {
+                        await runtime.adapter.processPendingExtractions();
+                        await runtime.adapter.maybeConsolidate();
+                    })(),
+                    budgetExpired,
+                ]);
+            }
+            finally {
+                if (budgetTimer)
+                    clearTimeout(budgetTimer);
+                // Settled: cancel any leftover in-flight worker calls (e.g. a
+                // turn/end drain still running) so nothing keeps the process alive.
+                runtime.abort.abort("memcurio: session retired");
+            }
         }, warn);
         const retirement = Promise.all([ended, drain]).then(() => undefined);
         runtime.retirement = retirement;
@@ -447,12 +474,14 @@ export function apply(ctx, config = {}) {
         }
         else if (event.type === "turn/end") {
             // The idle checkpoint is a fast durable write (event lane, awaited by
-            // flush); the model drain runs detached on the worker lane so a slow
-            // extraction never stalls the next pre-step or a flush boundary.
+            // flush); the model drain and the codex-style automatic Phase-2
+            // consolidation run detached on the worker lane so a slow extraction
+            // never stalls the next pre-step or a flush boundary.
             const idle = enqueue(runtime, () => runtime.adapter.sessionIdle(session.id), warn);
             void enqueueWorker(runtime, async () => {
                 await idle.catch(() => undefined);
                 await runtime.adapter.processPendingExtractions();
+                await runtime.adapter.maybeConsolidate();
             }, warn);
         }
         else if (event.type === "compaction/summary") {

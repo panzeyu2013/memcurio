@@ -253,6 +253,43 @@ describe("DSH plugin contract", () => {
     await disposeFibers(fibers);
   });
 
+  test("runs the retire drain plus automatic Phase-2 consolidation at dispose", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("auto-consolidate"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+    // Pending note => the consolidation work check is guaranteed to fire.
+    await integration.integrationRemember(root, "auto-consolidate note");
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const idx = await Index.create(indexDb(root));
+    try {
+      // No LLM adapter is registered in this test runtime, so the automatic
+      // consolidation attempt fails and records consolidate.auto_failed —
+      // which proves maybeConsolidate actually ran at retire time.
+      expect(idx.metaGet("consolidation_auto_failed")).toBeDefined();
+    } finally {
+      idx.close();
+      await disposeFibers(fibers);
+    }
+  });
+
   test("counts native read-tool reads of memory files as usage telemetry", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
