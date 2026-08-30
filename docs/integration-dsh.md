@@ -10,7 +10,8 @@ DSH plugins are Cordis modules with a package manifest and profile patch, unlike
 
 - `session/created`, `session/event`, `session/flush`, and `session/disposed` map to the durable Memcurio session lifecycle.
 - `agent/pre-step` injects a static memory summary once per session and query-relevant hits on each accepted model step. Compaction re-arms static injection. Because DSH's agent loop persists every pre-step decision message into the durable session log, unchanged content is not re-injected (the model already has it) and plugin-source messages are excluded from extraction evidence — injected memory can never feed back into itself.
-- `tools/result` records successful filesystem and shell reads as usage telemetry.
+- Successful compactions prune the evidence parts their `shadowedSeqs` cover (the content survives in the compaction summary and the replacement message), keeping the bounded evidence window focused on the live surface.
+- `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first).
 - Six native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`.
 - Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. The latest `request/header` route is used unless `provider` and `model` are pinned in plugin config.
 - Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.

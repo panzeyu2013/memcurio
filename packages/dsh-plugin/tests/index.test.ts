@@ -498,6 +498,77 @@ describe("DSH plugin contract", () => {
     await disposeFibers(fibers);
   });
 
+  test("prunes compacted-away messages from extraction evidence", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prune-shadowed"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const old = createUserMessage({
+      content: [{ type: "text", text: "OLD MESSAGE THAT WAS COMPACTED AWAY" }],
+      source: { kind: "user" },
+    });
+    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: old, surfaceOp: "append" });
+
+    // The compaction summary shadows seq 0; its content survives in the
+    // summary and the replacement message.
+    const cid = CompactionId("prune-shadowed");
+    ctx.emit("session/event", session, {
+      type: "compaction/summary",
+      seq: 1,
+      time: Date.now(),
+      data: {
+        compactionId: cid,
+        summary: [{ type: "text", text: "COMPACTION SUMMARY TEXT" }],
+        shadowedRange: { start: 0, end: 0 },
+        shadowedSeqs: [0],
+        shadowedTokenCount: 0,
+        provider: "test",
+        model: "test",
+      },
+    });
+    ctx.emit("session/event", session, {
+      type: "compaction/end",
+      seq: 2,
+      time: Date.now(),
+      data: { compactionId: cid, turn: null },
+    });
+    await ctx.sessions.flush(session);
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const finalJob = index.extractionList().find((job) => job.sessionId === session.id && job.sourceEvent === "session_end");
+      expect(finalJob).toBeDefined();
+      const snapshot = JSON.parse(finalJob?.snapshotJson ?? "{}") as {
+        summary?: string;
+        evidence?: { items?: Array<{ text?: string }> };
+      };
+      const texts = (snapshot.evidence?.items ?? []).map((item) => item.text ?? "");
+      expect(texts.some((text) => text.includes("OLD MESSAGE"))).toBe(false);
+      expect(snapshot.summary).toBe("COMPACTION SUMMARY TEXT");
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
   test("counts native read-tool reads of memory files as usage telemetry", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();

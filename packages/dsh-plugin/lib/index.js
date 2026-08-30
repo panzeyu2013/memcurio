@@ -94,6 +94,22 @@ function messageFromEvent(event) {
 function isPluginMessage(message) {
     return message.source.kind === "plugin";
 }
+/** The evidence partId the plugin assigns to one session event. */
+function partIdFor(eventType, seq) {
+    return `${eventType}:${seq}`;
+}
+/** Remove the evidence parts a compaction shadows. Their content survives in
+ *  the compaction summary and the replacement message, so pruning keeps the
+ *  bounded evidence window focused on the live surface instead of letting
+ *  stale pre-compaction text crowd out the current messages. */
+function pruneShadowedEvidence(adapter, sessionId, shadowedSeqs) {
+    for (const seq of shadowedSeqs) {
+        // The shadowed events can be of any surface type; both message partIds
+        // are removed (messageRemoved is a no-op for unknown partIds).
+        adapter.messageRemoved(sessionId, partIdFor("user/message", seq));
+        adapter.messageRemoved(sessionId, partIdFor("assistant/message", seq));
+    }
+}
 function routeFromEvent(event) {
     if (event.type !== "request/header")
         return undefined;
@@ -375,20 +391,26 @@ export function apply(ctx, config = {}) {
             for (const event of seedEvents) {
                 const message = messageFromEvent(event);
                 if (message && !isPluginMessage(message)) {
-                    await adapter.messageSeen(session.id, `${event.type}:${event.seq}`, {
+                    await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), {
                         kind: message.role === "assistant" ? "assistant" : "user",
                         text: textFromMessage(message),
                         messageId: message.id,
                     });
                 }
                 else if (event.type === "compaction/summary") {
-                    summaries.set(event.data.compactionId, textFromContent(event.data.summary));
+                    summaries.set(event.data.compactionId, {
+                        summary: textFromContent(event.data.summary),
+                        shadowedSeqs: event.data.shadowedSeqs,
+                    });
                 }
                 else if (event.type === "compaction/end") {
-                    const summary = summaries.get(event.data.compactionId);
+                    const compaction = summaries.get(event.data.compactionId);
                     summaries.delete(event.data.compactionId);
-                    if (event.data.error === undefined)
-                        await adapter.sessionCompacted(session.id, summary);
+                    if (event.data.error === undefined) {
+                        if (compaction)
+                            pruneShadowedEvidence(adapter, session.id, compaction.shadowedSeqs);
+                        await adapter.sessionCompacted(session.id, compaction?.summary);
+                    }
                 }
             }
         }, warn);
@@ -485,7 +507,7 @@ export function apply(ctx, config = {}) {
         if (message) {
             if (!isPluginMessage(message)) {
                 const text = textFromMessage(message);
-                void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, `${event.type}:${event.seq}`, { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id }), warn);
+                void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partIdFor(event.type, event.seq), { kind: message.role === "assistant" ? "assistant" : "user", text, messageId: message.id }), warn);
             }
         }
         else if (event.type === "turn/end") {
@@ -501,17 +523,24 @@ export function apply(ctx, config = {}) {
             }, warn);
         }
         else if (event.type === "compaction/summary") {
-            runtime.pendingCompactions.set(event.data.compactionId, textFromContent(event.data.summary));
+            runtime.pendingCompactions.set(event.data.compactionId, {
+                summary: textFromContent(event.data.summary),
+                shadowedSeqs: event.data.shadowedSeqs,
+            });
         }
         else if (event.type === "compaction/end") {
-            const summary = runtime.pendingCompactions.get(event.data.compactionId);
+            const compaction = runtime.pendingCompactions.get(event.data.compactionId);
             runtime.pendingCompactions.delete(event.data.compactionId);
             if (event.data.error === undefined) {
                 runtime.staticInjected = false;
                 // The log rewrite may have compacted the injected memory message
                 // away, so the next pre-step must re-inject even unchanged content.
                 runtime.lastInjectedContext = undefined;
-                void enqueue(runtime, () => runtime.adapter.sessionCompacted(session.id, summary), warn);
+                void enqueue(runtime, () => {
+                    if (compaction)
+                        pruneShadowedEvidence(runtime.adapter, session.id, compaction.shadowedSeqs);
+                    return runtime.adapter.sessionCompacted(session.id, compaction?.summary);
+                }, warn);
             }
         }
     }, { global: true });
