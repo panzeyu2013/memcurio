@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
@@ -610,7 +610,15 @@ export function apply(ctx: Context, config: Config = {}): void {
     const session = exec.agent?.session;
     if (!session || result.isError) return;
     const runtime = ensureSession(session);
-    void enqueue(runtime, () => runtime.adapter.toolExecuted(session.id, exec.name, toolDetails(exec.arguments)), warn);
+    const details = toolDetails(exec.arguments);
+    // DSH's read/grep/glob resolve relative paths against the session
+    // workspace, and models typically pass them that way. The engine counts
+    // memory usage by absolute path inside the memory workspace, so resolve
+    // relative operands against the session workdir here — otherwise the
+    // most common native reads would silently miss telemetry.
+    if (details?.filePath && !isAbsolute(details.filePath)) details.filePath = resolve(runtime.workdir, details.filePath);
+    if (details?.path && !isAbsolute(details.path)) details.path = resolve(runtime.workdir, details.path);
+    void enqueue(runtime, () => runtime.adapter.toolExecuted(session.id, exec.name, details), warn);
   }, { global: true });
 
   ctx.on("session/flush", async (session) => {
@@ -637,17 +645,25 @@ export function apply(ctx: Context, config: Config = {}): void {
         : undefined;
       if (agentRoute && resolved.provider === undefined) runtime.route = agentRoute;
       await awaitRuntime(runtime);
-      const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
-      const parts: string[] = [];
-      if (!runtime.staticInjected) {
-        parts.push(await runtime.adapter.buildStaticContext(runtime.workdir, resolved.injectBudgetTokens));
-        runtime.staticInjected = true;
+      let context: string;
+      try {
+        const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
+        const parts: string[] = [];
+        if (!runtime.staticInjected) {
+          parts.push(await runtime.adapter.buildStaticContext(runtime.workdir, resolved.injectBudgetTokens));
+        }
+        if (query) {
+          const dynamic = await runtime.adapter.buildDynamicContext(runtime.workdir, query, resolved.injectBudgetTokens);
+          if (dynamic) parts.push(dynamic);
+        }
+        context = parts.filter(Boolean).join("\n\n");
+      } catch (err) {
+        // Injection is read-only augmentation: a memory-store hiccup must
+        // never fail the model step. staticInjected stays false, so the
+        // next pre-step retries the static build.
+        ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
+        return decision;
       }
-      if (query) {
-        const dynamic = await runtime.adapter.buildDynamicContext(runtime.workdir, query, resolved.injectBudgetTokens);
-        if (dynamic) parts.push(dynamic);
-      }
-      const context = parts.filter(Boolean).join("\n\n");
       if (!context) return decision;
       // The loop persists every decision message to the durable session log.
       // Unchanged content is not re-injected (the model already has it from
@@ -656,6 +672,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // the marker because the log rewrite may have dropped the message.
       if (context === runtime.lastInjectedContext) return decision;
       runtime.lastInjectedContext = context;
+      runtime.staticInjected = true;
       return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
     }, { global: true });
   }

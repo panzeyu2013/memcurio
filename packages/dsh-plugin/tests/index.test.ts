@@ -396,6 +396,108 @@ describe("DSH plugin contract", () => {
     await disposeFibers(fibers);
   });
 
+  test("resolves relative read-tool paths against the session workdir for telemetry", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const workdir = join(root, "workspace");
+    const session = ctx.sessions.prepare(SessionId("relative-telemetry"), { meta: { cwd: workdir } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const rolloutKey = "dsh|relative-telemetry";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "relative-telemetry",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+      expect(filename).not.toBe("");
+    } finally {
+      idx.close();
+    }
+    writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
+
+    // DSH's read tool resolves relative paths against the session workspace;
+    // the memory workspace lives one level up from this test workdir.
+    ctx.emit("tools/result", {
+      name: "read",
+      arguments: { file_path: `../memory/rollout_summaries/${filename}` },
+      agent: { session },
+    } as never, { isError: false } as never);
+    await ctx.sessions.flush(session);
+
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+    } finally {
+      check.close();
+    }
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("degrades gracefully when pre-step injection fails", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prestep-degrade"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    // Destroy the memory store so buildStaticContext throws mid-pre-step.
+    rmSync(root, { recursive: true, force: true });
+
+    const agent = { session, options: {} } as never;
+    const userMsg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    const payload = {
+      agent,
+      messages: [userMsg],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    } as never;
+    const defaultNext = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [userMsg] });
+    const carrier = { [Context.filter]: () => false } as never;
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      // A memory-store hiccup must never fail the model step: the decision
+      // is returned unchanged.
+      const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
+      expect(decision.kind).toBe("enter");
+      expect(decision.messages).toHaveLength(1);
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
   test("counts native read-tool reads of memory files as usage telemetry", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();

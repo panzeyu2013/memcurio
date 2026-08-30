@@ -2,18 +2,18 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-08-15（第十二轮：新增 DeepSeek Harness Cordis 独立包、稳定 `memcurio/integration` 边界、workspace 隔离、原生生命周期/工具/上下文注入与 `ctx.llm` 通道；第十一轮安全扫描见下）
+> 最近更新：2026-08-30（第十三轮：DSH 插件对齐 0.1.1-rc.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 470 tests / 1580 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 482 tests / 1610 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle、插件启动 backfill（重启恢复）已实现；真实消息证据、compaction、跨进程故障注入未验收 |
-| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 独立包已完成首批实现：workspace 隔离、Cordis 生命周期、上下文注入、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 对齐 DSH 0.1.1-rc.2：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -25,7 +25,7 @@
 | Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
 | MCP stdio | tested locally | 六个工具（search/list/read/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
 | OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
-| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离、公共 integration 读写面、DSH 事件/工具/模型通道静态契约 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc 升级兼容性 |
+| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离（含 no-cwd）、公共 integration 读写面、0.1.1-rc.2 事件/工具/模型通道契约核对、双队列与取消语义、自动整合触发、注入/证据隔离 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc 升级兼容性 |
 
 ## 3. 已完成
 
@@ -121,7 +121,7 @@ bun run pack:check
 
 ### 6.2 最新结果（2026-08-12，第六轮修复后）
 
-- `bun test`：470 pass / 1580 expect / 28 files / 0 failed（第十二轮新增 public integration 与 DSH workspace 隔离测试；第十一轮安全回归保持通过）
+- `bun test`：482 pass / 1610 expect / 28 files / 0 failed（第十三轮新增 DSH 契约、证据过滤、注入去重、自动整合、相对路径遥测与降级测试）
 - `bun test --coverage`：lines 88.78%，functions 93.78%
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：72 文件，dist 干净且预期产物齐全（含提交产物反向校验）；DSH 子包 dry-run 为 7 文件，双 tarball 离线解包后 Node 入口导入通过
