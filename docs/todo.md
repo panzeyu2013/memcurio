@@ -2,18 +2,18 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-08-30（第十三轮：DSH 插件对齐 0.1.1-rc.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-04（第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 482 tests / 1610 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 498 tests / 1636 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle、插件启动 backfill（重启恢复）已实现；真实消息证据、compaction、跨进程故障注入未验收 |
-| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 对齐 DSH 0.1.1-rc.2：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 对齐 DSH 0.1.2-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -24,8 +24,8 @@
 |---|---|---|---|
 | Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
 | MCP stdio | tested locally | 六个工具（search/list/read/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
-| OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
-| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离（含 no-cwd）、公共 integration 读写面、0.1.1-rc.2 事件/工具/模型通道契约核对、双队列与取消语义、自动整合触发、注入/证据隔离 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc 升级兼容性 |
+| OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载（历史 smoke；类型契约 `@opencode-ai/plugin` ^1.18.15，当前解析 1.18.27）、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
+| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离（含 no-cwd）、公共 integration 读写面、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc/alpha 升级兼容性 |
 
 ## 3. 已完成
 
@@ -119,9 +119,9 @@ bun run eval:lexical
 bun run pack:check
 ```
 
-### 6.2 最新结果（2026-08-12，第六轮修复后）
+### 6.2 最新结果（2026-09-04，第十四轮修复后）
 
-- `bun test`：482 pass / 1610 expect / 28 files / 0 failed（第十三轮新增 DSH 契约、证据过滤、注入去重、自动整合、相对路径遥测与降级测试）
+- `bun test`：498 pass / 1636 expect / 28 files / 0 failed（第十四轮新增真实 seed 会话采纳回归；第十三轮新增 DSH 契约、证据过滤、注入去重、自动整合、相对路径遥测与降级测试）
 - `bun test --coverage`：lines 88.78%，functions 93.78%
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：72 文件，dist 干净且预期产物齐全（含提交产物反向校验）；DSH 子包 dry-run 为 7 文件，双 tarball 离线解包后 Node 入口导入通过
@@ -148,6 +148,24 @@ bun run pack:check
 | Medium | 事件 ts ISO 校验、U+2028/2029/U+0085 拒绝；rollout 字段控制字符清洗 | events.ts、extract.ts |
 | Low | compacting 钩子 worker 短路；根目录 96MB 残留删除+忽略 | plugin.ts、.gitignore |
 | 文档 | 4→6 工具、21→20 命令、schema v10→v11、pack 文件数统一 69、tag 表述改 #main、缓存路径统一、CONTRIBUTING v1 残留、退出码说明、dev bun 版本 | i18n.ts、architecture、integration-opencode、todo、README×2、installation、CONTRIBUTING |
+
+### 6.5 第十四轮独立 review 闭环（2026-09-04，两轮 subagent 独立审查）
+
+第十四轮（DSH 0.1.2-rc.1 对齐）提交前执行两轮独立 subagent 审查：第一轮全量（代码/契约角度），第二轮双角度并行（代码/契约 + 构建/安装/文档）。
+
+| 严重性 | 发现 | 处置 |
+|---|---|---|
+| Major（R1） | 增量 `bun install` 后 6 个传递依赖（dsh-scope/commands/user-approval/session-projection/attachment/code-runtime）仍为 alpha.2，不满足 rc.1 peer 范围——验证实为混合树 | `rm -rf node_modules bun.lock` 干净重装：全树 rc.1 单副本、lock 零 alpha.2 残留；重验 typecheck/lint/全量测试全绿（clean 树结果与混合树一致，无掩盖破坏）|
+| Minor（R1） | seed 采纳仅由 mock 覆盖，无真实 rc.1 seeded 会话路径 | 新增真实路径测试：`SessionStore.prepare({seed})` 采纳，断言 end-seed 标记容忍、证据一次、seed 内 read 遥测重建（27 项全绿）|
+| Minor（R1） | mock `snapshotEvents()` 返回可变副本，与 rc.1 冻结快照语义不符 | mock 改为 `Object.freeze([...events])` |
+| Minor（R1） | schemastery 3.18.1 落后上游 rc.1 所需 ^3.18.2（嵌套副本） | root exact + plugin dep 统一升 3.18.2，单副本 |
+| Minor（R2-A） | 新测试"exactly one copy"注释归因错误：text 断言无法捕获双重采纳（证据按 partId 覆盖），真正的一次性探测器是 usageCount +1 | 注释修正并指明双重采纳会使 usageCount=2 |
+| Minor（R2-A） | 全量快照重放（含 end-seed 标记与 fork 继承前缀）易被误"优化"为 firstLiveSeq/ownEvents 起点 | src 注释固化取舍依据（构造函数种子永不重发；ownEvents 是 fork 持久切点非恢复安全切点）|
+| Nit（R2-A） | end-seed 标记存在性无直接断言 | 测试内新增标记@firstLiveSeq 断言 |
+| Nit（R2-B） | biome.json $schema 2.5.11 落后已解析 biome 2.5.12 | schema URL 对齐 2.5.12 |
+| 文档（R2-B） | todo.md/§6.2 测试计数 482/1610 过期（实测 498/1636）、§6.2 标题日期与正文轮次矛盾、opencode 契约解析版本 1.18.25 过期（lock 1.18.27）| 全部对齐实测值 |
+
+审查结论：rc.1 迁移忠实完整——Session 快照 API 迁移、SessionSeq 品牌、seedLength→isSeeded 均正确处理；无 blocker/major；真实 seed 采纳测试经 25 次单独重跑无抖动；R2-B 确认干净安装可复现（frozen lockfile 逐字节一致）、构建产物与提交版逐字节一致、pack 门禁 72/7 文件与文档吻合。
 
 ### 6.3 环境（真实 Harness 本地 smoke）
 

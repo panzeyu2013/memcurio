@@ -1,6 +1,6 @@
 # DeepSeek Harness integration
 
-> Status: developer preview. This package targets the published DSH `0.1.1-rc.2` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
+> Status: developer preview. This package targets the published DSH `0.1.2-rc.1` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
 
 ## Why this is a separate package
 
@@ -81,4 +81,4 @@ Example configuration:
 
 ## Current validation boundary
 
-The repository validates strict TypeScript compilation against the published DSH `0.1.1-rc.2` packages (plugin sources AND tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation + native read-tool usage telemetry, seed replay (tool telemetry rebuild), the public integration read/write surface (including the injection gate on memory reads), and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+The repository validates strict TypeScript compilation against the published DSH `0.1.2-rc.1` packages (plugin sources AND tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation + native read-tool usage telemetry, seed replay (tool telemetry rebuild), the public integration read/write surface (including the injection gate on memory reads), and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.

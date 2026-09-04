@@ -1,6 +1,6 @@
 # opencode 插件接入（M3）
 
-> 当前状态：**实验性 / NO-GO for release**。OpenCode 1.18.13 已在隔离项目按全局插件目录完成 server 启动、session 创建/删除、`session_end` durable queue 和 worker 完成态 smoke；真实消息证据、压缩注入、长会话恢复和 provider/model 质量仍待独立验收。进度跟踪见 [docs/todo.md](todo.md)。
+> 当前状态：**实验性 / NO-GO for release**。OpenCode 1.18.13 已在隔离项目按全局插件目录完成 server 启动、session 创建/删除、`session_end` durable queue 和 worker 完成态 smoke（历史记录；插件按 `@opencode-ai/plugin` `^1.18.15` 类型契约编译，当前解析 1.18.27，最新版 harness smoke 未重跑）；真实消息证据、压缩注入、长会话恢复和 provider/model 质量仍待独立验收。进度跟踪见 [docs/todo.md](todo.md)。
 
 ## 1. 能力矩阵（opencode 适配器）
 

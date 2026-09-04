@@ -7,8 +7,8 @@ import { Context } from "@deepseek-ai/cordis";
 import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import { CompactionId } from "@deepseek-ai/dsh-compaction";
-import LlmRuntime, { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
-import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from "@deepseek-ai/dsh-session";
+import LlmRuntime, { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
@@ -80,9 +80,9 @@ describe("DSH plugin contract", () => {
     expect(manifest.dsh?.bundle?.patch).toBe("./cordis.patch.yml");
     // Peer contracts must track the DSH release this package is validated
     // against (bumped together with the root devDependencies).
-    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.1");
+    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.2");
     for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools"]) {
-      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.1-rc.2");
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.2-rc.1");
     }
   });
 
@@ -122,12 +122,12 @@ describe("DSH plugin contract", () => {
     const successfulId = CompactionId("successful");
     const summary = (id: ReturnType<typeof CompactionId>, text: string, seq: number): SessionEvent<"compaction/summary"> => ({
       type: "compaction/summary",
-      seq,
+      seq: SessionSeq(seq),
       time: Date.now(),
       data: {
         compactionId: id,
         summary: [{ type: "text", text }],
-        shadowedRange: { start: 0, end: 0 },
+        shadowedRange: { start: SessionSeq(0), end: SessionSeq(0) },
         shadowedSeqs: [],
         shadowedTokenCount: 0,
         provider: "test",
@@ -136,7 +136,7 @@ describe("DSH plugin contract", () => {
     });
     const end = (id: ReturnType<typeof CompactionId>, seq: number, error?: string): SessionEvent<"compaction/end"> => ({
       type: "compaction/end",
-      seq,
+      seq: SessionSeq(seq),
       time: Date.now(),
       data: { compactionId: id, turn: null, ...(error === undefined ? {} : { error }) },
     });
@@ -199,13 +199,13 @@ describe("DSH plugin contract", () => {
     const session = {
       id,
       header: { version: SESSION_FORMAT_VERSION, id, createdAt: Date.now(), cwd: join(root, "workspace") },
-      get events() { return events; },
+      snapshotEvents() { return Object.freeze([...events]); },
     } as unknown as Session;
     ctx.emit("session/created", session);
     const message = createUserMessage({ content: [{ type: "text", text: "one copy" }], source: { kind: "user" } });
     const event: SessionEvent<"user/message"> = {
       type: "user/message",
-      seq: 0,
+      seq: SessionSeq(0),
       time: Date.now(),
       data: message,
       surfaceOp: "append",
@@ -243,7 +243,7 @@ describe("DSH plugin contract", () => {
       model: "test",
     });
     const result = await ctx.tools.execute({
-      callId: CallId("invalid-memory-search"),
+      callId: ToolCallId("invalid-memory-search"),
       name: "memory_search",
       arguments: { query: 42 },
       signal: new AbortController().signal,
@@ -316,14 +316,14 @@ describe("DSH plugin contract", () => {
     const real = createUserMessage({ content: [{ type: "text", text: "real user text" }], source: { kind: "user" } });
     ctx.emit("session/event", session, {
       type: "user/message",
-      seq: 0,
+      seq: SessionSeq(0),
       time: Date.now(),
       data: injected,
       surfaceOp: "append",
     });
     ctx.emit("session/event", session, {
       type: "user/message",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
       data: real,
       surfaceOp: "append",
@@ -517,20 +517,20 @@ describe("DSH plugin contract", () => {
       content: [{ type: "text", text: "OLD MESSAGE THAT WAS COMPACTED AWAY" }],
       source: { kind: "user" },
     });
-    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: old, surfaceOp: "append" });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: old, surfaceOp: "append" });
 
     // The compaction summary shadows seq 0; its content survives in the
     // summary and the replacement message.
     const cid = CompactionId("prune-shadowed");
     ctx.emit("session/event", session, {
       type: "compaction/summary",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
       data: {
         compactionId: cid,
         summary: [{ type: "text", text: "COMPACTION SUMMARY TEXT" }],
-        shadowedRange: { start: 0, end: 0 },
-        shadowedSeqs: [0],
+        shadowedRange: { start: SessionSeq(0), end: SessionSeq(0) },
+        shadowedSeqs: [SessionSeq(0)],
         shadowedTokenCount: 0,
         provider: "test",
         model: "test",
@@ -538,7 +538,7 @@ describe("DSH plugin contract", () => {
     });
     ctx.emit("session/event", session, {
       type: "compaction/end",
-      seq: 2,
+      seq: SessionSeq(2),
       time: Date.now(),
       data: { compactionId: cid, turn: null },
     });
@@ -658,7 +658,7 @@ describe("DSH plugin contract", () => {
     const citationText = `<memcurio-citation>\n<rollout_ids>\n${rolloutKey}\n</rollout_ids>\n</memcurio-citation>`;
     ctx.emit("session/event", session, {
       type: "assistant/message",
-      seq: 0,
+      seq: SessionSeq(0),
       time: Date.now(),
       data: {
         turn: 1,
@@ -672,7 +672,7 @@ describe("DSH plugin contract", () => {
     });
     ctx.emit("session/event", session, {
       type: "turn/end",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
       data: { turn: 1, reason: { kind: "completed" } },
     });
@@ -726,17 +726,17 @@ describe("DSH plugin contract", () => {
 
     // A session restored from disk carries tool/call + tool/result in its
     // event log; the adoption replay must rebuild the usage telemetry.
-    const callId = CallId("seed-tool-call");
+    const callId = ToolCallId("seed-tool-call");
     const events: SessionEvent[] = [
       {
         type: "tool/call",
-        seq: 0,
+        seq: SessionSeq(0),
         time: Date.now(),
         data: { turn: 1, step: 1, callId, name: "read", arguments: JSON.stringify({ file_path: summaryPath }) },
       },
       {
         type: "tool/result",
-        seq: 1,
+        seq: SessionSeq(1),
         time: Date.now(),
         data: {
           turn: 1,
@@ -753,8 +753,9 @@ describe("DSH plugin contract", () => {
     const session = {
       id: SessionId("seed-tool-session"),
       header: { version: SESSION_FORMAT_VERSION, id: SessionId("seed-tool-session"), createdAt: Date.now(), cwd: join(root, "workspace") },
-      get events() {
-        return events;
+      snapshotEvents() {
+        // rc.1 snapshots are frozen and stay stable after later appends.
+        return Object.freeze([...events]);
       },
     } as unknown as Session;
     ctx.emit("session/created", session);
@@ -777,6 +778,107 @@ describe("DSH plugin contract", () => {
     }
   });
 
+  test("adopts a real rc.1 seeded session (frozen seed + end-seed marker replayed once)", async () => {
+    const root = temporaryRoot();
+    const workdir = join(root, "workspace");
+    const rolloutKey = "dsh|real-seed";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "real-seed",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+      expect(filename).not.toBe("");
+    } finally {
+      idx.close();
+    }
+    writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
+    const summaryPath = join(root, "memory", "rollout_summaries", filename);
+
+    // A resumed/forked rc.1 session carries its prior log as constructor
+    // seeds: validated, deep-frozen, never re-published on the live path, and
+    // terminated by the store's own `session/end-seed` marker (the adoption
+    // replay must tolerate that marker and still rebuild evidence once).
+    const { ctx, fibers } = await runtime();
+    const seeded = createUserMessage({
+      content: [{ type: "text", text: "SEEDED MESSAGE BEFORE RESTART" }],
+      source: { kind: "user" },
+    });
+    const callId = ToolCallId("real-seed-call");
+    const seed: SessionEvent[] = [
+      { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: seeded, surfaceOp: "append" },
+      {
+        type: "tool/call",
+        seq: SessionSeq(1),
+        time: Date.now(),
+        data: { turn: 1, step: 1, callId, name: "read", arguments: JSON.stringify({ file_path: summaryPath }) },
+      },
+      {
+        type: "tool/result",
+        seq: SessionSeq(2),
+        time: Date.now(),
+        data: {
+          turn: 1,
+          step: 1,
+          message: createToolResultMessage({ callId, content: [{ type: "text", text: "ok" }], isError: false }),
+        },
+        surfaceOp: "append",
+      },
+    ];
+    const session = ctx.sessions.prepare(SessionId("real-seed-adoption"), { meta: { cwd: workdir }, seed });
+    // rc.1 seals constructor seeds with an unpublished session/end-seed
+    // marker at the first live seq; the adoption replay must tolerate it.
+    {
+      const seededSnapshot = session.snapshotEvents();
+      const marker = seededSnapshot.find((event) => event.type === "session/end-seed");
+      expect(marker).toBeDefined();
+      expect(marker?.seq).toBe(SessionSeq(session.firstLiveSeq));
+    }
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const finalJob = index.extractionList().find((job) => job.sessionId === session.id && job.sourceEvent === "session_end");
+      expect(finalJob).toBeDefined();
+      const snapshot = JSON.parse(finalJob?.snapshotJson ?? "{}") as { evidence?: { items?: Array<{ text?: string }> } };
+      const texts = (snapshot.evidence?.items ?? []).map((item) => item.text ?? "");
+      // The text assertion guards presence (and that no LIVE duplicate under
+      // a distinct partId slipped in). It cannot trip on a double adoption
+      // replay: evidence parts are keyed by partId, so replayed parts
+      // overwrite instead of duplicating. The real once-only tripwire is the
+      // usage count below — every replayed native read is a genuine +1.
+      expect(texts.filter((text) => text === "SEEDED MESSAGE BEFORE RESTART")).toHaveLength(1);
+      // The seeded native read of the memory artifact rebuilt its telemetry
+      // exactly once (a second adoption replay would make this 2).
+      expect(index.stageGet(rolloutKey)?.usageCount).toBe(1);
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
   test("prunes evidence shadowed by model-free compaction/prune events", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
@@ -793,12 +895,12 @@ describe("DSH plugin contract", () => {
     await ctx.sessions.flush(session);
 
     const old = createUserMessage({ content: [{ type: "text", text: "PRUNED BY MODEL-FREE COMPACTION" }], source: { kind: "user" } });
-    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: old, surfaceOp: "append" });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: old, surfaceOp: "append" });
     ctx.emit("session/event", session, {
       type: "compaction/prune",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
-      data: { shadowedRange: { start: 0, end: 0 }, shadowedSeqs: [0], shadowedTokenCount: 0 },
+      data: { shadowedRange: { start: SessionSeq(0), end: SessionSeq(0) }, shadowedSeqs: [SessionSeq(0)], shadowedTokenCount: 0 },
     });
     await ctx.sessions.flush(session);
 
@@ -840,10 +942,10 @@ describe("DSH plugin contract", () => {
     await integration.integrationRemember(root, "worker-chain note");
 
     const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
-    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });
     ctx.emit("session/event", session, {
       type: "turn/end",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
       data: { turn: 1, reason: { kind: "completed" } },
     });
@@ -932,10 +1034,10 @@ describe("DSH plugin contract", () => {
     await ctx.sessions.flush(session);
 
     const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
-    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });
     ctx.emit("session/event", session, {
       type: "request/header",
-      seq: 1,
+      seq: SessionSeq(1),
       time: Date.now(),
       data: { header: { config: { provider: "routed-provider", model: "routed-model" } }, reason: "initial" },
     });
@@ -982,7 +1084,7 @@ describe("DSH plugin contract", () => {
     await ctx.sessions.flush(session);
 
     const msg = createUserMessage({ content: [{ type: "text", text: "pre-existing message" }], source: { kind: "user" } });
-    ctx.emit("session/event", session, { type: "user/message", seq: 0, time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });
 
     const originalConsoleWarn = console.warn;
     console.warn = () => undefined;

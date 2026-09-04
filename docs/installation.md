@@ -212,7 +212,7 @@ args = ["mcp"]
 
 | 操作 | CLI | opencode 插件 | MCP |
 |---|---|---|---|
-| 升级 | `npm install -g github:panzeyu2013/memcurio`（或指定 `#v0.1.1`） | 改 opencode.json 里 spec 的 tag 后重启 | 无（`memcurio` 命令随 CLI 升级） |
+| 升级 | `npm install -g github:panzeyu2013/memcurio`（或指定 `#v0.1.0`） | 改 opencode.json 里 spec 的 tag 后重启 | 无（`memcurio` 命令随 CLI 升级） |
 | 回滚 | `npm install -g github:panzeyu2013/memcurio#<旧tag>` | spec 改回旧 tag 后重启；配置备份在 `<文件>.memcurio.bak` | 无 |
 | 卸载 | `npm uninstall -g memcurio` | 从 `plugin` 数组删除条目（或还原 `.memcurio.bak`） | 从 `mcp` / `mcpServers` 删除条目 |
 

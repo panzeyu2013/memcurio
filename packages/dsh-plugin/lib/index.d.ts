@@ -15,7 +15,7 @@ export interface Config {
 export declare const Config: Schema<Config>;
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.1-rc.2). Only these names may
+ *  dsh-tool-pwsh; verified against DSH 0.1.2-rc.1). Only these names may
  *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 export declare const DSH_TOOL_PRESET: {
     readTools: string[];

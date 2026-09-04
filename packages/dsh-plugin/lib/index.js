@@ -33,7 +33,7 @@ async function harvestCitations(runtime) {
 }
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.1-rc.2). Only these names may
+ *  dsh-tool-pwsh; verified against DSH 0.1.2-rc.1). Only these names may
  *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 export const DSH_TOOL_PRESET = {
     readTools: ["read", "grep", "glob"],
@@ -386,7 +386,16 @@ export function apply(ctx, config = {}) {
         const existing = sessions.get(session.id);
         if (existing)
             return existing;
-        const seedEvents = [...session.events];
+        // DSH 0.1.2-rc.1 dropped the Session.events getter for snapshotEvents():
+        // the log is read once at adoption (any constructor seed), and everything
+        // appended later arrives over the live session/event path. The FULL
+        // snapshot is deliberate: constructor seeds — including the store's
+        // session/end-seed marker and, on fork-resume, the inherited prefix — are
+        // never re-published on the live path, so replaying from firstLiveSeq or
+        // ownEvents() would silently drop pre-restart evidence only this replay
+        // ever sees. (firstLiveSeq is an in-process cut; ownEvents is the durable
+        // fork cut; a restarted fork child needs its inherited prefix replayed.)
+        const seedEvents = session.snapshotEvents();
         // header.cwd is optional in DSH. Falling back to process.cwd() would tie
         // the store key to wherever the daemon happens to run — silently sharing
         // memory across workspaces whenever two sessions share that cwd. Instead,
