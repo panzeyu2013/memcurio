@@ -41,7 +41,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 ├── config.json
-└── state/                           # 事务日志 / 锁 / socket（不变）
+└── state/                           # 事务日志 / 锁（不变）
 ```
 
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。codex 适配器（daemon/hook/spool/plugin 生成）已整体移除，codex 用户使用 codex 原生 memory 机制。DSH 单宿主收敛重构中，opencode 适配器、MCP server、CLI 与 HTTP LLM 通道（`src/core/llm.ts`、HttpChannel、`MEMCURIO_LLM_*`）进一步移除：memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），模型访问仅来自宿主注入的 `ctx.llm` 通道。

@@ -267,7 +267,7 @@ export async function purgeRollout(root: string, rolloutKey: string, exportPaths
         try {
           recoverPendingGenerations(root, generationMarkerFromMeta(idx.metaGet("consolidation_generation")));
         } catch {
-          // Preserve the manifest for the next doctor/consolidation recovery.
+          // Preserve the manifest for the next consolidation recovery.
         }
       }
     }

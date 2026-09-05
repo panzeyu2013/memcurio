@@ -49,8 +49,9 @@ export interface AdapterOptions {
      * environment changes or daemon overrides from splitting one session across
      * different SQLite/workspace roots. */
     root?: string;
-    /** Phase-1 extraction channel; defaults to HTTP. Missing configuration is
-     *  a retryable provider failure for durable queue consumers. */
+    /** Phase-1 extraction provider; defaults to a channel-backed
+     *  LlmExtractProvider. Without a host channel the durable queue blocks
+     *  (never burning attempts); an explicit override still wins. */
     extract?: ExtractProvider;
     /** Harness-embedded model channel. When present the engine builds its
      *  default providers around it (extraction + automatic consolidation);
@@ -59,7 +60,7 @@ export interface AdapterOptions {
     /** Harness-specific read/shell tool-name sets for usage telemetry; the
      *  engine defaults to the codex-style superset. */
     toolPreset?: HarnessToolPreset;
-    /** This adapter's host (e.g. "opencode"). Used to scope host-wide scans
+    /** This adapter's host (e.g. "dsh"). Used to scope host-wide scans
      *  (backfill without explicit session ids) to sessions this adapter owns;
      *  when omitted it is derived from the first sessionCreated call. */
     host?: string;
@@ -77,8 +78,9 @@ export declare class MemcurioAdapter {
     /** Phase-1 provider (harness-channel default or explicit override);
      *  public so harness adapters can inspect the resolved provider name. */
     readonly extract: ExtractProvider;
-    /** Harness-embedded model channel (hostModel capability); undefined for
-     *  direct core callers that rely on the process-wide HTTP channel. */
+    /** Host model channel (the DSH plugin wraps ctx.llm). When undefined,
+     *  Phase-1 extraction blocks and automatic consolidation falls back to
+     *  the rule provider. */
     private readonly channel;
     /** Read-only tool names that count as memory reuse (usage telemetry).
      *  Harness-specific overrides come from the adapter's toolPreset; the
@@ -98,13 +100,13 @@ export declare class MemcurioAdapter {
     /** Retired adapters must never drain again: their channel may be aborted
      *  (harness dispose), so a late retry would burn job attempts into the
      *  dead-letter path for a non-model reason. The durable queue waits for
-     *  the next live session's drain or the CLI instead. */
+     *  the next live session's drain instead. */
     private disposed;
     constructor(opts?: AdapterOptions);
     state(sessionId: string): SessionState | undefined;
     /** Stop this adapter's autonomous work. Harness adapters call this when the
      *  session they serve is retired: pending jobs stay durable in SQLite and
-     *  are drained by the next live session's adapter or the CLI. */
+     *  are drained by the next live session's adapter instead. */
     dispose(): void;
     sessionCreated(sessionId: string, workdir: string, host: string): Promise<void>;
     messageSeen(sessionId: string, partId: string, details?: {
@@ -112,14 +114,14 @@ export declare class MemcurioAdapter {
         text?: string;
         messageId?: string;
     }): Promise<void>;
-    /** Record the role from OpenCode's Message object. The role is not a Part
+    /** Record a message role from the host's message object (RESERVED engine API: no DSH-plugin caller today). The role is not a Part
      * field; when it arrives after a streamed part, update the stored evidence
      * in place so the final snapshot has the correct user/assistant class. */
     messageRoleKnown(sessionId: string, messageId: string, kind: EvidenceInput["kind"]): void;
     messageRemoved(sessionId: string, partId: string): void;
     messageRemovedByMessage(sessionId: string, messageId: string): void;
     /** Replace the in-memory message-part view with the authoritative messages
-     * returned by OpenCode at idle/close. This repairs missed deltas and removes
+     * returned by the host at idle/close. This repairs missed deltas and removes
      * parts that the stream reported as deleted. */
     messageSnapshot(sessionId: string, items: ReadonlyArray<{
         partId: string;
@@ -161,15 +163,10 @@ export declare class MemcurioAdapter {
      *  its subtree only for search-type commands (caller sets subtree=true);
      *  plain read commands treat it as a no-op. */
     private memoryUsageFromPaths;
-    /** Entry-side retention recycle. Calls the shared stagePruneRetention with
-     *  the configured maxUnusedDays; the shared db.ts change also recycles
-     *  never-selected rows older than the window and RETURNS the deleted rows
-     *  ({ rollout_key, artifact_filename }) so the entry side can unlink their
-     *  artifacts. The cast keeps this compiling against both the old
-     *  count-return and the new rows-return signature; at runtime a plain
-     *  number means the old API, whose rows were already unlinked by the
-     *  pruning consolidation (fallback still recycles stale pending rows so
-     *  behavior is identical once the shared change lands). */
+    /** Entry-side retention recycle: stagePruneRetention (db.ts) atomically
+     *  recycles deleted rows and never-selected pending rows older than
+     *  maxUnusedDays, RETURNING the deleted rows ({ rollout_key,
+     *  artifact_filename }) so the entry side unlinks their summary artifacts. */
     private stagePruneRetentionWithRows;
     /** Conservatively extract path operands of whitelisted read-only commands
      *  from a shell command string. Tokens are never executed: the command text
@@ -220,6 +217,11 @@ export declare class MemcurioAdapter {
      *  (codex-style scheduling). Best-effort and detached: failures are logged,
      *  never thrown into the host event path; the workspace lease still
      *  serializes against manual curate runs. */
+    /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none
+     *  keeps the documented kill-switch: consolidation falls back to the rule
+     *  provider while Phase-1 extraction still uses the embedded host channel
+     *  (the plugin passes it straight to the extract provider). */
+    private modelChannel;
     maybeConsolidate(): Promise<void>;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
     buildDynamicContext(workdir: string, query: string, budgetTokens?: number): Promise<string>;

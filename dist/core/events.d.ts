@@ -1,4 +1,4 @@
-export declare const HOSTS: readonly ["opencode", "codex", "pi", "claude", "cli", "mcp"];
+export declare const HOSTS: readonly ["opencode", "codex", "pi", "claude", "cli", "mcp", "dsh"];
 export declare const EVENTS: readonly ["session_start", "session_end", "user_prompt", "turn_end", "tool_use", "compacting", "compacted", "idle", "injection", "use"];
 export type Host = (typeof HOSTS)[number];
 export type EventName = (typeof EVENTS)[number];

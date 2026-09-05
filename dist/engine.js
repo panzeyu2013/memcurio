@@ -167,8 +167,9 @@ export class MemcurioAdapter {
     /** Phase-1 provider (harness-channel default or explicit override);
      *  public so harness adapters can inspect the resolved provider name. */
     extract;
-    /** Harness-embedded model channel (hostModel capability); undefined for
-     *  direct core callers that rely on the process-wide HTTP channel. */
+    /** Host model channel (the DSH plugin wraps ctx.llm). When undefined,
+     *  Phase-1 extraction blocks and automatic consolidation falls back to
+     *  the rule provider. */
     channel;
     /** Read-only tool names that count as memory reuse (usage telemetry).
      *  Harness-specific overrides come from the adapter's toolPreset; the
@@ -188,7 +189,7 @@ export class MemcurioAdapter {
     /** Retired adapters must never drain again: their channel may be aborted
      *  (harness dispose), so a late retry would burn job attempts into the
      *  dead-letter path for a non-model reason. The durable queue waits for
-     *  the next live session's drain or the CLI instead. */
+     *  the next live session's drain instead. */
     disposed = false;
     constructor(opts = {}) {
         this.root = resolve(opts.root ?? coreRoot());
@@ -206,7 +207,7 @@ export class MemcurioAdapter {
     }
     /** Stop this adapter's autonomous work. Harness adapters call this when the
      *  session they serve is retired: pending jobs stay durable in SQLite and
-     *  are drained by the next live session's adapter or the CLI. */
+     *  are drained by the next live session's adapter instead. */
     dispose() {
         this.disposed = true;
         if (this.retryTimer) {
@@ -276,7 +277,7 @@ export class MemcurioAdapter {
         }
         s.messageCount = s.messageEvidence.size;
     }
-    /** Record the role from OpenCode's Message object. The role is not a Part
+    /** Record a message role from the host's message object (RESERVED engine API: no DSH-plugin caller today). The role is not a Part
      * field; when it arrives after a streamed part, update the stored evidence
      * in place so the final snapshot has the correct user/assistant class. */
     messageRoleKnown(sessionId, messageId, kind) {
@@ -305,6 +306,8 @@ export class MemcurioAdapter {
         s.messageEvidence.delete(partId);
         s.messageCount = s.messageEvidence.size;
     }
+    // Reserved engine API: the plugin prunes by partId (messageRemoved);
+    // kept for future host services.
     messageRemovedByMessage(sessionId, messageId) {
         const s = this.sessions.get(sessionId);
         if (!s) {
@@ -318,8 +321,10 @@ export class MemcurioAdapter {
         s.messageRoles.delete(messageId);
         s.messageCount = s.messageEvidence.size;
     }
+    // Reserved engine API: no DSH-plugin caller today; kept for future host
+    // services (not covered by plugin tests).
     /** Replace the in-memory message-part view with the authoritative messages
-     * returned by OpenCode at idle/close. This repairs missed deltas and removes
+     * returned by the host at idle/close. This repairs missed deltas and removes
      * parts that the stream reported as deleted. */
     messageSnapshot(sessionId, items) {
         const s = this.sessions.get(sessionId);
@@ -364,6 +369,8 @@ export class MemcurioAdapter {
             text: record.item.text,
         }));
     }
+    // Reserved engine API: no DSH-plugin caller today; kept for future host
+    // services (not covered by plugin tests).
     /** Add host-owned transcript evidence to the in-memory checkpoint. The
      * reader is adapter-specific; this shared method only applies the bounded
      * collection guard before the next durable snapshot is written. */
@@ -519,33 +526,12 @@ export class MemcurioAdapter {
         }
         await registerMemoryUsage(this.root, rels);
     }
-    /** Entry-side retention recycle. Calls the shared stagePruneRetention with
-     *  the configured maxUnusedDays; the shared db.ts change also recycles
-     *  never-selected rows older than the window and RETURNS the deleted rows
-     *  ({ rollout_key, artifact_filename }) so the entry side can unlink their
-     *  artifacts. The cast keeps this compiling against both the old
-     *  count-return and the new rows-return signature; at runtime a plain
-     *  number means the old API, whose rows were already unlinked by the
-     *  pruning consolidation (fallback still recycles stale pending rows so
-     *  behavior is identical once the shared change lands). */
+    /** Entry-side retention recycle: stagePruneRetention (db.ts) atomically
+     *  recycles deleted rows and never-selected pending rows older than
+     *  maxUnusedDays, RETURNING the deleted rows ({ rollout_key,
+     *  artifact_filename }) so the entry side unlinks their summary artifacts. */
     stagePruneRetentionWithRows(idx, maxUnusedDays) {
-        const result = idx.stagePruneRetention(200, maxUnusedDays);
-        if (Array.isArray(result)) {
-            return { rows: result, count: result.length };
-        }
-        // Old count-only API: recycle stale never-selected pending rows here
-        // (stalest-first, matching stagePruneRetention's ordering), so the entry
-        // side closes the window even before the shared db.ts change lands.
-        const cutoff = new Date(Date.now() - maxUnusedDays * 86_400_000).toISOString();
-        const rows = idx.driver.all(`DELETE FROM stage1_outputs
-       WHERE rollout_key IN (
-         SELECT rollout_key FROM stage1_outputs
-         WHERE status = 'pending' AND selected_for_phase2 = 0
-           AND COALESCE(last_usage, source_updated_at) < ?
-         ORDER BY COALESCE(last_usage, source_updated_at) ASC, source_updated_at ASC
-         LIMIT ?
-       ) RETURNING rollout_key, artifact_filename`, [cutoff, 200]);
-        return { rows, count: result + rows.length };
+        return idx.stagePruneRetention(200, maxUnusedDays);
     }
     /** Conservatively extract path operands of whitelisted read-only commands
      *  from a shell command string. Tokens are never executed: the command text
@@ -813,6 +799,8 @@ export class MemcurioAdapter {
         this.log("info", "session ended", { sessionId, staged, queued });
         return { staged, queued };
     }
+    // Reserved engine API: no DSH-plugin caller today (DSH adoption replays
+    // durable seed logs instead); kept for future host services.
     /** Crash/lost-session catch-up (A1): a session whose process died before
      *  `session.idle`/`session.deleted` never got a durable checkpoint (the host
      *  only enqueues on those events). Scan persisted session rows that have no
@@ -945,6 +933,13 @@ export class MemcurioAdapter {
      *  (codex-style scheduling). Best-effort and detached: failures are logged,
      *  never thrown into the host event path; the workspace lease still
      *  serializes against manual curate runs. */
+    /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none
+     *  keeps the documented kill-switch: consolidation falls back to the rule
+     *  provider while Phase-1 extraction still uses the embedded host channel
+     *  (the plugin passes it straight to the extract provider). */
+    modelChannel() {
+        return process.env.MEMCURIO_LLM_PROVIDER?.trim().toLowerCase() === "none" ? undefined : this.channel;
+    }
     async maybeConsolidate() {
         const root = this.root;
         if (this.disposed) {
@@ -971,10 +966,10 @@ export class MemcurioAdapter {
                 // MEMORY.md blocks (codex-style).
                 try {
                     const pruned = this.stagePruneRetentionWithRows(idx, cfg.maxUnusedDays);
-                    if (pruned.count > 0) {
-                        idx.audit("prune.retention", "-", `${pruned.count} row(s) pruned by retention cleanup`);
+                    if (pruned.length > 0) {
+                        idx.audit("prune.retention", "-", `${pruned.length} row(s) pruned by retention cleanup`);
                     }
-                    for (const row of pruned.rows) {
+                    for (const row of pruned) {
                         if (row.artifact_filename) {
                             try {
                                 deleteRolloutSummary(root, row.artifact_filename);
@@ -1058,7 +1053,7 @@ export class MemcurioAdapter {
             if (!work) {
                 return;
             }
-            const channel = this.channel;
+            const channel = this.modelChannel();
             const provider = channel ? new LlmLoopConsolidateProvider(undefined, channel) : new RuleConsolidateProvider();
             await runConsolidation(root, provider, { execute: true, config: cfg });
             const idx3 = await Index.create(indexDb(root));
@@ -1133,6 +1128,8 @@ export class MemcurioAdapter {
         const lines = hits.map((h) => `[memcurio] ${h.rel}:${h.line} ${h.content.replaceAll("\n", " ")}`);
         return fitContext(lines, budget);
     }
+    // Reserved engine API: DSH exposes no compaction-prompt seam, so the
+    // plugin never calls this; kept for future host services.
     async buildCompactionContext(sessionId, workdir) {
         const s = this.sessions.get(sessionId);
         const staticCtx = await this.buildStaticContext(workdir, this.#injectionBudget());
@@ -1141,6 +1138,7 @@ export class MemcurioAdapter {
         }
         return `${staticCtx}\n\nSession files touched: ${[...s.touchedFiles].slice(0, 10).join(", ") || "none"}`;
     }
+    // Reserved engine API: see buildCompactionContext.
     buildReplacePrompt(sessionId, context) {
         const s = this.sessions.get(sessionId);
         const files = s ? [...s.touchedFiles].slice(0, 10).join(", ") : "";

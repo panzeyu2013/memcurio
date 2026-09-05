@@ -70,7 +70,7 @@ function slugify(content) {
 /** Write an append-only ad-hoc memory note (mirrors codex's
  *  extensions/ad_hoc/notes). The note is consolidated on the next Phase 2 run;
  *  the model never edits memory files directly during sessions. The content
- *  cap lives in core so every entry point (CLI, plugin tools, MCP) shares it. */
+ *  cap lives in core so every entry point (plugin tools, future host services) shares it. */
 export const MAX_ADHOC_NOTE_CHARS = 20_000;
 export async function addAdHocNote(root, content, kind = "remember") {
     const cleaned = content.trim();
@@ -140,7 +140,7 @@ export async function addAdHocNote(root, content, kind = "remember") {
             deleteAdHocNoteFile(root, filename);
         }
         catch {
-            // Preserve the database error; doctor can report filesystem drift.
+            // Preserve the database error; the caller can report filesystem drift.
         }
         throw err;
     }

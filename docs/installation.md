@@ -4,7 +4,7 @@
 
 ## 1. 前置条件
 
-- **node >= 22.5**（`node:sqlite`，零原生编译；22.5–23.3 打印 ExperimentalWarning，23.4+ 稳定）
+- **node >= 22.13**（`node:sqlite`，零原生编译、无需 flag；22.5–22.12 窗口需要 `--experimental-sqlite`）
 - 一个可用的 **DSH profile**（`dsh` CLI，见 DeepSeek Harness 文档）
 - 从源码构建还需要 **bun 1.3.14**（与 CI 对齐；`bun:test`/`bun:sqlite` 仅测试与构建期使用，运行时是 node）
 

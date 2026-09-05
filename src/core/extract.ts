@@ -272,7 +272,7 @@ export function buildExtractPrompt(snapshot: RolloutSnapshot): string {
 
 /** Line-break and control characters that would inject structure into the
  *  `## Rollout \`key\`` markers of raw_memories.md when they ride in session
- *  ids or workdirs. The CLI event path rejects these in makeEnvelope, but
+ *  ids or workdirs. The event entry validation rejects these, but
  *  harness adapters call sessionCreated/enqueueExtractionJob directly, so the
  *  snapshot sanitizer must enforce them here too. */
 

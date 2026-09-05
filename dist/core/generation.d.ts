@@ -49,7 +49,7 @@ export interface GenerationManifestInfo {
     createdAt?: string;
     targetCount?: number;
 }
-/** Read-only inspection used by doctor/repair. Unlike recovery, this also
+/** Read-only inspection for recovery and audit. Unlike recovery, this also
  * reports an orphaned or malformed generation directory instead of silently
  * ignoring it. */
 export declare function inspectGenerationManifests(root: string): GenerationManifestInfo[];

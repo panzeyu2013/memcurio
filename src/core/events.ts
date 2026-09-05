@@ -1,4 +1,4 @@
-export const HOSTS = ["opencode", "codex", "pi", "claude", "cli", "mcp"] as const;
+export const HOSTS = ["opencode", "codex", "pi", "claude", "cli", "mcp", "dsh"] as const;
 
 export const EVENTS = [
   "session_start",

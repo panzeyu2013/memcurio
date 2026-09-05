@@ -184,7 +184,7 @@ export async function planConsolidation(root, cfg, opts) {
  *  summaries, deletions). Docs (MEMORY.md / memory_summary.md) are owned by
  *  the consolidator and applied later via validateEdits.
  *  Concurrency semantics: must only be invoked while holding
- *  WORKSPACE_WRITE_LEASE_KEY (every current caller — CLI reindex/repair —
+ *  WORKSPACE_WRITE_LEASE_KEY (every engine caller —
  *  does); it shares the generation-protocol stage with runConsolidation and
  *  purgeRollout, so a caller that skips the lease interleaves writes with an
  *  active consolidation. */

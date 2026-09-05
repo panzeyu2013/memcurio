@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-04（第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、315 tests / 18 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-04（第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 315 tests / 1021 assertions / 18 files、typecheck、lint、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 331 tests / 1073 assertions / 19 files、typecheck、lint、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -22,7 +22,7 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（315/18 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（331/19 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
 | 记忆可视化 UI（规划）| 未开始 | — | dsh.client 客户端半侧；设计讨论（对照 Codex #30299 等缺口）见第十六轮 |
 
@@ -84,7 +84,7 @@
 ### 3.5 验证与质量基建
 
 - [x] `evals/fixtures/retrieval.json` + `bun run eval:lexical`：Recall@5=1.00（4/4）、注入拦截 1/1、泄漏检查 5/5（含含秘密行的阳性对照）
-- [x] `scripts/pack-check.ts`：69 文件 allowlist + dist 预期产物反向校验
+- [x] `scripts/pack-check.ts`：54 文件 allowlist + dist 预期产物反向校验（第十五轮单包化后）
 - [x] CI 接入 typecheck/lint/test/pack:check/eval:lexical；`LANG=C.UTF-8` 保证 i18n 确定性
 - [x] 文档一致性：命令数（20 具名）、search 契约（含 skills/）、pid 文件名、compaction 上下文、CONTRIBUTING 安全基线、事务日志职责边界
 
@@ -123,10 +123,10 @@ bun run pack:check
 
 ### 6.2 最新结果（2026-09-04，第十五轮收敛后）
 
-- `bun test`：315 pass / 1021 expect / 18 files / 0 failed（第十五轮删除 183 项发行面测试；第十四轮新增真实 seed 会话采纳回归）
-- `bun test --coverage`：lines 88.78%，functions 93.78%
+- `bun test`：331 pass / 1073 expect / 19 files / 0 failed（第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
+- `bun test --coverage`：lines 89.49%，functions 89.45%
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：72 文件，dist 干净且预期产物齐全（含提交产物反向校验）；DSH 子包 dry-run 为 7 文件，双 tarball 离线解包后 Node 入口导入通过
+- `bun run pack:check`：54 文件（单 tarball allowlist + dist 反向校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
@@ -179,6 +179,19 @@ bun run pack:check
 | 测试 | 删除 adapters/channel/cli/i18n/integration/llm/mcp/opencode/setup/fixes/helpers（183 项）；consolidate/extract 的 HTTP-env 用例改注入式 `scriptedChannel`；315 pass / 0 fail |
 | 产物与门禁 | dist 单构建提交制；pack-check/prepare 单包化；CI 移除 bundle/CLI smoke，插件入口 node 冒烟；`bun run build` 后 dist 零漂移 |
 | 文档 | README×2/installation/integration-dsh/architecture/memory-pipeline/CONTRIBUTING 改写为 DSH 单模块；integration-opencode 删除；本文件矩阵收敛 |
+
+### 6.7 第十五轮审查闭环（2026-09-05，双 agent 独立审查 fea0fa9）
+
+| 严重性 | 发现 | 处置 |
+|---|---|---|
+| Major（行为回归） | `MEMCURIO_LLM_PROVIDER=none` 在收敛后无任何读者：文档所述"禁用 LLM 整合（回退 Rule）"静默失效 | engine.maybeConsolidate 恢复 none 门禁（`modelChannel()`）；新增回归测试（spy channel 零调用 + `consolidation_auto_last`）|
+| Minor（文档 vs 行为） | 安装 FAQ 声称"无路由不烧重试预算"；实际路由缺失抛普通 Error → 计入 attempts 直至死信 | dshChannel 路由缺失改抛 `ProviderNotConfiguredError` → durable job 进 blocked（attempts 保留，路由出现后自动激活）|
+| Major（覆盖缺口） | shell 命令词法遥测解析（live 路径）与入口保留清理失全部直接测试 | 新增 `tests/engine.test.ts`：16 项（operand 策略表、引号/NUL 占位符、粘连分隔符、长度上限、保留清理 trio、env-none 门禁）|
+| Minor | 入口保留 wrapper 保留死代码（db 恒返回 rows 数组的 legacy 分支）| wrapper 简化为直接类型化调用 |
+| Minor | `backfillUnprocessedSessions`/compaction 上下文等 7 个引擎方法无调用方且测试已删 | 标记 Reserved engine API（注释），DSH 无 compaction 注入缝不调用 |
+| Minor/Nit | 过期注释（HTTP/CLI/opencode/daemon/doctor）、HOSTS 缺 "dsh"、node 版本声明（22.5 需 flag）、README_cn 死链、AdapterOptions 文档虚构 consolidate 选项、todo 统计/覆盖率过期、architecture socket 残词、schemastery devDeps 重复、空目录残留 | 全部修复/清理；engines 与文档统一 node >=22.13；依赖去重；空目录删除 |
+
+审查结论（A/B 双 agent）：fea0fa9 收敛忠实、门禁全绿、无 blocker；修复后全量 **331 pass / 0 fail / 19 files**，coverage lines 89.49% / funcs 89.45%，`pack:check` 54 文件。
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 

@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import Schema from "@deepseek-ai/schemastery";
+import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
 import { workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
@@ -18,7 +19,7 @@ export const Config = Schema.object({
     model: Schema.string(),
 });
 /** Harvest codex-style `<memcurio-citation>` blocks from the assistant
- *  messages seen so far and feed them to the usage window (opencode parity:
+ *  messages seen so far and feed them to the usage window (codex-style citation telemetry:
  *  the injected read-path instructions tell the model to emit these). */
 async function harvestCitations(runtime) {
     const citations = runtime.adapter
@@ -39,7 +40,7 @@ export const DSH_TOOL_PRESET = {
     readTools: ["read", "grep", "glob"],
     shellTools: ["bash", "pwsh"],
 };
-/** Per-worker model-call cap. Mirrors the opencode channel's timeout: a hung
+/** Per-worker model-call cap. Mirrors the bounded-worker policy: a hung
  *  host model must not squat a bounded extraction slot forever. Kept below
  *  the extraction job lease so the job falls back to a normal retry. */
 const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
@@ -173,8 +174,10 @@ function dshChannel(ctx, route, abortSignal) {
         name: "dsh",
         async chat(system, user, signal) {
             const selected = route();
+            // A missing route is a durable configuration gap, not a transient model
+            // failure: blocking keeps the job’s attempts intact until a route exists.
             if (!selected)
-                throw new Error("DSH model route is not available for the Memcurio worker yet");
+                throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
             const messages = [memoryMessage(user)];
             // Bound every worker call: the runtime abort (session retired) plus a
             // wall-clock cap so a hung host model falls back to the durable
@@ -397,7 +400,7 @@ export function apply(ctx, config = {}) {
         // fork cut; a restarted fork child needs its inherited prefix replayed.)
         const seedEvents = session.snapshotEvents();
         // header.cwd is optional in DSH. Falling back to process.cwd() would tie
-        // the store key to wherever the daemon happens to run — silently sharing
+        // the store key to wherever the harness process happens to run — silently sharing
         // memory across workspaces whenever two sessions share that cwd. Instead,
         // cwd-less sessions deterministically share one explicit "no-cwd" store
         // and log a warning so the degraded isolation is visible.
@@ -549,7 +552,7 @@ export function apply(ctx, config = {}) {
                 // Settled: cancel leftover in-flight worker calls and stop the
                 // adapter's autonomous retry/drain work (its permanent abort must
                 // never burn retry attempts into the dead-letter path). The durable
-                // queue waits for the next live session's drain or the CLI.
+                // queue waits for the next live session's drain.
                 runtime.abort.abort("memcurio: session retired");
                 runtime.adapter.dispose();
                 // Let the abort settle the raced work so workerFailure is final
@@ -749,7 +752,7 @@ export function apply(ctx, config = {}) {
         registerMemoryTools(ctx, sessions);
     for (const session of ctx.sessions.list())
         ensureSession(session);
-    // Startup drain (opencode parity): pending durable jobs from a previous
+    // Startup drain: pending durable jobs from a previous
     // process run would otherwise sit until the first turn/end in the same
     // store. One drain per distinct store root; claims are SQLite-fenced.
     const drainedRoots = new Set();

@@ -194,7 +194,7 @@ function parseManifest(root, id) {
         // Structural validation of every target: a manifest that parses as JSON
         // but has malformed targets would crash applyGeneration deep inside
         // recovery and wedge every subsequent start (recovery has no per-item
-        // guard). Treat such manifests as invalid instead — doctor/repair can
+        // guard). Treat such manifests as invalid instead — recovery tooling can
         // then report them instead of wedging.
         for (const target of manifest.targets) {
             const t = target;
@@ -228,7 +228,7 @@ function pendingManifests(root) {
         .filter((manifest) => Boolean(manifest))
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
-/** Read-only inspection used by doctor/repair. Unlike recovery, this also
+/** Read-only inspection for recovery and audit. Unlike recovery, this also
  * reports an orphaned or malformed generation directory instead of silently
  * ignoring it. */
 export function inspectGenerationManifests(root) {
@@ -258,7 +258,7 @@ export function recoverPendingGenerations(root, committedGeneration) {
     // A kill during staging can leave a directory before manifest.json is
     // atomically published. No workspace/baseline target can have been applied
     // at that point, so this specific orphan class is safe to discard. A present
-    // but malformed manifest remains untouched for doctor/manual inspection.
+    // but a malformed manifest remains untouched for manual inspection.
     let names = [];
     try {
         names = readdirSync(generationRoot(root));
@@ -288,7 +288,7 @@ export function recoverPendingGenerations(root, committedGeneration) {
         }
         catch (err) {
             // One broken manifest must not wedge the remaining generations (nor
-            // every future startup); skip it and let doctor/repair surface it.
+            // every future startup); skip it and let recovery tooling surface it.
             recovered.push(`${manifest.id}:skip-failed:${String(err)}`);
         }
     }

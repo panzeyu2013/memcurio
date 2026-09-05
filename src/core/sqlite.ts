@@ -108,11 +108,12 @@ function chmodDbFiles(path: string): void {
 }
 
 /** SQLite driver selection is environment-driven, not preference-driven:
- *  - bun runtimes (CLI under bun, the opencode plugin, the bun test suite)
- *    MUST use `bun:sqlite` — bun cannot resolve `node:sqlite` (verified on
- *    bun 1.3.14: import fails at resolution time).
- *  - node runtimes (node >= 22.5) use `node:sqlite`; node 22.5–23.3 print an
- *    ExperimentalWarning, 23.4+ is stable. No native compile step either way.
+ *  - bun runtimes (the bun test suite and local tooling) MUST use
+ *    `bun:sqlite` — bun cannot resolve `node:sqlite` (verified on bun
+ *    1.3.14: import fails at resolution time).
+ *  - node runtimes (node >= 22.13) use `node:sqlite` without a flag (the
+ *    22.5–22.12 window required --experimental-sqlite). No native compile
+ *    step either way.
  */
 export async function openDb(path: string): Promise<DbDriver> {
   let bunModule: { Database: new (path: string) => BunDatabase } | undefined;
@@ -150,6 +151,6 @@ export async function openDb(path: string): Promise<DbDriver> {
     return driver;
   }
   throw new Error(
-    "no sqlite driver available: need bun:sqlite (bun) or node:sqlite (node >= 22.5)",
+    "no sqlite driver available: need bun:sqlite (bun) or node:sqlite (node >= 22.13)",
   );
 }

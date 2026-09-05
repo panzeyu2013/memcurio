@@ -145,7 +145,6 @@ export interface AdapterOptions {
   extract?: ExtractProvider;            // 默认 new LlmExtractProvider(opts.channel)（无 channel → unconfigured → blocked）
   channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合回退 Rule
   toolPreset?: HarnessToolPreset;       // 宿主遥测工具名（DSH 内建 read/grep/glob + bash/pwsh，见 plugin 内 DSH_TOOL_PRESET）
-  consolidate?: ConsolidateProvider;    // 默认 Rule
   injectBudgetTokens?: number;
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
 }
@@ -471,7 +470,6 @@ export interface AdapterOptions {
   extract?: ExtractProvider;            // 默认 new LlmExtractProvider(opts.channel)（无 channel → availability unconfigured → blocked）
   channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合回退 Rule
   toolPreset?: HarnessToolPreset;       // 宿主遥测工具名集合（DSH_TOOL_PRESET = read/grep/glob + bash/pwsh）
-  consolidate?: ConsolidateProvider;    // 默认 Rule
   injectBudgetTokens?: number;
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
 }

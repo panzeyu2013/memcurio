@@ -1,10 +1,10 @@
 # memcurio · DeepSeek Harness 记忆插件
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.5-green?logo=node.js)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-green?logo=node.js)](https://nodejs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
-**memcurio** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的记忆与上下文管理插件。本仓库即唯一交付物 `@memcurio/dsh-plugin`：一个 Cordis 插件（node 半侧）把宿主自身的会话生命周期转成持久、按工作区隔离的记忆，再注入回 agent loop，并注册六个原生记忆工具。包的客户端半侧（记忆可视化浏览器 UI）是下一个里程碑，见 [docs/todo.md](docs/todo.md)。
+**memcurio** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的记忆与上下文管理插件。本仓库即唯一交付物 `@memcurio/dsh-plugin`：一个 Cordis 插件（node 半侧）把宿主自身的会话生命周期转成持久、按工作区隔离的记忆，再注入回 agent loop，并注册六个原生记忆工具。包的客户端半侧（记忆可视化浏览器 UI）是下一个里程碑，见 [todo.md](todo.md)。
 
 引擎是 DSH 原生形态：模型访问完全走宿主自己的 `ctx.llm` 路由——**没有 API key、没有 HTTP provider、没有额外 daemon**。引擎核心零运行时依赖（`node:sqlite`）；唯一运行时依赖是插件配置面使用的 schemastery。
 
@@ -28,11 +28,11 @@
 - **整合（Phase 2）** —— `turn/end` 与退役时在墙钟预算内自动运行；worker 调用携带会话 abort 与单次超时。
 - **六个原生工具** —— `memory_search` / `memory_list` / `memory_read` / `memory_remember` / `memory_status` / `memory_context`，与注入共用同一读写门禁。
 
-细节见 [docs/integration-dsh.md](docs/integration-dsh.md)。
+细节见 [integration-dsh.md](integration-dsh.md)。
 
 ## 从本仓库安装（开发者预览）
 
-要求 node >= 22.5（`node:sqlite`）与一个 DSH profile。未上 registry，统一本地 tarball：
+要求 node >= 22.13（`node:sqlite`，无需 flag；22.5–22.12 需 `--experimental-sqlite`）与一个 DSH profile。未上 registry，统一本地 tarball：
 
 ```bash
 bun install --frozen-lockfile

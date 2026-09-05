@@ -1,7 +1,7 @@
 # memcurio · DeepSeek Harness memory plugin
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.5-green?logo=node.js)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-green?logo=node.js)](https://nodejs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **memcurio** is a memory and context management plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). This repository is the single deliverable package `@memcurio/dsh-plugin`: a Cordis plugin (node half) that turns the harness's own session lifecycle into durable, workspace-scoped memories, injects them back into the agent loop, and registers six native memory tools. The package's client half (a browser UI over the memory store) is the next milestone; see [docs/todo.md](docs/todo.md).
@@ -32,7 +32,7 @@ Full detail: [docs/integration-dsh.md](docs/integration-dsh.md).
 
 ## Install from this repository (developer preview)
 
-Requires [node](https://nodejs.org) >= 22.5 (`node:sqlite`) and a DSH profile. The package is not on a registry yet: build and pack locally, then add the tarball to a profile.
+Requires [node](https://nodejs.org) >= 22.13 (`node:sqlite`, no flag; the 22.5–22.12 window needed `--experimental-sqlite`) and a DSH profile. The package is not on a registry yet: build and pack locally, then add the tarball to a profile.
 
 ```bash
 # 1. Build (dist/ is committed; a fresh build must not drift — CI checks it)
