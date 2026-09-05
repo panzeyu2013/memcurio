@@ -289,11 +289,11 @@ describe("durable extraction queue", () => {
     }
   });
 
-  test("missing HTTP configuration blocks work without consuming retry budget", async () => {
+  test("an unconfigured host model channel blocks work without consuming retry budget", async () => {
     await queueExtraction(dir, {
       ...snapshot,
       evidence: createEvidenceSnapshot([{ kind: "user", text: "wait for configuration" }]),
-    }, "session_end", "http");
+    }, "session_end", "unconfigured");
     const result = await processExtractionQueue(dir, new LlmExtractProvider());
     expect(result.status).toBe("blocked");
     const idx = await Index.create(indexDb(dir));
@@ -319,9 +319,9 @@ describe("durable extraction queue", () => {
 });
 
 describe("LlmExtractProvider / buildExtractPrompt", () => {
-  test("http provider rejects without an API key so a durable job is not acknowledged", async () => {
+  test("a provider without a host model channel rejects so a durable job is not acknowledged", async () => {
     const provider = new LlmExtractProvider();
-    await expect(provider.extract(snapshot)).rejects.toThrow(/API_KEY/);
+    await expect(provider.extract(snapshot)).rejects.toThrow(/host model channel/);
   });
 
   test("prompt embeds the snapshot as untrusted JSON", () => {

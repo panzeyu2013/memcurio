@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { Index } from "./db.js";
-import { extractJsonObject } from "./llm.js";
-import { resolveChannel } from "./channel.js";
+import { extractJsonObject } from "./json.js";
 import { indexDb, ensureLayout } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
@@ -89,15 +88,11 @@ export class NoopExtractProvider {
         return null;
     }
 }
-/** Channel-backed Phase-1 extraction provider. With an embedded channel the
- *  provider uses it directly; without one it resolves the process-wide
- *  channel (harness-embedded first, HTTP fallback) at availability/extract
- *  time, so a durable job degrades to blocked instead of burning retries when
- *  no model is reachable.
- *  `claimName` overrides the queue provider namespace used for claims (the
- *  CLI retry command can then drain jobs enqueued by the harness plugin,
- *  whose provider name is the harness channel, without a channel of its
- *  own). */
+/** Channel-backed Phase-1 extraction provider. The embedding host's model
+ *  channel is the only model source; without one the provider reports
+ *  unconfigured, so a durable job degrades to blocked instead of burning
+ *  retries when no model is reachable.
+ *  `claimName` overrides the queue provider namespace used for claims. */
 export class LlmExtractProvider {
     channel;
     claimName;
@@ -106,20 +101,17 @@ export class LlmExtractProvider {
         this.claimName = claimName?.trim() || undefined;
     }
     get name() {
-        return this.claimName ?? this.channel?.name ?? "http";
+        return this.claimName ?? this.channel?.name ?? "unconfigured";
     }
     availability() {
-        if (this.channel) {
-            return { configured: true };
-        }
-        return resolveChannel()
+        return this.channel
             ? { configured: true }
-            : { configured: false, reason: "no LLM channel configured (set MEMCURIO_LLM_API_KEY or provide a harness channel)" };
+            : { configured: false, reason: "no host model channel configured" };
     }
     async extract(snapshot) {
-        const channel = this.channel ?? resolveChannel();
+        const channel = this.channel;
         if (!channel) {
-            throw new ProviderNotConfiguredError("no LLM channel configured (set MEMCURIO_LLM_API_KEY or provide a harness channel)");
+            throw new ProviderNotConfiguredError("no host model channel configured");
         }
         try {
             const raw = await channel.chat(EXTRACT_SYSTEM_PROMPT, buildExtractPrompt(snapshot));
@@ -555,7 +547,3 @@ export async function stageSession(root, snapshot, provider) {
     }
     return final;
 }
-// Compatibility alias: hosts written against the pre-channel provider name
-// keep working unchanged (`new HttpExtractProvider()` === channel-resolving
-// LlmExtractProvider).
-export { LlmExtractProvider as HttpExtractProvider };

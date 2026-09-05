@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +13,13 @@ import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
-import { Index } from "../../../src/core/db.js";
-import { indexDb } from "../../../src/core/paths.js";
-import { writeWorkspaceText } from "../../../src/core/workspace.js";
-import * as integration from "../../../dist/integration.js";
-import { workspaceStoreRoot } from "../src/scope.js";
+import { Index } from "../src/core/db.js";
+import { indexDb } from "../src/core/paths.js";
+import { writeWorkspaceText } from "../src/core/workspace.js";
+import * as api from "../src/api.js";
+import { workspaceStoreRoot } from "../src/plugin/scope.js";
 
-mock.module("memcurio/integration", () => integration);
-const plugin = await import("../src/index.js");
+const plugin = await import("../src/plugin/index.js");
 
 const temporaryRoots = new Set<string>();
 
@@ -269,7 +268,7 @@ describe("DSH plugin contract", () => {
     });
     await ctx.sessions.flush(session);
     // Pending note => the consolidation work check is guaranteed to fire.
-    await integration.integrationRemember(root, "auto-consolidate note");
+    await api.integrationRemember(root, "auto-consolidate note");
 
     const originalConsoleWarn = console.warn;
     console.warn = () => undefined;
@@ -939,7 +938,7 @@ describe("DSH plugin contract", () => {
     });
     await ctx.sessions.flush(session);
     // Pending work so the automatic consolidation check fires.
-    await integration.integrationRemember(root, "worker-chain note");
+    await api.integrationRemember(root, "worker-chain note");
 
     const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
     ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });

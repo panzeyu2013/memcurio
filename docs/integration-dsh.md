@@ -1,10 +1,10 @@
 # DeepSeek Harness integration
 
-> Status: developer preview. This package targets the published DSH `0.1.2-rc.1` Cordis contracts and is intentionally isolated under `packages/dsh-plugin` while those contracts are pre-release.
+> Status: developer preview. This repository IS the plugin package `@memcurio/dsh-plugin` (engine + Cordis plugin + bundle manifest in one tarball), targeting the published DSH `0.1.2-rc.1` Cordis contracts while those contracts are pre-release. All non-DSH distribution surfaces (opencode/MCP/CLI) were removed in round 15.
 
-## Why this is a separate package
+## Why a single DSH-native package
 
-DSH plugins are Cordis modules with a package manifest and profile patch, unlike OpenCode's single exported plugin function or an MCP server. Keeping `@memcurio/dsh-plugin` as a package in this repository gives it independent dependencies and release cadence while preserving one issue tracker and one versioned core contract. The stable boundary is `memcurio/integration`; DSH code does not import internal core paths.
+DSH plugins are Cordis modules with a package manifest and profile patch. Since the single-host convergence the engine is no longer host-agnostic middleware: it consumes the host's `ctx.llm` route directly, so core and plugin share one package, one release cadence, and one issue tracker. The model-channel abstraction (`LlmChannel` in `src/core/channel.ts`) is the only seam between the pipeline and the host, and the DSH plugin implements it over `ctx.llm`.
 
 ## What it integrates
 
@@ -29,39 +29,33 @@ This prevents two DSH Web workspaces from sharing memories accidentally. Set `sc
 
 A session without a `header.cwd` (the field is optional in DSH) never falls back to the daemon process cwd — that would silently share memory across workspaces that happen to share a cwd. Instead it deterministically uses `~/.memcurio/dsh/no-cwd/` and logs a warning so the degraded isolation is visible.
 
-## Tuning and CLI interop
+## Tuning and store inspection
 
 Each store root is a complete memcurio data root, so the per-store `config.json` (auto-created `0600` on first use) tunes the pipeline: `budget.maxInjectTokens` and `pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`. The plugin config (`injectBudgetTokens`, `provider`/`model`) is global per DSH profile; injection and tools cannot be disabled per workspace (only per profile via `cordis.patch.yml`).
 
-The CLI has no `--root` flag; point `MEMCURIO_ROOT` at a DSH store to inspect or drive it:
+There is no standalone CLI anymore (round 15): inspect or drive a store from a test/dev context by pointing the engine modules at its root (see the tests) — or wait for the planned memory-UI milestone, which will surface `memory_status`-class operations in the DSH Web client:
 
-```bash
-# Find the key: the memory_status tool reports the store root.
-export MEMCURIO_ROOT="$HOME/.memcurio/dsh/<16-hex-workspace-key>"
-memcurio status
-memcurio curate --execute        # manual Phase-2
-memcurio retry-extraction        # drain the durable queue (jobs are provider "dsh")
-memcurio audit
-```
+The store layout is self-describing (config.json + memory/ + state/); the six memory tools expose the same read/write surface in-session, and audit records cover every write.
 
-`MEMCURIO_LLM_PROVIDER=none` disables LLM consolidation (falls back to the rule provider) but has no effect on Phase-1 extraction inside DSH, because the plugin embeds the host channel directly — the same partial behavior as the opencode adapter.
+`MEMCURIO_LLM_PROVIDER=none` disables LLM consolidation (falls back to the rule provider) but has no effect on Phase-1 extraction inside DSH, because the plugin embeds the host channel directly.
 
 ## Known limitations
 
-- DSH exposes no compaction-prompt injection seam (opencode's `experimental.session.compacting` equivalent), so DSH compaction summaries are produced without memcurio context; the plugin consumes the summary as evidence instead.
+- DSH exposes no compaction-prompt injection seam, so DSH compaction summaries are produced without memcurio context; the plugin consumes the summary as evidence instead.
 - The worker model route follows the session `request/header` (or the pinned `provider`/`model`); in multi-tenant gateway deployments the session owner can steer the worker's model route (evidence is redacted before it leaves).
 
 ## Build and install from this repository
 
+Since the single-host convergence (round 15), this repository IS the plugin package: the engine, the Cordis plugin, and the bundle manifest ship together as `@memcurio/dsh-plugin`.
+
 ```bash
+bun install --frozen-lockfile
 bun run build
-npm pack
-cd packages/dsh-plugin
-npm pack
-dsh plugin --profile <profile> add ../../memcurio-0.1.0.tgz ./memcurio-dsh-plugin-0.1.0.tgz
+bun pm pack                                   # → memcurio-dsh-plugin-0.1.0.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
 ```
 
-The single `dsh plugin` command installs the unpublished core tarball and the DSH bundle together. The bundle manifest activates `cordis.patch.yml` automatically; do not copy the row into the profile manually. Registry publication is not part of the developer-preview milestone, so both packages must be installed from local tarballs during testing.
+The bundle manifest activates `cordis.patch.yml` automatically; do not copy the row into the profile manually. Registry publication is not part of the developer-preview milestone, so the package is installed from the local tarball during testing.
 
 Example configuration:
 

@@ -23,7 +23,7 @@ function filesUnder(dir: string): string[] {
   return out.sort();
 }
 
-const expectedDist = new Set<string>(["dist/opencode-memcurio-plugin.js"]);
+const expectedDist = new Set<string>();
 for (const source of filesUnder(join(repoRoot, "src"))) {
   if (!source.endsWith(".ts")) {
     continue;
@@ -57,7 +57,7 @@ const packed = output
   .split("\n")
   .map((line) => line.match(/^packed\s+\S+\s+(.+)$/)?.[1])
   .filter((path): path is string => Boolean(path));
-const allowed = /^(?:package\.json|README\.md|CONTRIBUTING\.md|LICENSE|dist\/|docs\/)/;
+const allowed = /^(?:package\.json|README\.md|LICENSE|cordis\.patch\.yml|dist\/)/;
 const unexpectedPackageFiles = packed.filter((path) => !allowed.test(path));
 if (unexpectedPackageFiles.length) {
   throw new Error(`unexpected files in package: ${unexpectedPackageFiles.join(", ")}`);

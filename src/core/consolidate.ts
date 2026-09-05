@@ -13,8 +13,7 @@ import {
   recoverPendingGenerations,
 } from "./generation.js";
 import type { GenerationFileSnapshot, GenerationManifest } from "./generation.js";
-import { extractJsonObject } from "./llm.js";
-import { resolveChannel } from "./channel.js";
+import { extractJsonObject } from "./json.js";
 import type { LlmChannel } from "./channel.js";
 import { ensureLayout, indexDb, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
@@ -736,14 +735,14 @@ interface AgentToolCall {
  *  docs directly (codex Phase-2 style), with engine-side validation on every
  *  write: workspace confinement, size caps, secret and injection scanning. */
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {
-  readonly name = "http-loop";
+  readonly name = "llm-loop";
   constructor(
     private readonly steps: number = DEFAULT_PIPELINE_CONFIG.maxAgentSteps,
     private readonly channel?: LlmChannel,
   ) {}
 
   async consolidate(input: ConsolidateInput): Promise<ConsolidateResult> {
-    const channel = this.channel ?? resolveChannel();
+    const channel = this.channel;
     if (!channel) {
       return { edits: [], report: "no LLM channel configured; use the rule provider", rejected: [], consumedNoteFilenames: [], completed: false };
     }
@@ -1519,7 +1518,3 @@ function workspaceSnapshotForProvider(root: string): Record<string, string> {
   return out;
 }
 
-// Compatibility alias: callers written against the pre-channel provider name
-// keep working unchanged (`new HttpLoopConsolidateProvider()` === channel-
-// resolving LlmLoopConsolidateProvider).
-export { LlmLoopConsolidateProvider as HttpLoopConsolidateProvider };

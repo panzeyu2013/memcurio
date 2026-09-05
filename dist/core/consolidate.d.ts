@@ -130,7 +130,7 @@ export declare class LlmLoopConsolidateProvider implements ConsolidateProvider {
     #private;
     private readonly steps;
     private readonly channel?;
-    readonly name = "http-loop";
+    readonly name = "llm-loop";
     constructor(steps?: number, channel?: LlmChannel | undefined);
     consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
 }
@@ -166,4 +166,3 @@ export declare function runConsolidation(root: string, provider: ConsolidateProv
     execute: boolean;
     config?: Partial<PipelineConfig>;
 }): Promise<ConsolidationRunResult>;
-export { LlmLoopConsolidateProvider as HttpLoopConsolidateProvider };

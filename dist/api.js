@@ -6,7 +6,7 @@ import { ensureLayout, indexDb } from "./core/paths.js";
 import { listMemory, readMemory } from "./core/read.js";
 import { redactSecrets } from "./core/sanitize.js";
 import { searchMemory } from "./core/search.js";
-export { MemcurioAdapter } from "./adapters/shared/engine.js";
+export { MemcurioAdapter } from "./engine.js";
 async function withIndex(root, run) {
     ensureLayout(root);
     const index = await Index.create(indexDb(root));

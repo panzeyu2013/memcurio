@@ -2,18 +2,18 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-04（第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-04（第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、315 tests / 18 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 498 tests / 1636 assertions / 28 files、typecheck、lint、clean build、主包 pack allowlist（72 文件 + dist 反向校验）、DSH tarball（7 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 315 tests / 1021 assertions / 18 files、typecheck、lint、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
-| OpenCode 真实集成 | 🟡 本地 smoke 通过 | 1.18.13 全局插件加载、session lifecycle、插件启动 backfill（重启恢复）已实现；真实消息证据、compaction、跨进程故障注入未验收 |
-| DeepSeek Harness 集成 | 🟡 开发者预览 | `packages/dsh-plugin` 对齐 DSH 0.1.2-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
+| OpenCode / MCP / CLI 发行面 | 🗑️ 已移除（第十五轮） | 代码/测试/产物/文档整体移除；运维操作语义（curate/retry/audit 等）将内化为 host 服务与 UI |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.2-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -22,10 +22,9 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| Core CLI / SQLite / Markdown | tested locally | 全量测试、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、pid 复用锁、事件字段校验 | 跨资源故障恢复和多进程并发完整正确性 |
-| MCP stdio | tested locally | 六个工具（search/list/read/remember/status/context）、参数校验、搜索过滤、审计脱敏、命中行截断 | 任意宿主的自动生命周期采集 |
-| OpenCode adapter/plugin | experimental | 1.18.13 全局插件加载（历史 smoke；类型契约 `@opencode-ai/plugin` ^1.18.15，当前解析 1.18.27）、空 session create/delete、`session_end` queue 完成、最终 messages/流式 part 模拟事件和 bundle | 真实消息证据、compaction、provider、跨进程故障注入/真实断电（重启恢复已由启动 backfill 覆盖） |
-| DeepSeek Harness Cordis package | developer preview | 独立编译、workspace root 确定性隔离（含 no-cwd）、公共 integration 读写面、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离 | 真实 DSH 启动、resume/compaction、多 workspace 并发与上游 rc/alpha 升级兼容性 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（315/18 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
+| 记忆可视化 UI（规划）| 未开始 | — | dsh.client 客户端半侧；设计讨论（对照 Codex #30299 等缺口）见第十六轮 |
 
 ## 3. 已完成
 
@@ -44,7 +43,9 @@
 - [x] MCP `memory_list`/`memory_read`（codex list/read 语义：隐藏条目/符号链接拒绝、cursor 分页、行/token 截断、读取重脱敏、rollout 读计遥测）；`resourceRetentionDays` 默认 7 对齐 codex RETENTION_DAYS，与 retentionDays 解耦
 - [x] 修复：`atomicWrite` 权限保留、workspace 符号链接逃逸、pid 复用锁永久卡死
 
-### 3.2 OpenCode 集成（codex 适配器已移除）
+### 3.2 历史：多宿主分发层（第十五轮整体移除）
+
+- [x] 第十五轮收敛：删除 opencode 适配器/插件、MCP server、CLI（含 setup/i18n）与全部相关测试/文档/产物；`memcurio` npm/GitHub CLI 分发终止；HTTP LLM 通道（`core/llm.ts`、`HttpChannel`、`MEMCURIO_LLM_*`）移除，模型访问只走宿主 `ctx.llm`；repair/doctor 等 CLI 专属运维语义随 host 服务重建
 
 - [x] Review 修复（第十轮）：多 agent 全面审查的 3 个分发硬伤 + 9 个 High + 12 个 Medium/Low 全部闭环（详见 §6.4）；新增 11 个回归测试
 - [x] 运行时迁移 node（第九轮）：放弃编译二进制方案与 npm 发布计划；CLI/MCP 以 `node:sqlite` 运行（engines node >= 22.5；22.5–23.3 实验警告已实测）；opencode 插件保持 bun bundle（bun 1.3.14 实测不支持 node:sqlite → sqlite.ts 双驱动按运行环境自动分流：bun → bun:sqlite、node → node:sqlite）；GitHub 为唯一分发介质——dist 全量（tsc 产物 + 插件 bundle）提交 git（.gitignore + CI diff 防漂移 + node smoke 步骤）；`prepare` 为纯 node 轻量校验（git 安装零构建）；setup MCP 命令按源选择：npm→`npx -y memcurio@latest mcp`、github→`memcurio mcp`（PATH 命令）、local→`node <repo>/dist/cli/index.js mcp`；`--mcp-command '<json>'` 自定义
@@ -57,15 +58,16 @@
 - [x] Evidence Snapshot：有界/脱敏/内容哈希/注入标记；宿主 API 拉取尾部 transcript ≤50 条消息（plugin.ts MESSAGES_LIMIT），证据上限 256 项 / 单 JSON ≤64KB / 单字段 ≤4000 字符（name/path 500）
 - [x] 真实本地 smoke（OpenCode 1.18.13）见 §6 记录
 
-### 3.3 DeepSeek Harness 独立包（开发者预览）
+### 3.3 DeepSeek Harness 单包（开发者预览）
 
-- [x] 在同一仓库建立 `packages/dsh-plugin` 独立包；DSH peer dependencies、Cordis patch、构建产物与发布文件不进入核心包运行时依赖
+- [x] （历史，第十五轮已并入单包，见 §6.6）在同一仓库建立 `packages/dsh-plugin` 独立包；DSH peer dependencies、Cordis patch、构建产物与发布文件不进入核心包运行时依赖
 - [x] 新增 `memcurio/integration` 稳定边界，DSH 包不直接导入 `src/core/*`
 - [x] 默认按绝对 workspace 路径的 SHA-256 摘要隔离存储；显式 `scope: global` 才共享
 - [x] 映射 session created/event/flush/disposed、turn end、compaction 与成功工具遥测；resume seed 恢复消息证据和模型路由
 - [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
 - [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
 - [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
+- [ ] 记忆可视化 UI（`dsh.client` 客户端半侧，嵌入 DSH Web）：注入预览/条目与溯源/用量/队列整合状态；对照 Codex 无管理 UI 缺口（#30299/#41711）设计（第十六轮讨论）
 
 ### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -88,11 +90,11 @@
 
 ## 4. 待办（Release Gate R1）
 
-> 只有以下全部满足，才可将 OpenCode 从 experimental 提升为 tested 并发布"自动记忆闭环"。
+> 只有以下全部满足，才可将 @memcurio/dsh-plugin 从 developer preview 提升为 tested 并发布"自动记忆闭环"。
 
-- [ ] **真实 Harness E2E**：OpenCode 受支持版本完整用户旅程（安装/发现/信任、SessionStart/compact/SessionEnd、插件中断与恢复、实际对话证据进入 stage1、自动 curate 进入长期记忆），留存 verification record；`tests/e2e/` 可重复脚本
-- [ ] **跨进程故障注入**：插件超时、worker 恢复、SIGKILL、重复事件均不丢任务、不重复落库；多进程并发压力与真实断电/文件系统语义验证
-- [ ] **真实对话证据**：OpenCode 采集有界、脱敏、可追溯的实际对话证据（transcript 格式质量验证）
+- [ ] **真实 DSH E2E**：DSH profile 完整用户旅程（tarball 安装、工作区切换、会话开始/compaction/结束、插件中断与恢复、实际对话证据进入 stage1、自动整合进入长期记忆、resume 后注入与证据重建），留存 verification record；`tests/e2e/` 可重复脚本
+- [ ] **跨进程故障注入**：worker 恢复、SIGKILL、重复事件均不丢任务、不重复落库；多进程并发压力与真实断电/文件系统语义验证
+- [ ] **真实对话证据**：DSH 会话采集有界、脱敏、可追溯的实际对话证据（含 seed 重放与 end-seed 标记路径）
 - [ ] **真实模型质量门槛**：Phase 5 评测（extraction/consolidation 分项评分），指标达到经批准门槛（提取 precision ≥0.90、false-memory ≤0.01、Recall@5 ≥0.80、pinned 100%、leakage 0、injection 0）
 - [ ] **远端备份/retention 策略**：SQLite/Markdown source-of-truth 与备份恢复规范、远端保留策略文档化并测试
 - [ ] **正式审核决策**：见 §5 开放决策，审核通过后本文拆分为正式路线
@@ -104,8 +106,8 @@
 3. 是否要求默认语义检索，还是坚持词法检索优先（升级由评测门控）
 4. `MEMORY.md` 的模型改写是否需要人工审批模式
 5. 是否支持多项目共享同一用户记忆
-6. 是否把 TUI/Web UI 纳入近期路线
-7. 哪些 Harness 进入正式支持矩阵，哪些只保留 MCP 兼容
+6. 记忆可视化 UI（dsh.client 客户端半侧）的功能边界与写入语义（第十六轮起讨论）
+7. 已收敛为 DSH 单宿主（第十五轮），正式支持矩阵即 DSH
 
 ## 6. 关键验证记录
 
@@ -119,9 +121,9 @@ bun run eval:lexical
 bun run pack:check
 ```
 
-### 6.2 最新结果（2026-09-04，第十四轮修复后）
+### 6.2 最新结果（2026-09-04，第十五轮收敛后）
 
-- `bun test`：498 pass / 1636 expect / 28 files / 0 failed（第十四轮新增真实 seed 会话采纳回归；第十三轮新增 DSH 契约、证据过滤、注入去重、自动整合、相对路径遥测与降级测试）
+- `bun test`：315 pass / 1021 expect / 18 files / 0 failed（第十五轮删除 183 项发行面测试；第十四轮新增真实 seed 会话采纳回归）
 - `bun test --coverage`：lines 88.78%，functions 93.78%
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：72 文件，dist 干净且预期产物齐全（含提交产物反向校验）；DSH 子包 dry-run 为 7 文件，双 tarball 离线解包后 Node 入口导入通过
@@ -167,7 +169,18 @@ bun run pack:check
 
 审查结论：rc.1 迁移忠实完整——Session 快照 API 迁移、SessionSeq 品牌、seedLength→isSeeded 均正确处理；无 blocker/major；真实 seed 采纳测试经 25 次单独重跑无抖动；R2-B 确认干净安装可复现（frozen lockfile 逐字节一致）、构建产物与提交版逐字节一致、pack 门禁 72/7 文件与文档吻合。
 
-### 6.3 环境（真实 Harness 本地 smoke）
+### 6.6 第十五轮：单宿主收敛（2026-09-04）
+
+| 动作 | 结果 |
+|---|---|
+| 删除发行层源码 | `src/cli`（index/setup/i18n）、`src/mcp`、`src/adapters/opencode`、`src/integration.ts`、`core/llm.ts`（HTTP 客户端）；`LlmChannel` 保留为唯一模型缝（`core/channel.ts`），无 channel 时 Phase-1 blocked / Phase-2 rule |
+| 单包合并 | 引擎（`src/core` + `src/engine.ts`）与插件（`src/plugin/`）并入根包 `@memcurio/dsh-plugin`；`cordis.patch.yml` 移至根；`api.ts` 保留 read/write/status 面（未来 UI host 服务底座）；`extractJsonObject` 移至 `core/json.ts` |
+| 依赖清理 | 移除 `@opencode-ai/plugin`、`@modelcontextprotocol/sdk`、`zod`；schemastery 升为唯一运行时依赖 |
+| 测试 | 删除 adapters/channel/cli/i18n/integration/llm/mcp/opencode/setup/fixes/helpers（183 项）；consolidate/extract 的 HTTP-env 用例改注入式 `scriptedChannel`；315 pass / 0 fail |
+| 产物与门禁 | dist 单构建提交制；pack-check/prepare 单包化；CI 移除 bundle/CLI smoke，插件入口 node 冒烟；`bun run build` 后 dist 零漂移 |
+| 文档 | README×2/installation/integration-dsh/architecture/memory-pipeline/CONTRIBUTING 改写为 DSH 单模块；integration-opencode 删除；本文件矩阵收敛 |
+
+### 6.3 环境（真实 Harness 本地 smoke，历史）
 
 | 组件 | 版本 | 已验证 |
 |---|---|---|
@@ -185,7 +198,6 @@ smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`�
 |---|---|
 | [docs/architecture.md](architecture.md) | v2 分层架构、存储布局、数据流 |
 | [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 实现契约（数据格式、模块接口、schema v11） |
-| [docs/installation.md](installation.md) | 安装指南：前置条件、三种场景、setup 详解、验证、各 harness MCP 配置、升级/回滚/卸载、源码安装、FAQ |
-| [docs/integration-opencode.md](integration-opencode.md) | OpenCode 接入、事件映射、已知限制 |
+| [docs/installation.md](installation.md) | 安装指南：前置条件、构建打包、DSH profile 安装、验证、升级/回滚/卸载、FAQ |
 | [README.md](../README.md) | 英文用户入口与支持矩阵 |
 | [docs/README_cn.md](README_cn.md) | 中文用户入口 |

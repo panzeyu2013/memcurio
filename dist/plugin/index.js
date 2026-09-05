@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import Schema from "@deepseek-ai/schemastery";
-import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "memcurio/integration";
+import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
 import { workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 export const name = "memcurio";

@@ -1,7 +1,7 @@
 /** Stable host-integration surface. Harness packages should import only here. */
-export { MemcurioAdapter } from "./adapters/shared/engine.js";
-export type { AdapterOptions } from "./adapters/shared/engine.js";
-export type { HarnessToolPreset } from "./adapters/contract.js";
+export { MemcurioAdapter } from "./engine.js";
+export type { AdapterOptions } from "./engine.js";
+export type { HarnessToolPreset } from "./engine.js";
 export type { LlmChannel } from "./core/channel.js";
 export declare function integrationSearch(root: string, query: string, topK?: number): Promise<{
     hits: {

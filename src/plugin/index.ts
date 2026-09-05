@@ -19,8 +19,8 @@ import {
   integrationRemember,
   integrationSearch,
   integrationStatus,
-} from "memcurio/integration";
-import type { LlmChannel } from "memcurio/integration";
+} from "../api.js";
+import type { LlmChannel } from "../api.js";
 import { workspaceStoreRoot } from "./scope.js";
 
 export { workspaceStoreRoot } from "./scope.js";

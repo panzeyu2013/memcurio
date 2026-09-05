@@ -1,20 +1,40 @@
-import { fitContext } from "../../core/budget.js";
+import { fitContext } from "./core/budget.js";
 import { resolve } from "node:path";
-import { loadConfig } from "../../core/config.js";
-import { pipelineConfig } from "../../core/config.js";
-import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "../../core/consolidate.js";
-import { Index } from "../../core/db.js";
-import type { ExtractProvider, EvidenceInput, RolloutSnapshot } from "../../core/extract.js";
-import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, processExtractionQueue, stageSession } from "../../core/extract.js";
-import { renderMemoryContext, renderReadPathInstructions } from "../../core/inject.js";
-import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "../../core/paths.js";
-import { searchMemory, registerMemoryUsage } from "../../core/search.js";
-import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "../../core/workspace.js";
-import { resolveChannel } from "../../core/channel.js";
-import type { LlmChannel } from "../../core/channel.js";
-import { DEFAULT_READ_TOOLS, DEFAULT_SHELL_TOOLS, type AdapterLog, type HarnessToolPreset } from "../contract.js";
+import { loadConfig } from "./core/config.js";
+import { pipelineConfig } from "./core/config.js";
+import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "./core/consolidate.js";
+import { Index } from "./core/db.js";
+import type { ExtractProvider, EvidenceInput, RolloutSnapshot } from "./core/extract.js";
+import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, processExtractionQueue, stageSession } from "./core/extract.js";
+import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
+import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
+import { searchMemory, registerMemoryUsage } from "./core/search.js";
+import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
+import type { LlmChannel } from "./core/channel.js";
 
-export type { AdapterLog } from "../contract.js";
+/** Structured log sink shared by the engine and its embedding plugin. */
+export type AdapterLog = (
+  level: "debug" | "info" | "warn" | "error",
+  message: string,
+  extra?: Record<string, unknown>,
+) => void;
+
+/** Host-specific tool-name sets for the usage-telemetry channels. The
+ *  engine's built-in defaults cover the codex-style superset; the embedding
+ *  host declares exactly which of its tool names are read-only file tools
+ *  and which are shell tools so unrelated tools can never fake usage. */
+export interface HarnessToolPreset {
+  readTools: string[];
+  shellTools: string[];
+}
+
+/** The codex-style superset of read-only file tools (used as the engine
+ * default when the host does not declare a toolPreset). */
+export const DEFAULT_READ_TOOLS = ["read", "grep", "rg", "glance", "list", "search", "view"];
+
+/** Shell tools whose command string is parsed lexically (never executed) for
+ * memory-file reads (the codex-style superset). */
+export const DEFAULT_SHELL_TOOLS = ["bash", "exec_command", "command", "shell"];
 
 /** Resolve an absolute path against a base; returns the relative path when
  *  the target lives inside the base, otherwise undefined. */
@@ -1168,7 +1188,7 @@ export class MemcurioAdapter {
       if (!work) {
         return;
       }
-      const channel = resolveChannel(this.channel);
+      const channel = this.channel;
       const provider = channel ? new LlmLoopConsolidateProvider(undefined, channel) : new RuleConsolidateProvider();
       await runConsolidation(root, provider, { execute: true, config: cfg });
       const idx3 = await Index.create(indexDb(root));

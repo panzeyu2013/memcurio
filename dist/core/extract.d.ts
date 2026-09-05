@@ -76,15 +76,11 @@ export declare class NoopExtractProvider implements ExtractProvider {
     readonly name = "noop";
     extract(): Promise<Stage1Output | null>;
 }
-/** Channel-backed Phase-1 extraction provider. With an embedded channel the
- *  provider uses it directly; without one it resolves the process-wide
- *  channel (harness-embedded first, HTTP fallback) at availability/extract
- *  time, so a durable job degrades to blocked instead of burning retries when
- *  no model is reachable.
- *  `claimName` overrides the queue provider namespace used for claims (the
- *  CLI retry command can then drain jobs enqueued by the harness plugin,
- *  whose provider name is the harness channel, without a channel of its
- *  own). */
+/** Channel-backed Phase-1 extraction provider. The embedding host's model
+ *  channel is the only model source; without one the provider reports
+ *  unconfigured, so a durable job degrades to blocked instead of burning
+ *  retries when no model is reachable.
+ *  `claimName` overrides the queue provider namespace used for claims. */
 export declare class LlmExtractProvider implements ExtractProvider {
     private readonly channel?;
     private readonly claimName;
@@ -141,4 +137,3 @@ export declare function parseExtractReply(raw: string, fallback: Partial<Stage1O
  *  synced by Phase 2). Returns the staged output, or null when the provider
  *  decided nothing was worth remembering. */
 export declare function stageSession(root: string, snapshot: RolloutSnapshot, provider: ExtractProvider): Promise<Stage1Output | null>;
-export { LlmExtractProvider as HttpExtractProvider };

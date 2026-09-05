@@ -4,8 +4,7 @@ import { basename, dirname, join, sep } from "node:path";
 import { Index } from "./db.js";
 import { pendingAdHocNotes } from "./adhoc.js";
 import { applyGeneration, discardGeneration, generationMarkerFromMeta, markGenerationCommitted, prepareGeneration, recoverPendingGenerations, } from "./generation.js";
-import { extractJsonObject } from "./llm.js";
-import { resolveChannel } from "./channel.js";
+import { extractJsonObject } from "./json.js";
 import { ensureLayout, indexDb, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { assertWorkspaceRel, deleteRolloutSummary, diffWorkspace, listAdHocNoteFiles, listWorkspaceFiles, loadBaseline, MAX_WORKSPACE_FILE_BYTES, readAdHocNoteFile, readWorkspaceText, rolloutSlugs, rolloutSummaryPath, } from "./workspace.js";
@@ -589,13 +588,13 @@ function isConsolidationEditable(rel) {
 export class LlmLoopConsolidateProvider {
     steps;
     channel;
-    name = "http-loop";
+    name = "llm-loop";
     constructor(steps = DEFAULT_PIPELINE_CONFIG.maxAgentSteps, channel) {
         this.steps = steps;
         this.channel = channel;
     }
     async consolidate(input) {
-        const channel = this.channel ?? resolveChannel();
+        const channel = this.channel;
         if (!channel) {
             return { edits: [], report: "no LLM channel configured; use the rule provider", rejected: [], consumedNoteFilenames: [], completed: false };
         }
@@ -1297,7 +1296,3 @@ function workspaceSnapshotForProvider(root) {
     }
     return out;
 }
-// Compatibility alias: callers written against the pre-channel provider name
-// keep working unchanged (`new HttpLoopConsolidateProvider()` === channel-
-// resolving LlmLoopConsolidateProvider).
-export { LlmLoopConsolidateProvider as HttpLoopConsolidateProvider };

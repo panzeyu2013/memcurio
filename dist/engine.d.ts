@@ -1,7 +1,21 @@
-import type { ExtractProvider, EvidenceInput } from "../../core/extract.js";
-import type { LlmChannel } from "../../core/channel.js";
-import { type AdapterLog, type HarnessToolPreset } from "../contract.js";
-export type { AdapterLog } from "../contract.js";
+import type { ExtractProvider, EvidenceInput } from "./core/extract.js";
+import type { LlmChannel } from "./core/channel.js";
+/** Structured log sink shared by the engine and its embedding plugin. */
+export type AdapterLog = (level: "debug" | "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => void;
+/** Host-specific tool-name sets for the usage-telemetry channels. The
+ *  engine's built-in defaults cover the codex-style superset; the embedding
+ *  host declares exactly which of its tool names are read-only file tools
+ *  and which are shell tools so unrelated tools can never fake usage. */
+export interface HarnessToolPreset {
+    readTools: string[];
+    shellTools: string[];
+}
+/** The codex-style superset of read-only file tools (used as the engine
+ * default when the host does not declare a toolPreset). */
+export declare const DEFAULT_READ_TOOLS: string[];
+/** Shell tools whose command string is parsed lexically (never executed) for
+ * memory-file reads (the codex-style superset). */
+export declare const DEFAULT_SHELL_TOOLS: string[];
 export interface SessionState {
     sessionId: string;
     workdir: string;
@@ -223,3 +237,4 @@ interface QueueDrainResult {
     staged?: boolean;
     retryInMs?: number;
 }
+export {};

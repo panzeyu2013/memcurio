@@ -8,9 +8,9 @@ import { listMemory, readMemory } from "./core/read.js";
 import { redactSecrets } from "./core/sanitize.js";
 import { searchMemory } from "./core/search.js";
 
-export { MemcurioAdapter } from "./adapters/shared/engine.js";
-export type { AdapterOptions } from "./adapters/shared/engine.js";
-export type { HarnessToolPreset } from "./adapters/contract.js";
+export { MemcurioAdapter } from "./engine.js";
+export type { AdapterOptions } from "./engine.js";
+export type { HarnessToolPreset } from "./engine.js";
 export type { LlmChannel } from "./core/channel.js";
 
 async function withIndex<T>(root: string, run: (index: Index) => Promise<T> | T): Promise<T> {
