@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-06（第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-06（第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 437 tests / 2848 assertions / 25 files、coverage 92.86% funcs / 94.55% lines（上轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 442 tests / 2868 assertions / 25 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -253,6 +253,18 @@ bun run pack:check
 ### 6.12 第二十一轮：客户端 M1-lite 折叠（2026-09-06）
 
 证据窗折叠（evidence delta → `state.evidence`：partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；client 27→30 项测试；全量 **437 tests / 25 files / 2848 expect / 0 fail**；设计 v1.4.2 记录（§8.4 增补）。
+
+### 6.14 第二十三轮：放行前三角度验收（2026-09-06）
+
+架构 / 功能 / 前端三路只读验收（并发 3，HEAD f626aa0）：
+
+- 架构：**ACCEPT**（无环、层干净、并发设计一致、打包/发布/可装载性通过；minor：services/memory 去 api、drain 后 refresh 仅一处）
+- 功能：**ACCEPT**（94/0 指定面 + 437 全绿；minor：引用键未过滤返回、收据 sessionId 生产形态、ok action 腿正则、usage 先于扫描、memory_read 失败仍打点）
+- 前端：**ACCEPT（带条件）**（27/1373、strict tsc、lint、pack 面通过；条件 = F1–F3/F10 记 adapter-mapping scope + F9 引用修正）
+
+修复收口（25c2e3e）：drain 后 refresh（turn/end + retire）；`registerMemoryUsage` 返回实际计数键并贯穿 citation 打标；收据 ok action 腿 `(?:^|[._])` 与 sessionId 生产形态（staged detail key 派生）；`services/memory.ts` 直包 core（不再 import api/engine 链）；`memory_read` 成功后打点；客户端浏览守卫扩展到实时 delta、queue 合并保留 provider/nextAttemptAt、证据窗 session+partId 键；设计引用/账本/计数/路径泛化/CI node 排序等文档修复；client README 增补 **Adapter-mapping scope** 记录（S0 传输适配器决策点清单）。
+
+验收后全量 **442 tests / 25 files / 2868 expect / 0 fail**；tsc+lint clean；pack 76；三角度结论均为放行 v0.0.1。
 
 ### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
 
