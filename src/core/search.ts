@@ -26,7 +26,11 @@ const MAX_SEARCH_QUERY_WORDS = 32;
  *  Entries may be workspace-relative paths (optionally with a `:line` or
  *  `:line-end` suffix), text containing `rollout_summaries/<file>.md`
  *  citations, or bare rollout keys. */
-export async function registerMemoryUsage(root: string, rels: readonly string[]): Promise<void> {
+/** Returns the rollout keys actually counted (rows that exist in
+ *  stage1_outputs and received a usage bump); unknown keys/citations are
+ *  silently dropped. Callers that surface usage to a UI should only
+ *  propagate the returned keys. */
+export async function registerMemoryUsage(root: string, rels: readonly string[]): Promise<string[]> {
   const usedKeys = new Set<string>();
   // Bare rollout keys dedupe per call too: the same key twice in one citation
   // block is one reference, not two (artifact filenames already dedupe via
@@ -61,24 +65,35 @@ export async function registerMemoryUsage(root: string, rels: readonly string[])
     }
   }
   if (!usedKeys.size && !pathKeys.size) {
-    return;
+    return [];
   }
+  const counted: string[] = [];
+  const seen = new Set<string>();
   const idx = await Index.create(indexDb(root));
   try {
     for (const filename of usedKeys) {
       const row = idx.stageByArtifactFilename(filename.replace(/:\d+(?:-\d+)?$/, ""));
       if (row) {
         idx.stageSetUsage(row.rolloutKey);
+        if (!seen.has(row.rolloutKey)) {
+          seen.add(row.rolloutKey);
+          counted.push(row.rolloutKey);
+        }
       }
     }
     for (const key of pathKeys) {
       if (idx.stageGet(key)) {
         idx.stageSetUsage(key);
+        if (!seen.has(key)) {
+          seen.add(key);
+          counted.push(key);
+        }
       }
     }
   } finally {
     idx.close();
   }
+  return counted;
 }
 
 /** Line-oriented search over the memory workspace. Scoring counts query-word

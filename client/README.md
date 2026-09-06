@@ -34,7 +34,8 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
   (default `"overview"`), `stores`, `currentStore`/`currentStoreId` (session-resolved store), `browsingStoreId`,
   optional `browse` (last per-store payload) / `browseError`, `injection` preview fields, `persistence` entry
   cache (`{entries, stale, loadedAt}`), `queue` counts+jobs, `consolidation` radar, `usage`, `receipts` (recent,
-  capped 100), `settings` read-only summary, `realtime` (`{mode: "push"|"polling", degraded}`), `timeline`
+  capped 100), `evidence` window (partId/session-deduped, capped 200), `bookmarks` (pure-UI ⭐ set),
+  `settings` read-only summary, `realtime` (`{mode: "push"|"polling", degraded}`), `timeline`
   (append-only, capped 500), `lastSeq`, `lastRefreshAt`, `lastError`.
 - **`select(view)`** — tab switch over the six `WorkbenchView` values (design §7.7).
 - **`setStore(storeId)`** — read-only cross-workspace browse (design §7.6): validates against `stores`
@@ -60,7 +61,9 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
   `queue-updated` (per-job jobId/status/attempts) → folds the job onto the snapshot queue state and
   recomputes counts (completed removes the job); `memory-list-updated` (`updateKind: rollout|consolidation|note`) → replaces
   persistence rows when `entries` are carried, else marks the cache `stale`; `receipt` → prepends (capped 100);
-  `evidence`/`citation` → timeline nodes only; `compaction-prune` → timeline node + marks persistence stale.
+  `evidence` → folds into the evidence window (session+partId dedupe, cap 200) + timeline node; `citation` →
+  timeline node only; `compaction-prune` → drops this session's shadowed evidence parts + marks persistence
+  stale (both suppressed while browsing another store).
 - **`simulate(query)`** — trims the query, runs `api.simulate`, and returns the **plain-text rendering of the api
   result** (`formatSimulationResult`): deterministic, DOM-free. *S0 decision point: text hand-off vs structured
   `SimulateResult` for the real workbench.*
@@ -94,6 +97,30 @@ Delta union mirrors the §8.2 rows 1–8 + the §8.3 snapshot-ready marker — n
 (updateKind: rollout|consolidation|note) / `receipt` /
 `evidence` / `citation` / `compaction-prune`. Exact payload shapes remain spike-verification material; the review
 revision aligned field names (`count` increments, `updateKind`, `itemKind`) with src/services/projector.ts.
+
+### Adapter-mapping scope (S0 transport adapter; acceptance-round record)
+
+The following host→client wire differences are INTENTIONALLY unmapped until the S0 transport adapter exists
+(design §8.4 "delta 过滤与快照标记映射留给传输适配器"). Each is a stated decision point, not an accident:
+
+- **inject-updated**: host delta is flat (`sessionId/workdir/staticText?/dynamicText?/budgetTokens?/duplicate`);
+  the client folds a full `InjectionState` — the adapter must recompose `staticText↔staticSummary/readGuide`,
+  `budgetTokens↔budget{used,max}`, decide a consumer for `duplicate` (or drop it), and merge instead of replace
+  so readGuide/budget survive partial deltas.
+- **receipt**: host delta is an audit row (`time/action/object?/detail`); client requires `AuditReceipt`
+  (`id/at/ok/target/…`) — adapter synthesizes id/ok, renames `time→at`, classifies open engine labels into the
+  closed action union (`…|other`). The snapshot face already pre-synthesizes parity fields.
+- **snapshot-ready**: host emits a MARKER (client refetches); client types carry the payload inline — the
+  adapter either materializes the payload or the model gains a marker→refresh() path.
+- **usage key-space**: snapshot `byKey` keys are artifact filenames, citation ticks are rollout keys, tool-hit
+  ticks are workspace-relative paths; the client "self-healing fold" only merges after adapter key
+  normalization. `UsageReport.recent` is client-required but absent from the snapshot face — the adapter must
+  merge or the field becomes optional.
+- **consolidation radar naming**: client `lastAt/lastOk/failedAt/cooldownRemainingMs` vs host
+  `{last,failed}+candidateRolloutIds`; cooldownRemainingMs needs derivation — adapter renames/synthesis.
+- **evidence backfill**: the bridge exposes `evidenceSnapshot(sessionId)` but the snapshot payload has no
+  evidence face and the API no evidence read — in polling mode the evidence window is live-delta-fed only; the
+  adapter/bridge should emit catch-up or expose a read (S0).
 
 ---
 
@@ -240,7 +267,7 @@ Each item: the open question → my read from the docs above → what to verify 
 
 ## 7. (d) Upstream docs read (this scaffold)
 
-All under `$A = /root/.dsh-chamber/gateway/dsh-anchor/node_modules/@deepseek-ai/` — the DSH npm **0.1.2-rc.1**
+All under `$A = <DSH source checkout>/node_modules/@deepseek-ai/` — the DSH npm **0.1.2-rc.1**
 install (design §13.10 reference version):
 
 1. **`$A/dsh-client-modules/README.md`** (en) — the module system: `dsh.client` declaration (`platform: 'web'`,

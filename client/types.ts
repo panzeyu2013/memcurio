@@ -14,7 +14,7 @@
  * spike questions, not verified facts.
  *
  * Reference version discipline (design §13.10): DSH npm 0.1.2-rc.1 install
- * artifacts under /root/.dsh-chamber/gateway/dsh-anchor/node_modules/@deepseek-ai/
+ * artifacts under <DSH source checkout>/node_modules/@deepseek-ai/
  * were used as the only upstream ground truth while writing these types.
  */
 
@@ -103,7 +103,7 @@ export interface MemorySource {
 /** A memory entry as listed in the persistence surface (§7.3 two-layer view). */
 export interface MemoryEntry {
     readonly id: string;
-    /** "manual" = MEMORY.md layer, "rollout" = evidence layer (design §2.3). */
+    /** "manual" = MEMORY.md layer, "rollout" = evidence layer (design §2.2/§7.3). */
     readonly kind: 'manual' | 'rollout';
     readonly title: string;
     readonly summary: string;

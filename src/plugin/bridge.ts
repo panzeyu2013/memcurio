@@ -96,6 +96,13 @@ function sessionIdFromNs(ns: string | undefined): string | undefined {
   return ns.startsWith(marker) && ns.length > marker.length ? ns.slice(marker.length) : undefined;
 }
 
+/** Session id from a "host|<session>" rollout key (extract.staged detail). */
+function sessionIdFromKey(target: string | undefined): string | undefined {
+  if (!target) return undefined;
+  const tail = target.split("|").at(-1)?.trim();
+  return tail ? tail : undefined;
+}
+
 /** Parse the rollout key out of extract audit details ("<key> (<slug>)"). */
 function rolloutKeyFromDetail(detail: string, action: string): string | undefined {
   if (action !== "extract.staged") return undefined;
@@ -302,8 +309,8 @@ export class HostBridge {
         }
         const kind = memoryKindForAction(row.action);
         if (kind) {
-          const sessionId = sessionIdFromNs(row.ns);
           const rolloutKey = rolloutKeyFromDetail(row.detail, row.action);
+          const sessionId = sessionIdFromNs(row.ns) ?? sessionIdFromKey(rolloutKey);
           const record2: InputRecord = {
             kind: "memory-updated",
             sessionId,

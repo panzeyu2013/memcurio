@@ -38,7 +38,7 @@ import type {
 
 export type * from './types.js';
 
-import type { EvidenceWindowItem } from './types.js';
+import type { EvidenceWindowItem, QueueJob } from './types.js';
 
 /** Timeline cap: append-only axis, oldest events drop beyond this (design §7.5). */
 export const TIMELINE_LIMIT = 500;
@@ -106,7 +106,7 @@ export interface WorkbenchState {
     /** Evidence window (state face), newest first, capped at EVIDENCE_LIMIT;
      *  partId-deduped; compaction prune removes shadowed parts. */
     readonly evidence: readonly EvidenceWindowItem[];
-    /** ⭐ pure-UI bookmarks (design §2.3/§7.8): entry ids kept client-side,
+    /** ⭐ pure-UI bookmarks (design §6.2 actions / v1.4.2 §8.4 record): entry ids kept client-side,
      *  never sent to the host; deletion of the memory itself stays a
      *  conversation flow (M2 expert dry-run). */
     readonly bookmarks: ReadonlySet<string>;
@@ -129,7 +129,7 @@ export interface WorkbenchModel {
     readonly state: WorkbenchState;
     /** Switch the active tab (design §7.7: overview/injection/persistence/state/timeline/settings). */
     select(view: WorkbenchView): void;
-    /** Toggle a pure-UI ⭐ bookmark (design §2.3/§7.8): entry ids are kept
+    /** Toggle a pure-UI ⭐ bookmark (design §6.2 actions / v1.4.2 §8.4 record): entry ids are kept
      *  client-side only, never sent to the host; memory deletion stays a
      *  conversation flow (M2 expert dry-run). */
     toggleBookmark(entryId: string): void;
@@ -380,6 +380,11 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
         }
         const seq = ++counter;
         const at = new Date().toISOString();
+        // §7.6 guard for live deltas: while another store is browsed, deltas
+        // that carry current-store data (usage/memory-list) must not corrupt
+        // the browsed store's caches (deltas carry no storeId yet).
+        const browsingOther =
+            state.browsingStoreId !== null && state.browsingStoreId !== state.currentStoreId;
         let next: WorkbenchState;
         switch (delta.kind) {
             case 'snapshot-ready':
@@ -389,6 +394,13 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 next = { ...state, injection: delta.injection };
                 break;
             case 'usage-tick': {
+                // While another store is browsed, current-store usage deltas
+                // must not fold into the browsed store's cache (deltas carry
+                // no storeId; §7.6 guard mirrors withSnapshot).
+                if (browsingOther) {
+                    next = state;
+                    break;
+                }
                 // Increment semantics (projector emits +1 per hit/citation):
                 // fold onto the last snapshot's absolute stats so the stream
                 // is self-healing on the next snapshot.
@@ -404,14 +416,28 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
             }
             case 'queue-updated': {
                 // Fold one job change onto the snapshot's full queue state:
-                // terminal 'completed' removes the job; otherwise upsert it.
-                // Counts are recomputed from the jobs list (host counts and
-                // the jobs list agree; completed jobs are excluded from both).
+                // terminal 'completed' removes the job; otherwise upsert by
+                // MERGING onto the existing row so snapshot-sourced
+                // provider/nextAttemptAt survive, and an absent lastError
+                // never clears the previous value.
                 const others = state.queue.jobs.filter((job) => job.jobId !== delta.jobId);
-                const jobs =
-                    delta.status === 'completed'
-                        ? others
-                        : [{ jobId: delta.jobId, status: delta.status, attempts: delta.attempts, lastError: delta.lastError ?? null }, ...others];
+                let jobs: readonly QueueJob[];
+                if (delta.status === 'completed') {
+                    jobs = others;
+                } else {
+                    const existing = state.queue.jobs.find((job) => job.jobId === delta.jobId);
+                    jobs = [
+                        {
+                            jobId: delta.jobId,
+                            status: delta.status,
+                            attempts: delta.attempts,
+                            ...(delta.lastError !== undefined ? { lastError: delta.lastError ?? null } : existing?.lastError !== undefined ? { lastError: existing.lastError } : {}),
+                            ...(existing?.provider !== undefined ? { provider: existing.provider } : {}),
+                            ...(existing?.nextAttemptAt !== undefined ? { nextAttemptAt: existing.nextAttemptAt } : {}),
+                        },
+                        ...others,
+                    ];
+                }
                 const counted = ['pending', 'processing', 'blocked', 'dead'] as const;
                 const counts = { pending: 0, processing: 0, blocked: 0, dead: 0 };
                 for (const job of jobs) {
@@ -423,6 +449,12 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 break;
             }
             case 'memory-list-updated': {
+                // Browsing another store: current-store list changes are not
+                // the browsed store's rows (no storeId on deltas).
+                if (browsingOther) {
+                    next = state;
+                    break;
+                }
                 const persistence = delta.entries
                     ? { entries: delta.entries, stale: false, loadedAt: at }
                     : { ...state.persistence, stale: true };
@@ -440,7 +472,9 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                     ...(delta.text !== undefined ? { text: delta.text } : {}),
                     at,
                 };
-                const without = state.evidence.filter((row) => row.partId !== delta.partId);
+                // partId is a per-session seq space: key by session + partId.
+                const key = `${delta.sessionId}|${delta.partId}`;
+                const without = state.evidence.filter((row) => `${row.sessionId}|${row.partId}` !== key);
                 next = { ...state, evidence: [item, ...without].slice(0, EVIDENCE_LIMIT) };
                 break;
             }
@@ -449,16 +483,19 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 next = state;
                 break;
             case 'compaction-prune': {
-                // Shadowed rows may change after the next consolidation; mark
-                // the persistence cache stale so refresh() reloads, and drop
-                // evidence parts whose partId names a shadowed seq.
+                // Drop evidence parts of THIS session whose partId names a
+                // shadowed seq; the stale flag targets the persistence cache
+                // only when not browsing another store.
                 const shadowed = new Set(delta.seqs);
                 const evidence = state.evidence.filter((row) => {
+                    if (row.sessionId !== delta.sessionId) return true;
                     const seqText = row.partId.split(':').at(-1);
                     const seq = Number(seqText);
                     return !(Number.isInteger(seq) && shadowed.has(seq));
                 });
-                next = { ...state, persistence: { ...state.persistence, stale: true }, evidence };
+                next = browsingOther
+                    ? { ...state, evidence }
+                    : { ...state, persistence: { ...state.persistence, stale: true }, evidence };
                 break;
             }
         }

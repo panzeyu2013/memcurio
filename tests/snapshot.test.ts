@@ -247,7 +247,8 @@ describe("buildSnapshot", () => {
     // scheduling-agnostic under both bun and node:sqlite drivers.
     expect(snapshot.receipts.every((receipt) => !receipt.writePath)).toBe(true);
     expect(snapshot.usage).toEqual({ byKey: {} });
-    expect(snapshot.consolidation).toEqual({ last: undefined, failed: undefined, candidateRolloutIds: [] });
+    // No store layout: the queue/consolidation face degrades to null (never throws).
+    expect(snapshot.consolidation).toBeNull();
     expect(snapshot.injection.staticSummary).toContain("not consolidated");
     expect(snapshot.injection.readGuide).toContain("read path");
     expect(snapshot.realtime).toEqual({ mode: "polling", degraded: false });
@@ -373,6 +374,33 @@ describe("round-19 enrichment (receipt synthesis, radar candidates, settings/dyn
     expect(snapshot.injection.dynamicText).toContain("dynamic line");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);
     expect(snapshot.settings.version).toBe("rc.1 contract");
+  });
+});
+
+describe("acceptance-round receipt semantics (production audit shapes)", () => {
+  test("ok heuristic fires on the action leg for production action names", async () => {
+    const root = makeStore("okleg");
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.audit("consolidate.auto_failed", "dsh", "provider channel unavailable");
+      idx.audit("consolidate.rejected", "dsh", "validation failed");
+      idx.audit("warn.promptware", "dsh", "blocked injection pattern");
+      idx.audit("extract.staged", "dsh", "dsh|s1 (slug-x)");
+    } finally {
+      idx.close();
+    }
+    const snapshot = await buildSnapshot({ root, label: "/work/alpha" });
+    const byAction = new Map(snapshot.receipts.map((receipt) => [receipt.action, receipt]));
+    expect(byAction.get("consolidate.auto_failed")?.ok).toBe(false);
+    expect(byAction.get("consolidate.auto_failed")?.error).toContain("provider channel");
+    expect(byAction.get("consolidate.rejected")?.ok).toBe(false);
+    // warn.promptware action leg reads ok (no failure marker), matching the
+    // heuristic — receipts for warnings stay informational.
+    expect(byAction.get("warn.promptware")?.ok).toBe(true);
+    // Production ns is the bare host "dsh": the session id must be derived
+    // from the staged detail rollout key "host|<session>".
+    expect(byAction.get("extract.staged")?.sessionId).toBe("s1");
+    expect(byAction.get("extract.staged")?.target).toBe("dsh|s1");
   });
 });
 

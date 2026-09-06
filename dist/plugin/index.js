@@ -379,15 +379,20 @@ function registerMemoryTools(ctx, sessions, bridge) {
         async execute(args, exec) {
             const runtime = requireSession(exec, sessions);
             const rel = stringArg(args.path, "path", true, 1_000) ?? "";
-            if (bridge?.isEnabled && rel) {
-                bridge.tagToolReadHits(runtime.session.id, "memory_read", [rel]);
-            }
-            return runTool(runtime, exec, async () => JSON.stringify(await integrationRead(runtime.root, {
-                path: rel,
-                lineOffset: integerArg(args.lineOffset, "lineOffset", 1),
-                maxLines: integerArg(args.maxLines, "maxLines", undefined, 10_000),
-                maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 1_000_000),
-            })));
+            return runTool(runtime, exec, async () => {
+                // Tag only after the read succeeded: a failed/nonexistent read must
+                // not emit a UI usage tick the engine never counted.
+                const text = JSON.stringify(await integrationRead(runtime.root, {
+                    path: rel,
+                    lineOffset: integerArg(args.lineOffset, "lineOffset", 1),
+                    maxLines: integerArg(args.maxLines, "maxLines", undefined, 10_000),
+                    maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 1_000_000),
+                }));
+                if (bridge?.isEnabled && rel) {
+                    bridge.tagToolReadHits(runtime.session.id, "memory_read", [rel]);
+                }
+                return text;
+            });
         },
     }));
     ctx.tools.register(defineTool({
@@ -610,6 +615,9 @@ export function apply(ctx, config = {}) {
                     }
                     await runtime.adapter.processPendingExtractions();
                     await runtime.adapter.maybeConsolidate();
+                    // Deliver queue/audit diffs produced by the retire drain.
+                    if (resolved.hostBridge)
+                        await bridge.refresh(runtime.root).catch(warn);
                 })();
                 // If the budget expires first, the raced work continues detached;
                 // record any late failure instead of letting it become an
@@ -719,6 +727,9 @@ export function apply(ctx, config = {}) {
                 }
                 await runtime.adapter.processPendingExtractions();
                 await runtime.adapter.maybeConsolidate();
+                // Deliver queue/audit diffs produced by this drain (turn/end lane).
+                if (resolved.hostBridge)
+                    await bridge.refresh(runtime.root).catch(warn);
             }, warn);
         }
         else if (event.type === "compaction/summary") {

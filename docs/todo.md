@@ -22,7 +22,7 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（434/25 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（437/25 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
 | 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、快照/投影/读服务（第十七轮）、客户端 view-model 24 测（含 browse 跨 store） | 浏览器 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）后 M0 |
 
@@ -250,7 +250,11 @@ bun run pack:check
 
 全量 **434 pass / 25 files / 2840 expect / 0 fail**；tsc+lint clean。
 
-### 6.12 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
+### 6.12 第二十一轮：客户端 M1-lite 折叠（2026-09-06）
+
+证据窗折叠（evidence delta → `state.evidence`：partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；client 27→30 项测试；全量 **437 tests / 25 files / 2848 expect / 0 fail**；设计 v1.4.2 记录（§8.4 增补）。
+
+### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
 
 收尾并准备首个发布（本地无法实际推送/发版——外部项，流程与产物已就绪）：
 

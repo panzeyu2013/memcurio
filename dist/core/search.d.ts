@@ -11,7 +11,11 @@ export interface MemoryHit {
  *  Entries may be workspace-relative paths (optionally with a `:line` or
  *  `:line-end` suffix), text containing `rollout_summaries/<file>.md`
  *  citations, or bare rollout keys. */
-export declare function registerMemoryUsage(root: string, rels: readonly string[]): Promise<void>;
+/** Returns the rollout keys actually counted (rows that exist in
+ *  stage1_outputs and received a usage bump); unknown keys/citations are
+ *  silently dropped. Callers that surface usage to a UI should only
+ *  propagate the returned keys. */
+export declare function registerMemoryUsage(root: string, rels: readonly string[]): Promise<string[]>;
 /** Line-oriented search over the memory workspace. Scoring counts query-word
  *  occurrences per line; hits are injection-filtered and re-redacted at read
  *  time. Matches against rollout summary files bump the corresponding

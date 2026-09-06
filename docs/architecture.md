@@ -97,6 +97,8 @@ docs/
 ├── README_cn.md / installation.md / todo.md          CN 说明 / 安装指南 / 轮次账本
 ```
 
+层例外（文档化）：`services/context.ts` 复用 `plugin/scope.ts` 的 `workspaceStoreRoot`——scope.ts 只依赖 node 内建（纯叶子、无 DSH 依赖、无环）；向 scope.ts 新增任何导入前须重新评估此例外。
+
 分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/）后 `bun pm pack` 得到 tarball，`dsh plugin --profile <profile> add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
 
 ## 4. 数据流

@@ -55,6 +55,13 @@ function sessionIdFromNs(ns) {
     const marker = "dsh|";
     return ns.startsWith(marker) && ns.length > marker.length ? ns.slice(marker.length) : undefined;
 }
+/** Session id from a "host|<session>" rollout key (extract.staged detail). */
+function sessionIdFromKey(target) {
+    if (!target)
+        return undefined;
+    const tail = target.split("|").at(-1)?.trim();
+    return tail ? tail : undefined;
+}
 /** Parse the rollout key out of extract audit details ("<key> (<slug>)"). */
 function rolloutKeyFromDetail(detail, action) {
     if (action !== "extract.staged")
@@ -251,8 +258,8 @@ export class HostBridge {
                 }
                 const kind = memoryKindForAction(row.action);
                 if (kind) {
-                    const sessionId = sessionIdFromNs(row.ns);
                     const rolloutKey = rolloutKeyFromDetail(row.detail, row.action);
+                    const sessionId = sessionIdFromNs(row.ns) ?? sessionIdFromKey(rolloutKey);
                     const record2 = {
                         kind: "memory-updated",
                         sessionId,

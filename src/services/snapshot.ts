@@ -117,11 +117,22 @@ function isWritePath(action: string): boolean {
   return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
 }
 
-/** Session id from an audit ns like "dsh|<session>" (mirror of bridge). */
+/** Session id from an audit ns like "dsh|<session>" (mirror of bridge).
+ *  Production audit rows carry host ("dsh") or "-" as ns, so the ns leg
+ *  rarely fires; the extract.staged detail key "host|<session>" is the
+ *  reliable production source (see writePathTarget). */
 function sessionIdFromNs(ns: string | undefined): string | undefined {
   if (!ns) return undefined;
   const marker = "dsh|";
   return ns.startsWith(marker) && ns.length > marker.length ? ns.slice(marker.length) : undefined;
+}
+
+/** Session id derived from a "host|<session>" style rollout key/target. */
+function sessionIdFromKey(target: string | undefined): string | undefined {
+  if (!target) return undefined;
+  const parts = target.split("|");
+  const tail = parts[parts.length - 1]?.trim();
+  return tail ? tail : undefined;
 }
 
 /** Receipt target: extract.staged details carry "<rolloutKey> (<slug>)";
@@ -297,8 +308,9 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
     consolidation: consolidation ? { ...consolidation, candidateRolloutIds } : null,
     usage,
     receipts: auditRows.map((row, index) => {
-      const failedAction = /(^|\\.)(failed|rejected|skip)/.test(row.action) || /error|failed/i.test(row.detail);
-      const nsSession = sessionIdFromNs(row.object);
+      const failedAction = /(?:^|[._])(failed|rejected|skip)/.test(row.action) || /error|failed/i.test(row.detail);
+      const target = writePathTarget(row.action, row.detail);
+      const nsSession = sessionIdFromNs(row.object) ?? sessionIdFromKey(target);
       return {
         seq: index + 1,
         time: row.time,
@@ -309,7 +321,7 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
         id: `audit-${index + 1}`,
         ok: !failedAction,
         ...(failedAction ? { error: row.detail.slice(0, 300) } : {}),
-        ...(writePathTarget(row.action, row.detail) ? { target: writePathTarget(row.action, row.detail) } : {}),
+        ...(target ? { target } : {}),
         ...(nsSession ? { sessionId: nsSession } : {}),
         ...(label ? { workspaceKey: workspaceKey } : {}),
       };

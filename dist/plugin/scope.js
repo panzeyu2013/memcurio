@@ -23,9 +23,9 @@ export function dshHome() {
     }
     return join(homedir(), ".dsh");
 }
-/** Base data root for the plugin: explicit plugin `root`/MEMCURIO_ROOT wins
- *  (legacy override and test/dev isolation), otherwise the memcurio
- *  namespace under the DSH home. */
+/** Base data root for the plugin: the memcurio namespace under the DSH home.
+ *  The explicit plugin `root` / MEMCURIO_ROOT override is applied by the
+ *  plugin apply() (plugin/index.ts), not here. */
 export function memcurioBaseRoot() {
     return join(dshHome(), "memcurio");
 }

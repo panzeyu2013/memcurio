@@ -13,9 +13,9 @@ export declare const NO_CWD_STORE_KEY = "no-cwd";
  *  `<home>/memcurio` namespace for its stores, SQLite files and workspaces
  *  so uninstall is a directory removal and never touches host data. */
 export declare function dshHome(): string;
-/** Base data root for the plugin: explicit plugin `root`/MEMCURIO_ROOT wins
- *  (legacy override and test/dev isolation), otherwise the memcurio
- *  namespace under the DSH home. */
+/** Base data root for the plugin: the memcurio namespace under the DSH home.
+ *  The explicit plugin `root` / MEMCURIO_ROOT override is applied by the
+ *  plugin apply() (plugin/index.ts), not here. */
 export declare function memcurioBaseRoot(): string;
 /** Resolve the store used by one DSH workspace without exposing its path. */
 export declare function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string;

@@ -97,7 +97,7 @@ function makeSnapshotPayload(): SnapshotPayload {
         ],
         queue: {
             counts: { pending: 2, processing: 1, blocked: 0, dead: 0 },
-            jobs: [{ jobId: 'job-1', status: 'pending', attempts: 1 }],
+            jobs: [{ jobId: 'job-1', status: 'pending', attempts: 1, provider: 'p1', nextAttemptAt: AT }],
         },
         consolidation: {
             lastAt: AT,
@@ -617,7 +617,10 @@ describe('queue job-update fold (per-job deltas, projector-parity)', () => {
         await model.refresh(); // snapshot queue: job-1 pending (list-backed)
         model.applyDelta({ kind: 'queue-updated', seq: 1, jobId: 'job-1', status: 'processing', attempts: 2 });
         const after = model.state.queue;
-        expect(after.jobs).toEqual([{ jobId: 'job-1', status: 'processing', attempts: 2, lastError: null }]);
+        // Merge semantics: absent lastError does not invent/clear one; the
+        // row keeps only what the snapshot + deltas carried.
+        expect(after.jobs).toMatchObject([{ jobId: 'job-1', status: 'processing', attempts: 2 }]);
+        expect(after.jobs[0]?.lastError).toBeUndefined();
         expect(after.counts).toEqual({ pending: 0, processing: 1, blocked: 0, dead: 0 });
         model.applyDelta({ kind: 'queue-updated', seq: 2, jobId: 'job-1', status: 'completed', attempts: 2 });
         const terminal = model.state.queue;
@@ -626,6 +629,48 @@ describe('queue job-update fold (per-job deltas, projector-parity)', () => {
         model.applyDelta({ kind: 'queue-updated', seq: 3, jobId: 'job-9', status: 'blocked', attempts: 1, lastError: '[REDACTED]' });
         expect(model.state.queue.counts.blocked).toBe(1);
         expect(model.state.queue.jobs[0]?.lastError).toBe('[REDACTED]');
+    });
+
+    test('upserts merge onto the existing row, preserving provider and nextAttemptAt', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // snapshot job-1 carries provider p1 + nextAttemptAt
+        model.applyDelta({ kind: 'queue-updated', seq: 9, jobId: 'job-1', status: 'blocked', attempts: 3 });
+        const row = model.state.queue.jobs[0];
+        expect(row).toMatchObject({ jobId: 'job-1', status: 'blocked', attempts: 3, provider: 'p1', nextAttemptAt: AT });
+    });
+});
+
+describe('acceptance-round fixes: browse guard for live deltas + session-scoped evidence', () => {
+    test('while browsing another store, usage/memory-list deltas do not corrupt its caches', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // current = store-alpha
+        await model.browse('store-beta'); // browsing cache cleared + beta folded
+        expect(model.state.browsingStoreId).toBe('store-beta');
+        const beforeKeys = Object.keys(model.state.usage.byKey);
+        model.applyDelta({ kind: 'usage-tick', seq: 50, usage: { rolloutKey: 'alpha-only', count: 5 } });
+        model.applyDelta({ kind: 'memory-list-updated', seq: 51, updateKind: 'rollout' });
+        expect(Object.keys(model.state.usage.byKey)).toEqual(beforeKeys); // no alpha-only fold
+        expect(model.state.persistence.stale).toBe(false); // no current-store stale mark
+        expect(model.state.timeline.at(-1)?.kind).toBe('memory'); // timeline still advances
+        model.applyDelta({ kind: 'compaction-prune', sessionId: 's1', seqs: [0] });
+        expect(model.state.persistence.stale).toBe(false); // prune stale mark suppressed too
+    });
+
+    test('evidence window keys by session + partId and prunes per session', () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        model.applyDelta({ kind: 'evidence', sessionId: 's1', partId: 'user/message:0', itemKind: 'user', text: 'a' });
+        model.applyDelta({ kind: 'evidence', sessionId: 's2', partId: 'user/message:0', itemKind: 'user', text: 'b' });
+        expect(model.state.evidence).toHaveLength(2);
+        // Dedupe only within the same session.
+        model.applyDelta({ kind: 'evidence', sessionId: 's1', partId: 'user/message:0', itemKind: 'user', text: 'a2' });
+        expect(model.state.evidence).toHaveLength(2);
+        expect(model.state.evidence[0]?.sessionId).toBe('s1');
+        // Prune in s1 leaves s2's identical partId untouched.
+        model.applyDelta({ kind: 'compaction-prune', sessionId: 's1', seqs: [0] });
+        expect(model.state.evidence.map((row) => row.sessionId)).toEqual(['s2']);
     });
 });
 

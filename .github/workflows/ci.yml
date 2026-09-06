@@ -40,11 +40,17 @@ jobs:
       # Validate the published tarball contents (files list / prepare) so a
       # broken `files` field is caught in CI, not at publish time. Note: the
       # command is `bun pm pack` — plain `bun pack` is not a bun subcommand.
-      - run: bun pm pack --dry-run
-      - run: npm pack --dry-run --ignore-scripts --cache /tmp/memcurio-npm-cache
-      # The plugin entry runs under node (node:sqlite) once the host loads it;
-      # verify the committed dist imports under node, not just under bun.
+      # Node before the pack dry-runs: `prepare` is a node script (bun pm
+      # pack runs it unless --ignore-scripts). The plugin entry also runs
+      # under node (node:sqlite); verify the committed dist imports under
+      # node, not just under bun.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: bun pm pack --dry-run
+      - run: npm pack --dry-run --ignore-scripts --cache /tmp/memcurio-npm-cache
+      # Node before the pack dry-runs: `prepare` is a node script (bun pm
+      # pack runs it unless --ignore-scripts). The plugin entry also runs
+      # under node (node:sqlite); verify the committed dist imports under
+      # node, not just under bun.
       - run: node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok:', m.name); })"

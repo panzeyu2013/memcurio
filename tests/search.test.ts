@@ -103,3 +103,41 @@ describe("searchMemory", () => {
     }
   });
 });
+
+describe("registerMemoryUsage return semantics (acceptance round)", () => {
+  test("returns only keys actually counted; unknown keys and MEMORY.md lines vanish", async () => {
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|known"));
+    writeRolloutSummary(dir, artifactFilename, "known recap\\n");
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "test|known",
+        rawMemory: "x",
+        rolloutSummary: "y",
+        rolloutSlug: "known",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+    // Bare rollout keys: known counts, unknown does not.
+    const counted = await registerMemoryUsage(dir, ["test|known", "test|unknown"]);
+    expect(counted).toEqual(["test|known"]);
+    // A MEMORY.md-style citation line (embedded rollout file ref) counts only
+    // when the referenced artifact exists; a text without any rollout file
+    // reference counts nothing.
+    const viaLine = await registerMemoryUsage(dir, [
+      `some MEMORY.md line mentioning rollout_summaries/${artifactFilename}`,
+      "plain prose without citations",
+    ]);
+    expect(viaLine).toEqual(["test|known"]);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      const row = idx2.stageGet("test|unknown");
+      expect(row?.usageCount ?? 0).toBe(0);
+    } finally {
+      idx2.close();
+    }
+  });
+});
+

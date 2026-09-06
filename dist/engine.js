@@ -714,9 +714,12 @@ export class MemcurioAdapter {
             }
         }
         if (entries.length) {
-            await registerMemoryUsage(this.root, entries);
+            // Only propagate keys the engine actually counted: unknown keys and
+            // MEMORY.md citation lines never bump a stage row, so the UI citation
+            // stream must not see phantom ticks for them.
+            return registerMemoryUsage(this.root, entries);
         }
-        return entries;
+        return [];
     }
     async sessionIdle(sessionId) {
         const s = this.sessions.get(sessionId);
