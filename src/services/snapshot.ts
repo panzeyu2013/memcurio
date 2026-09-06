@@ -14,6 +14,7 @@
  */
 import { basename } from "node:path";
 
+import { pipelineConfig } from "../core/config.js";
 import type { ListResult, ReadResult, StatusResult } from "./memory.js";
 import { list as memoryList, read as memoryRead } from "./memory.js";
 import { staticParts } from "./inject.js";
@@ -45,7 +46,9 @@ export interface SnapshotEntry {
   usage: { count: number; lastUsedAt: string | null };
 }
 
-/** Write-path receipt row (audit tail; §6.3). */
+/** Write-path receipt row (audit tail; §6.3). The optional client-parity
+ *  fields (id/ok/error/target/sessionId) are synthesized for the browser
+ *  adapter; ok is a heuristic (failure-suffixed actions / error markers). */
 export interface SnapshotReceipt {
   /** Rowid-style sequence (monotonic per store). */
   seq: number;
@@ -55,17 +58,30 @@ export interface SnapshotReceipt {
   detail: string;
   /** Write-path receipts only (adapter and integration lifecycle noise excluded). */
   writePath: boolean;
+  id?: string;
+  ok?: boolean;
+  error?: string;
+  target?: string;
+  sessionId?: string;
+  workspaceKey?: string;
 }
 
 export interface SnapshotSettings {
   dataRoot: string;
   scopeBadge: string;
   workspaceKey: string;
+  injectBudgetTokens?: number;
+  maxInjectTokens?: number;
+  consolidationCooldownMs?: number;
+  version?: string;
 }
 
 export interface SnapshotInjection {
   staticSummary?: string;
   readGuide?: string;
+  /** Last pre-step dynamic context text for the session, when the bridge
+   *  captured one (raw preview; client renders/handles it). */
+  dynamicText?: string;
 }
 
 export interface SnapshotUsage {
@@ -80,7 +96,7 @@ export interface WorkbenchSnapshot {
   injection: SnapshotInjection;
   entries: SnapshotEntry[];
   queue: Awaited<ReturnType<typeof queueList>>;
-  consolidation: Awaited<ReturnType<typeof consolidationMeta>> | null;
+  consolidation: (Awaited<ReturnType<typeof consolidationMeta>> & { candidateRolloutIds?: string[] }) | null;
   usage: SnapshotUsage;
   receipts: SnapshotReceipt[];
   settings: SnapshotSettings;
@@ -99,6 +115,23 @@ const WRITE_PATH_ACTIONS = [
 
 function isWritePath(action: string): boolean {
   return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
+}
+
+/** Session id from an audit ns like "dsh|<session>" (mirror of bridge). */
+function sessionIdFromNs(ns: string | undefined): string | undefined {
+  if (!ns) return undefined;
+  const marker = "dsh|";
+  return ns.startsWith(marker) && ns.length > marker.length ? ns.slice(marker.length) : undefined;
+}
+
+/** Receipt target: extract.staged details carry "<rolloutKey> (<slug>)";
+ *  otherwise the ns object. */
+function writePathTarget(action: string, detail: string): string | undefined {
+  if (action === "extract.staged") {
+    const key = detail.split(" ")[0]?.trim();
+    return key || undefined;
+  }
+  return undefined;
 }
 
 /** Rollout files live under rollout_summaries/ in the memory workspace. */
@@ -139,12 +172,18 @@ export interface BuildSnapshotOptions {
   /** True when the store is the shared no-cwd store (no cwd isolation). */
   isolated?: boolean;
   scope?: "workspace" | "global";
+  /** Plugin-level injection budget override (settings preview parity). */
+  injectBudgetTokens?: number;
+  /** Reference version label (settings preview). */
+  version?: string;
+  /** Latest dynamic context text captured for the session (preview). */
+  dynamicText?: string;
 }
 
 /** Assemble the full-state read for one store. Never throws: individual face
  *  failures degrade to empty fields so the workbench always has a frame. */
 export async function buildSnapshot(options: BuildSnapshotOptions): Promise<WorkbenchSnapshot> {
-  const { root, baseRoot, label, sessionId, scope = "workspace" } = options;
+  const { root, baseRoot, label, sessionId, scope = "workspace", injectBudgetTokens, version, dynamicText } = options;
   const at = new Date().toISOString();
   const isolated = options.isolated ?? label === undefined; // no-cwd degradation
   const workspaceKey = label ?? basename(root);
@@ -218,6 +257,23 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
     usage.byKey[key] = value;
   }
 
+  // Consolidation radar candidates: usage-heuristic preview of the engine's
+  // own selection (usage-driven, capped by pipeline.maxInputs). The engine
+  // remains the source of truth when it actually consolidates.
+  const cfg = (() => {
+    try {
+      return pipelineConfig(root);
+    } catch {
+      return undefined;
+    }
+  })();
+  const maxInputs = cfg?.maxInputs ?? 8;
+  const candidateRolloutIds = usageRows
+    .filter((row) => (row.usageCount ?? 0) > 0 && row.status !== "deleted")
+    .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0) || (a.rolloutKey < b.rolloutKey ? -1 : 1))
+    .slice(0, maxInputs)
+    .map((row) => row.rolloutKey);
+
   const store: SnapshotStore = { id: workspaceKey, label, workspaceKey, root, isolated, sessionId };
   const storesOut: SnapshotStore[] = stores.length > 0 ? stores.map((storeEntry) => ({
     id: storeEntry.key,
@@ -234,23 +290,38 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
     injection: {
       staticSummary: parts?.summary,
       readGuide: parts?.instructions,
+      ...(dynamicText ? { dynamicText } : {}),
     },
     entries,
     queue,
-    consolidation,
+    consolidation: consolidation ? { ...consolidation, candidateRolloutIds } : null,
     usage,
-    receipts: auditRows.map((row, index) => ({
-      seq: index + 1,
-      time: row.time,
-      action: row.action,
-      object: row.object,
-      detail: row.detail,
-      writePath: isWritePath(row.action),
-    })),
+    receipts: auditRows.map((row, index) => {
+      const failedAction = /(^|\\.)(failed|rejected|skip)/.test(row.action) || /error|failed/i.test(row.detail);
+      const nsSession = sessionIdFromNs(row.object);
+      return {
+        seq: index + 1,
+        time: row.time,
+        action: row.action,
+        object: row.object,
+        detail: row.detail,
+        writePath: isWritePath(row.action),
+        id: `audit-${index + 1}`,
+        ok: !failedAction,
+        ...(failedAction ? { error: row.detail.slice(0, 300) } : {}),
+        ...(writePathTarget(row.action, row.detail) ? { target: writePathTarget(row.action, row.detail) } : {}),
+        ...(nsSession ? { sessionId: nsSession } : {}),
+        ...(label ? { workspaceKey: workspaceKey } : {}),
+      };
+    }),
     settings: {
       dataRoot: baseRoot ?? root,
       scopeBadge: scope,
       workspaceKey,
+      injectBudgetTokens: injectBudgetTokens ?? undefined,
+      maxInjectTokens: undefined,
+      consolidationCooldownMs: undefined,
+      ...(version ? { version } : {}),
     },
     realtime: { mode: "polling", degraded: false },
   };

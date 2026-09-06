@@ -1,7 +1,11 @@
 import type { Context } from "@deepseek-ai/cordis";
 import Schema from "@deepseek-ai/schemastery";
 export { workspaceStoreRoot } from "./scope.js";
+import { HostBridge } from "./bridge.js";
 export declare const name = "memcurio";
+/** Live host bridge for a base root (present once the plugin applied; its
+ *  isEnabled mirrors config.hostBridge). */
+export declare function hostBridgeForRoot(root: string): HostBridge | undefined;
 export declare const inject: string[];
 export interface Config {
     root?: string;
@@ -17,10 +21,6 @@ export interface Config {
     model?: string;
 }
 export declare const Config: Schema<Config>;
-/** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
- *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.2-rc.1). Only these names may
- *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 export declare const DSH_TOOL_PRESET: {
     readTools: string[];
     shellTools: string[];

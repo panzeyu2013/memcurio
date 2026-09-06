@@ -25,6 +25,7 @@ import { Index } from "../core/db.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
 import { list as queueList } from "../services/queue.js";
 import type { EvidenceKind } from "../core/extract.js";
+import { redactSecrets } from "../core/sanitize.js";
 import type { AuditRecord, InputRecord, MemoryUpdateKind, PreStepInjectRecord, ProjectedDelta } from "../services/projector.js";
 import { createProjector } from "../services/projector.js";
 import { buildSnapshot, type WorkbenchSnapshot } from "../services/snapshot.js";
@@ -34,6 +35,18 @@ export interface BridgeSink {
   deliver(deltas: ProjectedDelta[]): void;
 }
 
+/** One evidence-window row for the browser (state face; §5.1
+ *  evidence.session). Text is re-redacted + capped on the way out. */
+export interface BridgeEvidenceRow {
+  kind: EvidenceKind;
+  text?: string;
+  name?: string;
+  path?: string;
+}
+
+/** Provider the plugin wires: session evidence from the live adapter. */
+export type EvidenceSource = (sessionId: string) => readonly BridgeEvidenceRow[];
+
 export interface HostBridgeOptions {
   /** memcurio data base root (for the store list in snapshots). */
   baseRoot: string;
@@ -41,6 +54,8 @@ export interface HostBridgeOptions {
   scope?: "workspace" | "global";
   /** Plugin reference version label shown in settings. */
   version?: string;
+  /** Plugin-level injection budget override (settings preview parity). */
+  injectBudgetTokens?: number;
 }
 
 export interface BridgeSessionInfo {
@@ -92,6 +107,7 @@ export class HostBridge {
   private readonly baseRoot: string;
   private readonly scope: "workspace" | "global";
   private readonly version?: string;
+  private readonly injectBudgetTokens?: number;
   /** Settings summary carries the plugin reference version. */
   get referenceVersion(): string | undefined {
     return this.version;
@@ -109,11 +125,16 @@ export class HostBridge {
   private readonly lastAuditRowid = new Map<string, number>();
   /** root -> jobId -> row snapshot (queue diff baseline). */
   private readonly jobsByRoot = new Map<string, Map<string, QueueJobRow>>();
+  /** Evidence provider (plugin wires the live adapter snapshot). */
+  private evidenceSource: EvidenceSource | null = null;
+  /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
+  private readonly lastInjection = new Map<string, { dynamicText?: string; at: number }>();
 
   constructor(options: HostBridgeOptions) {
     this.baseRoot = options.baseRoot;
     this.scope = options.scope ?? "workspace";
     this.version = options.version;
+    this.injectBudgetTokens = options.injectBudgetTokens;
   }
 
   get isEnabled(): boolean {
@@ -136,6 +157,22 @@ export class HostBridge {
     this.sink = null;
   }
 
+  /** Wire the evidence provider (plugin: adapter.memoryEvidenceSnapshot). */
+  attachEvidenceSource(source: EvidenceSource): void {
+    this.evidenceSource = source;
+  }
+
+  /** Session evidence window, re-redacted for the browser. Empty when no
+   *  source is wired or the session is unknown. */
+  evidenceSnapshot(sessionId: string): BridgeEvidenceRow[] {
+    if (!this.enabled || !this.evidenceSource) return [];
+    const rows = this.evidenceSource(sessionId);
+    return rows.map((row) => {
+      const text = row.text === undefined ? undefined : contentTextRedacted(row.text);
+      return { kind: row.kind, ...(text !== undefined ? { text } : {}), ...(row.name ? { name: row.name } : {}), ...(row.path ? { path: row.path } : {}) };
+    });
+  }
+
   /** Session identity facts (label map + session per root). */
   registerSession(info: BridgeSessionInfo): void {
     this.labels.set(info.root, info.workdir || "no-cwd");
@@ -156,9 +193,13 @@ export class HostBridge {
     this.push(this.projector.project(record));
   }
 
-  /** Pre-step injection happened (plugin agent/pre-step handler). */
+  /** Pre-step injection happened (plugin agent/pre-step handler). The
+   *  per-session dynamic piece feeds the snapshot injection preview. */
   tagInjection(sessionId: string, workdir: string, staticText: string | undefined, dynamicText: string | undefined, budgetTokens: number | undefined): void {
     if (!this.enabled) return;
+    if (dynamicText !== undefined || staticText !== undefined) {
+      this.lastInjection.set(sessionId, { ...(dynamicText !== undefined ? { dynamicText } : {}), at: Date.now() });
+    }
     const record: PreStepInjectRecord = {
       kind: "pre-step-inject",
       sessionId,
@@ -200,6 +241,18 @@ export class HostBridge {
     if (!rel || rel.startsWith("..")) return false;
     this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
     return true;
+  }
+
+  /** Batch variant for callers that already resolved workspace-relative
+   *  paths (memory_read/shell reads): one usage tick per hit. Rels are
+   *  identifiers; blank/traversal entries are dropped, never trusted. */
+  tagToolReadHits(sessionId: string, tool: string, rels: readonly string[]): void {
+    if (!this.enabled) return;
+    for (const raw of rels) {
+      const rel = raw.trim();
+      if (!rel || rel.startsWith("..") || rel.includes("\\")) continue;
+      this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+    }
   }
 
   /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
@@ -312,19 +365,49 @@ export class HostBridge {
     return deltas;
   }
 
-  /** Full-state read for one store (connect/refresh/polling). */
+  /** Full-state read for one store (connect/refresh/polling). Carries the
+   *  latest dynamic-context preview captured for the session/root. */
   snapshot(root: string, sessionId?: string): Promise<WorkbenchSnapshot> {
     const label = this.labelFor(root);
     const workdir = this.workdirs.get(root);
+    const target = sessionId ?? this.sessionsByRoot.get(root);
+    const dynamicText = this.latestDynamicText(root, target);
     return buildSnapshot({
       root,
       baseRoot: this.baseRoot,
       label,
-      sessionId: sessionId ?? this.sessionsByRoot.get(root),
+      sessionId: target,
       scope: this.scope,
       isolated: workdir === "" || workdir === undefined,
+      injectBudgetTokens: this.injectBudgetTokens,
+      version: this.version,
+      ...(dynamicText ? { dynamicText } : {}),
     });
   }
+
+  private latestDynamicText(root: string, sessionId: string | undefined): string | undefined {
+    if (sessionId) {
+      return this.lastInjection.get(sessionId)?.dynamicText;
+    }
+    let best: string | undefined;
+    let bestAt = 0;
+    for (const [entryRoot, entrySession] of this.sessionsByRoot) {
+      if (entryRoot !== root) continue;
+      const entry = this.lastInjection.get(entrySession);
+      if (entry?.dynamicText && entry.at >= bestAt) {
+        best = entry.dynamicText;
+        bestAt = entry.at;
+      }
+    }
+    return best;
+  }
+}
+
+const MAX_EVIDENCE_CHARS = 2000;
+
+function contentTextRedacted(text: string): string {
+  const redacted = redactSecrets(text).text.trim();
+  return redacted.length > MAX_EVIDENCE_CHARS ? `${redacted.slice(0, MAX_EVIDENCE_CHARS)}…` : redacted;
 }
 
 interface AuditRow {

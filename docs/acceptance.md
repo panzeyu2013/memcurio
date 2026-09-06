@@ -8,7 +8,7 @@
 
 **可验收 = 三个独立闸门全过**：
 
-1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：425 tests / 24 files / 2799 expects / 0 fail；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（76 文件，dist 反向校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
+1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：434 tests / 25 files / 2840 expects / 0 fail（coverage 92.86% funcs / 94.55% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（76 文件，dist 反向校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
 3. **设计闸门**：设计基线 v1.4 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入 §6 外部依赖并挂接 S0 计划。
 
@@ -21,8 +21,8 @@
 | 存储附属 DSH home / 语言政策 | `src/plugin/scope.ts` 等 | ✅ 完成 | scope 测试；prompt 语言断言 |
 | host 读服务（context/memory/inject/usage/queue/audit/intent） | `src/services/{context,memory,inject,usage,queue,audit,intent}.ts` | ✅ 完成 | `tests/services.test.ts`（21→26 项） |
 | 事件投影器（8→9 类脱敏 delta） | `src/services/projector.ts` | ✅ 完成 | `tests/projector.test.ts`（22→26 项） |
-| 快照装配 | `src/services/snapshot.ts` | ✅ 完成 | `tests/snapshot.test.ts`（8 项） |
-| host 桥接层（注册表/打标/refresh diff/snapshot/sink） | `src/plugin/bridge.ts` + 插件接线（config.hostBridge） | ✅ 完成 | `tests/bridge.test.ts`（9 项） |
+| 快照装配（含雷达候选/收据合成/settings/dynamic） | `src/services/snapshot.ts` | ✅ 完成 | `tests/snapshot.test.ts`（11 项） |
+| host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（config.hostBridge，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
 | 客户端工作台 view-model（含 browse 跨 store、queue 单 job 折叠、增量 usage） | `client/` | ✅ 完成（框架自由，S0 组装） | `tests/client-types.test.ts`（24 项） |
 | 传输通道（SSE/投影/轮询） | — | ⛔ S0 实机 | s0-spike-plan P0–P8 |
 | 浏览器 UI 组装（标题栏单按钮/槽位） | — | ⛔ S0 实机 | s0-spike-plan G1–G6 |
@@ -37,7 +37,7 @@
 ## 4. 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：425 pass / 24 files / 2799 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：434 pass / 25 files / 2840 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 67 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功
@@ -59,11 +59,12 @@ git status --short                                                 # 期望：�
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
 | 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.2-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
+| 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
 | 客户端 bundle 构建与 loader 产物 | S0 结果（seed 8 键/tsdown 等价流程） | S0 → M0 |
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（design §7.7、plan L19–L20） |
-| node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 后续 CI 加跑（本轮 bun 下验证） |
-| 覆盖率回归 | 轮次终了补跑 | CI 语义下 `bun test --coverage` |
+| node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
+| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.86% funcs / 94.55% lines |
 
 ## 7. 结论
 

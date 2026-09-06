@@ -285,3 +285,46 @@ describe("snapshot", () => {
     expect(snapshot.store.label).toBe("no-cwd");
   });
 });
+
+describe("round-19 additions (rel hits, evidence source, dynamic preview)", () => {
+  test("tagToolReadHits emits one tick per safe rel and drops traversal entries", () => {
+    const sink = collector();
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.enable();
+    bridge.attachSink(sink);
+    bridge.tagToolReadHits("s1", "memory_read", ["rollout_summaries/a.md", "../config.json", "", "  rollout_summaries/b.md "]);
+    expect(sink.deltas.map((d) => d.kind)).toEqual(["usage-tick", "usage-tick"]);
+    const keys = sink.deltas.map((d) => (d.kind === "usage-tick" ? d.rolloutKey : undefined));
+    expect(keys).toEqual(["rollout_summaries/a.md", "rollout_summaries/b.md"]);
+  });
+
+  test("evidenceSnapshot redacts text through a wired source and is empty otherwise", () => {
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.attachEvidenceSource(() => [
+      { kind: "user", text: `remember token ${SECRET}` },
+      { kind: "assistant", text: "  " },
+    ]);
+    // Disabled: no rows.
+    expect(bridge.evidenceSnapshot("s1")).toEqual([]);
+    bridge.enable();
+    const rows = bridge.evidenceSnapshot("s1");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.text).toContain("[REDACTED]");
+    expect(rows[0]?.text).not.toContain(SECRET);
+    expect(rows[1]?.text).toBe("");
+  });
+
+  test("snapshot carries dynamic preview, budget and version once provided", async () => {
+    const root = makeStore("dyn");
+    const bridge = new HostBridge({ baseRoot: dir, scope: "workspace", version: "rc.1 contract", injectBudgetTokens: 900 });
+    bridge.enable();
+    bridge.registerSession({ sessionId: "session-1", workdir: "/work/dyn", root });
+    bridge.tagInjection("session-1", "/work/dyn", "static", "[memcurio] rollout_summaries/x.md:1 dynamic line", 900);
+    const snapshot = await bridge.snapshot(root, "session-1");
+    expect(snapshot.injection.dynamicText).toContain("dynamic line");
+    expect(snapshot.settings.injectBudgetTokens).toBe(900);
+    expect(snapshot.settings.version).toBe("rc.1 contract");
+    expect(snapshot.settings.dataRoot).toBe(dir);
+  });
+});
+

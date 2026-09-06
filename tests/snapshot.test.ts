@@ -247,7 +247,7 @@ describe("buildSnapshot", () => {
     // scheduling-agnostic under both bun and node:sqlite drivers.
     expect(snapshot.receipts.every((receipt) => !receipt.writePath)).toBe(true);
     expect(snapshot.usage).toEqual({ byKey: {} });
-    expect(snapshot.consolidation).toEqual({ last: undefined, failed: undefined });
+    expect(snapshot.consolidation).toEqual({ last: undefined, failed: undefined, candidateRolloutIds: [] });
     expect(snapshot.injection.staticSummary).toContain("not consolidated");
     expect(snapshot.injection.readGuide).toContain("read path");
     expect(snapshot.realtime).toEqual({ mode: "polling", degraded: false });
@@ -322,3 +322,57 @@ describe("buildSnapshot", () => {
     expect(dead?.lastError).not.toContain(SECRET);
   });
 });
+
+describe("round-19 enrichment (receipt synthesis, radar candidates, settings/dynamic preview)", () => {
+  test("receipts carry synthesized id/ok/target/sessionId for write-path rows", async () => {
+    const root = makeStore("synth");
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.audit("extract.staged", "dsh|s1", "dsh|s1 (slug-one)");
+      idx.audit("consolidate.auto_failed", "-", "provider failed: boom");
+    } finally {
+      idx.close();
+    }
+    const snapshot = await buildSnapshot({ root, label: "/work/alpha" });
+    const staged = snapshot.receipts.find((r) => r.action === "extract.staged");
+    expect(staged?.id).toBeTruthy();
+    expect(staged?.ok).toBe(true);
+    expect(staged?.target).toBe("dsh|s1");
+    expect(staged?.sessionId).toBe("s1");
+    expect(staged?.workspaceKey).toBe("/work/alpha");
+    const failed = snapshot.receipts.find((r) => r.action === "consolidate.auto_failed");
+    expect(failed?.ok).toBe(false);
+    expect(failed?.error).toContain("boom");
+  });
+
+  test("consolidation radar candidates follow usage desc capped by pipeline.maxInputs", async () => {
+    const root = makeStore("cands");
+    await seedRollout(root, "dsh|low", ["low"], "2026-08-10T00:00:00.000Z");
+    await seedRollout(root, "dsh|high", ["high"], "2026-08-10T00:00:00.000Z");
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.stageSetUsage("dsh|low");
+      idx.stageSetUsage("dsh|high");
+      idx.stageSetUsage("dsh|high");
+    } finally {
+      idx.close();
+    }
+    const snapshot = await buildSnapshot({ root });
+    expect(snapshot.consolidation?.candidateRolloutIds).toEqual(["dsh|high", "dsh|low"]);
+  });
+
+  test("settings and dynamic preview pass through when provided", async () => {
+    const root = makeStore("sett");
+    const snapshot = await buildSnapshot({
+      root,
+      baseRoot: dir,
+      injectBudgetTokens: 900,
+      version: "rc.1 contract",
+      dynamicText: "[memcurio] rollout_summaries/x.md:1 some dynamic line",
+    });
+    expect(snapshot.injection.dynamicText).toContain("dynamic line");
+    expect(snapshot.settings.injectBudgetTokens).toBe(900);
+    expect(snapshot.settings.version).toBe("rc.1 contract");
+  });
+});
+

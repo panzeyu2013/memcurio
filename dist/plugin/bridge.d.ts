@@ -5,6 +5,16 @@ import { type WorkbenchSnapshot } from "../services/snapshot.js";
 export interface BridgeSink {
     deliver(deltas: ProjectedDelta[]): void;
 }
+/** One evidence-window row for the browser (state face; §5.1
+ *  evidence.session). Text is re-redacted + capped on the way out. */
+export interface BridgeEvidenceRow {
+    kind: EvidenceKind;
+    text?: string;
+    name?: string;
+    path?: string;
+}
+/** Provider the plugin wires: session evidence from the live adapter. */
+export type EvidenceSource = (sessionId: string) => readonly BridgeEvidenceRow[];
 export interface HostBridgeOptions {
     /** memcurio data base root (for the store list in snapshots). */
     baseRoot: string;
@@ -12,6 +22,8 @@ export interface HostBridgeOptions {
     scope?: "workspace" | "global";
     /** Plugin reference version label shown in settings. */
     version?: string;
+    /** Plugin-level injection budget override (settings preview parity). */
+    injectBudgetTokens?: number;
 }
 export interface BridgeSessionInfo {
     sessionId: string;
@@ -22,6 +34,7 @@ export declare class HostBridge {
     private readonly baseRoot;
     private readonly scope;
     private readonly version?;
+    private readonly injectBudgetTokens?;
     /** Settings summary carries the plugin reference version. */
     get referenceVersion(): string | undefined;
     private enabled;
@@ -37,18 +50,28 @@ export declare class HostBridge {
     private readonly lastAuditRowid;
     /** root -> jobId -> row snapshot (queue diff baseline). */
     private readonly jobsByRoot;
+    /** Evidence provider (plugin wires the live adapter snapshot). */
+    private evidenceSource;
+    /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
+    private readonly lastInjection;
     constructor(options: HostBridgeOptions);
     get isEnabled(): boolean;
     enable(): void;
     disable(): void;
     attachSink(sink: BridgeSink): void;
     detachSink(): void;
+    /** Wire the evidence provider (plugin: adapter.memoryEvidenceSnapshot). */
+    attachEvidenceSource(source: EvidenceSource): void;
+    /** Session evidence window, re-redacted for the browser. Empty when no
+     *  source is wired or the session is unknown. */
+    evidenceSnapshot(sessionId: string): BridgeEvidenceRow[];
     /** Session identity facts (label map + session per root). */
     registerSession(info: BridgeSessionInfo): void;
     labelFor(root: string): string | undefined;
     private push;
     private project;
-    /** Pre-step injection happened (plugin agent/pre-step handler). */
+    /** Pre-step injection happened (plugin agent/pre-step handler). The
+     *  per-session dynamic piece feeds the snapshot injection preview. */
     tagInjection(sessionId: string, workdir: string, staticText: string | undefined, dynamicText: string | undefined, budgetTokens: number | undefined): void;
     /** Non-plugin user/assistant evidence seen (mirrors adapter.messageSeen). */
     tagEvidence(sessionId: string, partId: string, kind: EvidenceKind, text: string | undefined): void;
@@ -59,10 +82,16 @@ export declare class HostBridge {
     /** A DSH read/grep/glob tool touched a file inside the memory workspace.
      *  Returns true when tagged (path resolved inside <store>/memory). */
     tagToolReadHit(sessionId: string, tool: string, absolutePath: string, storeRoot: string): boolean;
+    /** Batch variant for callers that already resolved workspace-relative
+     *  paths (memory_read/shell reads): one usage tick per hit. Rels are
+     *  identifiers; blank/traversal entries are dropped, never trusted. */
+    tagToolReadHits(sessionId: string, tool: string, rels: readonly string[]): void;
     /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
      *  updates and queue job-updates for NEW changes only (first call seeds).
      *  Returns the deltas pushed (empty on the seeding call). */
     refresh(root: string): Promise<ProjectedDelta[]>;
-    /** Full-state read for one store (connect/refresh/polling). */
+    /** Full-state read for one store (connect/refresh/polling). Carries the
+     *  latest dynamic-context preview captured for the session/root. */
     snapshot(root: string, sessionId?: string): Promise<WorkbenchSnapshot>;
+    private latestDynamicText;
 }

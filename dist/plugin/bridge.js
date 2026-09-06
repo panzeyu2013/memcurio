@@ -23,6 +23,7 @@ import { relative, sep } from "node:path";
 import { Index } from "../core/db.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
 import { list as queueList } from "../services/queue.js";
+import { redactSecrets } from "../core/sanitize.js";
 import { createProjector } from "../services/projector.js";
 import { buildSnapshot } from "../services/snapshot.js";
 /** Write-path action prefixes: only these produce browser receipts (the
@@ -65,6 +66,7 @@ export class HostBridge {
     baseRoot;
     scope;
     version;
+    injectBudgetTokens;
     /** Settings summary carries the plugin reference version. */
     get referenceVersion() {
         return this.version;
@@ -82,10 +84,15 @@ export class HostBridge {
     lastAuditRowid = new Map();
     /** root -> jobId -> row snapshot (queue diff baseline). */
     jobsByRoot = new Map();
+    /** Evidence provider (plugin wires the live adapter snapshot). */
+    evidenceSource = null;
+    /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
+    lastInjection = new Map();
     constructor(options) {
         this.baseRoot = options.baseRoot;
         this.scope = options.scope ?? "workspace";
         this.version = options.version;
+        this.injectBudgetTokens = options.injectBudgetTokens;
     }
     get isEnabled() {
         return this.enabled;
@@ -101,6 +108,21 @@ export class HostBridge {
     }
     detachSink() {
         this.sink = null;
+    }
+    /** Wire the evidence provider (plugin: adapter.memoryEvidenceSnapshot). */
+    attachEvidenceSource(source) {
+        this.evidenceSource = source;
+    }
+    /** Session evidence window, re-redacted for the browser. Empty when no
+     *  source is wired or the session is unknown. */
+    evidenceSnapshot(sessionId) {
+        if (!this.enabled || !this.evidenceSource)
+            return [];
+        const rows = this.evidenceSource(sessionId);
+        return rows.map((row) => {
+            const text = row.text === undefined ? undefined : contentTextRedacted(row.text);
+            return { kind: row.kind, ...(text !== undefined ? { text } : {}), ...(row.name ? { name: row.name } : {}), ...(row.path ? { path: row.path } : {}) };
+        });
     }
     /** Session identity facts (label map + session per root). */
     registerSession(info) {
@@ -119,10 +141,14 @@ export class HostBridge {
     project(record) {
         this.push(this.projector.project(record));
     }
-    /** Pre-step injection happened (plugin agent/pre-step handler). */
+    /** Pre-step injection happened (plugin agent/pre-step handler). The
+     *  per-session dynamic piece feeds the snapshot injection preview. */
     tagInjection(sessionId, workdir, staticText, dynamicText, budgetTokens) {
         if (!this.enabled)
             return;
+        if (dynamicText !== undefined || staticText !== undefined) {
+            this.lastInjection.set(sessionId, { ...(dynamicText !== undefined ? { dynamicText } : {}), at: Date.now() });
+        }
         const record = {
             kind: "pre-step-inject",
             sessionId,
@@ -165,6 +191,19 @@ export class HostBridge {
             return false;
         this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
         return true;
+    }
+    /** Batch variant for callers that already resolved workspace-relative
+     *  paths (memory_read/shell reads): one usage tick per hit. Rels are
+     *  identifiers; blank/traversal entries are dropped, never trusted. */
+    tagToolReadHits(sessionId, tool, rels) {
+        if (!this.enabled)
+            return;
+        for (const raw of rels) {
+            const rel = raw.trim();
+            if (!rel || rel.startsWith("..") || rel.includes("\\"))
+                continue;
+            this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+        }
     }
     /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
      *  updates and queue job-updates for NEW changes only (first call seeds).
@@ -270,17 +309,45 @@ export class HostBridge {
         this.push(deltas);
         return deltas;
     }
-    /** Full-state read for one store (connect/refresh/polling). */
+    /** Full-state read for one store (connect/refresh/polling). Carries the
+     *  latest dynamic-context preview captured for the session/root. */
     snapshot(root, sessionId) {
         const label = this.labelFor(root);
         const workdir = this.workdirs.get(root);
+        const target = sessionId ?? this.sessionsByRoot.get(root);
+        const dynamicText = this.latestDynamicText(root, target);
         return buildSnapshot({
             root,
             baseRoot: this.baseRoot,
             label,
-            sessionId: sessionId ?? this.sessionsByRoot.get(root),
+            sessionId: target,
             scope: this.scope,
             isolated: workdir === "" || workdir === undefined,
+            injectBudgetTokens: this.injectBudgetTokens,
+            version: this.version,
+            ...(dynamicText ? { dynamicText } : {}),
         });
     }
+    latestDynamicText(root, sessionId) {
+        if (sessionId) {
+            return this.lastInjection.get(sessionId)?.dynamicText;
+        }
+        let best;
+        let bestAt = 0;
+        for (const [entryRoot, entrySession] of this.sessionsByRoot) {
+            if (entryRoot !== root)
+                continue;
+            const entry = this.lastInjection.get(entrySession);
+            if (entry?.dynamicText && entry.at >= bestAt) {
+                best = entry.dynamicText;
+                bestAt = entry.at;
+            }
+        }
+        return best;
+    }
+}
+const MAX_EVIDENCE_CHARS = 2000;
+function contentTextRedacted(text) {
+    const redacted = redactSecrets(text).text.trim();
+    return redacted.length > MAX_EVIDENCE_CHARS ? `${redacted.slice(0, MAX_EVIDENCE_CHARS)}…` : redacted;
 }

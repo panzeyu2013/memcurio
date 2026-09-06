@@ -24,7 +24,9 @@ export interface SnapshotEntry {
         lastUsedAt: string | null;
     };
 }
-/** Write-path receipt row (audit tail; §6.3). */
+/** Write-path receipt row (audit tail; §6.3). The optional client-parity
+ *  fields (id/ok/error/target/sessionId) are synthesized for the browser
+ *  adapter; ok is a heuristic (failure-suffixed actions / error markers). */
 export interface SnapshotReceipt {
     /** Rowid-style sequence (monotonic per store). */
     seq: number;
@@ -34,15 +36,28 @@ export interface SnapshotReceipt {
     detail: string;
     /** Write-path receipts only (adapter and integration lifecycle noise excluded). */
     writePath: boolean;
+    id?: string;
+    ok?: boolean;
+    error?: string;
+    target?: string;
+    sessionId?: string;
+    workspaceKey?: string;
 }
 export interface SnapshotSettings {
     dataRoot: string;
     scopeBadge: string;
     workspaceKey: string;
+    injectBudgetTokens?: number;
+    maxInjectTokens?: number;
+    consolidationCooldownMs?: number;
+    version?: string;
 }
 export interface SnapshotInjection {
     staticSummary?: string;
     readGuide?: string;
+    /** Last pre-step dynamic context text for the session, when the bridge
+     *  captured one (raw preview; client renders/handles it). */
+    dynamicText?: string;
 }
 export interface SnapshotUsage {
     byKey: Record<string, {
@@ -58,7 +73,9 @@ export interface WorkbenchSnapshot {
     injection: SnapshotInjection;
     entries: SnapshotEntry[];
     queue: Awaited<ReturnType<typeof queueList>>;
-    consolidation: Awaited<ReturnType<typeof consolidationMeta>> | null;
+    consolidation: (Awaited<ReturnType<typeof consolidationMeta>> & {
+        candidateRolloutIds?: string[];
+    }) | null;
     usage: SnapshotUsage;
     receipts: SnapshotReceipt[];
     settings: SnapshotSettings;
@@ -79,6 +96,12 @@ export interface BuildSnapshotOptions {
     /** True when the store is the shared no-cwd store (no cwd isolation). */
     isolated?: boolean;
     scope?: "workspace" | "global";
+    /** Plugin-level injection budget override (settings preview parity). */
+    injectBudgetTokens?: number;
+    /** Reference version label (settings preview). */
+    version?: string;
+    /** Latest dynamic context text captured for the session (preview). */
+    dynamicText?: string;
 }
 /** Assemble the full-state read for one store. Never throws: individual face
  *  failures degrade to empty fields so the workbench always has a frame. */
