@@ -51,8 +51,8 @@ Since the single-host convergence (round 15), this repository IS the plugin pack
 ```bash
 bun install --frozen-lockfile
 bun run build
-bun pm pack                                   # → memcurio-dsh-plugin-0.1.0.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
+bun pm pack                                   # → memcurio-dsh-plugin-0.0.1.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
 The bundle manifest activates `cordis.patch.yml` automatically; do not copy the row into the profile manually. Registry publication is not part of the developer-preview milestone, so the package is installed from the local tarball during testing.

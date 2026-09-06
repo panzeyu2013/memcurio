@@ -250,6 +250,20 @@ bun run pack:check
 
 全量 **434 pass / 25 files / 2840 expect / 0 fail**；tsc+lint clean。
 
+### 6.12 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
+
+收尾并准备首个发布（本地无法实际推送/发版——外部项，流程与产物已就绪）：
+
+- `package.json`：version → **0.0.1**；`publishConfig.access: public`（npm 发布预留、workflow 内禁用说明）；exports 补 `./cordis.patch.yml`、`./package.json`；scripts 补 `pack:tgz`（bun pm pack --destination .smoke --ignore-scripts）与 `release:notes`
+- `CHANGELOG.md`：0.0.1 节（Added + Known limitations，keepachangelog）
+- `.github/workflows/release.yml`：tag `v*` / dispatch(dry_run) → 全量门禁 → 版本一致性 → CHANGELOG 合成 notes（`scripts/release-notes.mjs`）→ tgz + sha256 → 防重发布守卫 → GitHub Release（资产=打包 tgz）；npm publish 注释暂禁
+- `ci.yml`：push `tags: v*` 走同链
+- `docs/RELEASE.md`：checklist/版本纪律/步骤/环境要求/安全规范
+- 版本化文件名引用 8 处 → 0.0.1；README 补 Releases 说明；`.smoke/` 入 gitignore
+- 验证：`bun run pack:tgz` → `.smoke/memcurio-dsh-plugin-0.0.1.tgz`（0.54MB unpacked / 140.67KB packed；表面 = cordis.patch.yml+LICENSE+package.json+README + 72 dist 文件）；release-notes.mjs 提取 0.0.1 节成功
+
+外部项（需凭据/真实环境）：git push、GitHub Release 创建、真实 DSH 安装 smoke、npm publish（NPM_TOKEN + provenance 决策）。
+
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 
 | 组件 | 版本 | 已验证 |

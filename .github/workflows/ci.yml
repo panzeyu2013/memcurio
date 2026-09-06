@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']  # a tag can never publish an untested commit; same chain
   pull_request:
 
 jobs:

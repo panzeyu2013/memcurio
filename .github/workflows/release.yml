@@ -1,0 +1,151 @@
+name: Release
+
+# Tag-driven GitHub Release (tgz asset only) or manual dispatch (incl. a
+# dry-run mode). Modeled on the dsh-mcp-scope release conventions:
+# - the FULL validation chain runs inside this workflow BEFORE any Release
+#   mutation (tag-triggered workflows run in parallel with CI, so this gate
+#   must be self-contained);
+# - publication is serialized and never re-publishes over an existing
+#   release: a *published* release for the tag fails closed; only stale
+#   drafts are deleted (softprops would silently update an existing release);
+# - release notes are composed from the CHANGELOG section of the released
+#   version (missing/empty/undated section fails the run);
+# - the packed tgz ships with a .sha256 sidecar; the asset is exactly the
+#   bytes the local gates produced.
+#
+# ⚠ npm publishing is TEMPORARILY DISABLED — releases ship the packed
+# `memcurio-dsh-plugin-<version>.tgz` as the GitHub Release asset; users
+# install it directly, e.g.:
+#   dsh plugin --profile <profile> add \
+#     https://github.com/<owner>/memcurio/releases/download/v0.0.1/memcurio-dsh-plugin-0.0.1.tgz
+# To re-enable npm publishing later: uncomment the "Publish to npm" step,
+# add the repository secret NPM_TOKEN, and restore `id-token: write` in
+# `permissions` when using `--provenance`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release — MUST equal package.json version (X.Y.Z)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run (gate + notes only; do not create/update the GitHub Release)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# GitHub Releases are shared mutable state: serialize publication and never
+# cancel a run that may already have mutated a release.
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Gate, pack, GitHub Release (tgz)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release + attach assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+          cache: true
+
+      # The package verifies the plugin entry under node (node:sqlite).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Full gate (build + typecheck + lint + tests + pack allowlist)
+        run: |
+          bun run build
+          bun run typecheck
+          bun run lint
+          bun test
+          bun run pack:check
+          bun pm pack --dry-run
+          node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok:', m.name); })"
+
+      - name: Tag/version sanity
+        run: |
+          pkg_ver=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag_ver="${{ inputs.version }}"
+          else
+            tag_ver="${GITHUB_REF_NAME#v}"
+          fi
+          test "$pkg_ver" = "$tag_ver" || {
+            echo "::error::package.json version $pkg_ver does not match requested v$tag_ver"
+            exit 1
+          }
+          echo "Releasing memcurio@$pkg_ver"
+          echo "PKG_VERSION=$pkg_ver" >> "$GITHUB_ENV"
+
+      - name: Compose release notes from CHANGELOG
+        run: node scripts/release-notes.mjs "$PKG_VERSION" --out .smoke/release-notes.md
+
+      - name: Pack the release tarball + sha256 sidecar
+        run: |
+          mkdir -p .smoke/release
+          bun pm pack --destination .smoke/release --ignore-scripts
+          cd .smoke/release
+          sha256sum memcurio-dsh-plugin-*.tgz > memcurio-dsh-plugin-${{ env.PKG_VERSION }}.tgz.sha256
+          cat memcurio-dsh-plugin-${{ env.PKG_VERSION }}.tgz.sha256
+
+      # A published release for this version is a hard stop; only stale
+      # drafts from an aborted run are deleted first.
+      - name: Refuse re-publishing an existing release
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "v${{ env.PKG_VERSION }}" --json id,draft --jq '{id,draft}' >/tmp/rel.json 2>/dev/null; then
+            draft=$(jq -r '.draft' /tmp/rel.json)
+            if [ "$draft" = "true" ]; then
+              echo "stale draft v${{ env.PKG_VERSION }} exists — deleting before re-release"
+              gh release delete "v${{ env.PKG_VERSION }}" --yes --cleanup-tag=false
+            else
+              echo "::error::release v${{ env.PKG_VERSION }} is already published; refusing to overwrite"
+              exit 1
+            fi
+          fi
+
+      # ------------------------------------------------------------------
+      # Temporarily disabled — npm publish. Re-enable when ready:
+      #
+      # - name: Publish to npm
+      #   run: npm publish --provenance
+      #   env:
+      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # ------------------------------------------------------------------
+
+      - name: Create GitHub Release with tgz asset
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: memcurio v${{ env.PKG_VERSION }}
+          body_path: .smoke/release-notes.md
+          files: |
+            .smoke/release/*.tgz
+            .smoke/release/*.tgz.sha256
+          fail_on_unmatched_files: true
+
+      - name: Attach packed tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: memcurio-dsh-plugin-tgz
+          path: .smoke/release/*.tgz*
+          if-no-files-found: error

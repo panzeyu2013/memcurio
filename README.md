@@ -38,10 +38,13 @@ Requires [node](https://nodejs.org) >= 22.13 (`node:sqlite`, no flag; the 22.5�
 # 1. Build (dist/ is committed; a fresh build must not drift — CI checks it)
 bun install --frozen-lockfile
 bun run build
-bun pm pack            # → memcurio-dsh-plugin-0.1.0.tgz
+bun pm pack            # → memcurio-dsh-plugin-0.0.1.tgz
+# Releases: tag-driven GitHub Release shipping the packed tarball (asset URL
+# install); npm publish is prepared but disabled — see docs/RELEASE.md and
+# CHANGELOG.md for the full mechanics.
 
 # 2. Install into a DSH profile (activates cordis.patch.yml automatically)
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
 The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. `hostBridge: true` turns on the memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`); it defaults to off until a browser transport sink is attached (S0).
@@ -87,6 +90,11 @@ bun run build         # tsc build into dist/ (committed; CI guards drift)
 bun run pack:check    # build + tarball allowlist gate
 bun run eval:lexical  # deterministic retrieval/safety baseline
 ```
+
+Releases ship as tag-driven GitHub Releases whose asset is the packed
+`memcurio-dsh-plugin-<version>.tgz` (`npm publish` is prepared but disabled).
+See [docs/RELEASE.md](docs/RELEASE.md) for the release checklist and
+[CHANGELOG.md](CHANGELOG.md) for release notes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for design principles, code style, testing, and commit conventions.
 
