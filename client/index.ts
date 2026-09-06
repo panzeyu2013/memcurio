@@ -39,6 +39,8 @@ export type * from './types.js';
 
 /** Timeline cap: append-only axis, oldest events drop beyond this (design §7.5). */
 export const TIMELINE_LIMIT = 500;
+/** Origin-seq dedupe window: only recent seqs are remembered (see applyDelta). */
+export const ORIGIN_WINDOW = 2048;
 /** Usage-movement recency list cap (design §10: pushes merge/throttle; list stays bounded). */
 export const USAGE_RECENT_LIMIT = 100;
 /** Audit-receipt in-memory buffer cap (full history stays server-side: audit.list). */
@@ -161,6 +163,12 @@ function initialState(): WorkbenchState {
 function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): WorkbenchState {
     const browsingStillListed =
         base.browsingStoreId !== null && snapshot.stores.some((candidate) => candidate.id === base.browsingStoreId);
+    // §7.6 read-only browsing: while a non-current store is being browsed,
+    // the (current-store) snapshot must NOT overwrite the browsing caches.
+    // The S0 bridge only snapshots the current store; per-store fetches and
+    // storeId-tagged deltas are an open S0 decision (client/README Q2/Q3).
+    const browsingAnother =
+        base.browsingStoreId !== null && base.browsingStoreId !== snapshot.store.id;
     return {
         ...base,
         stores: snapshot.stores,
@@ -168,12 +176,16 @@ function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): Workbenc
         currentStoreId: snapshot.store.id,
         browsingStoreId: browsingStillListed ? base.browsingStoreId : null,
         injection: snapshot.injection,
-        persistence: { entries: snapshot.entries, stale: false, loadedAt: snapshot.at },
+        ...(browsingAnother
+            ? {}
+            : {
+                  persistence: { entries: snapshot.entries, stale: false, loadedAt: snapshot.at },
+                  consolidation: snapshot.consolidation,
+                  usage: snapshot.usage,
+                  settings: snapshot.settings,
+              }),
         queue: snapshot.queue,
-        consolidation: snapshot.consolidation,
-        usage: snapshot.usage,
         receipts: snapshot.receipts,
-        settings: snapshot.settings,
         realtime: snapshot.realtime,
         lastRefreshAt: snapshot.at,
         lastError: null,
@@ -200,7 +212,7 @@ function timelineEventFor(delta: MemoryDelta, seq: number, at: string): Timeline
                 originSeq: delta.seq,
                 at,
                 kind: 'usage',
-                summary: `usage: ${delta.usage.rolloutKey} → ${delta.usage.usageCount}`,
+                summary: `usage: ${delta.usage.rolloutKey} +${delta.usage.count}`,
                 ref: { rolloutKey: delta.usage.rolloutKey },
             };
         case 'queue-updated': {
@@ -215,10 +227,9 @@ function timelineEventFor(delta: MemoryDelta, seq: number, at: string): Timeline
         }
         case 'memory-list-updated': {
             const reason =
-                delta.reason === 'rollout' ? 'rollout landed'
-                : delta.reason === 'consolidation' ? 'consolidation committed'
-                : delta.reason === 'note' ? 'ad-hoc note applied'
-                : 'compaction prune';
+                delta.updateKind === 'rollout' ? 'rollout landed'
+                : delta.updateKind === 'consolidation' ? 'consolidation committed'
+                : 'ad-hoc note applied';
             return { seq, originSeq: delta.seq, at, kind: 'memory', summary: reason };
         }
         case 'evidence':
@@ -287,11 +298,24 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
     let state: WorkbenchState = initialState();
     let counter = 0;
     const seenOrigin = new Set<number>();
+    /** Origin-window high-water mark: dedupe only recent seqs (the unordered
+     *  channel's replay horizon); older ones are evicted so the set cannot
+     *  grow for the whole tab lifetime. */
+    let originHighWater = 0;
+    const evictOriginWindow = (): void => {
+        if (seenOrigin.size <= ORIGIN_WINDOW * 2) return;
+        const floor = originHighWater - ORIGIN_WINDOW;
+        for (const value of seenOrigin) {
+            if (value < floor) seenOrigin.delete(value);
+        }
+    };
 
     const applyDelta = (delta: MemoryDelta): ApplyResult => {
         if (delta.seq !== undefined) {
+            if (delta.seq > originHighWater) originHighWater = delta.seq;
             if (seenOrigin.has(delta.seq)) return { status: 'duplicate', seq: state.lastSeq };
             seenOrigin.add(delta.seq);
+            evictOriginWindow();
         }
         const seq = ++counter;
         const at = new Date().toISOString();
@@ -304,8 +328,15 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 next = { ...state, injection: delta.injection };
                 break;
             case 'usage-tick': {
-                const { rolloutKey, usageCount, at: tickAt } = delta.usage;
-                const byKey = { ...state.usage.byKey, [rolloutKey]: { count: usageCount, lastUsedAt: tickAt } };
+                // Increment semantics (projector emits +1 per hit/citation):
+                // fold onto the last snapshot's absolute stats so the stream
+                // is self-healing on the next snapshot.
+                const { rolloutKey, count } = delta.usage;
+                const previous = state.usage.byKey[rolloutKey]?.count ?? 0;
+                const byKey = {
+                    ...state.usage.byKey,
+                    [rolloutKey]: { count: previous + count, lastUsedAt: delta.usage.at ?? at },
+                };
                 const recent = [delta.usage, ...state.usage.recent].slice(0, USAGE_RECENT_LIMIT);
                 next = { ...state, usage: { byKey, recent } };
                 break;

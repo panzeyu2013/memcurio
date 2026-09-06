@@ -23,9 +23,14 @@ async function withIndex<T>(root: string, run: (index: Index) => Promise<T> | T)
   }
 }
 
-export async function integrationSearch(root: string, query: string, topK = 10) {
+export async function integrationSearch(
+  root: string,
+  query: string,
+  topK = 10,
+  options: { trackUsage?: boolean } = {},
+) {
   return withIndex(root, async (index) => {
-    const result = await searchMemory(root, query, topK);
+    const result = await searchMemory(root, query, topK, options);
     const safeQuery = redactSecrets(query).text;
     index.audit("integration.search", "-", `${safeQuery} -> ${result.hits.length} hits`);
     return {
@@ -51,7 +56,7 @@ export async function integrationList(
 
 export async function integrationRead(
   root: string,
-  options: { path: string; lineOffset?: number; maxLines?: number; maxTokens?: number },
+  options: { path: string; lineOffset?: number; maxLines?: number; maxTokens?: number; trackUsage?: boolean },
 ) {
   return withIndex(root, async (index) => {
     const result = await readMemory(root, options);

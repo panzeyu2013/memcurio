@@ -311,7 +311,8 @@ describe("audit services", () => {
     expect(all[0]).toEqual({
       time: "2026-08-10T00:00:00.000Z",
       action: "extract.staged",
-      detail: `staged rollout with token [REDACTED]`,
+      object: "dsh|s2",
+      detail: "staged rollout with token [REDACTED]",
     });
     expect(await auditCount(root)).toBe(3);
 
@@ -384,5 +385,72 @@ describe("services index", () => {
     for (const fn of surface) {
       expect(fn).toBeTypeOf("function");
     }
+  });
+});
+
+describe("review regressions (telemetry opt-out, audit object, global store, intent edges)", () => {
+  test("simulate never bumps usage telemetry of hit rollouts", async () => {
+    const root = makeStore("sim-nobump");
+    await seedRollout(root, "dsh|sim-nobump", ["sqlite fts5 trigram decision"]);
+    await simulate(root, "sqlite fts5");
+    const index = await Index.create(indexDb(root));
+    try {
+      const row = index.stageGet("dsh|sim-nobump");
+      expect(row?.usageCount ?? 0).toBe(0);
+      expect(row?.lastUsage ?? null).toBeNull();
+    } finally {
+      index.close();
+    }
+  });
+
+  test("workbench search and read previews do not bump usage either", async () => {
+    const root = makeStore("ui-nobump");
+    const rel = await seedRollout(root, "dsh|ui-nobump", ["unique preview marker text"]);
+    await memorySearch(root, "unique preview marker text");
+    await memoryRead(root, { path: rel });
+    const index = await Index.create(indexDb(root));
+    try {
+      const row = index.stageGet("dsh|ui-nobump");
+      expect(row?.usageCount ?? 0).toBe(0);
+    } finally {
+      index.close();
+    }
+  });
+
+  test("audit entries expose the object (ns) column; % and _ in filters are literal", async () => {
+    const root = makeStore("audit-obj");
+    const index = await Index.create(indexDb(root));
+    try {
+      index.audit("note.remember", "dsh|s1", "stored a note");
+      index.driver.run("INSERT INTO audit(ts, action, ns, detail) VALUES (?,?,?,?)", [
+        new Date().toISOString(),
+        "note.50%_ok",
+        "dsh|s1",
+        "percent filter target",
+      ]);
+    } finally {
+      index.close();
+    }
+    const all = await auditList(root);
+    expect(all[0]).toMatchObject({ action: "note.50%_ok", object: "dsh|s1" });
+    const literal = await auditList(root, { filter: "50%_ok" });
+    expect(literal).toHaveLength(1);
+    expect(literal[0]?.action).toBe("note.50%_ok");
+  });
+
+  test("listStores reports a global-scope store rooted at baseRoot when marked", async () => {
+    const globalRoot = join(dir, "global-base");
+    mkdirSync(join(globalRoot, "dsh"), { recursive: true });
+    writeFileSync(join(globalRoot, "config.json"), "{}\n");
+    const entries = listStores(globalRoot);
+    expect(entries.some((entry) => entry.key === "global" && entry.path === globalRoot)).toBe(true);
+  });
+
+  test("intent drafts omit empty provenance parts and degrade empty remembers", () => {
+    expect(draft({ kind: "remember", ref: { rolloutKey: "   " } })).toBe("请记住这条内容。");
+    expect(draft({ kind: "remember", ref: { rolloutKey: "key-1", sessionId: "   " } })).toBe(
+      "请记住（来源：rollout key-1）",
+    );
+    expect(draft({ kind: "remember", ref: { rolloutKey: "key-1" } })).toBe("请记住（来源：rollout key-1）");
   });
 });

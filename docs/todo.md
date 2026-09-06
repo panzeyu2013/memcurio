@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-05（第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——双入口/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-06（第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——双入口/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 331 tests / 1073 assertions / 19 files、typecheck、lint、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 402 tests / 2566 assertions / 22 files、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -22,7 +22,7 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（331/19 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（402/22 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
 | 记忆可视化 UI（规划）| 未开始 | — | dsh.client 客户端半侧；设计讨论（对照 Codex #30299 等缺口）见第十六轮 |
 
@@ -123,7 +123,7 @@ bun run pack:check
 
 ### 6.2 最新结果（2026-09-04，第十五轮收敛后）
 
-- `bun test`：331 pass / 1073 expect / 19 files / 0 failed（第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
+- `bun test`：402 pass / 2566 expect / 22 files / 0 failed（第十七轮新增 host 服务 26 + 投影器 26 + 客户端 18 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
 - `bun test --coverage`：lines 89.49%，functions 89.45%
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：54 文件（单 tarball allowlist + dist 反向校验），干净
@@ -192,6 +192,23 @@ bun run pack:check
 | Minor/Nit | 过期注释（HTTP/CLI/opencode/daemon/doctor）、HOSTS 缺 "dsh"、node 版本声明（22.5 需 flag）、README_cn 死链、AdapterOptions 文档虚构 consolidate 选项、todo 统计/覆盖率过期、architecture socket 残词、schemastery devDeps 重复、空目录残留 | 全部修复/清理；engines 与文档统一 node >=22.13；依赖去重；空目录删除 |
 
 审查结论（A/B 双 agent）：fea0fa9 收敛忠实、门禁全绿、无 blocker；修复后全量 **331 pass / 0 fail / 19 files**，coverage lines 89.49% / funcs 89.45%，`pack:check` 54 文件。
+
+### 6.8 第十七轮：记忆工作台实现批次 + 审查闭环（2026-09-06）
+
+四路并行 subagent 交付 + 集成统一（服务 21/投影 22/客户端 12→18/计划文档），随后双 agent 独立审查并修复：
+
+| 提交/内容 | 说明 |
+|---|---|
+| a896d6c feat(services) | host 读服务（context/memory/inject 含注入模拟器/usage/queue/audit/intent 草稿）+ 纯投影器（8 类 InputRecord → 9 类脱敏 delta）；21+22 测 |
+| f49c7bb feat(client) | 浏览器骨架：工作台 view-model + MemoryClientApi（无写方法）+ 9 问 spike 清单（rc.1 实证）；lint 覆盖 client |
+| 9742c42 docs(design) | s0-spike-plan/checklist；设计 v1.2（ctx.remote 对第三方关闭、header.actions 槽位候选、8-seed 表、挂载平面风险）|
+
+审查发现与修复（双 agent，无 blocker）：
+- **Major**：注入模拟器/工作台搜索与读预览会经 searchMemory/readMemory 虚增 usage 遥测（已实测）→ 核心增加 `trackUsage` 开关（默认 true 保持模型路径不变），服务层预览一律关闭；回归测试断言 usage 不动
+- Minor 修复：tool-read-hit 路径 trim；citation 键形状过滤/去重；审计行与 receipt 补 `object`(ns) 列；模拟器预算按引擎行形态估算 + 预览差异注释；listStores 支持 global store；意图草稿空来源降级；投影器会话去重窗口有界（256）；客户端 origin 去重窗口有界（2048）、usage-tick 改**增量语义**、memory-list reason→updateKind（rollout/consolidation/note）、QueueJobState 补 completed、跨 store 浏览时 refresh 不覆盖浏览缓存；README/设计/计划措辞与计数收敛（v1.3：telemetry 开关/增量语义/审计 object）
+- 实测审查结论：其余映射/字段/转义/隔离均验证无偏差（usage/queue/audit/投影策略逐项核对）
+
+审查后全量 **402 pass / 0 fail / 22 files / 2566 expect**；tsc（含 client）与 lint 干净。
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 

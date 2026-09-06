@@ -66,6 +66,9 @@ function optional(key, value) {
  *  doc). Callers that need a "window" for the duplicate comparison decide
  *  it by choosing when the per-session entry is reset (or by discarding
  *  the instance); the module never expires entries on its own. */
+/** Cap for the duplicate-window state: per-session static text retained so
+ *  long host runs (many sessions) cannot grow it without bound. */
+const MAX_TRACKED_SESSIONS = 256;
 export function createProjector() {
     const lastStaticBySession = new Map();
     return {
@@ -80,6 +83,14 @@ export function createProjector() {
                     const current = record.staticText ?? "";
                     const duplicate = previous !== undefined && current === previous;
                     lastStaticBySession.set(record.sessionId, current);
+                    // Bounded duplicate window: evict the oldest session once the cap
+                    // is exceeded (insertion order is update order because Map.set on
+                    // an existing key keeps its position — refresh on hit).
+                    if (lastStaticBySession.size > MAX_TRACKED_SESSIONS) {
+                        const oldest = lastStaticBySession.keys().next().value;
+                        if (oldest !== undefined)
+                            lastStaticBySession.delete(oldest);
+                    }
                     return [{
                             kind: "inject-updated",
                             sessionId: record.sessionId,
@@ -93,26 +104,31 @@ export function createProjector() {
                 case "tool-read-hit": {
                     // A hit with no path has no key to attribute usage to — dropping
                     // it is safer than an empty-key tick the client cannot merge.
-                    if (record.path.trim() === "") {
+                    const path = record.path.trim();
+                    if (path === "") {
                         return [];
                     }
                     return [{
                             kind: "usage-tick",
                             sessionId: record.sessionId,
-                            rolloutKey: record.path,
+                            rolloutKey: path,
                             count: 1,
                         }];
                 }
                 case "citation": {
+                    // Keys are model-authored text: shape-sanity filter here (trim,
+                    // drop blanks/duplicates); the host adapter must additionally
+                    // validate them against stage rows before tagging real usage.
+                    const rolloutKeys = [...new Set(record.rolloutKeys.map((k) => k.trim()).filter(Boolean))];
                     const node = {
                         kind: "citation",
                         sessionId: record.sessionId,
-                        rolloutKeys: [...record.rolloutKeys],
+                        rolloutKeys,
                     };
                     // One tick per cited key; the node itself always survives so the
                     // timeline can show that an answer cited memories even when the
                     // harvested block named no known rollout.
-                    const ticks = record.rolloutKeys.map((rolloutKey) => ({
+                    const ticks = rolloutKeys.map((rolloutKey) => ({
                         kind: "usage-tick",
                         sessionId: record.sessionId,
                         rolloutKey,
@@ -162,7 +178,13 @@ export function createProjector() {
                     if (action === "" && detail === "") {
                         return [];
                     }
-                    return [{ kind: "receipt", time: record.time, action, detail }];
+                    return [{
+                            kind: "receipt",
+                            time: record.time,
+                            action,
+                            ...(record.ns ? { object: record.ns.slice(0, MAX_ERROR_CHARS) } : {}),
+                            detail,
+                        }];
                 }
             }
         },

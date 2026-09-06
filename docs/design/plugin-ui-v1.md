@@ -1,6 +1,6 @@
 # @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.2）
 
-> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名（conversation.session.header.actions）、seed 模块表、挂载平面风险。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
 > 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例同版本）；GitHub 上游 dsh-v0.1.3-alpha.1 已打 tag 但未发布到 npm，**未纳入**；沿用「每次 DSH 升级重核 peer/client 契约」纪律。
 > 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.2-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
@@ -323,7 +323,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 ## 10. 非功能要求
 
 - **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定（S0 确定）。
-- **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
+- **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
 - **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。
 - **i18n**：UI 文案跟随 DSH 客户端语言约定；记忆内容原样展示（不翻译）。
@@ -336,7 +336,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 内容：
 1. 第三方 `dsh.client` 验证：设置页 `settings.section` 槽位可注册；会话标题栏第三方入口是否存在（无 → 落回退预案）；
-2. host↔浏览器通道：客户端 `inject` api-remote 模式第三方等价物；事件推送可行性；
+2. host↔浏览器通道：按 v1.2 §8.1 候选实测（① 自定义 SSE 前缀路由 ② sessionProjections ③ 轮询）；事件推送可行性；
 3. 客户端 bundle 构建（`lib/client.js` 约定）、`dsh.client.external`、HMR 开发流；
 4. 最小"记忆工作台"占位 + 一条 host 事件推送到浏览器端到端跑通。
 
@@ -380,7 +380,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 ## 13. 决策记录（2026-09-05 第十六轮）
 
 1. 承载：仅嵌入 DSH Web（`dsh.client` 客户端半侧）；不做独立页分发。
-2. 入口：标题栏**单按钮**唤起记忆界面；其余内容（三面/时间线/设置/收藏/跨工作区切换）全部写入该界面；标题栏不可用回退 `/memory` 斜杠。
+2. 入口：标题栏**单按钮**唤起记忆界面；其余内容全部写入该界面。候选槽位 `conversation.session.header.actions`/`conversation.view`（v1.2）；`/memory` 斜杠回退无实证、列为开放项（v1.2/v1.3 修订，S0 定夺）。
 3. 实时性：**M0 即事件推送**（脱敏 delta；恢复先全量快照；轮询仅次级降级）。
 4. 写语义：**UI 永不静默写**；remember/forget/修正 = 对话草稿 → 模型工具流 → 工具卡 + 审计收据；删除仅对话流（M2 才有专家干跑，且留收据）；无 UI 直删。
 5. "重要"两层分离：⭐ = 纯 UI 视图收藏；语义记忆 = 对话流。

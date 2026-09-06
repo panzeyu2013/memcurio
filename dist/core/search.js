@@ -77,7 +77,7 @@ export async function registerMemoryUsage(root, rels) {
  *  occurrences per line; hits are injection-filtered and re-redacted at read
  *  time. Matches against rollout summary files bump the corresponding
  *  stage-1 usage stats so the selection window tracks real reuse. */
-export async function searchMemory(root, query, topK) {
+export async function searchMemory(root, query, topK, opts = {}) {
     const q = query.trim();
     const hits = [];
     let blocked = 0;
@@ -133,7 +133,12 @@ export async function searchMemory(root, query, topK) {
             }
         }
     }
-    await registerMemoryUsage(root, usedRels);
+    // UI previews (injection simulator, workbench search) must never inflate
+    // real reuse telemetry: opt out via trackUsage:false (default true keeps
+    // model-driven paths counting).
+    if (opts.trackUsage !== false) {
+        await registerMemoryUsage(root, usedRels);
+    }
     const sorted = hits.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel) || a.line - b.line);
     return { hits: sorted.slice(0, Math.max(1, topK)), blocked };
 }

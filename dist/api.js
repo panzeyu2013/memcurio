@@ -17,9 +17,9 @@ async function withIndex(root, run) {
         index.close();
     }
 }
-export async function integrationSearch(root, query, topK = 10) {
+export async function integrationSearch(root, query, topK = 10, options = {}) {
     return withIndex(root, async (index) => {
-        const result = await searchMemory(root, query, topK);
+        const result = await searchMemory(root, query, topK, options);
         const safeQuery = redactSecrets(query).text;
         index.audit("integration.search", "-", `${safeQuery} -> ${result.hits.length} hits`);
         return {

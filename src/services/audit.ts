@@ -5,6 +5,8 @@ import { redactSecrets } from "../core/sanitize.js";
 export interface AuditEntry {
   time: string;
   action: string;
+  /** Object/namespace the write targeted (e.g. session/rollout key). */
+  object?: string;
   detail: string;
 }
 
@@ -26,19 +28,20 @@ export async function list(root: string, options: AuditListOptions = {}): Promis
   try {
     const filter = options.filter?.trim();
     const rows = filter
-      ? index.rawAll<{ ts: unknown; action: unknown; detail: unknown }>(
-        `SELECT ts, action, detail FROM audit
+      ? index.rawAll<{ ts: unknown; action: unknown; ns: unknown; detail: unknown }>(
+        `SELECT ts, action, ns, detail FROM audit
          WHERE action LIKE ? ESCAPE '\\' OR ns LIKE ? ESCAPE '\\'
          ORDER BY rowid DESC LIMIT ?`,
         [`%${escapeLike(filter)}%`, `%${escapeLike(filter)}%`, limit],
       )
-      : index.rawAll<{ ts: unknown; action: unknown; detail: unknown }>(
-        "SELECT ts, action, detail FROM audit ORDER BY rowid DESC LIMIT ?",
+      : index.rawAll<{ ts: unknown; action: unknown; ns: unknown; detail: unknown }>(
+        "SELECT ts, action, ns, detail FROM audit ORDER BY rowid DESC LIMIT ?",
         [limit],
       );
     return rows.map((row) => ({
       time: row.ts === null ? "" : String(row.ts),
       action: row.action === null ? "" : String(row.action),
+      object: row.ns === null ? undefined : String(row.ns),
       detail: redactSecrets(row.detail === null ? "" : String(row.detail)).text,
     }));
   } finally {

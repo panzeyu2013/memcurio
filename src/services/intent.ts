@@ -40,11 +40,13 @@ function clean(text: string): string {
 
 function provenance(ref: IntentRef): string {
   const parts: string[] = [];
-  if (ref.rolloutKey) {
-    parts.push(`rollout ${clean(ref.rolloutKey)}`);
+  const rolloutKey = clean(ref.rolloutKey ?? "");
+  const sessionId = clean(ref.sessionId ?? "");
+  if (rolloutKey) {
+    parts.push(`rollout ${rolloutKey}`);
   }
-  if (ref.sessionId) {
-    parts.push(`会话 ${clean(ref.sessionId)}`);
+  if (sessionId) {
+    parts.push(`会话 ${sessionId}`);
   }
   return parts.length > 0 ? `（来源：${parts.join("，")}）` : "";
 }
@@ -54,6 +56,11 @@ export function draft(input: IntentDraftInput): string {
   const quote = clean(ref.text ?? ref.title ?? "");
   const quotePart = quote ? `：${quote}` : "";
   if (input.kind === "remember") {
+    if (!quote && !provenance(ref)) {
+      // Nothing concrete to remember: the draft still must be a usable
+      // prompt, never a dangling "请记住" with an empty source.
+      return "请记住这条内容。";
+    }
     return `请记住${quotePart}${provenance(ref)}`;
   }
   if (input.kind === "update") {

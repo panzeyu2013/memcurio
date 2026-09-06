@@ -134,7 +134,7 @@ export async function listMemory(
  *  reads of rollout summary files count as usage for the selection window. */
 export async function readMemory(
   root: string,
-  opts: { path: string; lineOffset?: number; maxLines?: number; maxTokens?: number },
+  opts: { path: string; lineOffset?: number; maxLines?: number; maxTokens?: number; trackUsage?: boolean },
 ): Promise<MemoryReadResult> {
   if (opts.lineOffset === 0) {
     throw new Error("line_offset must be >= 1");
@@ -197,7 +197,8 @@ export async function readMemory(
   }
 
   const rel = opts.path;
-  if (rel.startsWith("rollout_summaries/")) {
+  // UI previews opt out (trackUsage:false); model-driven reads keep counting.
+  if (rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
     await registerMemoryUsage(root, [rel]);
   }
   // The read path is the only memory->model output that would otherwise skip

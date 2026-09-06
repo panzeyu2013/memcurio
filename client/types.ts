@@ -37,7 +37,7 @@ export type WorkbenchView = 'overview' | 'injection' | 'persistence' | 'state' |
 export type IntentKind = 'remember' | 'update' | 'remove';
 
 /** Extraction-job states (design §5.3). */
-export type QueueJobState = 'pending' | 'processing' | 'blocked' | 'dead';
+export type QueueJobState = 'pending' | 'processing' | 'blocked' | 'completed' | 'dead';
 
 /** Memory-entry lifecycle states (design §5.3: stage-1 rows). */
 export type MemoryEntryStatus = 'pending' | 'selected' | 'consolidated' | 'deleted';
@@ -214,11 +214,14 @@ export interface UsageStat {
     readonly lastUsedAt: string | null;
 }
 
-/** One observable usage movement (tools/result hit → usage jump; §4②③). */
+/** One observable usage movement (tools/result hit to usage jump).
+ * `count` is an INCREMENT, matching the host projector (+1 per read hit or
+ * cited rollout); the model folds it onto snapshot absolute stats, so the
+ * stream self-heals on every snapshot. */
 export interface UsageTick {
     readonly rolloutKey: string;
-    readonly usageCount: number;
-    readonly at: string;
+    readonly count: number;
+    readonly at?: string;
     readonly via?: 'tool-result' | 'citation' | null;
 }
 
@@ -348,7 +351,7 @@ export interface QueueUpdatedDelta extends MemoryDeltaBase {
  */
 export interface MemoryListUpdatedDelta extends MemoryDeltaBase {
     readonly kind: 'memory-list-updated';
-    readonly reason: 'rollout' | 'consolidation' | 'prune' | 'note';
+    readonly updateKind: 'rollout' | 'consolidation' | 'note';
     readonly entries?: readonly MemoryEntry[];
 }
 

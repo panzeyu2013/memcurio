@@ -17,6 +17,7 @@ import {
     registerFactory,
     registeredFactory,
     TIMELINE_LIMIT,
+    ORIGIN_WINDOW,
     createWorkbenchModel,
 } from '../client/index.js';
 import type {
@@ -105,7 +106,7 @@ function makeSnapshotPayload(): SnapshotPayload {
         },
         usage: {
             byKey: { 'rollout-1': { count: 3, lastUsedAt: AT } },
-            recent: [{ rolloutKey: 'rollout-1', usageCount: 3, at: AT, via: 'tool-result' }],
+            recent: [{ rolloutKey: 'rollout-1', count: 3, at: AT, via: 'tool-result' }],
         },
         receipts: [
             { id: 'receipt-1', at: AT, action: 'remember', target: 'rollout-1', ok: true, sessionId: 'session-1' },
@@ -214,8 +215,8 @@ class FakeApi implements MemoryClientApi {
     }
 }
 
-function usageTick(rolloutKey: string, usageCount: number, seq: number): MemoryDelta {
-    return { kind: 'usage-tick', seq, usage: { rolloutKey, usageCount, at: AT, via: 'tool-result' } };
+function usageTick(rolloutKey: string, count: number, seq: number): MemoryDelta {
+    return { kind: 'usage-tick', seq, usage: { rolloutKey, count, at: AT, via: 'tool-result' } };
 }
 
 // Type-level smoke: the full view union and the full S0 delta union compile.
@@ -225,7 +226,7 @@ const ALL_DELTA_KINDS: readonly MemoryDelta[] = [
     { kind: 'inject-updated', injection: { staticSummary: 's' } },
     usageTick('rollout-1', 4, 1),
     { kind: 'queue-updated', queue: { counts: { pending: 0, processing: 0, blocked: 0, dead: 0 }, jobs: [] } },
-    { kind: 'memory-list-updated', reason: 'consolidation' },
+    { kind: 'memory-list-updated', updateKind: 'consolidation' },
     { kind: 'receipt', receipt: { id: 'r', at: AT, action: 'remember', target: 'rollout-1', ok: true } },
 ];
 
@@ -316,7 +317,7 @@ describe('setStore (read-only cross-workspace browse, design §7.6)', () => {
         model.applyDelta({
             kind: 'memory-list-updated',
             seq: 2,
-            reason: 'rollout',
+            updateKind: 'rollout',
             entries: [
                 {
                     id: 'entry-x',
@@ -468,10 +469,50 @@ describe('extended projector-vocabulary deltas (design §8.2 rows 3-5 + note rea
     test('memory-list-updated reason note renders an ad-hoc-note timeline event', () => {
         const api = new FakeApi();
         const model = createWorkbenchModel(api);
-        model.applyDelta({ kind: 'memory-list-updated', reason: 'note' });
+        model.applyDelta({ kind: 'memory-list-updated', updateKind: 'note' });
         const last = model.state.timeline.at(-1);
         expect(last?.kind).toBe('memory');
         expect(last?.summary).toBe('ad-hoc note applied');
+    });
+});
+
+describe('usage-tick increment semantics + origin window (review regressions)', () => {
+    test('folds increments onto snapshot absolute stats (self-healing stream)', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // snapshot: rollout-1 = 3
+        model.applyDelta(usageTick('rollout-1', 4, 1));
+        expect(model.state.usage.byKey['rollout-1']).toEqual({ count: 7, lastUsedAt: AT });
+        model.applyDelta(usageTick('rollout-1', 1, 2));
+        expect(model.state.usage.byKey['rollout-1']?.count).toBe(8);
+    });
+
+    test('origin dedupe window evicts old seqs so replay outside the window applies', () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        for (let index = 1; index <= ORIGIN_WINDOW * 2 + 5; index += 1) {
+            model.applyDelta(usageTick(`rollout-${index}`, 1, index));
+        }
+        // evicted: seq 5 is below the window floor
+        expect(model.applyDelta(usageTick('rollout-5', 1, 5)).status).toBe('applied');
+        // recent seq still dedupes
+        expect(model.applyDelta(usageTick('rollout-last', 1, ORIGIN_WINDOW * 2 + 5)).status).toBe('duplicate');
+    });
+});
+
+describe('cross-store browsing coherence (review regression, §7.6)', () => {
+    test('refresh while browsing another store does not overwrite the browsing caches', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // current store alpha, browsing none
+        model.setStore('store-beta');
+        expect(model.state.browsingStoreId).toBe('store-beta');
+        expect(model.state.persistence.entries).toHaveLength(0); // cleared on switch
+        await model.refresh(); // snapshot still names store-alpha
+        expect(model.state.currentStoreId).toBe('store-alpha');
+        expect(model.state.browsingStoreId).toBe('store-beta');
+        // alpha snapshot rows must NOT land in the beta browsing cache:
+        expect(model.state.persistence.entries).toHaveLength(0);
     });
 });
 

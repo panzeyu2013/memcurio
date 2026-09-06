@@ -89,6 +89,7 @@ export async function searchMemory(
   root: string,
   query: string,
   topK: number,
+  opts: { trackUsage?: boolean } = {},
 ): Promise<{ hits: MemoryHit[]; blocked: number }> {
   const q = query.trim();
   const hits: MemoryHit[] = [];
@@ -146,7 +147,12 @@ export async function searchMemory(
     }
   }
 
-  await registerMemoryUsage(root, usedRels);
+  // UI previews (injection simulator, workbench search) must never inflate
+  // real reuse telemetry: opt out via trackUsage:false (default true keeps
+  // model-driven paths counting).
+  if (opts.trackUsage !== false) {
+    await registerMemoryUsage(root, usedRels);
+  }
 
   const sorted = hits.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel) || a.line - b.line);
   return { hits: sorted.slice(0, Math.max(1, topK)), blocked };

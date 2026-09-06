@@ -1,6 +1,6 @@
 # S0 Spike Plan — Third-party `dsh.client` module assumptions (DSH npm `0.1.2-rc.1`)
 
-> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (frozen v1.1, commit `6f99047`). Upstream artifacts: DSH npm `0.1.2-rc.1` installs at a `node_modules/@deepseek-ai/*` tree (same version the local dsh instance runs — design §"参考版本声明").
+> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (in-tree v1.2/v1.3, commit `9742c42` and review revisions; re-read before the run). Upstream artifacts: DSH npm `0.1.2-rc.1` installs at a `node_modules/@deepseek-ai/*` tree (same version the local dsh instance runs — design §"参考版本声明").
 >
 > This plan is executable by a future human/agent in a **real DSH environment** (real host process + real browser). Findings tagged `VERIFIED(rc.1)` were confirmed by reading the rc.1 artifacts **now**; `OPEN` needs the live spike; `UNVERIFIABLE-HERE` cannot be decided without a browser/host run.
 >
@@ -42,7 +42,7 @@ Each goal converts one design §12 open item (or an S0 bullet) into a question t
 **Open sub-questions.** Whether registering an unknown (undeclared) slot name throws at runtime vs is silently ignored (the renderers only call `renderSlot` for names they own, so undeclared names are structurally unreachable — confirm by reading the runtime Slots implementation during the spike, P4); what `single`/`chain` slots do with a second registrant; whether entry ordering (`order`) and localization (`label`/`locale`) behave exactly as ui-goal uses them.
 
 ### G3 — Browser ↔ host bridge for third parties (S0 内容 2; §12 risk 2)
-**Question.** Is the official `inject` api-remote/controller pattern (client `ctx.remote.<ns>`, generated typert controllers, forwarded host events) open to third-party packages — i.e. can a non-`@deepseek-ai` package have its host controller methods reach the browser — and if not, which fallback channel survives rc.1 (session projections? custom webserver routes? polling), matching the design’s §8.1 sentence and §12.2 “评估上游申请 / 轮询次级”.
+**Question.** Is the official `inject` api-remote/controller pattern (client `ctx.remote.<ns>`, generated typert controllers, forwarded host events) open to third-party packages — i.e. can a non-`@deepseek-ai` package have its host controller methods reach the browser — and if not, which fallback channel survives rc.1 (session projections? custom webserver routes? polling), matching the design v1.2 §8.1 channel ranking (custom SSE route / sessionProjections / polling) and §12.2’s “closed to third parties” verdict.
 
 **Already VERIFIED(rc.1)** (ledger L10–L13): the api-remotes assembly is **closed by construction** — “the capability set is fixed by explicit build-time value imports; the Client does not discover the Host's active Services or Remote definitions at runtime. Additional capabilities require an explicit `/remote` value import and mount in this assembly”, and forwarded host events are allowlisted in one official array. This is the design’s §12 risk-2 “no” branch, confirmed at rc.1. Two open fallback candidates exist in rc.1: (a) `ctx.sessionProjections` — an **open registry** any host plugin can register units into, whose client-visible wire views ride the existing official `session/projection` frames + history tail (no new wire), but whose fold input is **committed session-log events** only (see L12) — and (b) `ctx.webServer.register` — **any plugin may register named exact/prefix/upgrade routes** on the GUI’s HTTP server, which “carries no authentication or origin policy of its own” (default loopback bind), enabling same-origin fetch/SSE between the page and the memcurio host half (see L13).
 
@@ -122,7 +122,7 @@ Each phase lists: steps, artifacts to collect (checklist fields), and its decisi
 3. First boot + artifact inventory:
    - `dsh --profile web --no-open --port 0` in background (or a fixed high port); capture the `dsh web:` startup URL line and logs to `artifacts/p0-boot.log`.
    - Browser/HTTP smoke: open the printed URL (browser automation or manual); page renders, session list appears, a chat message can be sent **only if a provider key exists — otherwise skip chat, the UI still renders** (record which).
-   - `dsh --profile web --dump-config > artifacts/p0-composed-tree.yml` — inventory the composed rows: confirm the browser roster (~50 `dsh-client-*` rows), `client-hmr`, `client-modules`, `agent-presets`.
+   - `dsh --profile web --dump-config > artifacts/p0-composed-tree.yml` — inventory the composed rows: confirm the browser roster (~39 `dsh-client-*` rows in memcurio’s patch today), `client-hmr`, `client-modules`, `agent-presets`.
    - Shut down. Record the auto-created profile dir layout (`$DSH_HOME/profiles/web/…`).
 4. **Gate P0** (preconditions): web boots and renders → continue; otherwise stop and fix environment (risk register R1–R3).
 
@@ -182,7 +182,7 @@ In the browser against `<spike-web>`:
    - stream: SSE endpoint (`text/event-stream`, `Content-Type` checked, compression skip verified per L12) → one host event per second reaches the page;
    - host event source for the *real* plugin later = existing memcurio cordis events (design §8.1) — validate a trivial mapping now (spike timer → delta JSON).
 4. **Polling baseline**: 1s `fetch` loop over the unary route; measure latency/jitter and UI-degraded badge approach (design §8.3).
-5. **Gate G3** (§5): choose channel(s) for M0: order = custom-route SSE (+projection where state is log-derived) if (b) passes; projection-only if (a) passes and (b) fails; polling if both fail. Record whether an upstream extension request must be filed (design §8.1 “评估上游申请” branch) and who owns it.
+5. **Gate G3** (§5): choose channel(s) for M0: order = custom-route SSE (+projection where state is log-derived) if (b) passes; projection-only if (a) passes and (b) fails; polling if both fail. Record whether an upstream extension request must be filed and who owns it.
 
 ### P6 — HMR loop (G5)
 1. Boot with a bundle watcher running: replicate `dev:web`-style by running the spike package’s own `tsdown --watch` (writes its `lib/client.js`) while the page is open (the row’s bundle path is the installed package path — for a `pnpm add <tarball>` install, re-install or link the package so the watcher writes the installed file; a `bun link`/`pnpm link`-style install is acceptable for the spike).

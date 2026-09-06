@@ -165,7 +165,8 @@ export async function readMemory(root, opts) {
         truncated = true;
     }
     const rel = opts.path;
-    if (rel.startsWith("rollout_summaries/")) {
+    // UI previews opt out (trackUsage:false); model-driven reads keep counting.
+    if (rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
         await registerMemoryUsage(root, [rel]);
     }
     // The read path is the only memory->model output that would otherwise skip

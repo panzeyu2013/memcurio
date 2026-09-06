@@ -122,6 +122,8 @@ export interface AuditRecord {
     time: number;
     /** Audit action label (e.g. "adhoc.note"), content-capped. */
     action: string;
+    /** Object/namespace the write targeted (identifier; cap verbatim). */
+    ns?: string;
     /** Human-readable outcome text, redacted + capped. */
     detail: string;
 }
@@ -198,6 +200,8 @@ export interface ReceiptDelta {
     time: number;
     /** Redacted + trimmed + capped (see module doc). */
     action: string;
+    /** Object the write targeted (identifier; see AuditRecord.ns). */
+    object?: string;
     /** Redacted + trimmed + capped. */
     detail: string;
 }
@@ -219,11 +223,6 @@ export interface Projector {
      *  project(); exposed for introspection/tests — do not mutate. */
     readonly lastStaticBySession: Map<string, string>;
 }
-/** Create a projector. Stateful: `lastStaticBySession` persists across
- *  project() calls on the same instance (duplicate flag semantics, module
- *  doc). Callers that need a "window" for the duplicate comparison decide
- *  it by choosing when the per-session entry is reset (or by discarding
- *  the instance); the module never expires entries on its own. */
 export declare function createProjector(): Projector;
 /** Connection-restore marker delta (design §8.3): after the channel comes
  *  up, the client receives `snapshot-ready` and requests the full snapshot

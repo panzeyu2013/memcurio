@@ -134,6 +134,8 @@ export interface AuditRecord {
   time: number;
   /** Audit action label (e.g. "adhoc.note"), content-capped. */
   action: string;
+  /** Object/namespace the write targeted (identifier; cap verbatim). */
+  ns?: string;
   /** Human-readable outcome text, redacted + capped. */
   detail: string;
 }
@@ -227,6 +229,8 @@ export interface ReceiptDelta {
   time: number;
   /** Redacted + trimmed + capped (see module doc). */
   action: string;
+  /** Object the write targeted (identifier; see AuditRecord.ns). */
+  object?: string;
   /** Redacted + trimmed + capped. */
   detail: string;
 }
@@ -284,6 +288,10 @@ export interface Projector {
  *  doc). Callers that need a "window" for the duplicate comparison decide
  *  it by choosing when the per-session entry is reset (or by discarding
  *  the instance); the module never expires entries on its own. */
+/** Cap for the duplicate-window state: per-session static text retained so
+ *  long host runs (many sessions) cannot grow it without bound. */
+const MAX_TRACKED_SESSIONS = 256;
+
 export function createProjector(): Projector {
   const lastStaticBySession = new Map<string, string>();
   return {
@@ -298,6 +306,13 @@ export function createProjector(): Projector {
           const current = record.staticText ?? "";
           const duplicate = previous !== undefined && current === previous;
           lastStaticBySession.set(record.sessionId, current);
+          // Bounded duplicate window: evict the oldest session once the cap
+          // is exceeded (insertion order is update order because Map.set on
+          // an existing key keeps its position — refresh on hit).
+          if (lastStaticBySession.size > MAX_TRACKED_SESSIONS) {
+            const oldest = lastStaticBySession.keys().next().value as string | undefined;
+            if (oldest !== undefined) lastStaticBySession.delete(oldest);
+          }
           return [{
             kind: "inject-updated",
             sessionId: record.sessionId,
@@ -311,26 +326,31 @@ export function createProjector(): Projector {
         case "tool-read-hit": {
           // A hit with no path has no key to attribute usage to — dropping
           // it is safer than an empty-key tick the client cannot merge.
-          if (record.path.trim() === "") {
+          const path = record.path.trim();
+          if (path === "") {
             return [];
           }
           return [{
             kind: "usage-tick",
             sessionId: record.sessionId,
-            rolloutKey: record.path,
+            rolloutKey: path,
             count: 1,
           }];
         }
         case "citation": {
+          // Keys are model-authored text: shape-sanity filter here (trim,
+          // drop blanks/duplicates); the host adapter must additionally
+          // validate them against stage rows before tagging real usage.
+          const rolloutKeys = [...new Set(record.rolloutKeys.map((k) => k.trim()).filter(Boolean))];
           const node: CitationDelta = {
             kind: "citation",
             sessionId: record.sessionId,
-            rolloutKeys: [...record.rolloutKeys],
+            rolloutKeys,
           };
           // One tick per cited key; the node itself always survives so the
           // timeline can show that an answer cited memories even when the
           // harvested block named no known rollout.
-          const ticks: UsageTickDelta[] = record.rolloutKeys.map((rolloutKey) => ({
+          const ticks: UsageTickDelta[] = rolloutKeys.map((rolloutKey) => ({
             kind: "usage-tick",
             sessionId: record.sessionId,
             rolloutKey,
@@ -380,7 +400,13 @@ export function createProjector(): Projector {
           if (action === "" && detail === "") {
             return [];
           }
-          return [{ kind: "receipt", time: record.time, action, detail }];
+          return [{
+            kind: "receipt",
+            time: record.time,
+            action,
+            ...(record.ns ? { object: record.ns.slice(0, MAX_ERROR_CHARS) } : {}),
+            detail,
+          }];
         }
       }
     },

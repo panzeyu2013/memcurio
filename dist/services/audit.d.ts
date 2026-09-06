@@ -1,6 +1,8 @@
 export interface AuditEntry {
     time: string;
     action: string;
+    /** Object/namespace the write targeted (e.g. session/rollout key). */
+    object?: string;
     detail: string;
 }
 export interface AuditListOptions {

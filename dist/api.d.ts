@@ -3,7 +3,9 @@ export { MemcurioAdapter } from "./engine.js";
 export type { AdapterOptions } from "./engine.js";
 export type { HarnessToolPreset } from "./engine.js";
 export type { LlmChannel } from "./core/channel.js";
-export declare function integrationSearch(root: string, query: string, topK?: number): Promise<{
+export declare function integrationSearch(root: string, query: string, topK?: number, options?: {
+    trackUsage?: boolean;
+}): Promise<{
     hits: {
         content: string;
         rel: string;
@@ -22,6 +24,7 @@ export declare function integrationRead(root: string, options: {
     lineOffset?: number;
     maxLines?: number;
     maxTokens?: number;
+    trackUsage?: boolean;
 }): Promise<import("./core/read.js").MemoryReadResult>;
 export declare function integrationRemember(root: string, content: string): Promise<import("./core/adhoc.js").AdHocNote>;
 export declare function integrationStatus(root: string): Promise<{

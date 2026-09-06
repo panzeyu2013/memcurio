@@ -17,7 +17,7 @@ one pushed event end-to-end.
 
 | File | Role |
 |---|---|
-| `client/types.ts` | Local structural vocabulary: `MemoryClientApi` bridge, delta union (S0 subset), snapshot payload, `WorkbenchView`, stores/entries/usage/queue/audit/settings shapes, `MemoryUiFactory` seam. Zero external imports. |
+| `client/types.ts` | Local structural vocabulary: `MemoryClientApi` bridge, delta union (nine kinds, projector-aligned), snapshot payload, `WorkbenchView`, stores/entries/usage/queue/audit/settings shapes, `MemoryUiFactory` seam. Zero external imports. |
 | `client/index.ts` | Pure view-model state machine `createWorkbenchModel(api)` — no DOM/framework. `registerFactory()` S0 stub. |
 | `client/README.md` | This record: wiring plan (UNVERIFIED), S0 spike checklist, S0 acceptance, upstream docs read. |
 | `tests/client-types.test.ts` | Dependency-free `bun:test` suite (FakeApi inline implementing `MemoryClientApi`): initial state, select, setStore, refresh fold + error path, applyDelta per-kind fold / origin-seq dedupe / timeline cap 500, simulate text hand-off, registerFactory seam. |
@@ -42,15 +42,18 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
   rows of the previous store are never shown as the new store's; injection stays bound to the current session
   store; timeline/receipts survive; `currentStoreId` (write target) is never changed.
 - **`refresh()`** — calls `api.snapshot()`, folds the full snapshot (§8.3 semantics); failures are recorded in
-  `state.lastError`, never thrown.
-- **`applyDelta(delta)`** — folds one projector delta. Dedupe: a delta carrying an **origin `seq`** is dropped as
-  `{status: "duplicate"}` when that origin seq was already applied (unordered-channel guard, §8.3); every applied
-  delta gets one **locally assigned monotonic seq** (`state.lastSeq` bumps per apply, never per duplicate) and
-  appends one timeline event (capped at `TIMELINE_LIMIT = 500`). Kind folds: `snapshot-ready` → full fold
-  (keeps view/timeline/seq); `inject-updated` → injection preview; `usage-tick` → `usage.byKey[rolloutKey]` +
-  recency list (capped 100); `queue-updated` → queue state; `memory-list-updated` → replaces persistence rows
-  when `entries` are carried, otherwise marks the cache `stale` (next `refresh()` reloads); `receipt` → prepends
-  to the receipt stream (capped 100).
+  `state.lastError`, never thrown. While `browsingStoreId` names another store, the current-store snapshot does
+  NOT overwrite the browsing caches (persistence/usage/consolidation stay cleared until a per-store fetch path
+  exists — S0 decision).
+- **`applyDelta(delta)`** — folds one projector delta. Dedupe: an **origin `seq`** is dropped as
+  `{status: "duplicate"}` when already applied (unordered-channel guard, §8.3); the dedupe window is bounded
+  (`ORIGIN_WINDOW = 2048` — older seqs are evicted so the set cannot grow for the tab lifetime); every applied
+  delta gets one **locally assigned monotonic seq** and appends one timeline event (capped at 500). Kind folds:
+  `snapshot-ready` → full fold (keeps view/timeline/seq); `inject-updated` → injection preview; `usage-tick` →
+  **increment** semantics (`count` added onto the last snapshot's absolute stat; self-healing on next snapshot);
+  `queue-updated` → queue state; `memory-list-updated` (`updateKind: rollout|consolidation|note`) → replaces
+  persistence rows when `entries` are carried, else marks the cache `stale`; `receipt` → prepends (capped 100);
+  `evidence`/`citation` → timeline nodes only; `compaction-prune` → timeline node + marks persistence stale.
 - **`simulate(query)`** — trims the query, runs `api.simulate`, and returns the **plain-text rendering of the api
   result** (`formatSimulationResult`): deterministic, DOM-free. *S0 decision point: text hand-off vs structured
   `SimulateResult` for the real workbench.*
@@ -77,9 +80,10 @@ is assumed server-side redacted/truncated (§5.2/§9.1). Method → design §5.1
 | `usage()` | `usage.list/byKey` | `UsageReport` |
 | `intentDraft(kind, ref)` | `intent.draft` (no-persist wording) | `IntentDraft` |
 
-Delta union mirrors the §8.2 projector list for the S0 subset: `snapshot-ready` / `inject-updated` / `usage-tick` /
-`queue-updated` / `memory-list-updated` / `receipt` — exact payload shapes are spike-verification material, and the
-remaining §8.2 rows (evidence window, citation nodes, compaction annotations) land with later milestones.
+Delta union mirrors the §8.2 projector list — all nine kinds: `snapshot-ready` / `inject-updated` /
+`usage-tick` / `queue-updated` / `memory-list-updated` (updateKind: rollout|consolidation|note) / `receipt` /
+`evidence` / `citation` / `compaction-prune`. Exact payload shapes remain spike-verification material; the review
+revision aligned field names (`count` increments, `updateKind`, `itemKind`) with src/services/projector.ts.
 
 ---
 
@@ -144,9 +148,10 @@ Each item: the open question → my read from the docs above → what to verify 
   best candidate for a per-session "记忆" button. Verify: (a) whether a third-party bundle's `apply(ctx)` runs
   under the official composition at all (the memcurio node plugin is an enabled Loader entry → its `dsh.client`
   row should be composed; confirm), (b) whether `ctx.slots` accepts third-party entries for
-  `conversation.session.header.*` (or any real title-bar slot), (c) fallback `/memory` slash command surface
-  (commands registration; design §7.7 accepts this fallback), (d) settings.section registration as the *internal*
-  Settings tab if we keep it inside the workbench only.
+  `conversation.session.header.*` (or any real title-bar slot), (c) fallback surface: design v1.2/v1.3 demoted `/memory`-as-UI-opener to an open item (no verified
+  client-side command→UI mechanism at rc.1) — verify whether any command→UI path exists at all; else
+  `conversation.view` tab or settings deep-link carry the fallback, (d) settings.section registration as the
+  *internal* Settings tab if we keep it inside the workbench only.
 
 - **Q2 — Is the host↔browser bridge open to third parties (design §8.1/§12 #2)?**
   Read: mostly **no for memcurio's own namespaces/events** — `ctx.remote.<ns>` capabilities are mounted by the
@@ -223,9 +228,6 @@ Each item: the open question → my read from the docs above → what to verify 
 
 
 
-All under `$A = /root/.dsh-chamber/gateway/dsh-anchor/node_modules/@deepseek-ai/` — the DSH npm **0.1.2-rc.1**
-install (design §13.10 reference version):
-
 ## 7. (d) Upstream docs read (this scaffold)
 
 All under `$A = /root/.dsh-chamber/gateway/dsh-anchor/node_modules/@deepseek-ai/` — the DSH npm **0.1.2-rc.1**
@@ -300,8 +302,8 @@ composed behavior needs confirmation beyond the npm artifacts.
   # → exit 0
   ```
 
-- `bun test tests/client-types.test.ts` → **12 pass / 0 fail** (1296 expects): initial state, view switching,
-  refresh fold + error capture, store switching cache semantics, all six delta kinds, origin-seq dedupe, timeline
+- `bun test tests/client-types.test.ts` → **18 pass / 0 fail** (1315 expects): initial state, view switching,
+  refresh fold + error capture, store switching cache semantics, all nine delta kinds, origin-seq dedupe, timeline
   cap 500 + sliding window, simulate text + trim/reject, registerFactory seam.
 - Biome lint (repo rule set, run via `bun ./node_modules/@biomejs/biome/bin/biome lint client
   tests/client-types.test.ts`) → clean, 0 diagnostics.

@@ -16,7 +16,9 @@ export declare function registerMemoryUsage(root: string, rels: readonly string[
  *  occurrences per line; hits are injection-filtered and re-redacted at read
  *  time. Matches against rollout summary files bump the corresponding
  *  stage-1 usage stats so the selection window tracks real reuse. */
-export declare function searchMemory(root: string, query: string, topK: number): Promise<{
+export declare function searchMemory(root: string, query: string, topK: number, opts?: {
+    trackUsage?: boolean;
+}): Promise<{
     hits: MemoryHit[];
     blocked: number;
 }>;

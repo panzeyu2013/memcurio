@@ -12,13 +12,14 @@ export async function list(root, options = {}) {
     try {
         const filter = options.filter?.trim();
         const rows = filter
-            ? index.rawAll(`SELECT ts, action, detail FROM audit
+            ? index.rawAll(`SELECT ts, action, ns, detail FROM audit
          WHERE action LIKE ? ESCAPE '\\' OR ns LIKE ? ESCAPE '\\'
          ORDER BY rowid DESC LIMIT ?`, [`%${escapeLike(filter)}%`, `%${escapeLike(filter)}%`, limit])
-            : index.rawAll("SELECT ts, action, detail FROM audit ORDER BY rowid DESC LIMIT ?", [limit]);
+            : index.rawAll("SELECT ts, action, ns, detail FROM audit ORDER BY rowid DESC LIMIT ?", [limit]);
         return rows.map((row) => ({
             time: row.ts === null ? "" : String(row.ts),
             action: row.action === null ? "" : String(row.action),
+            object: row.ns === null ? undefined : String(row.ns),
             detail: redactSecrets(row.detail === null ? "" : String(row.detail)).text,
         }));
     }

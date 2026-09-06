@@ -286,3 +286,46 @@ describe("snapshotSeed", () => {
     expect(snapshotSeed("session-1")).toEqual([{ kind: "snapshot-ready", sessionId: "session-1" }]);
   });
 });
+
+describe("review regressions (tool path trim, citation shape filter, audit ns, session cap)", () => {
+  test("tool-read-hit trims the path before emitting the usage tick", () => {
+    const projector = createProjector();
+    expect(projector.project({ kind: "tool-read-hit", sessionId: "s1", tool: "bash", path: "  rollout_summaries/x.md  " })).toEqual([
+      { kind: "usage-tick", sessionId: "s1", rolloutKey: "rollout_summaries/x.md", count: 1 },
+    ]);
+    expect(projector.project({ kind: "tool-read-hit", sessionId: "s1", tool: "bash", path: "   " })).toEqual([]);
+  });
+
+  test("citation keys are trimmed, blank-filtered and deduped before the node and ticks", () => {
+    const projector = createProjector();
+    const out = projector.project({
+      kind: "citation",
+      sessionId: "s1",
+      rolloutKeys: ["  key-1  ", "", "key-2", "key-1", "  "],
+    });
+    expect(out).toEqual([
+      { kind: "citation", sessionId: "s1", rolloutKeys: ["key-1", "key-2"] },
+      { kind: "usage-tick", sessionId: "s1", rolloutKey: "key-1", count: 1 },
+      { kind: "usage-tick", sessionId: "s1", rolloutKey: "key-2", count: 1 },
+    ]);
+  });
+
+  test("audit records carry their ns as the receipt object", () => {
+    const projector = createProjector();
+    expect(
+      projector.project({ kind: "audit", time: 7, action: "note.remember", ns: "dsh|s1", detail: "ok" }),
+    ).toEqual([{ kind: "receipt", time: 7, action: "note.remember", object: "dsh|s1", detail: "ok" }]);
+  });
+
+  test("duplicate-window state is bounded to MAX_TRACKED_SESSIONS sessions", () => {
+    const projector = createProjector();
+    for (let index = 0; index < 300; index += 1) {
+      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, workdir: "/w", staticText: "same" });
+    }
+    expect(projector.lastStaticBySession.size).toBe(256);
+    // The oldest session was evicted: an identical re-inject is no longer a duplicate.
+    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+    const node = replay.find((delta) => delta.kind === "inject-updated");
+    expect(node?.duplicate).toBe(false);
+  });
+});
