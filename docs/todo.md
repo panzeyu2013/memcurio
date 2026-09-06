@@ -2,7 +2,7 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-04（第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-05（第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——双入口/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
@@ -67,7 +67,7 @@
 - [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
 - [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
 - [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
-- [ ] 记忆可视化 UI（`dsh.client` 客户端半侧，嵌入 DSH Web）：注入预览/条目与溯源/用量/队列整合状态；对照 Codex 无管理 UI 缺口（#30299/#41711）设计（第十六轮讨论）
+- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md)，第十六轮决策：双入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；下一步 S0 spike（第三方 dsh.client 槽位/推送通道/标题栏入口）
 
 ### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -211,6 +211,7 @@ smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`�
 |---|---|
 | [docs/architecture.md](architecture.md) | v2 分层架构、存储布局、数据流 |
 | [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 实现契约（数据格式、模块接口、schema v11） |
+| [docs/design/plugin-ui-v1.md](design/plugin-ui-v1.md) | 记忆可视化 UI 设计基线（架构/服务契约/对话即写面/阶段路线） |
 | [docs/installation.md](installation.md) | 安装指南：前置条件、构建打包、DSH profile 安装、验证、升级/回滚/卸载、FAQ |
 | [README.md](../README.md) | 英文用户入口与支持矩阵 |
 | [docs/README_cn.md](README_cn.md) | 中文用户入口 |
