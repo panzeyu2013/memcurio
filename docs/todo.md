@@ -210,6 +210,20 @@ bun run pack:check
 
 审查后全量 **402 pass / 0 fail / 22 files / 2566 expect**；tsc（含 client）与 lint 干净。
 
+### 6.9 第十八轮：host 桥接层实现（2026-09-06）
+
+未实现清单盘点后推进的最大缺口 = **host 半侧桥**（设计 §5/§8 的 node 适配；transport 仍留给 S0）：
+
+- `src/services/snapshot.ts`：`buildSnapshot` 全量装配（store 列表/注入预览/持久条目 rollout+manual 层 join usage/队列/整合雷达/近 60 收据/设置/realtime；面失败降级不抛）
+- `src/plugin/bridge.ts`：`HostBridge`——store 注册表（root→workdir 标签/session，no-cwd 标 isolated）、打标点（pre-step 注入/证据/citation/compaction prune/读工具命中仅限 `<store>/memory/` 内）、`refresh()` 审计尾 + 抽取任务行 diff（首次播种静默；写路径前缀才出收据；extract.staged/adhoc.*/consolidate.auto→memory-list；单 job queue-updated 含消失即 completed）、`snapshot()`；sink 可挂接（默认丢弃）
+- 插件接线：`config.hostBridge`（默认关）门控全部桥工作；ensureSession 注册、pre-step 捕获 static/dynamic 片段、消息/剪除/收成/读工具打点、三处 drain 后 refresh；engine `memoryUsageFromCitations` 返回实际计入的键
+- 客户端队列对齐：queue-updated 改**单 job**（jobId/status/attempts，投影器同构），counts 由 jobs 重算，completed 移除；桥 9 项 + 客户端 19 项测试
+- 设计 v1.4：§8.4 host 桥接层（打标点/diff 映射/快照/过滤规则）
+
+**412 tests / 23 files / 2618 expect / 0 fail**；tsc+lint（66 files）clean；pack 76 files。
+
+仍缺（S0/M0 接力）：传输通道（SSE/投影/轮询按 v1.2 §8.1 实测定案）、真正浏览器 UI 组装（槽位实测）、/memory 唤起、每 store 数据路径与 delta 归属 storeId、UI 记忆工具消息折叠。
+
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 
 | 组件 | 版本 | 已验证 |

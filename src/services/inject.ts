@@ -20,6 +20,15 @@ export interface SimulateResult {
   budgetTokens: number;
 }
 
+/** Budget-capped summary plus read-path instructions, separately — the two
+ *  pieces real injection composes (and the workbench preview keeps apart). */
+export function staticParts(root: string, budgetTokens?: number): { summary: string; instructions: string } {
+  return {
+    summary: renderMemoryContext(root, budgetTokens),
+    instructions: renderReadPathInstructions(root),
+  };
+}
+
 /** Full static injection preview: the budget-capped summary plus the read-path
  *  instructions, composed like the engine does. Two preview caveats: the
  *  budget resolves to config budget.maxInjectTokens ?? 1500 (the plugin may
@@ -27,8 +36,7 @@ export interface SimulateResult {
  *  parity), and no audit row is written (real injections audit
  *  adapter.static_context / adapter.dynamic_context). */
 export function staticContext(root: string, budgetTokens?: number): { text: string } {
-  const summary = renderMemoryContext(root, budgetTokens);
-  const instructions = renderReadPathInstructions(root);
+  const { summary, instructions } = staticParts(root, budgetTokens);
   return { text: `${summary}\n${instructions}` };
 }
 

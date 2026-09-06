@@ -11,6 +11,12 @@ export interface SimulateResult {
      *  bar matches what buildDynamicContext would actually inject. */
     budgetTokens: number;
 }
+/** Budget-capped summary plus read-path instructions, separately — the two
+ *  pieces real injection composes (and the workbench preview keeps apart). */
+export declare function staticParts(root: string, budgetTokens?: number): {
+    summary: string;
+    instructions: string;
+};
 /** Full static injection preview: the budget-capped summary plus the read-path
  *  instructions, composed like the engine does. Two preview caveats: the
  *  budget resolves to config budget.maxInjectTokens ?? 1500 (the plugin may

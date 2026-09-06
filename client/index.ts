@@ -215,16 +215,15 @@ function timelineEventFor(delta: MemoryDelta, seq: number, at: string): Timeline
                 summary: `usage: ${delta.usage.rolloutKey} +${delta.usage.count}`,
                 ref: { rolloutKey: delta.usage.rolloutKey },
             };
-        case 'queue-updated': {
-            const counts = delta.queue.counts;
+        case 'queue-updated':
             return {
                 seq,
                 originSeq: delta.seq,
                 at,
                 kind: 'queue',
-                summary: `queue: ${counts.pending}p/${counts.processing}r/${counts.blocked}b/${counts.dead}d`,
+                summary: `queue: ${delta.jobId} → ${delta.status}`,
+                ref: { sessionId: delta.sessionId ?? undefined },
             };
-        }
         case 'memory-list-updated': {
             const reason =
                 delta.updateKind === 'rollout' ? 'rollout landed'
@@ -341,9 +340,26 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 next = { ...state, usage: { byKey, recent } };
                 break;
             }
-            case 'queue-updated':
-                next = { ...state, queue: delta.queue };
+            case 'queue-updated': {
+                // Fold one job change onto the snapshot's full queue state:
+                // terminal 'completed' removes the job; otherwise upsert it.
+                // Counts are recomputed from the jobs list (host counts and
+                // the jobs list agree; completed jobs are excluded from both).
+                const others = state.queue.jobs.filter((job) => job.jobId !== delta.jobId);
+                const jobs =
+                    delta.status === 'completed'
+                        ? others
+                        : [{ jobId: delta.jobId, status: delta.status, attempts: delta.attempts, lastError: delta.lastError ?? null }, ...others];
+                const counted = ['pending', 'processing', 'blocked', 'dead'] as const;
+                const counts = { pending: 0, processing: 0, blocked: 0, dead: 0 };
+                for (const job of jobs) {
+                    if ((counted as readonly string[]).includes(job.status)) {
+                        counts[job.status as keyof typeof counts] += 1;
+                    }
+                }
+                next = { ...state, queue: { counts, jobs } };
                 break;
+            }
             case 'memory-list-updated': {
                 const persistence = delta.entries
                     ? { entries: delta.entries, stale: false, loadedAt: at }

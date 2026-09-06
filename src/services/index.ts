@@ -23,3 +23,5 @@ export type { AuditEntry, AuditListOptions } from "./audit.js";
 
 export { draft } from "./intent.js";
 export type { IntentDraftInput, IntentRef } from "./intent.js";
+
+export * from "./snapshot.js";

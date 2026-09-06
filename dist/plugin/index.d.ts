@@ -9,6 +9,10 @@ export interface Config {
     injectContext?: boolean;
     registerTools?: boolean;
     injectBudgetTokens?: number;
+    /** Host bridge for the memory workbench (design §5/§8): tags events,
+     *  diffs store changes and prepares snapshots. Default off until a
+     *  transport sink is attached (S0). */
+    hostBridge?: boolean;
     provider?: string;
     model?: string;
 }

@@ -51,7 +51,8 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
   delta gets one **locally assigned monotonic seq** and appends one timeline event (capped at 500). Kind folds:
   `snapshot-ready` → full fold (keeps view/timeline/seq); `inject-updated` → injection preview; `usage-tick` →
   **increment** semantics (`count` added onto the last snapshot's absolute stat; self-healing on next snapshot);
-  `queue-updated` → queue state; `memory-list-updated` (`updateKind: rollout|consolidation|note`) → replaces
+  `queue-updated` (per-job jobId/status/attempts) → folds the job onto the snapshot queue state and
+  recomputes counts (completed removes the job); `memory-list-updated` (`updateKind: rollout|consolidation|note`) → replaces
   persistence rows when `entries` are carried, else marks the cache `stale`; `receipt` → prepends (capped 100);
   `evidence`/`citation` → timeline nodes only; `compaction-prune` → timeline node + marks persistence stale.
 - **`simulate(query)`** — trims the query, runs `api.simulate`, and returns the **plain-text rendering of the api
@@ -81,7 +82,8 @@ is assumed server-side redacted/truncated (§5.2/§9.1). Method → design §5.1
 | `intentDraft(kind, ref)` | `intent.draft` (no-persist wording) | `IntentDraft` |
 
 Delta union mirrors the §8.2 projector list — all nine kinds: `snapshot-ready` / `inject-updated` /
-`usage-tick` / `queue-updated` / `memory-list-updated` (updateKind: rollout|consolidation|note) / `receipt` /
+`usage-tick` / `queue-updated` (per-job, projector-parity jobId/status) / `memory-list-updated`
+(updateKind: rollout|consolidation|note) / `receipt` /
 `evidence` / `citation` / `compaction-prune`. Exact payload shapes remain spike-verification material; the review
 revision aligned field names (`count` increments, `updateKind`, `itemKind`) with src/services/projector.ts.
 

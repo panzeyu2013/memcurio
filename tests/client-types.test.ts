@@ -96,7 +96,7 @@ function makeSnapshotPayload(): SnapshotPayload {
         ],
         queue: {
             counts: { pending: 2, processing: 1, blocked: 0, dead: 0 },
-            jobs: [{ id: 'job-1', state: 'pending', attempts: 1 }],
+            jobs: [{ jobId: 'job-1', status: 'pending', attempts: 1 }],
         },
         consolidation: {
             lastAt: AT,
@@ -225,7 +225,7 @@ const ALL_DELTA_KINDS: readonly MemoryDelta[] = [
     { kind: 'snapshot-ready', snapshot: makeSnapshotPayload() },
     { kind: 'inject-updated', injection: { staticSummary: 's' } },
     usageTick('rollout-1', 4, 1),
-    { kind: 'queue-updated', queue: { counts: { pending: 0, processing: 0, blocked: 0, dead: 0 }, jobs: [] } },
+    { kind: 'queue-updated', jobId: 'job-1', status: 'processing', attempts: 2 },
     { kind: 'memory-list-updated', updateKind: 'consolidation' },
     { kind: 'receipt', receipt: { id: 'r', at: AT, action: 'remember', target: 'rollout-1', ok: true } },
 ];
@@ -413,7 +413,7 @@ describe('applyDelta', () => {
         expect(model.state.timeline).toHaveLength(TIMELINE_LIMIT);
         expect(model.state.lastSeq).toBe(600);
         // further applied deltas keep the cap: retained window slides
-        model.applyDelta({ kind: 'queue-updated', seq: 601, queue: { counts: { pending: 0, processing: 0, blocked: 0, dead: 0 }, jobs: [] } });
+        model.applyDelta({ kind: 'queue-updated', seq: 601, jobId: 'job-x', status: 'blocked', attempts: 1 });
         expect(model.state.timeline).toHaveLength(TIMELINE_LIMIT);
         expect(model.state.timeline[0]?.seq).toBe(102);
         expect(model.state.timeline[499]?.kind).toBe('queue');
@@ -473,6 +473,25 @@ describe('extended projector-vocabulary deltas (design §8.2 rows 3-5 + note rea
         const last = model.state.timeline.at(-1);
         expect(last?.kind).toBe('memory');
         expect(last?.summary).toBe('ad-hoc note applied');
+    });
+});
+
+describe('queue job-update fold (per-job deltas, projector-parity)', () => {
+    test('upserts jobs, recomputes counts, and removes completed jobs', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // snapshot queue: job-1 pending (list-backed)
+        model.applyDelta({ kind: 'queue-updated', seq: 1, jobId: 'job-1', status: 'processing', attempts: 2 });
+        const after = model.state.queue;
+        expect(after.jobs).toEqual([{ jobId: 'job-1', status: 'processing', attempts: 2, lastError: null }]);
+        expect(after.counts).toEqual({ pending: 0, processing: 1, blocked: 0, dead: 0 });
+        model.applyDelta({ kind: 'queue-updated', seq: 2, jobId: 'job-1', status: 'completed', attempts: 2 });
+        const terminal = model.state.queue;
+        expect(terminal.jobs).toEqual([]);
+        expect(terminal.counts).toEqual({ pending: 0, processing: 0, blocked: 0, dead: 0 });
+        model.applyDelta({ kind: 'queue-updated', seq: 3, jobId: 'job-9', status: 'blocked', attempts: 1, lastError: '[REDACTED]' });
+        expect(model.state.queue.counts.blocked).toBe(1);
+        expect(model.state.queue.jobs[0]?.lastError).toBe('[REDACTED]');
     });
 });
 

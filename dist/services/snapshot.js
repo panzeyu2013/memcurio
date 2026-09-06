@@ -1,0 +1,169 @@
+/**
+ * Snapshot assembly for the memory workbench (design plugin-ui-v1 §5/§8.3).
+ *
+ * Builds the FULL-state read the client folds on connect/refresh/polling:
+ * current store + browsable store list, injection preview (static summary +
+ * read guide), persistence entries (rollout layer + manual markdown layer)
+ * joined with usage telemetry, queue counts/jobs, consolidation radar,
+ * recent write-path receipts, settings summary, realtime info.
+ *
+ * Pure node-side module: consumes the read services only, never writes, and
+ * never imports browser code. Field names mirror the client SnapshotPayload
+ * vocabulary (client/types.ts) as a structural superset/subset — the S0
+ * bridge adapter performs the final wire mapping.
+ */
+import { basename } from "node:path";
+import { list as memoryList, read as memoryRead } from "./memory.js";
+import { staticParts } from "./inject.js";
+import { listStores } from "./context.js";
+import { list as usageList } from "./usage.js";
+import { list as queueList, consolidation as consolidationMeta } from "./queue.js";
+import { list as auditList } from "./audit.js";
+/** Actions that mutate the durable memory (receipt candidates). */
+const WRITE_PATH_ACTIONS = [
+    "extract.",
+    "adhoc.",
+    "consolidate.",
+    "prune.",
+    "purge.",
+    "warn.",
+];
+function isWritePath(action) {
+    return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
+}
+/** Rollout files live under rollout_summaries/ in the memory workspace. */
+function rolloutEntry(path) {
+    const match = /^rollout_summaries\/([^/]+)\.md$/.exec(path);
+    return match?.[1];
+}
+/** Manual markdown layer (MEMORY.md / memory_summary.md). */
+function manualTitle(path) {
+    return path === "MEMORY.md" || path === "memory_summary.md" ? path : undefined;
+}
+async function entrySummary(root, rel) {
+    try {
+        const result = await memoryRead(root, { path: rel, maxLines: 6, maxTokens: 320 });
+        return result.content
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .slice(0, 4)
+            .join(" ")
+            .slice(0, 280);
+    }
+    catch {
+        return "";
+    }
+}
+/** Assemble the full-state read for one store. Never throws: individual face
+ *  failures degrade to empty fields so the workbench always has a frame. */
+export async function buildSnapshot(options) {
+    const { root, baseRoot, label, sessionId, scope = "workspace" } = options;
+    const at = new Date().toISOString();
+    const isolated = options.isolated ?? label === undefined; // no-cwd degradation
+    const workspaceKey = label ?? basename(root);
+    const [queue, consolidation, usageRows, auditRows, stores, listing, rolloutListing, parts] = await Promise.all([
+        queueList(root).catch(() => ({ counts: { pending: 0, processing: 0, blocked: 0, dead: 0 }, jobs: [] })),
+        consolidationMeta(root).catch(() => null),
+        usageList(root).catch(() => []),
+        auditList(root, { limit: 60 }).catch(() => []),
+        baseRoot ? listStores(baseRoot) : [],
+        memoryList(root).catch(() => null),
+        memoryList(root, { path: "rollout_summaries" }).catch(() => null),
+        (() => {
+            try {
+                return staticParts(root);
+            }
+            catch {
+                return undefined;
+            }
+        })(),
+    ]);
+    const usageIndex = new Map();
+    for (const row of usageRows) {
+        if (row.artifactFilename) {
+            usageIndex.set(row.artifactFilename, { count: row.usageCount, lastUsedAt: row.lastUsage ?? null });
+        }
+    }
+    const entries = [];
+    const seen = new Set();
+    const listingResult = listing;
+    const rolloutListingResult = rolloutListing;
+    // Sublisting paths are already fully relative ("rollout_summaries/<file>");
+    // the root listing only shows the directory itself.
+    const rolloutFiles = (rolloutListingResult?.entries ?? [])
+        .filter((item) => item.type === "file")
+        .map((item) => item.path);
+    const manualFiles = (listingResult?.entries ?? [])
+        .filter((item) => item.type === "file")
+        .map((item) => item.path);
+    for (const rel of [...rolloutFiles, ...manualFiles]) {
+        const rollout = rolloutEntry(rel);
+        const manual = manualTitle(rel);
+        if (!rollout && !manual)
+            continue;
+        if (seen.has(rel))
+            continue;
+        seen.add(rel);
+        if (rollout) {
+            const usage = usageIndex.get(`${rollout}.md`) ?? { count: 0, lastUsedAt: null };
+            entries.push({
+                id: rollout,
+                kind: "rollout",
+                title: rollout,
+                summary: await entrySummary(root, rel),
+                usage,
+            });
+        }
+        else {
+            const usage = usageIndex.get(basename(rel)) ?? { count: 0, lastUsedAt: null };
+            entries.push({
+                id: rel,
+                kind: "manual",
+                title: manual ?? rel,
+                summary: await entrySummary(root, rel),
+                usage,
+            });
+        }
+    }
+    entries.sort((a, b) => b.usage.count - a.usage.count || a.title.localeCompare(b.title));
+    const usage = { byKey: {} };
+    for (const [key, value] of usageIndex) {
+        usage.byKey[key] = value;
+    }
+    const store = { id: workspaceKey, label, workspaceKey, root, isolated, sessionId };
+    const storesOut = stores.length > 0 ? stores.map((storeEntry) => ({
+        id: storeEntry.key,
+        label: storeEntry.key,
+        workspaceKey: storeEntry.key,
+        root: storeEntry.path,
+        isolated: storeEntry.key === "no-cwd",
+    })) : [store];
+    return {
+        at,
+        store,
+        stores: storesOut,
+        injection: {
+            staticSummary: parts?.summary,
+            readGuide: parts?.instructions,
+        },
+        entries,
+        queue,
+        consolidation,
+        usage,
+        receipts: auditRows.map((row, index) => ({
+            seq: index + 1,
+            time: row.time,
+            action: row.action,
+            object: row.object,
+            detail: row.detail,
+            writePath: isWritePath(row.action),
+        })),
+        settings: {
+            dataRoot: baseRoot ?? root,
+            scopeBadge: scope,
+            workspaceKey,
+        },
+        realtime: { mode: "polling", degraded: false },
+    };
+}

@@ -184,7 +184,9 @@ export declare class MemcurioAdapter {
      *  (`citation_entries:` / `rollout_ids:`) are still accepted for
      *  backward compatibility with sessions in flight.
      */
-    memoryUsageFromCitations(text: string): Promise<void>;
+    /** Returns the rollout keys that were actually counted (validated against
+     *  stage rows by registerMemoryUsage semantics — unknown keys are dropped). */
+    memoryUsageFromCitations(text: string): Promise<string[]>;
     sessionIdle(sessionId: string): Promise<void>;
     sessionCompacted(sessionId: string, summary?: string): Promise<void>;
     sessionEnded(sessionId: string): Promise<{

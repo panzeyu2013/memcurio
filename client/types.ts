@@ -174,9 +174,11 @@ export interface QueueCounts {
     readonly dead: number;
 }
 
+/** Field names mirror the host queue service rows + projector deltas
+ *  (jobId/status), so the future transport needs no rename mapping. */
 export interface QueueJob {
-    readonly id: string;
-    readonly state: QueueJobState;
+    readonly jobId: string;
+    readonly status: QueueJobState;
     readonly attempts: number;
     readonly nextAttemptAt?: string | null;
     /** Redacted last error — server-side re-redaction before leaving the host. */
@@ -338,9 +340,16 @@ export interface UsageTickDelta extends MemoryDeltaBase {
 }
 
 /** Extraction job state migration → queue surface update (§8.2). */
+/** One extraction-job state change (§8.2 row 6). Per-job, mirroring the
+ *  host projector; the model folds it onto the snapshot's full queue state
+ *  (counts are recomputed from the jobs list). */
 export interface QueueUpdatedDelta extends MemoryDeltaBase {
     readonly kind: 'queue-updated';
-    readonly queue: QueueState;
+    readonly sessionId?: string | null;
+    readonly jobId: string;
+    readonly status: QueueJobState;
+    readonly attempts: number;
+    readonly lastError?: string | null;
 }
 
 /**

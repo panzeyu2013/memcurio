@@ -657,6 +657,8 @@ export class MemcurioAdapter {
      *  (`citation_entries:` / `rollout_ids:`) are still accepted for
      *  backward compatibility with sessions in flight.
      */
+    /** Returns the rollout keys that were actually counted (validated against
+     *  stage rows by registerMemoryUsage semantics — unknown keys are dropped). */
     async memoryUsageFromCitations(text) {
         const entries = [];
         for (const block of text.matchAll(/<memcurio-citation>([\s\S]*?)<\/memcurio-citation>/g)) {
@@ -714,6 +716,7 @@ export class MemcurioAdapter {
         if (entries.length) {
             await registerMemoryUsage(this.root, entries);
         }
+        return entries;
     }
     async sessionIdle(sessionId) {
         const s = this.sessions.get(sessionId);
