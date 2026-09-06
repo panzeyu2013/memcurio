@@ -1,11 +1,10 @@
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import Schema from "@deepseek-ai/schemastery";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
-import { workspaceStoreRoot } from "./scope.js";
+import { memcurioBaseRoot, workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 export const name = "memcurio";
 export const inject = ["tools", "llm", "sessions"];
@@ -382,7 +381,10 @@ function registerMemoryTools(ctx, sessions) {
 /** Register Memcurio lifecycle hooks and native DSH tools. */
 export function apply(ctx, config = {}) {
     const resolved = resolveConfig(config);
-    const baseRoot = resolved.root ?? process.env.MEMCURIO_ROOT ?? join(homedir(), ".memcurio");
+    // Default data root lives INSIDE the DSH home (see scope.ts dshHome):
+    // no separate top-level data location. Explicit plugin root and the
+    // MEMCURIO_ROOT env keep overriding for legacy/dev/test isolation.
+    const baseRoot = resolved.root ?? process.env.MEMCURIO_ROOT ?? memcurioBaseRoot();
     const sessions = new Map();
     const warn = (error) => ctx.logger.warn("memcurio: %s", String(error));
     const ensureSession = (session) => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
@@ -17,7 +17,7 @@ import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
-import { workspaceStoreRoot } from "../src/plugin/scope.js";
+import { dshHome, memcurioBaseRoot, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -48,6 +48,27 @@ async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
 async function disposeFibers(fibers: Fiber[]): Promise<void> {
   for (const fiber of fibers.reverse()) await fiber.dispose();
 }
+
+describe("memcurio data root", () => {
+  test("defaults to the DSH home namespace, honoring DSH_HOME over ~/.dsh", () => {
+    const prev = process.env.DSH_HOME;
+    try {
+      delete process.env.DSH_HOME;
+      expect(dshHome()).toBe(join(homedir(), ".dsh"));
+      expect(memcurioBaseRoot()).toBe(join(homedir(), ".dsh", "memcurio"));
+      process.env.DSH_HOME = "~/custom-dsh";
+      expect(dshHome()).toBe(join(homedir(), "custom-dsh"));
+      process.env.DSH_HOME = "  ";
+      expect(dshHome()).toBe(join(homedir(), ".dsh"));
+    } finally {
+      if (prev === undefined) {
+        delete process.env.DSH_HOME;
+      } else {
+        process.env.DSH_HOME = prev;
+      }
+    }
+  });
+});
 
 describe("workspaceStoreRoot", () => {
   test("isolates workspaces deterministically", () => {

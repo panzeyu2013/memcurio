@@ -44,7 +44,7 @@ bun pm pack            # → memcurio-dsh-plugin-0.1.0.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
 ```
 
-The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `~/.memcurio/dsh/<workspace-key>/` — one isolated store per absolute workspace path (`MEMCURIO_ROOT` overrides the base; `scope: global` opts into one shared store). Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys.
+The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys.
 
 ## Memory model
 
@@ -58,7 +58,8 @@ The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and
 
 | Variable | Description |
 |---|---|
-| `MEMCURIO_ROOT` | Data root base directory (default `~/.memcurio`); DSH stores live under `dsh/<workspace-key>` |
+| `DSH_HOME` | DeepSeek Harness home (default `~/.dsh`); memcurio stores live under `<home>/memcurio/dsh/<workspace-key>` |
+| `MEMCURIO_ROOT` | Legacy/override data base (defaults to the memcurio namespace under the DSH home) |
 | `MEMCURIO_LLM_PROVIDER=none` | Disables LLM consolidation (rule provider fallback); Phase-1 extraction inside DSH is unaffected — the plugin embeds the host channel directly |
 
 There are no other runtime knobs: model routes, budgets and isolation are DSH profile / per-store `config.json` settings.

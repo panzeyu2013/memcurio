@@ -41,7 +41,7 @@ bun pm pack              # → memcurio-dsh-plugin-0.1.0.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
 ```
 
-bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `~/.memcurio/dsh/<workspace 密钥>/`——每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT` 覆盖基目录；`scope: global` 显式共享）。store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定。
+bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`——附属 DSH 数据根（配置路径 → `$DSH_HOME` → `~/.dsh`），不单独创建顶层数据位置；每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT`/插件 `root` 仍可覆盖；`scope: global` 显式共享）。store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定。
 
 ## 记忆模型
 
@@ -55,7 +55,8 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `sco
 
 | 变量 | 说明 |
 |---|---|
-| `MEMCURIO_ROOT` | 数据根基目录（默认 `~/.memcurio`）；DSH store 在 `dsh/<workspace 密钥>/` 下 |
+| `DSH_HOME` | DeepSeek Harness home（默认 `~/.dsh`）；memcurio store 在 `<home>/memcurio/dsh/<workspace 密钥>/` 下 |
+| `MEMCURIO_ROOT` | 旧/覆盖数据基目录（默认 DSH home 下的 memcurio 命名空间） |
 | `MEMCURIO_LLM_PROVIDER=none` | 关闭 LLM 整合（回落 rule provider）；Phase-1 抽取不受影响——插件直接内嵌宿主通道 |
 
 其余旋钮都在 DSH profile / 每 store `config.json`。

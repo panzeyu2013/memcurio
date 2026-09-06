@@ -45,7 +45,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 ### 3.2 每 store 级配置（data root 的 config.json，首用时自动创建 `0600`）
 
-`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`。DSH store 位于 `~/.memcurio/dsh/<16 位 workspace 密钥>/`（`MEMCURIO_ROOT` 覆盖基目录）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
+`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`。memcurio 不单独创建顶层数据位置：store 附属 DSH 数据根下 `＜DSH home＞/memcurio/dsh/<16 位 workspace 密钥>/`（DSH home 源为配置路径 → `$DSH_HOME` → `~/.dsh`；`MEMCURIO_ROOT`/插件 `root` 为可选覆盖）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
 
 ## 4. 安装后验证
 
@@ -59,13 +59,13 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 |---|---|
 | 升级 | 拉取新代码 → `bun install --frozen-lockfile && bun run build && bun pm pack` → 用 `dsh` 的插件管理命令以新 tarball 替换旧版本 |
 | 回滚 | 重新打包旧提交（`git checkout <旧tag/commit>`）后同路径替换 |
-| 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`~/.memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
+| 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
 | 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.2-rc.1`，peer 范围 `^0.1.2-rc.1` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
 
 ## 6. 常见问题
 
 - **为什么没有 CLI / MCP / 独立服务了？** memcurio 自第十五轮收敛为 DSH 单模块：模型路由由宿主提供，运维操作（整合/重试/审计）将逐步内化为插件 host 服务与未来的可视化界面（见 [docs/todo.md](todo.md)）。
-- **数据在哪、怎么手动查看/编辑？** `~/.memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 `state/`。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
+- **数据在哪、怎么手动查看/编辑？** `＜DSH home＞/memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 `state/`。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
 - **记忆没有被注入？** 检查 store 是否为空、`injectContext` 是否开启、注入是否因内容未变化被去重（决策消息已持久化时不会重复注入）；DSH 会话无 `header.cwd` 时会告警并使用 no-cwd store。
 - **为什么模型说"没有权限/没有路由"？** 会话尚无 `request/header` 路由且插件未固定 `provider`/`model` 时，worker 调用不可用；durable job 会保持 pending 等待路由，不会烧重试预算。
 - **提示词注入/泄密怎么防？** 记忆写入面做注入扫描与脱敏；读出路径（注入与 `memory_read`）再脱敏 + 注入过滤；证据自污染（插件注入消息进入抽取）被排除；所有写操作有审计记录。

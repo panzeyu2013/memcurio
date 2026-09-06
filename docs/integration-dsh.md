@@ -22,12 +22,12 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 The default `scope: workspace` derives an opaque SHA-256 key from the absolute working directory and stores data under:
 
 ```text
-~/.memcurio/dsh/<16-hex-workspace-key>/
+<DSH home>/memcurio/dsh/<16-hex-workspace-key>/
 ```
 
 This prevents two DSH Web workspaces from sharing memories accidentally. Set `scope: global` only when deliberate cross-project memory is desired. `root` changes the base directory; `MEMCURIO_ROOT` remains the environment fallback.
 
-A session without a `header.cwd` (the field is optional in DSH) never falls back to the daemon process cwd — that would silently share memory across workspaces that happen to share a cwd. Instead it deterministically uses `~/.memcurio/dsh/no-cwd/` and logs a warning so the degraded isolation is visible.
+A session without a `header.cwd` (the field is optional in DSH) never falls back to the daemon process cwd — that would silently share memory across workspaces that happen to share a cwd. Instead it deterministically uses `<DSH home>/memcurio/dsh/no-cwd/` and logs a warning so the degraded isolation is visible.
 
 ## Tuning and store inspection
 

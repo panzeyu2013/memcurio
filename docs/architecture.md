@@ -30,7 +30,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 ## 2. 存储布局
 
 ```
-~/.memcurio/
+<DSH home>/memcurio/
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
 │   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
@@ -76,7 +76,7 @@ src/
 │   └── config.ts       config.json（budget + pipeline 配置）
 └── plugin/
     ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装）
-    └── scope.ts        workspace 作用域隔离（~/.memcurio/dsh/<workspace-key>/ 派生）
+    └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
 docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档

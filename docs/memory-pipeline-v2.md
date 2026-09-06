@@ -20,7 +20,7 @@
 ## 1. 存储布局
 
 ```
-~/.memcurio/
+<DSH home>/memcurio/
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
 │   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
@@ -505,7 +505,7 @@ export class MemcurioAdapter {
 
 ### src/plugin/index.ts + scope.ts（DSH Cordis 插件；原 opencode/plugin.ts 的收敛对应物）
 
-- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions]`；config 含 scope/injectContext/registerTools/provider/model/root。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `~/.memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 仍为 env 兜底（scope.ts）；
+- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions]`；config 含 scope/injectContext/registerTools/provider/model/root。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（scope.ts）；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 收割 `<memcurio-citation>` → memoryUsageFromCitations；
 - 注入：`agent/pre-step` 静态注入（摘要 + read path 指引，每会话一次）+ 相关命中动态注入 top-K；注入内容与 worker 消息不进证据（防回注 feed-back）；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；

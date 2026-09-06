@@ -1,6 +1,7 @@
-# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1）
+# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.1）
 
-> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1 修订：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例同版本）；GitHub 上游 dsh-v0.1.3-alpha.1 已打 tag 但未发布到 npm，**未纳入**；沿用「每次 DSH 升级重核 peer/client 契约」纪律。
 > 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.2-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
 
@@ -31,7 +32,8 @@
 
 - memcurio 已收敛为 DeepSeek Harness 专属记忆插件：会话生命周期 → 证据 → durable 队列 → Phase-1 抽取（rollout）→ Phase-2 整合（MEMORY.md）→ 注入回 pre-step；六个原生工具（`memory_search/list/read/remember/status/context`）；用量遥测（原生 read + `<memcurio-citation>`）驱动遗忘窗口。
 - 记忆是"人可读、可手编"的 Markdown 真源 + SQLite 索引/队列；一切写路径已有门禁（注入扫描、脱敏、workspace 围栏、审计、dry-run 纪律）。
-- 用户可见面目前只有：模型对话（工具卡）与文件系统（~/.memcurio/dsh/<key>/memory/*）。**没有图形化的查看/理解/意图表达界面**。
+- 用户可见面目前只有：模型对话（工具卡）与文件系统（`<DSH home>/memcurio/dsh/<key>/memory/*`）。**没有图形化的查看/理解/意图表达界面**。
+- 存储位置决策：**附属 DSH home，不单独创建顶层数据位置**——home 解析按 DSH 语义（配置路径 → `$DSH_HOME` → `~/.dsh`），memcurio 数据统一在 `<home>/memcurio/` 命名空间内（含 SQLite 文件；SQLite 不强制独立位置，只要求自己的文件与 schema/锁所有权——不与宿主库混放）。跨实例（多进程/多 profile 共享同一 home）：store 目录内并发由既有机制保证——SQLite WAL + withTransaction、抽取 job claim-token/租约、整合 workspace 文件锁与 generation manifest；记忆归属 = (DSH home, workspace)，与 profile 无关。`MEMCURIO_ROOT`/插件 `root` 保留为旧数据与开发/测试隔离的显式覆盖。
 
 ### 1.2 目标
 
@@ -115,12 +117,9 @@ DSH Web（浏览器）
 4. 推送 delta 与全量快照**同源同脱敏**。
 5. 客户端 bundle 是浏览器内核件：不经模型、不进 prompt、不进证据、不进抽取。
 
-### 3.3 双入口
+### 3.3 入口（标题栏单按钮）
 
-| 入口 | 位置 | 内容 |
-|---|---|---|
-| 设置页 | DSH settings 域（`settings.section` 槽位） | 激活与配置：scope（workspace/global）、injectContext、registerTools、injectBudgetTokens、provider/model 固定、工作台入口开关、数据根展示 |
-| 功能入口 | 会话标题栏按钮（当前 workspace） | 打开"记忆工作台"全宽视图；标题栏无第三方槽位时**回退**：设置页直达 + 会话内 `/memory` 斜杠命令（已接受回退预案） |
+主界面只放**一个标题栏按钮**（当前 workspace 的"记忆"入口）；点击唤起**记忆界面**，其余全部内容（注入面/持久面/状态面/时间线/设置与数据根展示/收藏筛选/跨工作区切换）都在该界面内部承载——DSH 主界面不加任何其他 memcurio chrome。标题栏无第三方槽位时**回退**：会话内 `/memory` 斜杠命令唤起同一记忆界面（设置入口仅保留在界面内部与 profile 配置）。
 
 ---
 
@@ -275,10 +274,10 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 - store 切换器列出所有 memcurio store（含 no-cwd）；只读浏览任意 store；
 - 写意图/收藏始终绑定**当前会话 workspace**（切换浏览不改变写语义）；切换时 UI 明示"当前写入目标仍是 <当前 workspace>"。
 
-### 7.7 双入口与回退
+### 7.7 入口与回退
 
-- 设置页 section：配置 + 工作台开关 + "打开工作台"；
-- 会话标题栏入口按钮；不可用 → 设置页 + `/memory` 斜杠（回退已接受）。
+- 标题栏**唯一**按钮唤起记忆界面；界面内部以 Tab 承载：总览 / 注入面 / 持久面 / 状态面 / 时间线 / 设置（含数据根展示与作用域徽标）；
+- 标题栏无第三方槽位 → `/memory` 斜杠命令唤起同一界面（回退已接受）。
 
 ---
 
@@ -380,12 +379,15 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 ## 13. 决策记录（2026-09-05 第十六轮）
 
 1. 承载：仅嵌入 DSH Web（`dsh.client` 客户端半侧）；不做独立页分发。
-2. 入口：设置页（配置/开关）+ 会话标题栏功能入口；标题栏不可用回退 设置页直达 + `/memory` 斜杠。
+2. 入口：标题栏**单按钮**唤起记忆界面；其余内容（三面/时间线/设置/收藏/跨工作区切换）全部写入该界面；标题栏不可用回退 `/memory` 斜杠。
 3. 实时性：**M0 即事件推送**（脱敏 delta；恢复先全量快照；轮询仅次级降级）。
 4. 写语义：**UI 永不静默写**；remember/forget/修正 = 对话草稿 → 模型工具流 → 工具卡 + 审计收据；删除仅对话流（M2 才有专家干跑，且留收据）；无 UI 直删。
 5. "重要"两层分离：⭐ = 纯 UI 视图收藏；语义记忆 = 对话流。
 6. 范围：M0 含注入模拟器 + 跨工作区只读切换 + 三面工作台；M1 意图启动器；M2 深化。
 7. 对照基准：Codex 缺口（#30299/#41711/#29033/#23658 等）逐条给答案（§2.2）。
+8. 存储：附属 DSH home（`<home>/memcurio/`，home = 配置 → $DSH_HOME → ~/.dsh），不建独立顶层位置；SQLite 在命名空间内；跨实例并发复用既有锁/租约机制。
+9. 语言政策：注入/指令/Prompt 一律英语（Phase-1/2 提示词已统一并含"按源会话语言书写、不翻译不改写"规则）；记忆内容语言跟随用户输入语言，原样保存与展示；UI 文案跟随 DSH 客户端语言。
+10. 参考版本：DSH npm `0.1.2-rc.1`（0.1.3-alpha.1 未上 npm 不采纳）。
 
 ---
 
