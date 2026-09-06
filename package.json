@@ -48,7 +48,7 @@
     "build": "bun run scripts/clean-dist.ts && tsc",
     "prepare": "node scripts/prepare.mjs",
     "test": "bun test",
-    "lint": "biome lint src tests scripts",
+    "lint": "biome lint src tests scripts client",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "pack:check": "bun run build && bun run scripts/pack-check.ts",
     "eval:lexical": "bun run scripts/eval-lexical.ts"
