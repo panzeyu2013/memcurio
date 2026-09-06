@@ -1,6 +1,6 @@
-# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.1）
+# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.2）
 
-> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1 修订：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名（conversation.session.header.actions）、seed 模块表、挂载平面风险。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
 > 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例同版本）；GitHub 上游 dsh-v0.1.3-alpha.1 已打 tag 但未发布到 npm，**未纳入**；沿用「每次 DSH 升级重核 peer/client 契约」纪律。
 > 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.2-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
@@ -119,7 +119,7 @@ DSH Web（浏览器）
 
 ### 3.3 入口（标题栏单按钮）
 
-主界面只放**一个标题栏按钮**（当前 workspace 的"记忆"入口）；点击唤起**记忆界面**，其余全部内容（注入面/持久面/状态面/时间线/设置与数据根展示/收藏筛选/跨工作区切换）都在该界面内部承载——DSH 主界面不加任何其他 memcurio chrome。标题栏无第三方槽位时**回退**：会话内 `/memory` 斜杠命令唤起同一记忆界面（设置入口仅保留在界面内部与 profile 配置）。
+主界面只放**一个标题栏按钮**（当前 workspace 的"记忆"入口）；点击唤起**记忆界面**，其余全部内容都在该界面内部承载——DSH 主界面不加任何其他 memcurio chrome。S0 预查（v1.2，rc.1 实证）：候选槽位为 **`conversation.session.header.actions`**（"标题相邻会话操作"，ui-conversation 声明）或全宽 `conversation.view` tab；`settings.section` 仅适合设置页。`/memory` 回退存疑：rc.1 无已验证的"客户端命令唤起 UI"机制（命令在 agent 侧执行）——回退路径待 S0 实测后修订（可能为 conversation.view tab 或设置页直达）。
 
 ---
 
@@ -274,18 +274,19 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 - store 切换器列出所有 memcurio store（含 no-cwd）；只读浏览任意 store；
 - 写意图/收藏始终绑定**当前会话 workspace**（切换浏览不改变写语义）；切换时 UI 明示"当前写入目标仍是 <当前 workspace>"。
 
-### 7.7 入口与回退
+### 7.7 入口与回退（v1.2 修订）
 
 - 标题栏**唯一**按钮唤起记忆界面；界面内部以 Tab 承载：总览 / 注入面 / 持久面 / 状态面 / 时间线 / 设置（含数据根展示与作用域徽标）；
-- 标题栏无第三方槽位 → `/memory` 斜杠命令唤起同一界面（回退已接受）。
+- 首选槽位 `conversation.session.header.actions`（rc.1 声明级实证；运行时治理待 S0 浏览器探针）；备选 `conversation.view` 全宽 tab；
+- 原 `/memory` 斜杠回退因"客户端唤起命令"机制未获实证而**降级为开放项**（S0 门禁），不再作为已接受的默认回退。
 
 ---
 
 ## 8. 实时性设计（M0 即推送）
 
-### 8.1 通道
+### 8.1 通道（v1.2 实证修订）
 
-host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱敏 delta 推送浏览器（客户端 `inject` api-remote/controller 模式的第三方等价物——S0 spike 验证；不可用则评估上游申请，轮询为次级路径）。
+host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱敏 delta 推送浏览器。**S0 预查结论：官方 `ctx.remote`（api-remote/controller 模式）对第三方关闭**——能力集为构建期固定值导入、转发事件为官方 allowlist，客户端无法运行时发现宿主服务。候选通道（按优先级，S0 门禁）：① 自定义前缀路由 + SSE（`ctx.webServer.register` 对任意插件开放，默认 loopback、无自带鉴权——需自持会话绑定）；② `ctx.sessionProjections`（开放注册表，但 fold 输入仅限已提交的 session-log 事件，队列等非日志 delta 未验证）；③ 轮询降级。另发现挂载平面风险：web profile 中 agent 平面运行在 agent preset 之后，根平面行（inject tools/llm/sessions）能否在 preset 平面解析需 S0 专项验证（P3 阶段）。
 
 ### 8.2 delta 类型（初版清单）
 
@@ -322,7 +323,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 ## 10. 非功能要求
 
 - **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定（S0 确定）。
-- **打包**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle、`dsh.client.external` 按需）；`files` 增加客户端产物；构建脚本扩展 client bundle 步骤；dist 提交制纪律不变。
+- **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
 - **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。
 - **i18n**：UI 文案跟随 DSH 客户端语言约定；记忆内容原样展示（不翻译）。
@@ -366,8 +367,8 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 
 | # | 开放项/风险 | 影响 | 处置 |
 |---|---|---|---|
-| 1 | 会话标题栏第三方槽位是否存在 | 双入口之一 | S0 首查；回退预案已接受 |
-| 2 | host↔浏览器推送/remote 第三方注册路径 | 推送架构 | S0 验证；不可用 → 评估上游申请（需许可）或轮询次级 |
+| 1 | 标题栏第三方槽位运行时是否可填 | 单按钮入口 | S0 预查：`conversation.session.header.actions`/`conversation.view` 声明级存在；运行时治理待浏览器探针。回退开放项（见 §7.7）|
+| 2 | host↔浏览器推送/remote 第三方注册路径 | 推送架构 | **v1.2 实证：rc.1 `ctx.remote` 对第三方关闭**；通道候选 ①自定义 SSE 路由（ctx.webServer.register）② sessionProjections ③ 轮询——S0 门禁定案 |
 | 3 | 时间线"跳到会话历史位置"定位能力 | 回链体验 | S0 顺带验证；不可用 → 文本引用 |
 | 4 | 客户端 bundle 构建与 HMR 工具链 | 开发效率 | S0 建立；`lib/client.js` 约定 |
 | 5 | 上游 rc/alpha 升级对 client module 契约影响 | 兼容 | 沿用重核纪律 |
