@@ -4,7 +4,7 @@
  * MemoryClientApi. No DOM, no React, no @deepseek-ai imports — mirrors the
  * repo test style (bun:test + relative ESM imports with .js extensions).
  *
- * Scope: initial state, select/setStore/refresh, applyDelta semantics
+ * Scope: initial state, select/setStore/browse/refresh, applyDelta semantics
  * (fold per kind, origin-seq dedupe, local monotonic seq, timeline cap 500),
  * simulate() text hand-off, refresh() error recording, and the
  * registerFactory seam. A type-level smoke lives in the annotated fixtures
@@ -22,6 +22,7 @@ import {
 } from '../client/index.js';
 import type {
     AuditQuery,
+    BrowseSnapshot,
     IntentKind,
     IntentRef,
     MemoryClientApi,
@@ -161,11 +162,45 @@ function makeSimulateResult(query: string): SimulateResult {
     };
 }
 
+/**
+ * Canned per-store payload (api.browseSnapshot) — store id passed through,
+ * distinct entries per store (e.g. "beta entry") so folds are observable.
+ */
+function makeBrowseSnapshot(storeId: string): BrowseSnapshot {
+    const store = makeSnapshotPayload().stores.find((candidate) => candidate.id === storeId);
+    if (store === undefined) throw new RangeError(`fixture: unknown store "${storeId}"`);
+    const shortId = storeId.replace('store-', '');
+    const rolloutKey = `${storeId}-rollout-1`;
+    return {
+        at: AT,
+        store: { id: store.id, label: store.label, root: store.root, isolated: store.isolated },
+        entries: [
+            {
+                id: `${storeId}-entry-1`,
+                kind: 'rollout',
+                title: `${shortId} entry`,
+                summary: `${shortId} summary`,
+                source: { sessionId: 'session-9', rolloutKey, workspaceKey: store.workspaceKey },
+                usage: { count: 2, lastUsedAt: AT },
+                status: 'selected',
+                scope: 'current-workspace',
+            },
+        ],
+        usage: {
+            byKey: { [rolloutKey]: { count: 2, lastUsedAt: AT } },
+            recent: [{ rolloutKey, count: 2, at: AT, via: 'tool-result' }],
+        },
+        consolidation: { lastAt: AT, lastOk: true, candidateRolloutIds: [rolloutKey] },
+    };
+}
+
 /** Inline fake implementing MemoryClientApi with canned data + call counters. */
 class FakeApi implements MemoryClientApi {
     snapshotCalls = 0;
     readonly simulateCalls: string[] = [];
     failNextSnapshot = false;
+    browseSnapshotCalls = 0;
+    failNextBrowseSnapshot = false;
 
     async snapshot(): Promise<SnapshotPayload> {
         this.snapshotCalls += 1;
@@ -175,6 +210,17 @@ class FakeApi implements MemoryClientApi {
         }
         return makeSnapshotPayload();
     }
+
+    /** Optional per-store read (S0/host decision): delete to emulate a bridge
+     *  without per-store reads (browsing degrades to clear-only, §7.6). */
+    browseSnapshot?: (storeId: string) => Promise<BrowseSnapshot> = async (storeId: string) => {
+        this.browseSnapshotCalls += 1;
+        if (this.failNextBrowseSnapshot) {
+            this.failNextBrowseSnapshot = false;
+            throw new Error(`browseSnapshot failed for ${storeId} (simulated)`);
+        }
+        return makeBrowseSnapshot(storeId);
+    };
 
     async search(query: string, _options?: { topK?: number; storeId?: string }) {
         return { query, hits: [], blockedCount: 0, truncated: false };
@@ -353,6 +399,94 @@ describe('setStore (read-only cross-workspace browse, design §7.6)', () => {
         await model.refresh();
         expect(() => model.setStore('no-such-store')).toThrow(RangeError);
         expect(() => model.setStore('no-such-store')).toThrow(/unknown store/);
+    });
+});
+
+describe('browse (per-store refill, design §7.6)', () => {
+    test('folds the per-store snapshot into persistence/usage/consolidation while the current store stays the write target', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // current store alpha
+        const expected = makeBrowseSnapshot('store-beta');
+        await model.browse('store-beta');
+        const state = model.state;
+        expect(state.browsingStoreId).toBe('store-beta');
+        expect(state.currentStoreId).toBe('store-alpha'); // write target / injection source unchanged
+        expect(state.currentStore?.id).toBe('store-alpha');
+        expect(state.persistence).toEqual({ entries: expected.entries, stale: false, loadedAt: expected.at });
+        expect(state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
+        expect(state.usage).toEqual(expected.usage);
+        expect(state.usage.byKey['store-beta-rollout-1']).toEqual({ count: 2, lastUsedAt: AT });
+        expect(state.consolidation).toEqual(expected.consolidation);
+        expect(state.browse).toEqual(expected); // last per-store payload recorded
+        expect(state.browseError).toBeNull();
+        expect(api.browseSnapshotCalls).toBe(1);
+    });
+
+    test('refresh() while browsing another store keeps the per-store caches and payload (browse is the refill path)', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        await model.browse('store-beta');
+        expect(model.state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
+        await model.refresh(); // snapshot still names store-alpha
+        const state = model.state;
+        expect(state.currentStoreId).toBe('store-alpha');
+        expect(state.browsingStoreId).toBe('store-beta');
+        // the alpha snapshot rows must NOT overwrite the beta browsing cache:
+        expect(state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
+        expect(state.persistence.loadedAt).toBe(AT);
+        expect(state.usage.byKey['store-beta-rollout-1']?.count).toBe(2);
+        expect(state.consolidation?.candidateRolloutIds).toEqual(['store-beta-rollout-1']);
+        expect(state.browse?.store.id).toBe('store-beta');
+        expect(state.browse?.at).toBe(AT);
+        expect(state.browseError).toBeNull();
+    });
+
+    test('degrades to clear-only when the bridge has no per-store read', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        expect(api.browseSnapshot).toBeDefined();
+        delete api.browseSnapshot; // bridge without per-store reads (S0/host decision)
+        await expect(model.browse('store-beta')).resolves.toBeUndefined(); // never throws
+        const state = model.state;
+        expect(state.browsingStoreId).toBe('store-beta');
+        expect(state.currentStoreId).toBe('store-alpha');
+        expect(state.persistence).toEqual({ entries: [], stale: false, loadedAt: null });
+        expect(state.usage.byKey).toEqual({});
+        expect(state.consolidation).toBeNull();
+        expect(state.browse).toBeNull();
+        expect(state.browseError).toBeNull();
+        expect(api.browseSnapshotCalls).toBe(0); // degraded path never fetches
+    });
+
+    test('rejects unknown store ids with RangeError before any bridge read', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        await expect(model.browse('no-such-store')).rejects.toThrow(RangeError);
+        await expect(model.browse('no-such-store')).rejects.toThrow(/unknown store/);
+        expect(api.browseSnapshotCalls).toBe(0);
+        expect(model.state.browseError).toBeNull();
+        expect(model.state.browsingStoreId).toBeNull();
+    });
+
+    test('records a rejecting browseSnapshot in state.browseError and never throws', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        api.failNextBrowseSnapshot = true;
+        await expect(model.browse('store-beta')).resolves.toBeUndefined();
+        expect(model.state.browseError).toBe('browseSnapshot failed for store-beta (simulated)');
+        expect(model.state.browsingStoreId).toBe('store-beta'); // context switched anyway
+        expect(model.state.browse).toBeNull(); // no payload landed
+        expect(model.state.persistence).toEqual({ entries: [], stale: false, loadedAt: null });
+        // a later success clears the error and refills the browsing caches
+        await model.browse('store-beta');
+        expect(model.state.browseError).toBeNull();
+        expect(model.state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
+        expect(model.state.browse?.store.id).toBe('store-beta');
     });
 });
 

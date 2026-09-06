@@ -21,7 +21,7 @@ bun pm pack                     # 生成 memcurio-dsh-plugin-0.1.0.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.1.0.tgz
 ```
 
-bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册六个原生记忆工具）。
+bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册六个原生记忆工具）；`hostBridge`（默认 false）控制记忆工作台 host 桥（事件打标与快照，传输层 S0 后启用）。
 
 ## 3. 配置
 
@@ -36,6 +36,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         scope: workspace          # workspace | global
         injectContext: true
         registerTools: true
+        # hostBridge: true          # 记忆工作台 host 桥（事件打标/快照，默认 false，S0 接传输后开）
         # injectBudgetTokens: 1500  # 注入预算下限 128
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
         # 可选固定 worker 路由；省略两者则跟随会话 request/header 路由：
@@ -65,7 +66,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 ## 6. 常见问题
 
 - **为什么没有 CLI / MCP / 独立服务了？** memcurio 自第十五轮收敛为 DSH 单模块：模型路由由宿主提供，运维操作（整合/重试/审计）将逐步内化为插件 host 服务与未来的可视化界面（见 [docs/todo.md](todo.md)）。
-- **数据在哪、怎么手动查看/编辑？** `＜DSH home＞/memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 `state/`。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
+- **数据在哪、怎么手动查看/编辑？** `＜DSH home＞/memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 store 根 `＜DSH home＞/memcurio/dsh/<key>/index.sqlite`（`state/` 只放事务日志与锁）。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
 - **记忆没有被注入？** 检查 store 是否为空、`injectContext` 是否开启、注入是否因内容未变化被去重（决策消息已持久化时不会重复注入）；DSH 会话无 `header.cwd` 时会告警并使用 no-cwd store。
 - **为什么模型说"没有权限/没有路由"？** 会话尚无 `request/header` 路由且插件未固定 `provider`/`model` 时，worker 调用不可用；durable job 会保持 pending 等待路由，不会烧重试预算。
 - **提示词注入/泄密怎么防？** 记忆写入面做注入扫描与脱敏；读出路径（注入与 `memory_read`）再脱敏 + 注入过滤；证据自污染（插件注入消息进入抽取）被排除；所有写操作有审计记录。

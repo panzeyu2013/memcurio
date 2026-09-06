@@ -17,6 +17,7 @@
 
 import type {
     AuditReceipt,
+    BrowseSnapshot,
     ConsolidationState,
     InjectionState,
     MemoryClientApi,
@@ -75,6 +76,16 @@ export interface WorkbenchState {
      * bound to the current session workspace regardless.
      */
     readonly browsingStoreId: string | null;
+    /**
+     * Last per-store payload landed by browse() (design §7.6), advisory for
+     * UI correlation with the browsing caches (entries/usage/consolidation
+     * remain the render source of truth). Non-null only after a successful
+     * api.browseSnapshot fold; it survives refresh() while that store is
+     * browsed and is cleared once a current-store snapshot folds in.
+     */
+    readonly browse?: BrowseSnapshot | null;
+    /** Last browse() failure message (degradation banner), null when clean. */
+    readonly browseError?: string | null;
     /** Injection preview (static + latest dynamic + budget), §7.2. */
     readonly injection: InjectionState | null;
     readonly persistence: PersistenceCache;
@@ -117,6 +128,18 @@ export interface WorkbenchModel {
      */
     setStore(storeId: string): void;
     /**
+     * Per-store read-only browse (design §7.6): validates storeId against
+     * state.stores like setStore (RangeError on unknown). When the host
+     * bridge provides api.browseSnapshot and storeId names another store,
+     * switches the browsing context (clears the previous store's caches),
+     * folds the per-store payload into persistence/usage/consolidation and
+     * records it in state.browse. Otherwise behaves exactly like setStore —
+     * clear-only, the degraded path when per-store reads do not exist
+     * ("cleared caches until you switch back"). Rejections of
+     * api.browseSnapshot are recorded in state.browseError, never thrown.
+     */
+    browse(storeId: string): Promise<void>;
+    /**
      * Injection simulator (design §7.2/§5.1 inject.simulate). Runs the query
      * on the bridge and returns the plain-text rendering of the result —
      * a DOM-free hand-off shape; S0 decides whether the real workbench wants
@@ -144,6 +167,8 @@ function initialState(): WorkbenchState {
         currentStore: null,
         currentStoreId: null,
         browsingStoreId: null,
+        browse: null,
+        browseError: null,
         injection: null,
         persistence: { entries: [], stale: false, loadedAt: null },
         queue: EMPTY_QUEUE,
@@ -165,8 +190,10 @@ function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): Workbenc
         base.browsingStoreId !== null && snapshot.stores.some((candidate) => candidate.id === base.browsingStoreId);
     // §7.6 read-only browsing: while a non-current store is being browsed,
     // the (current-store) snapshot must NOT overwrite the browsing caches.
-    // The S0 bridge only snapshots the current store; per-store fetches and
-    // storeId-tagged deltas are an open S0 decision (client/README Q2/Q3).
+    // browse() is the refill path for the browsed store — it clears and then
+    // folds api.browseSnapshot when the host bridge provides per-store reads
+    // (S0/host-bridge decision point; absent, browsing stays cleared until
+    // the user switches back — client/README Q2/Q3).
     const browsingAnother =
         base.browsingStoreId !== null && base.browsingStoreId !== snapshot.store.id;
     return {
@@ -183,6 +210,10 @@ function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): Workbenc
                   consolidation: snapshot.consolidation,
                   usage: snapshot.usage,
                   settings: snapshot.settings,
+                  // Folding the current-store snapshot replaces any per-store
+                  // browse payload/error of a store we are no longer browsing.
+                  browse: null,
+                  browseError: null,
               }),
         queue: snapshot.queue,
         receipts: snapshot.receipts,
@@ -309,6 +340,20 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
         }
     };
 
+    /** setStore's behavior, shared verbatim by browse()'s degraded path. */
+    const switchBrowsingStore = (storeId: string): void => {
+        if (state.browsingStoreId === storeId) return;
+        const store = state.stores.find((candidate) => candidate.id === storeId);
+        if (store === undefined) throw new RangeError(`setStore: unknown store "${storeId}"`);
+        state = {
+            ...state,
+            browsingStoreId: storeId,
+            persistence: { entries: [], stale: false, loadedAt: null },
+            usage: { byKey: {}, recent: [] },
+            consolidation: null,
+        };
+    };
+
     const applyDelta = (delta: MemoryDelta): ApplyResult => {
         if (delta.seq !== undefined) {
             if (delta.seq > originHighWater) originHighWater = delta.seq;
@@ -396,16 +441,45 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
             state = { ...state, view };
         },
         setStore(storeId: string): void {
-            if (state.browsingStoreId === storeId) return;
+            switchBrowsingStore(storeId);
+        },
+        async browse(storeId: string): Promise<void> {
             const store = state.stores.find((candidate) => candidate.id === storeId);
-            if (store === undefined) throw new RangeError(`setStore: unknown store "${storeId}"`);
-            state = {
-                ...state,
-                browsingStoreId: storeId,
-                persistence: { entries: [], stale: false, loadedAt: null },
-                usage: { byKey: {}, recent: [] },
-                consolidation: null,
-            };
+            if (store === undefined) throw new RangeError(`browse: unknown store "${storeId}"`);
+            // Degraded path (design §7.6): no per-store bridge read, or the
+            // current store requested — behave exactly like setStore.
+            if (api.browseSnapshot === undefined || storeId === state.currentStoreId) {
+                switchBrowsingStore(storeId);
+                return;
+            }
+            // Switch the browsing context synchronously (like setStore): clear
+            // the previous store's caches before the fetch lands so stale rows
+            // are never shown as the new store's. A same-store re-browse skips
+            // this — the current payload stays on screen until replaced.
+            if (state.browsingStoreId !== storeId) {
+                state = {
+                    ...state,
+                    browsingStoreId: storeId,
+                    persistence: { entries: [], stale: false, loadedAt: null },
+                    usage: { byKey: {}, recent: [] },
+                    consolidation: null,
+                    browse: null,
+                    browseError: null,
+                };
+            }
+            try {
+                const payload = await api.browseSnapshot(storeId);
+                state = {
+                    ...state,
+                    persistence: { entries: payload.entries, stale: false, loadedAt: payload.at },
+                    usage: payload.usage,
+                    consolidation: payload.consolidation,
+                    browse: payload,
+                    browseError: null,
+                };
+            } catch (error) {
+                state = { ...state, browseError: error instanceof Error ? error.message : String(error) };
+            }
         },
         async simulate(query: string): Promise<string> {
             const trimmed = query.trim();

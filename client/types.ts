@@ -303,6 +303,29 @@ export interface SnapshotPayload {
     readonly realtime: RealtimeInfo;
 }
 
+/**
+ * One store's read-only per-store payload (§7.6 cross-workspace browse):
+ * the shape {@link MemoryClientApi.browseSnapshot} returns for a store that
+ * is NOT the current session's. Like the snapshot's persistence/usage/
+ * consolidation faces, but store-scoped — injection/queue/receipts/settings
+ * and the write target stay bound to the current session store, so those
+ * faces are deliberately absent here.
+ */
+export interface BrowseSnapshot {
+    readonly at: string;
+    /** Minimal identity of the browsed store (subset of StoreBrief). */
+    readonly store: {
+        readonly id: string;
+        readonly label: string;
+        readonly root: string;
+        readonly isolated: boolean;
+    };
+    /** Persistence-surface entry cache seed (evidence layer list). */
+    readonly entries: readonly MemoryEntry[];
+    readonly usage: UsageReport;
+    readonly consolidation: ConsolidationState | null;
+}
+
 export interface RealtimeInfo {
     readonly mode: RealtimeMode;
     /** UI shows the "realtime degraded" badge when true (§8.3). */
@@ -451,6 +474,13 @@ export interface MemoryClientApi {
      * faces; §8.3 snapshot semantics). Model fold target of SnapshotPayload.
      */
     snapshot(): Promise<SnapshotPayload>;
+    /**
+     * Per-store read for the §7.6 read-only browse path. S0/host-bridge
+     * decision point — provided by the host bridge when per-store reads
+     * exist; absent means browsing degrades to "cleared caches until you
+     * switch back" (design §7.6).
+     */
+    browseSnapshot?(storeId: string): Promise<BrowseSnapshot>;
     /** memory.search(query, topK): search hits + blocked count. */
     search(query: string, options?: { topK?: number; storeId?: string }): Promise<SearchResult>;
     /** store.list(): browsable workspace store list (read-only). */

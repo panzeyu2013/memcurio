@@ -1,6 +1,6 @@
-# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.2）
+# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.4）
 
-> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义、预检与快照字数说明见 §5.2/§8.2/§8.4。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义（实现面详见 §8.4）。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
 > 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例同版本）；GitHub 上游 dsh-v0.1.3-alpha.1 已打 tag 但未发布到 npm，**未纳入**；沿用「每次 DSH 升级重核 peer/client 契约」纪律。
 > 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.2-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
@@ -11,7 +11,7 @@
 
 1. 背景与目标
 2. 调研与对照（Codex 参考）
-3. 总体架构（三层一缝 + 双入口 + 推送）
+3. 总体架构（三层一缝 + 标题栏单按钮入口 + 推送）
 4. 与 agent loop 的相位对照（设计原点）
 5. host 服务层设计
 6. 写语义：对话即写面（铁律）
@@ -84,7 +84,7 @@
 
 ---
 
-## 3. 总体架构（三层一缝 + 双入口 + 推送）
+## 3. 总体架构（三层一缝 + 标题栏单按钮入口 + 推送）
 
 ### 3.1 分层
 
@@ -130,7 +130,7 @@ DSH Web（浏览器）
 | # | Loop 相位 | memcurio 介入点（已存在） | UI 展示/能力 |
 |---|---|---|---|
 | ① | pre-step 输入侧 | `agent/pre-step`：静态注入（摘要+read 指引）+ 动态 top-8 | **注入面**：当前注入内容实时预览、预算条；**注入模拟器**（任意 query 试跑） |
-| ② | 步内工具侧 | `tools/result` 遥测（read/grep/glob/bash/pwsh 命中记忆文件） | 命中流：哪个工具、哪个 rollout、usage_count 即时跳动 |
+| ② | 步内工具侧 | `tools/result` 遥测（read/grep/glob/bash/pwsh 命中记忆文件） | 命中流：哪个工具、哪个文件/rollout、usage +1（客户端折叠展示） |
 | ③ | 输出引用侧 | turn/end 收获 `<memcurio-citation>` | "本次回答基于哪些记忆"回链（时间线节点） |
 | ④ | 证据采集侧 | session/event → 证据窗口；plugin 注入消息过滤 | 证据窗口视图（含自污染防护计数）；compaction shadowedSeqs 剪除标注 |
 | ⑤ | worker/队列侧 | 事件 lane + worker lane；durable queue；retire 预算 | **状态面**：队列 pending/blocked/dead/attempts、worker 路由（request/header 跟随）、retire 进度 |
@@ -154,15 +154,15 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 | 读 | `memory.status` | stage1 计数/notes/队列/审计数 | `api.ts` integrationStatus |
 | 注入 | `inject.static()` | → 静态上下文全文 + 预算内裁剪后形态（预览） | `engine.buildStaticContext` |
 | 注入 | `inject.simulate(query)` | **注入模拟器**：query → top-8 命中+来源+blocked+脱敏预览+预算占用 | `engine.buildDynamicContext` / `searchMemory` 内部组装 |
-| 用量 | `usage.list/byKey` | usage_count/last_usage/最近命中时间线 | db stage 行 + engine 内存态（tools/result 投影） |
-| 状态 | `queue.list()` | 抽取 job：pending/processing/blocked/dead + attempts + lastError（脱敏） | db `extractionList` |
+| 用量 | `usage.list/byKey` | usage_count/last_usage（db stage 行；预览路径不计数） | `src/services/usage.ts`（最近命中时间线为客户端对 usage-tick 增量的折叠，宿主无内存态） |
+| 状态 | `queue.list()` | 抽取 job：pending/processing/blocked/completed（终态，不入列表）/dead + attempts + lastError（脱敏） | db `extractionList` |
 | 状态 | `consolidation.state()` | 自动整合 last/failed/冷却剩余（meta 键） | `metaGet("consolidation_auto_last"/"_failed")` |
 | 状态 | `evidence.session(sessionId)` | 当前会话证据窗口（消息部分/工具/摘要，脱敏） | `engine.memoryEvidenceSnapshot` + 事件投影 |
-| 审计 | `audit.list(limit, filter)` | 审计记录（写路径收据） | db audit 表（查询文本脱敏） |
-| 意图 | `intent.draft(kind, ref)` | **不落库**：合成预填用户消息（remember/update/forget 措辞 + 引用） | 纯服务层文本组装 |
+| 审计 | `audit.list(limit, filter)` | 审计记录（近尾行 + writePath 标记；写路径才作收据） | db audit 表（查询文本脱敏） |
+| 意图 | `intent.draft(kind, ref)` | **不落库**：合成预填用户消息（remember/update/remove 措辞 + 引用） | 纯服务层文本组装 |
 | 写 | （无直接写服务） | UI 永不直写；写 = 对话草稿 → 模型工具 | `memory_remember` 等既有工具 |
 
-> 注：`forget`/`purge` 当前没有模型工具（按设计遗忘是 agent-only 语义）——M1 意图启动器先覆盖 remember/update 措辞；forget/purge 措辞草案把"删除意图"翻译成给模型的修正/清理指令，或（M2）专家干跑路径。详见 §6.2。
+> 注：`forget`/`purge` 当前没有模型工具（按设计遗忘是 agent-only 语义）——M1 意图启动器先覆盖 remember/update/remove 措辞；forget/purge 把"删除意图"翻译成给模型的修正/清理指令，或（M2）专家干跑路径。详见 §6.2。
 
 ### 5.2 脱敏与审计规则（服务层强制）
 
@@ -173,7 +173,7 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 ### 5.3 状态机数据（供 UI 呈现的"真实来源"）
 
 - stage1 行状态：pending / selected / deleted（+ artifact filename）；
-- 抽取 job：pending / processing / blocked / dead（attempts、next_attempt_at、last_error 脱敏）；
+- 抽取 job：pending / processing / blocked / completed（终态，不入列表）/ dead（attempts、next_attempt_at、last_error 脱敏）；
 - 整合：meta 键 `consolidation_auto_last` / `consolidation_auto_failed`（冷却 6h / 退避 1h 语义来自 engine）；
 - 会话：sessions 表（host/workdir/started/ended/summary）+ 抽取 job 关联；
 - 证据/剪除：adapter 内存态 + compaction 事件投影（shadowedSeqs）。
@@ -252,20 +252,20 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 
 - 双层结构（对齐 Codex 心智）：**手册层**（MEMORY.md Task Groups，可展开到块）与**证据层**（rollout 卡片）。
 - 检索框（同 `memory.search` 语义）+ 筛选（按 usage、时间、收藏、来源会话）。
-- rollout 卡片字段：标题/摘要、来源（会话 id+日期+cwd）、`rollout_summaries` 文件、usage_count/last_usage、状态（pending/selected/consolidated/deleted 推导）、**动作**（记住这条/修正/移除/⭐ 收藏/打开文件位置）。
+- rollout 卡片字段：标题/摘要、来源（会话 id+日期+cwd）、`rollout_summaries` 文件、count/lastUsedAt（usage 折叠后视图，映射自 usage_count/last_usage）、状态（pending/selected/consolidated/deleted 推导）、**动作**（记住这条/修正/移除/⭐ 收藏/打开文件位置）。
 - 新鲜度视图："最近更新（memory days）"风格索引。
 - 空态与"为什么没有记忆"引导（含注入/管线未运行的解释入口）。
 
 ### 7.4 状态面
 
-- **队列**：pending/processing/blocked/dead 计数卡 + 明细（attempts、next_attempt、脱敏 lastError、provider 名）；blocked 原因引导（如"无模型路由"）。
+- **队列**：pending/processing/blocked/dead 计数卡 + 明细（attempts、next_attempt、脱敏 lastError、provider 名；completed 为终态不入列表，折叠后移除）；blocked 原因引导（如"无模型路由"）。
 - **整合**：上次自动整合时间/结果、冷却/退避倒计时、"将要自动整合的候选"（usage/maxInputs 推导）——**整合雷达**。
 - **审计流**：最近写路径收据（时间/动作/对象/结果），支持过滤；新收据实时插入。
 - **隔离/健康**：store 根路径、no-cwd 告警、config 关键值摘要（只读展示）。
 
 ### 7.5 时间线与回链
 
-- 节点类型：注入（静态/动态）、原生读取（tool+file）、引用（citation 块）、证据入窗、compaction 剪除（shadowedSeqs）、rollout 落库、整合提交、note 应用。
+- 节点类型（客户端 TimelineEventKind，9 类）：inject / usage（原生读取命中与引用计数折叠） / queue / memory（rollout 落库/整合提交/note 应用，摘要区分） / receipt / snapshot / evidence / citation / prune。
 - 每个"记忆变更"节点可回链到来源会话/消息（DSH 客户端定位能力；不可用时显示会话/消息文本引用）。
 - 时间线同时回答 Codex 被诟病的两个问题：记忆何时被用过（②③），记忆何时/为何被改或被剪（④⑥⑦）。
 
@@ -293,13 +293,13 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 | 事件（源） | delta | 触发面 |
 |---|---|---|
 | `agent/pre-step` 注入成功 | inject.static/dynamic 内容+预算 | 注入面 |
-| `tools/result` 命中记忆文件 | usage 跳动（rollout key + 计数） | 持久面/时间线 |
+| `tools/result` 命中记忆文件 | usage-tick（**+1 增量**；读命中键=相对路径，引用键=rollout key） | 持久面/时间线 |
 | `turn/end` 引用收获 | citation 节点 | 时间线 |
 | `session/event`（消息） | 证据窗口增量 | 状态面/时间线 |
 | compaction summary/end/prune | 剪除标注 | 时间线/证据 |
-| job 状态迁移（pending→…/blocked/dead） | 队列明细 | 状态面 |
-| rollout 落库/整合提交（含 meta 变化） | 列表刷新 + 整合雷达 | 持久面/状态面 |
-| 审计写 | 收据插入 | 状态面 |
+| job 状态迁移（pending→processing/blocked/dead/完成消失） | **单 job** queue-updated（jobId/status/attempts/lastError；消失即 completed 终态），counts 客户端自 jobs 重算 | 状态面 |
+| rollout 落库/整合提交 | memory-list-updated（updateKind rollout/consolidation/note，无 entries → 客户端标 stale 下轮快照重载） | 持久面 |
+| 写路径审计行 | receipt（time/action/object/detail）；adapter./integration. 生命周期行不出 delta | 状态面 |
 
 ### 8.3 一致性
 
@@ -313,9 +313,9 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 已落地的 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`，`config.hostBridge` 门控，默认关）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
-- **事件打标点**：pre-step 注入（static/dynamic/budget，投影器判重）、非插件 user/assistant 证据（沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
-- **refresh diff**：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出网；extract.staged/adhoc.note|adopt/consolidate.auto → memory-list（rollout/note/consolidation）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
-- **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 收据/设置/realtime）；字段名与客户端词汇对齐，传输层最终映射留给 S0；
+- **事件打标点**：pre-step 注入（static/dynamic/budget；投影器仅置 duplicate 标记，重复注入仍出流——实际去重在插件 pre-step 的 lastInjectedContext）、非插件 user/assistant 证据（沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
+- **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出 delta；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
+- **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置/realtime）；字段名与客户端词汇对齐；delta 过滤与快照标记映射留给传输适配器（S0）；
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
 
 ## 9. 安全与隐私边界
@@ -353,7 +353,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 ### M0 — 只读工作台（推送版）
 
-内容：双入口；三面（注入面含**模拟器**、持久面、状态面）；事件推送接入；跨工作区只读切换；空态/引导。
+内容：标题栏单按钮入口唤起记忆界面（全部内容在界面内）；三面（注入面含**模拟器**、持久面、状态面）；事件推送接入；跨工作区只读切换；空态/引导。
 验收：真实 DSH 冒烟通过；双 agent review；typecheck/lint/全量测试（含新服务层单测）全绿；设计-实现偏差回归本文。
 
 ### M1 — 意图与收据
@@ -398,6 +398,9 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 8. 存储：附属 DSH home（`<home>/memcurio/`，home = 配置 → $DSH_HOME → ~/.dsh），不建独立顶层位置；SQLite 在命名空间内；跨实例并发复用既有锁/租约机制。
 9. 语言政策：注入/指令/Prompt 一律英语（Phase-1/2 提示词已统一并含"按源会话语言书写、不翻译不改写"规则）；记忆内容语言跟随用户输入语言，原样保存与展示；UI 文案跟随 DSH 客户端语言。
 10. 参考版本：DSH npm `0.1.2-rc.1`（0.1.3-alpha.1 未上 npm 不采纳）。
+11. v1.2 实证修订：第三方 `ctx.remote` 通道关闭（§8.1/§12 风险 2 定案）；标题栏候选槽位 `conversation.session.header.actions` / `conversation.view`；seed 模块表恰 8 键（含 react-dom/client）；`/memory` 客户端唤起降为开放项（§7.7）。
+12. v1.3 审查修订：预览与工作台搜索/读**不计数遥测**（trackUsage 开关，默认模型路径仍计数）；usage-tick 语义定为**增量**并在客户端快照上自愈；审计行/收据暴露 object（ns）。
+13. v1.4 实现批次：host 桥接层落定（store 注册表/打标点/refresh diff/快照/写路径收据过滤，config.hostBridge 门控，§8.4）；queue-updated 改**单 job**（jobId/status/attempts，counts 客户端自 jobs 重算，completed 移除）。
 
 ---
 

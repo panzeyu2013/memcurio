@@ -32,19 +32,23 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
 
 - **`state: WorkbenchState`** — immutable-by-convention snapshot, rebuilt per operation. Contains: `view`
   (default `"overview"`), `stores`, `currentStore`/`currentStoreId` (session-resolved store), `browsingStoreId`,
-  `injection` preview fields, `persistence` entry cache (`{entries, stale, loadedAt}`), `queue` counts+jobs,
-  `consolidation` radar, `usage`, `receipts` (recent, capped 100), `settings` read-only summary, `realtime`
-  (`{mode: "push"|"polling", degraded}`), `timeline` (append-only, capped 500), `lastSeq`, `lastRefreshAt`,
-  `lastError`.
+  optional `browse` (last per-store payload) / `browseError`, `injection` preview fields, `persistence` entry
+  cache (`{entries, stale, loadedAt}`), `queue` counts+jobs, `consolidation` radar, `usage`, `receipts` (recent,
+  capped 100), `settings` read-only summary, `realtime` (`{mode: "push"|"polling", degraded}`), `timeline`
+  (append-only, capped 500), `lastSeq`, `lastRefreshAt`, `lastError`.
 - **`select(view)`** — tab switch over the six `WorkbenchView` values (design §7.7).
 - **`setStore(storeId)`** — read-only cross-workspace browse (design §7.6): validates against `stores`
   (RangeError otherwise), clears store-scoped caches (persistence entries, usage, consolidation radar) so stale
   rows of the previous store are never shown as the new store's; injection stays bound to the current session
   store; timeline/receipts survive; `currentStoreId` (write target) is never changed.
+- **`browse(storeId)`** — optional per-store refill via `api.browseSnapshot` — S0/host decision (§7.6): clears
+  then folds the per-store payload into the browsing caches; absent bridge method (or the current store) degrades
+  to `setStore`'s clear-only behavior; RangeError on unknown id; a rejecting read lands in `state.browseError`,
+  never thrown.
 - **`refresh()`** — calls `api.snapshot()`, folds the full snapshot (§8.3 semantics); failures are recorded in
   `state.lastError`, never thrown. While `browsingStoreId` names another store, the current-store snapshot does
-  NOT overwrite the browsing caches (persistence/usage/consolidation stay cleared until a per-store fetch path
-  exists — S0 decision).
+  NOT overwrite the browsing caches (persistence/usage/consolidation stay cleared until the user switches back,
+  or `browse()` refills them when the host bridge provides per-store reads — S0 decision).
 - **`applyDelta(delta)`** — folds one projector delta. Dedupe: an **origin `seq`** is dropped as
   `{status: "duplicate"}` when already applied (unordered-channel guard, §8.3); the dedupe window is bounded
   (`ORIGIN_WINDOW = 2048` — older seqs are evicted so the set cannot grow for the tab lifetime); every applied
@@ -80,8 +84,10 @@ is assumed server-side redacted/truncated (§5.2/§9.1). Method → design §5.1
 | `audit(query?)` | `audit.list` | `AuditPage` |
 | `usage()` | `usage.list/byKey` | `UsageReport` |
 | `intentDraft(kind, ref)` | `intent.draft` (no-persist wording) | `IntentDraft` |
+| `browseSnapshot?(storeId)` | per-store read (§7.6; optional — S0/host decision) | `BrowseSnapshot` — absent ⇒ `browse()` degrades to clear-only |
 
-Delta union mirrors the §8.2 projector list — all nine kinds: `snapshot-ready` / `inject-updated` /
+Delta union mirrors the §8.2 rows 1–8 + the §8.3 snapshot-ready marker — nine kinds total:
+`snapshot-ready` / `inject-updated` /
 `usage-tick` / `queue-updated` (per-job, projector-parity jobId/status) / `memory-list-updated`
 (updateKind: rollout|consolidation|note) / `receipt` /
 `evidence` / `citation` / `compaction-prune`. Exact payload shapes remain spike-verification material; the review
@@ -304,10 +310,11 @@ composed behavior needs confirmation beyond the npm artifacts.
   # → exit 0
   ```
 
-- `bun test tests/client-types.test.ts` → **18 pass / 0 fail** (1315 expects): initial state, view switching,
-  refresh fold + error capture, store switching cache semantics, all nine delta kinds, origin-seq dedupe, timeline
+- `bun test tests/client-types.test.ts` → **24 pass / 0 fail** (1365 expects): initial state, view switching,
+  setStore + browse (per-store refill, degradation, error capture), refresh fold + error capture + browsing guard,
+  applyDelta per-kind folds (nine delta kinds), queue per-job fold, origin-seq dedupe + window, timeline
   cap 500 + sliding window, simulate text + trim/reject, registerFactory seam.
 - Biome lint (repo rule set, run via `bun ./node_modules/@biomejs/biome/bin/biome lint client
   tests/client-types.test.ts`) → clean, 0 diagnostics.
-- `git status` shows only the four new files: `client/index.ts`, `client/types.ts`, `client/README.md`,
-  `tests/client-types.test.ts` (pre-existing untracked `src/services/` untouched).
+- Client files are tracked additions under `client/` + `tests/client-types.test.ts`; the browser half stays
+  framework-free pending the S0 loader/slot outcome.

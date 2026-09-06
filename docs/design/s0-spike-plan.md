@@ -1,6 +1,6 @@
 # S0 Spike Plan — Third-party `dsh.client` module assumptions (DSH npm `0.1.2-rc.1`)
 
-> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (in-tree v1.2/v1.3, commit `9742c42` and review revisions; re-read before the run). Upstream artifacts: DSH npm `0.1.2-rc.1` installs at a `node_modules/@deepseek-ai/*` tree (same version the local dsh instance runs — design §"参考版本声明").
+> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (in-tree **v1.4**, commit `0077aaa` + later doc-sync edits; re-read before the run). Upstream artifacts: DSH npm `0.1.2-rc.1` installs at a `node_modules/@deepseek-ai/*` tree (same version the local dsh instance runs — design §"参考版本声明").
 >
 > This plan is executable by a future human/agent in a **real DSH environment** (real host process + real browser). Findings tagged `VERIFIED(rc.1)` were confirmed by reading the rc.1 artifacts **now**; `OPEN` needs the live spike; `UNVERIFIABLE-HERE` cannot be decided without a browser/host run.
 >

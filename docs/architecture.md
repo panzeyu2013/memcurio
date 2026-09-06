@@ -1,7 +1,6 @@
 # Memcurio 架构（v2）
 
-> 2026-08-10 v2 codex-style 重构快照：两阶段记忆管线（模型驱动的抽取与整合）落地，
-> §条目/命名空间/规则剪枝/状态机体系整体删除。
+> 历史：2026-08-10 v2 codex-style 重构快照；2026-09-05 起第 15–19 轮持续演进（单宿主收敛、DSH home 存储、UI host 桥与读服务、客户端骨架）。
 > 实现契约见 [memory-pipeline-v2.md](./memory-pipeline-v2.md)（模块职责、导出签名、数据格式、行为规则以该文档为准）。
 
 ## 1. 分层架构
@@ -29,8 +28,10 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 
 ## 2. 存储布局
 
+默认 `scope: workspace`：每个绝对工作区一个 store，落在 `<DSH home>/memcurio/dsh/<sha256-16 密钥>/`；无 cwd 会话固定共享 `dsh/no-cwd/`。`scope: global` 时 store 即 `<DSH home>/memcurio/` 本身（下图扁平方块）。每个 store 内：
+
 ```
-<DSH home>/memcurio/
+<DSH home>/memcurio/dsh/<workspace-key>/     （scope: global 则为 <DSH home>/memcurio/）
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
 │   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
@@ -39,12 +40,12 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   ├── skills/                      # 可选：模型创建的可复用流程包
 │   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember 的 note（append-only；forget/update 遗留，仅 agent 执行）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
-├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
+├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11；位于 store 根）
 ├── config.json
 └── state/                           # 事务日志 / 锁（不变）
 ```
 
-删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。codex 适配器（daemon/hook/spool/plugin 生成）已整体移除，codex 用户使用 codex 原生 memory 机制。DSH 单宿主收敛重构中，opencode 适配器、MCP server、CLI 与 HTTP LLM 通道（`src/core/llm.ts`、HttpChannel、`MEMCURIO_LLM_*`）进一步移除：memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），模型访问仅来自宿主注入的 `ctx.llm` 通道。
+删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。codex 适配器（daemon/hook/spool/plugin 生成）已整体移除，codex 用户使用 codex 原生 memory 机制。DSH 单宿主收敛重构（已完成）移除 opencode 适配器、MCP server、CLI 与 HTTP LLM 通道（`src/core/llm.ts`、HttpChannel 与 `MEMCURIO_LLM_*` 家族；**仅保留 `MEMCURIO_LLM_PROVIDER=none`** 作为 Phase-2 熔断门禁，engine.ts）：memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），模型访问仅来自宿主注入的 `ctx.llm` 通道。
 
 ## 3. 模块地图
 
@@ -74,16 +75,29 @@ src/
 │   ├── workspace.ts    工作区读写/快照/diff/baseline（MEMORY_DOCS / snapshot / diffTexts / saveBaseline）
 │   ├── budget.ts       token 估算 + 裁剪（不变）
 │   └── config.ts       config.json（budget + pipeline 配置）
-└── plugin/
-    ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装）
-    └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
+├── services/         UI host 读服务与事件投影（纯 node、无 DSH 依赖；barrel 别名 usageList/queueList/auditList/auditCount）
+│   ├── context.ts       store 解析/列举（resolveStoreRoot / listStores，含 no-cwd 与 global 标记）
+│   ├── memory.ts        memory.search/list/read/status 包装（预览 trackUsage:false）
+│   ├── inject.ts        staticParts/staticContext + 注入模拟器（simulate，trackUsage:false）
+│   ├── usage.ts / queue.ts / audit.ts   用量、队列（counts+jobs，错误脱敏）、审计（list/count，object=ns）
+│   ├── intent.ts        意图草稿（remember/update/remove 中文模板，不落库）
+│   ├── projector.ts     8 类 InputRecord → 9 类脱敏 delta（inject/usage/citation/evidence/prune/queue 单 job/memory-list/receipt/snapshot-ready）
+│   └── snapshot.ts      buildSnapshot 全量装配（store 列表/注入预览/条目+usage/队列/雷达/近 60 收据/设置/realtime）
+├── plugin/
+│   ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装）
+│   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；config.hostBridge 门控）
+│   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
+client/                浏览器半侧骨架（types.ts 词汇 / index.ts view-model incl. browse()/browseSnapshot；无框架，React 组装留 S0/M0）
 docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档
-└── integration-dsh.md      DSH 接入与安装说明
+├── integration-dsh.md      DSH 接入与安装说明
+├── design/plugin-ui-v1.md  记忆工作台设计基线（v1.4，验收基准）
+├── design/s0-spike-plan.md / s0-spike-checklist.md   S0 实机 spike 计划与运行卡
+├── README_cn.md / installation.md / todo.md          CN 说明 / 安装指南 / 轮次账本
 ```
 
-分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/）后 `npm pack` 得到 tarball，`dsh plugin add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
+分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/）后 `bun pm pack` 得到 tarball，`dsh plugin --profile <profile> add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
 
 ## 4. 数据流
 

@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-06（第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——双入口/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-06（第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 402 tests / 2566 assertions / 22 files、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 425 tests / 2799 assertions / 24 files、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -22,9 +22,9 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（402/22 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（425/24 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
-| 记忆可视化 UI（规划）| 未开始 | — | dsh.client 客户端半侧；设计讨论（对照 Codex #30299 等缺口）见第十六轮 |
+| 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、快照/投影/读服务（第十七轮）、客户端 view-model 24 测（含 browse 跨 store） | 浏览器 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）后 M0 |
 
 ## 3. 已完成
 
@@ -67,7 +67,7 @@
 - [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
 - [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
 - [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
-- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md)，第十六轮决策：双入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；下一步 S0 spike（第三方 dsh.client 槽位/推送通道/标题栏入口）
+- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md) v1.4：标题栏单按钮入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；host 半侧桥与快照已实现（config.hostBridge），下一步 S0 spike（真实 DSH 环境实测第三方 dsh.client 槽位/推送通道/标题栏入口）
 
 ### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -121,12 +121,12 @@ bun run eval:lexical
 bun run pack:check
 ```
 
-### 6.2 最新结果（2026-09-04，第十五轮收敛后）
+### 6.2 最新结果（当前；历史快照见各轮记录）
 
-- `bun test`：402 pass / 2566 expect / 22 files / 0 failed（第十七轮新增 host 服务 26 + 投影器 26 + 客户端 18 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
+- `bun test`：425 pass / 2799 expect / 24 files / 0 failed（第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
 - `bun test --coverage`：lines 89.49%，functions 89.45%
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：54 文件（单 tarball allowlist + dist 反向校验），干净
+- `bun run pack:check`：76 文件（单 tarball allowlist + dist 反向校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
@@ -215,7 +215,7 @@ bun run pack:check
 未实现清单盘点后推进的最大缺口 = **host 半侧桥**（设计 §5/§8 的 node 适配；transport 仍留给 S0）：
 
 - `src/services/snapshot.ts`：`buildSnapshot` 全量装配（store 列表/注入预览/持久条目 rollout+manual 层 join usage/队列/整合雷达/近 60 收据/设置/realtime；面失败降级不抛）
-- `src/plugin/bridge.ts`：`HostBridge`——store 注册表（root→workdir 标签/session，no-cwd 标 isolated）、打标点（pre-step 注入/证据/citation/compaction prune/读工具命中仅限 `<store>/memory/` 内）、`refresh()` 审计尾 + 抽取任务行 diff（首次播种静默；写路径前缀才出收据；extract.staged/adhoc.*/consolidate.auto→memory-list；单 job queue-updated 含消失即 completed）、`snapshot()`；sink 可挂接（默认丢弃）
+- `src/plugin/bridge.ts`：`HostBridge`——store 注册表（root→workdir 标签/session，no-cwd 标 isolated）、打标点（pre-step 注入/证据/citation/compaction prune/读工具命中仅限 `<store>/memory/` 内）、`refresh()` 审计尾 + 抽取任务行 diff（首次播种静默；写路径前缀才出收据；extract.staged/backfill/noop→rollout、adhoc.note/adopt→note、consolidate.auto→consolidation 的 memory-list；单 job queue-updated 含消失即 completed）、`snapshot()`；sink 可挂接（默认丢弃）
 - 插件接线：`config.hostBridge`（默认关）门控全部桥工作；ensureSession 注册、pre-step 捕获 static/dynamic 片段、消息/剪除/收成/读工具打点、三处 drain 后 refresh；engine `memoryUsageFromCitations` 返回实际计入的键
 - 客户端队列对齐：queue-updated 改**单 job**（jobId/status/attempts，投影器同构），counts 由 jobs 重算，completed 移除；桥 9 项 + 客户端 19 项测试
 - 设计 v1.4：§8.4 host 桥接层（打标点/diff 映射/快照/过滤规则）
@@ -223,6 +223,18 @@ bun run pack:check
 **412 tests / 23 files / 2618 expect / 0 fail**；tsc+lint（66 files）clean；pack 76 files。
 
 仍缺（S0/M0 接力）：传输通道（SSE/投影/轮询按 v1.2 §8.1 实测定案）、真正浏览器 UI 组装（槽位实测）、/memory 唤起、每 store 数据路径与 delta 归属 storeId、UI 记忆工具消息折叠。
+
+### 6.10 第十九轮：验收收口（2026-09-06，三路关切审计 + 验收卷宗）
+
+三路只读关切审计（安装/用法正确性、状态/统计账本、API 词汇漂移；并发 ≤3）与修复：
+
+- 账本：todo 顶行/§1 统计行/§6.2 重标当前值 425/24/2799；支持矩阵 UI 行改为"半侧就绪"
+- 设计：H1 → v1.4；§13 补决策 11–13（v1.2–v1.4）；§8.2 行语义对齐（单 job queue/updateKind/写路径收据/usage +1 键语义）；§5.1 usage 行去"engine 内存态"伪述；§7.3/§7.5/§5.3/§7.4 字段与枚举对齐（count/lastUsedAt、9 类时间线、completed 终态）；§8.4 措辞（duplicate 标记 vs 去重、快照审计尾带 writePath 标记、memory-list 映射 exact：staged/backfill/noop、adhoc.note/adopt、consolidate.auto）
+- 安装/架构：FAQ SQLite 位置（store 根 index.sqlite）；存储布局补 dsh/<key> 层；模块图补 services/ + client/；era 文案与 `MEMCURIO_LLM_PROVIDER=none` 保留说明；分发命令补 `--profile`/`bun pm pack`；config 示例补 hostBridge（installation/integration-dsh）；README 调优键补 resourceRetentionDays；pack 计数 54→76
+- 契约文档：memory-pipeline-v2 引擎签名 `memoryUsageFromCitations → Promise<string[]>`、config 键含 hostBridge、env 读取位置；client README §3 补 browseSnapshot 行、§8.2+§8.3 措辞、§e 24 项/1365 expects
+- 产出：[acceptance.md](acceptance.md) 验收卷宗（三闸门定义、组件→状态矩阵、运行卡、外部依赖与遗留、结论）
+
+审计后全量 **425 pass / 24 files / 2799 expect / 0 fail**（不变）；tsc+lint clean；工作树净提交。
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 

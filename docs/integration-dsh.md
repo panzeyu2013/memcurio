@@ -68,6 +68,7 @@ Example configuration:
         scope: workspace
         injectContext: true
         registerTools: true
+        # hostBridge: true          # memory-workbench host bridge (event tags/snapshots; default false)
         # Optional fixed worker route. Omit both to follow the session route.
         # provider: deepseek
         # model: deepseek-v4
