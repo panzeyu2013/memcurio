@@ -669,6 +669,43 @@ describe('cross-store browsing coherence (review regression, §7.6)', () => {
     });
 });
 
+describe('evidence window + ⭐ bookmarks (design §7.5/§7.8 folds)', () => {
+    test('evidence deltas fold newest-first with partId dedupe and a cap', () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        model.applyDelta({ kind: 'evidence', seq: 1, sessionId: 's1', partId: 'user/message:0', itemKind: 'user', text: 'first' });
+        model.applyDelta({ kind: 'evidence', seq: 2, sessionId: 's1', partId: 'user/message:1', itemKind: 'user', text: 'second' });
+        expect(model.state.evidence.map((row) => row.partId)).toEqual(['user/message:1', 'user/message:0']);
+        // Dedupe replaces in place (newest position) rather than duplicating.
+        model.applyDelta({ kind: 'evidence', seq: 3, sessionId: 's1', partId: 'user/message:0', itemKind: 'user', text: 'updated' });
+        expect(model.state.evidence).toHaveLength(2);
+        expect(model.state.evidence[0]?.text).toBe('updated');
+    });
+
+    test('compaction-prune drops evidence parts whose partId names a shadowed seq', () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        model.applyDelta({ kind: 'evidence', sessionId: 's1', partId: 'user/message:3', itemKind: 'user', text: 'a' });
+        model.applyDelta({ kind: 'evidence', sessionId: 's1', partId: 'tool/result:4', itemKind: 'tool', text: 'b' });
+        model.applyDelta({ kind: 'evidence', sessionId: 's1', partId: 'user/message:9', itemKind: 'user', text: 'c' });
+        model.applyDelta({ kind: 'compaction-prune', sessionId: 's1', seqs: [3, 4] });
+        expect(model.state.evidence.map((row) => row.partId)).toEqual(['user/message:9']);
+        expect(model.state.persistence.stale).toBe(true);
+    });
+
+    test('⭐ bookmarks toggle idempotently and survive refresh folds', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        model.toggleBookmark('rollout-1');
+        model.toggleBookmark('rollout-2');
+        expect([...model.state.bookmarks]).toEqual(['rollout-1', 'rollout-2']);
+        model.toggleBookmark('rollout-1');
+        expect([...model.state.bookmarks]).toEqual(['rollout-2']);
+        await model.refresh();
+        expect([...model.state.bookmarks]).toEqual(['rollout-2']);
+    });
+});
+
 describe('registerFactory seam (S0 placeholder)', () => {
     test('keeps one module-local registration slot', () => {
         const factory: MemoryUiFactory = (_api) => ({

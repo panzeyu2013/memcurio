@@ -51,6 +51,16 @@ export type RealtimeMode = 'push' | 'polling';
 /** Timeline event kinds the S0 model derives from deltas (design §7.5 node types). */
 export type TimelineEventKind = 'inject' | 'usage' | 'queue' | 'memory' | 'receipt' | 'snapshot' | 'evidence' | 'citation' | 'prune';
 
+/** One evidence-window row (design §7.5/状态面; folded from evidence deltas). */
+export interface EvidenceWindowItem {
+    readonly partId: string;
+    readonly sessionId: string;
+    readonly kind: 'user' | 'assistant' | 'tool' | 'summary' | 'event';
+    /** Redacted text when present (host guarantees); empty stays empty. */
+    readonly text?: string;
+    readonly at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Stores (design §5.1 store.resolve / store.list; §7.6 cross-workspace switch)
 // ---------------------------------------------------------------------------

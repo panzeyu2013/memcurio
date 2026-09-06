@@ -41,6 +41,8 @@ root tsconfig (`rootDir: src`) intentionally does not include `client/`, so type
   (RangeError otherwise), clears store-scoped caches (persistence entries, usage, consolidation radar) so stale
   rows of the previous store are never shown as the new store's; injection stays bound to the current session
   store; timeline/receipts survive; `currentStoreId` (write target) is never changed.
+- **`toggleBookmark(entryId)`** — ⭐ pure-UI bookmark (client-side set only; never sent to the host; memory
+  deletion stays a conversation flow).
 - **`browse(storeId)`** — optional per-store refill via `api.browseSnapshot` — S0/host decision (§7.6): clears
   then folds the per-store payload into the browsing caches; absent bridge method (or the current store) degrades
   to `setStore`'s clear-only behavior; RangeError on unknown id; a rejecting read lands in `state.browseError`,
@@ -310,10 +312,11 @@ composed behavior needs confirmation beyond the npm artifacts.
   # → exit 0
   ```
 
-- `bun test tests/client-types.test.ts` → **24 pass / 0 fail** (1365 expects): initial state, view switching,
+- `bun test tests/client-types.test.ts` → **27 pass / 0 fail** (1373 expects): initial state, view switching,
   setStore + browse (per-store refill, degradation, error capture), refresh fold + error capture + browsing guard,
   applyDelta per-kind folds (nine delta kinds), queue per-job fold, origin-seq dedupe + window, timeline
-  cap 500 + sliding window, simulate text + trim/reject, registerFactory seam.
+  cap 500 + sliding window, evidence-window folds (dedupe/cap/prune), ⭐ bookmark toggles, simulate text +
+  trim/reject, registerFactory seam.
 - Biome lint (repo rule set, run via `bun ./node_modules/@biomejs/biome/bin/biome lint client
   tests/client-types.test.ts`) → clean, 0 diagnostics.
 - Client files are tracked additions under `client/` + `tests/client-types.test.ts`; the browser half stays

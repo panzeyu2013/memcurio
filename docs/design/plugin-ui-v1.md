@@ -317,7 +317,8 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出 delta；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置/realtime）；字段名与客户端词汇对齐；delta 过滤与快照标记映射留给传输适配器（S0）；
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
-- v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version、注入预览携带 dynamicText；桥插件级集成测试落地。
+- v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version、注入预览携带 dynamicText；桥插件级集成测试落地；
+- v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）。
 
 ## 9. 安全与隐私边界
 

@@ -37,7 +37,7 @@
 ## 4. 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：434 pass / 25 files / 2840 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：437 pass / 25 files / 2848 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 67 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功

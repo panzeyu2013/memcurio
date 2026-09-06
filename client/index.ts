@@ -38,6 +38,8 @@ import type {
 
 export type * from './types.js';
 
+import type { EvidenceWindowItem } from './types.js';
+
 /** Timeline cap: append-only axis, oldest events drop beyond this (design §7.5). */
 export const TIMELINE_LIMIT = 500;
 /** Origin-seq dedupe window: only recent seqs are remembered (see applyDelta). */
@@ -46,6 +48,8 @@ export const ORIGIN_WINDOW = 2048;
 export const USAGE_RECENT_LIMIT = 100;
 /** Audit-receipt in-memory buffer cap (full history stays server-side: audit.list). */
 export const RECEIPT_LIMIT = 100;
+/** Evidence window cap (state face rows). */
+export const EVIDENCE_LIMIT = 200;
 
 /** Persistence-surface cache bookkeeping (design §7.3 evidence layer list). */
 export interface PersistenceCache {
@@ -99,6 +103,13 @@ export interface WorkbenchState {
     readonly realtime: RealtimeInfo | null;
     /** Append-only causal axis, capped at {@link TIMELINE_LIMIT}. */
     readonly timeline: readonly TimelineEvent[];
+    /** Evidence window (state face), newest first, capped at EVIDENCE_LIMIT;
+     *  partId-deduped; compaction prune removes shadowed parts. */
+    readonly evidence: readonly EvidenceWindowItem[];
+    /** ⭐ pure-UI bookmarks (design §2.3/§7.8): entry ids kept client-side,
+     *  never sent to the host; deletion of the memory itself stays a
+     *  conversation flow (M2 expert dry-run). */
+    readonly bookmarks: ReadonlySet<string>;
     /** Locally assigned monotonic apply counter — bumped once per APPLIED delta. */
     readonly lastSeq: number;
     readonly lastRefreshAt: string | null;
@@ -118,6 +129,10 @@ export interface WorkbenchModel {
     readonly state: WorkbenchState;
     /** Switch the active tab (design §7.7: overview/injection/persistence/state/timeline/settings). */
     select(view: WorkbenchView): void;
+    /** Toggle a pure-UI ⭐ bookmark (design §2.3/§7.8): entry ids are kept
+     *  client-side only, never sent to the host; memory deletion stays a
+     *  conversation flow (M2 expert dry-run). */
+    toggleBookmark(entryId: string): void;
     /**
      * Switch the READ-ONLY browsing store (§7.6). Throws RangeError for ids
      * not in state.stores. Store-scoped caches (persistence entries, usage,
@@ -178,6 +193,8 @@ function initialState(): WorkbenchState {
         settings: null,
         realtime: null,
         timeline: [],
+        evidence: [],
+        bookmarks: new Set<string>(),
         lastSeq: 0,
         lastRefreshAt: null,
         lastError: null,
@@ -415,17 +432,35 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
             case 'receipt':
                 next = { ...state, receipts: [delta.receipt, ...state.receipts].slice(0, RECEIPT_LIMIT) };
                 break;
-            case 'evidence':
+            case 'evidence': {
+                const item: EvidenceWindowItem = {
+                    partId: delta.partId,
+                    sessionId: delta.sessionId,
+                    kind: delta.itemKind,
+                    ...(delta.text !== undefined ? { text: delta.text } : {}),
+                    at,
+                };
+                const without = state.evidence.filter((row) => row.partId !== delta.partId);
+                next = { ...state, evidence: [item, ...without].slice(0, EVIDENCE_LIMIT) };
+                break;
+            }
             case 'citation':
-                // Timeline-only nodes for now; state folds arrive with the
-                // evidence/timeline milestone (design §7.5).
+                // Timeline node only; usage movement arrives as ticks.
                 next = state;
                 break;
-            case 'compaction-prune':
+            case 'compaction-prune': {
                 // Shadowed rows may change after the next consolidation; mark
-                // the persistence cache stale so refresh() reloads.
-                next = { ...state, persistence: { ...state.persistence, stale: true } };
+                // the persistence cache stale so refresh() reloads, and drop
+                // evidence parts whose partId names a shadowed seq.
+                const shadowed = new Set(delta.seqs);
+                const evidence = state.evidence.filter((row) => {
+                    const seqText = row.partId.split(':').at(-1);
+                    const seq = Number(seqText);
+                    return !(Number.isInteger(seq) && shadowed.has(seq));
+                });
+                next = { ...state, persistence: { ...state.persistence, stale: true }, evidence };
                 break;
+            }
         }
         const event = timelineEventFor(delta, seq, at);
         const timeline = [...next.timeline.slice(-(TIMELINE_LIMIT - 1)), event];
@@ -442,6 +477,15 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
         },
         setStore(storeId: string): void {
             switchBrowsingStore(storeId);
+        },
+        toggleBookmark(entryId: string): void {
+            const next = new Set(state.bookmarks);
+            if (next.has(entryId)) {
+                next.delete(entryId);
+            } else {
+                next.add(entryId);
+            }
+            state = { ...state, bookmarks: next };
         },
         async browse(storeId: string): Promise<void> {
             const store = state.stores.find((candidate) => candidate.id === storeId);
