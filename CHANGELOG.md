@@ -38,6 +38,18 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   the release workflow until a token/provenance decision is made — see
   `docs/RELEASE.md`.
 
+### Changed
+
+- **Aligned to DSH `0.1.5-rc.1`** (current npm `latest`; peers now
+  `^0.1.5-rc.1`). The only contract delta encountered was
+  `assistant/message` events carrying a required `stream` record; plugin
+  runtime code was already compatible. The rc.1 spike ledger in
+  `docs/design/` was verified against `0.1.2-rc.1` artifacts and must be
+  re-checked on the run target.
+- Test fixtures that encoded absolute August dates in the 30-day usage
+  window were made clock-independent (`daysAgo()` helpers), so the suite no
+  longer rots as wall-clock time advances.
+
 ### Known limitations (this release)
 
 - The browser UI is not yet assembled: no React/DOM rendering, no transport

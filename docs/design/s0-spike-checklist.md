@@ -6,7 +6,7 @@
 ## A. Pre-flight (P0)
 
 - [ ] `DSH_HOME` = fresh disposable dir; path recorded: `________`
-- [ ] Versions recorded: node `____` (>= 22.13), bun `____` (1.3.14 pin), dsh `____` (must be 0.1.2-rc.1), install tree `____`
+- [ ] Versions recorded: node `____` (>= 22.13), bun `____` (1.3.14 pin), dsh `____` (target 0.1.5-rc.1), install tree `____`
 - [ ] `dsh --profile web --no-open --port 0` boots; startup URL captured; page renders in the real browser
 - [ ] Debug-logging knob for this rc.1 found and recorded (how to see `client-modules` / plugin logs)
 - [ ] `--dump-config` inventory saved (`artifacts/p0-composed-tree.yml`); browser roster rows counted `____`

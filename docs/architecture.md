@@ -149,4 +149,4 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
 | v1 M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 完成（v1 体系，v2 中已移除，改用 codex 原生 memory） |
 | v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ provider-scoped durable extraction queue + 有界证据 + 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v11 + stable artifact ID + generation recovery + consolidation lease（v2 时代的 CLI/MCP 表面在 DSH 收敛中移除） | ✅ 已完成首批实现与本地回归 |
 | DSH 收敛 | 单宿主收敛：opencode 适配器 / MCP server / CLI / HTTP LLM 通道（HttpChannel、`MEMCURIO_LLM_*`）全部移除；引擎 + 插件合并为仓库根单包 `@memcurio/dsh-plugin`（`cordis.patch.yml` bundle manifest）；模型访问只经宿主注入的 `ctx.llm` 通道 | ✅ 已完成 |
-| 真实 harness 验证 | DeepSeek Harness（DSH 0.1.2-rc.1）Cordis 插件与 session lifecycle | ✅ 本地 smoke 已通过；真实模型质量、长会话、崩溃恢复仍待独立验收 |
+| 真实 harness 验证 | DeepSeek Harness（DSH 0.1.5-rc.1）Cordis 插件与 session lifecycle | ✅ 本地 smoke 已通过；真实模型质量、长会话、崩溃恢复仍待独立验收 |

@@ -1,8 +1,8 @@
 # @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.4）
 
 > 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义（实现面详见 §8.4；v1.4.1：A 类收口——桥集成测试、memory_read/shell 打点、evidence 源、雷达候选启发式、快照收据合成与 settings/dynamic 富化）。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
-> 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例同版本）；GitHub 上游 dsh-v0.1.3-alpha.1 已打 tag 但未发布到 npm，**未纳入**；沿用「每次 DSH 升级重核 peer/client 契约」纪律。
-> 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.2-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
+> 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例版本）；适配目标已随第二十四轮升级为 **npm `latest` = `0.1.5-rc.1`**（0.1.5-rc.2/alpha 未采纳）；S0 实机须在 0.1.5-rc.1 上重核，并沿用「每次 DSH 升级重核 peer/client 契约」纪律。
+> 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.5-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
 
 ---
@@ -399,7 +399,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 7. 对照基准：Codex 缺口（#30299/#41711/#29033/#23658 等）逐条给答案（§2.2）。
 8. 存储：附属 DSH home（`<home>/memcurio/`，home = 配置 → $DSH_HOME → ~/.dsh），不建独立顶层位置；SQLite 在命名空间内；跨实例并发复用既有锁/租约机制。
 9. 语言政策：注入/指令/Prompt 一律英语（Phase-1/2 提示词已统一并含"按源会话语言书写、不翻译不改写"规则）；记忆内容语言跟随用户输入语言，原样保存与展示；UI 文案跟随 DSH 客户端语言。
-10. 参考版本：DSH npm `0.1.2-rc.1`（0.1.3-alpha.1 未上 npm 不采纳）。
+10. 参考版本：DSH npm `0.1.5-rc.1`（当前 `latest`；0.1.3-alpha.1 未上 npm、0.1.5-rc.2/alpha 未采纳；本设计的 rc.1 实证账本来自 0.1.2-rc.1 安装物，S0 在 0.1.5-rc.1 上重核）。
 11. v1.2 实证修订：第三方 `ctx.remote` 通道关闭（§8.1/§12 风险 2 定案）；标题栏候选槽位 `conversation.session.header.actions` / `conversation.view`；seed 模块表恰 8 键（含 react-dom/client）；`/memory` 客户端唤起降为开放项（§7.7）。
 12. v1.3 审查修订：预览与工作台搜索/读**不计数遥测**（trackUsage 开关，默认模型路径仍计数）；usage-tick 语义定为**增量**并在客户端快照上自愈；审计行/收据暴露 object（ns）。
 13. v1.4 实现批次：host 桥接层落定（store 注册表/打标点/refresh diff/快照/写路径收据过滤，config.hostBridge 门控，§8.4）；queue-updated 改**单 job**（jobId/status/attempts，counts 客户端自 jobs 重算，completed 移除）。

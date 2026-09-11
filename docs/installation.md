@@ -61,7 +61,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 | 升级 | 拉取新代码 → `bun install --frozen-lockfile && bun run build && bun pm pack` → 用 `dsh` 的插件管理命令以新 tarball 替换旧版本 |
 | 回滚 | 重新打包旧提交（`git checkout <旧tag/commit>`）后同路径替换 |
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
-| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.2-rc.1`，peer 范围 `^0.1.2-rc.1` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
+| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.5-rc.1`，peer 范围 `^0.1.5-rc.1` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
 
 ## 6. 常见问题
 

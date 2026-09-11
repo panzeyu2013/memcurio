@@ -58,7 +58,7 @@ git status --short                                                 # 期望：�
 
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
-| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.2-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
+| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
 | 客户端 bundle 构建与 loader 产物 | S0 结果（seed 8 键/tsdown 等价流程） | S0 → M0 |
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |

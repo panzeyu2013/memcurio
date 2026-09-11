@@ -2,7 +2,7 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-06（第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-11（第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
@@ -13,7 +13,7 @@
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode / MCP / CLI 发行面 | 🗑️ 已移除（第十五轮） | 代码/测试/产物/文档整体移除；运维操作语义（curate/retry/audit 等）将内化为 host 服务与 UI |
-| DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.2-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.5-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见 §4） |
@@ -23,7 +23,7 @@
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
 | 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（437/25 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
-| DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.2-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
+| DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.5-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
 | 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、快照/投影/读服务（第十七轮）、客户端 view-model 24 测（含 browse 跨 store） | 浏览器 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）后 M0 |
 
 ## 3. 已完成
@@ -265,6 +265,14 @@ bun run pack:check
 修复收口（25c2e3e）：drain 后 refresh（turn/end + retire）；`registerMemoryUsage` 返回实际计数键并贯穿 citation 打标；收据 ok action 腿 `(?:^|[._])` 与 sessionId 生产形态（staged detail key 派生）；`services/memory.ts` 直包 core（不再 import api/engine 链）；`memory_read` 成功后打点；客户端浏览守卫扩展到实时 delta、queue 合并保留 provider/nextAttemptAt、证据窗 session+partId 键；设计引用/账本/计数/路径泛化/CI node 排序等文档修复；client README 增补 **Adapter-mapping scope** 记录（S0 传输适配器决策点清单）。
 
 验收后全量 **442 tests / 25 files / 2868 expect / 0 fail**；tsc+lint clean；pack 76；三角度结论均为放行 v0.0.1。
+
+### 6.15 第二十四轮：DSH 0.1.5-rc.1 适配（2026-09-11）
+
+- devDeps 升级至 `0.1.5-rc.1`（agent/compaction/invariants/llm/session/system-prompt/tools；cordis 保持 4.0.2），peerDependencies 范围改 `^0.1.5-rc.1`
+- 契约核对结果：**唯一破坏点**为 `assistant/message` 事件 data 新增必填 `stream: AssistantStreamRecord[]`（测试事件构造已适配；插件运行时只读 `data.message`，无需改）
+- 时钟脆弱修复：db/consolidate 测试中硬编码的 8 月 `sourceUpdatedAt` 越过 30 天窗口（系统时钟已到 09-11），改为相对 `daysAgo()` 时间戳
+- 文档版本对齐：design §版本声明/§13-10、integration-dsh、installation、architecture、todo 矩阵、s0 计划/清单（目标 0.1.5-rc.1，rc.1 实证账本来源仍标注 0.1.2-rc.1）、acceptance、client README、CHANGELOG（Changed 节）
+- 全量 **442 tests / 25 files / 2868 expect / 0 fail**（0.1.5-rc.1 依赖下）；tsc+lint clean
 
 ### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
 

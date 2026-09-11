@@ -19,12 +19,16 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** Clock-independent source timestamp: the selection window is measured
+ *  against Date.now(), so hardcoded dates rot out of the 30-day window. */
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+
 const stage = {
   rolloutKey: "test|s1",
   rawMemory: "raw",
   rolloutSummary: "summary",
   rolloutSlug: "proj-setup",
-  sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+  sourceUpdatedAt: daysAgo(1),
 };
 
 describe("Index schema v11", () => {
@@ -258,13 +262,13 @@ describe("stage1_outputs", () => {
       idx.stageUpsert({
         ...stage,
         rawMemory: "FINAL",
-        sourceUpdatedAt: "2026-08-11T02:00:00.000Z",
+        sourceUpdatedAt: daysAgo(2),
         sourceEvent: "session_end",
       });
       expect(idx.stageUpsert({
         ...stage,
         rawMemory: "OLD IDLE",
-        sourceUpdatedAt: "2026-08-11T03:00:00.000Z",
+        sourceUpdatedAt: daysAgo(1),
         sourceEvent: "idle",
       })).toBe(false);
       expect(idx.stageGet(stage.rolloutKey)?.rawMemory).toBe("FINAL");

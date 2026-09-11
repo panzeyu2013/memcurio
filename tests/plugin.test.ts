@@ -687,6 +687,8 @@ describe("DSH plugin contract", () => {
           content: [{ type: "text", text: citationText }],
           source: { provider: "test", model: "test" },
         }),
+        // DSH 0.1.5-rc.1: assistant/message events carry the stream record.
+        stream: [],
       },
       surfaceOp: "append",
     });

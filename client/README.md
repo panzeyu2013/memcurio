@@ -267,7 +267,8 @@ Each item: the open question → my read from the docs above → what to verify 
 
 ## 7. (d) Upstream docs read (this scaffold)
 
-All under `$A = <DSH source checkout>/node_modules/@deepseek-ai/` — the DSH npm **0.1.2-rc.1**
+All under `$A = <DSH source checkout>/node_modules/@deepseek-ai/` — recorded against DSH npm **0.1.2-rc.1**
+(target upgraded to `0.1.5-rc.1`; re-verify at S0)
 install (design §13.10 reference version):
 
 1. **`$A/dsh-client-modules/README.md`** (en) — the module system: `dsh.client` declaration (`platform: 'web'`,

@@ -15,6 +15,9 @@ import { applyGeneration, prepareGeneration } from "../src/core/generation.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/** Clock-independent source timestamps (window math uses Date.now()). */
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+
 let dir: string;
 const originalFetch = globalThis.fetch;
 
@@ -621,20 +624,20 @@ describe("runConsolidation", () => {
         rawMemory: "task_group: old\n\n### Task 1\n\nReusable knowledge:\n- OLD_FACT",
         rolloutSummary: "old recap",
         rolloutSlug: "old",
-        sourceUpdatedAt: "2026-08-11T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(45),
       });
       idx.stageUpsert({
         rolloutKey: "test|fresh",
         rawMemory: "task_group: fresh\n\n### Task 1\n\nReusable knowledge:\n- FRESH_FACT",
         rolloutSummary: "fresh recap",
         rolloutSlug: "fresh",
-        sourceUpdatedAt: "2026-08-12T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(1),
       });
       // Generated_at recency decides the pending batch ranking: make fresh
       // strictly newer so old stays unselected at maxInputs=1, then backdate
       // old's source so only the age criterion recycles it.
-      idx.driver.run("UPDATE stage1_outputs SET generated_at = ? WHERE rollout_key = ?", ["2026-08-11T00:00:00.000Z", "test|old"]);
-      idx.driver.run("UPDATE stage1_outputs SET source_updated_at = ? WHERE rollout_key = ?", ["2020-01-01T00:00:00.000Z", "test|old"]);
+      idx.driver.run("UPDATE stage1_outputs SET generated_at = ? WHERE rollout_key = ?", [daysAgo(45), "test|old"]);
+      idx.driver.run("UPDATE stage1_outputs SET source_updated_at = ? WHERE rollout_key = ?", [daysAgo(400), "test|old"]);
     } finally {
       idx.close();
     }
