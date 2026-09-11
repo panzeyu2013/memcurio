@@ -1,6 +1,15 @@
-# @memcurio/dsh-plugin — browser client half (S0 scaffold)
+# @memcurio/dsh-plugin — browser client half
 
-> Status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web.**
+This directory carries TWO halves with different maturity:
+
+1. **Shipped: the Settings panel** (`entry.ts`, `settings/*`, built to `lib/client.js`) — the
+   `dsh.client` browser half that registers the `memcurio` Settings section. It requires only the platform-seeded
+   `react`; discovery rides `package.json` `dsh.client` + `exports["./client"]`; `pack:check` validates the artifact.
+   Controller logic is unit-tested (`tests/client-settings.test.ts`); rendering + slot governance still need a real
+   DSH Web (S0 run card).
+2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
+
+> Workbench status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web.**
 > Created ahead of the S0 spike (design [plugin-ui-v1.md](../docs/design/plugin-ui-v1.md) §11-S0). Every claim about the
 > DSH client-module machinery is marked UNVERIFIED-until-spike and was grounded in the read-only upstream npm install
 > listed in [§d](#7-d-upstream-docs-read-this-scaffold) — the same rc.1 install the design declares as its reference
