@@ -137,6 +137,8 @@ bun run pack:check
 - **导入验证**：`import "@memcurio/dsh-plugin"` 成功，导出 `apply/inject/name`，inject = `["tools","llm","sessions","settings"]`
 - **组合验证**：`dsh --profile memcurio-probe --dump-config` 输出含我们的 patch 行（id `memcurio`、name `@memcurio/dsh-plugin`、四项 inject、`config.scope/injectContext/registerTools`）——证明 `dsh.bundle.patch` 清单与用户层 patch 语法在真实 DSH 上有效
 - **边界（重要）**：web app **在 bun 下无法启动**（loader entry 激活失败），且**去掉我们的插件行后基线同样失败** → 与本包无关，是 bun 缺 node 语义/pnpm postinstall 的环境限制；因此"启动 + 面板渲染 + `settings.yaml` 往返"仍必须在真实 node 环境执行（S0 运行卡）
+- **挂载平面（plan P3/L17）定性**：组合树把我们的行放在 root 平面（`agent-presets` 之后），而 root 平面**自带** `llm`/`tools`/`session`/`settings` 四个服务（`@deepseek-ai/dsh-llm` / `dsh-tools` / `dsh-session` / `dsh-settings-file`）；web-app 层只是 disable 具体条目（`tool-bash`/`tool-pwsh`/`tool-jobs`/`tool-fs`/`tool-fs-search`/`agent-instructions`/`skill-*`），并未迁移服务平面 → **L17 的"root 行解析不到 tools/llm"担忧在 0.1.5-rc.1 上不复现**，无需 preset 平面挂载行
+- **遥测面推论**：web profile 下内置 `read`/`grep`/`glob` 被 disable，读命中来自本插件 `memory_read`/`memory_search`（`DSH_TOOL_PRESET` 保持无害）
 - **固化**：新增 `scripts/probe-dsh-profile.sh`（默认 dump-config 校验；`BOOT=1` 时尝试启动并 curl，附 bun 限制提示），任何人可在有 node 的机器上一键复现
 - 账本事实修正：此前"真实 harness 未验收"改为"组合层已验证（CLI+dump-config），启动层待 node"
 

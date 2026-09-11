@@ -65,8 +65,9 @@ git status --short                                                 # 期望：�
 | web 启动 + 面板渲染 | 真实 Node.js 运行时（bun 缺 node 语义/pnpm postinstall） | S0 首项；本仓库已用 jsdom + 真实 renderer/react 覆盖渲染契约 |
 | Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | 控制器逻辑 23 项 + **浏览器半侧回归网 8 项**（`tests/client-panel-render.test.ts`：loader 契约/`hooks→useFace`/jsdom 活性/交互/成对写）；真实浏览器渲染与槽位治理仍为 S0 首项 |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
+| web profile 下读命中遥测面 | 组合层已定性（第三十轮） | `tool-fs`/`tool-fs-search` 在 web profile 被 disable → 内置 `read`/`grep`/`glob` 不触发；命中来自本插件 `memory_read`/`memory_search`（`DSH_TOOL_PRESET` 保持无害） |
 | 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |
-| 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |
+| 挂载平面（agent preset 后根平面行解析） | ✅ 组合层已定性（第三十轮） | root 平面自带 `llm`/`tools`/`session`/`settings` 服务，web-app 仅 disable 具体工具与 skill；root-plane insert 即正确挂载点（plan §5.5，L17 担忧不复现）；实机启动仍待 S0 |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（design §7.7、plan L19–L20） |
 | node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
 | 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.17% funcs / 93.76% lines |
