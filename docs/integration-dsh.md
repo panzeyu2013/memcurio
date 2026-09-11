@@ -85,6 +85,10 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 `settings` is a hard injection (the service is guaranteed by dsh-base and every profile layered on it, and a hard inject makes the namespace resolve synchronously before apply). Two consequences, both verified in review: a profile without any settings provider leaves the plugin inert (`dsh-sdk-minimal` is such a tree), and unloading/remounting the settings provider unloads and re-applies memcurio.
 
+## Verification status
+
+`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. That ran green against real DSH 0.1.5-rc.1 (third-round probe, s0-spike-plan "sandbox pre-check"). Booting the web app still requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
+
 ## Current validation boundary
 
 The repository validates strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources AND tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation + native read-tool usage telemetry, seed replay (tool telemetry rebuild), the public integration read/write surface (including the injection gate on memory reads), and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.

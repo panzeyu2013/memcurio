@@ -60,14 +60,16 @@ git status --short                                                 # 期望：�
 
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
-| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
+| 真实 DSH 组合（profile 装载 + patch 行 + 包导入） | ✅ 已验证（`scripts/probe-dsh-profile.sh`，真实 DSH 0.1.5-rc.1） | `--dump-config` 组合树含 `id: memcurio`/四项 inject/config；包导入成功（第三十轮） |
+| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器（需 Node.js 运行时） | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md）；bun 下官方 web app 基线亦无法启动 |
+| web 启动 + 面板渲染 | 真实 Node.js 运行时（bun 缺 node 语义/pnpm postinstall） | S0 首项；本仓库已用 jsdom + 真实 renderer/react 覆盖渲染契约 |
 | Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | 控制器逻辑 23 项 + **浏览器半侧回归网 8 项**（`tests/client-panel-render.test.ts`：loader 契约/`hooks→useFace`/jsdom 活性/交互/成对写）；真实浏览器渲染与槽位治理仍为 S0 首项 |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
 | 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（design §7.7、plan L19–L20） |
 | node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
-| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.63% funcs / 93.64% lines |
+| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.17% funcs / 93.76% lines |
 
 ## 7. 结论
 

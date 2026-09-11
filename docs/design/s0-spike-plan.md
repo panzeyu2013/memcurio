@@ -233,6 +233,13 @@ Acceptance (mirrors design §11 S0 验收; no production plumbing):
 
 ---
 
+## 5.5 Sandbox pre-check already done (third-round probe, 2026-09-11)
+
+Before the S0 run, the CLI-verifiable half was executed in the sandbox:
+
+- `scripts/probe-dsh-profile.sh` builds an isolated `DSH_HOME`, installs `@deepseek-ai/dsh@0.1.5-rc.1` plus this package (`bun add --ignore-scripts file:<repo>`), writes the package patch row as the profile user layer, then asserts the import and the `--dump-config` composition. Result: `id: memcurio`, `name: @memcurio/dsh-plugin`, `inject: [tools, llm, sessions, settings]` and the config block all appear in the composed tree.
+- The harness CLI runs under bun; the WEB APP does not (loader-entry activation fails identically with and without memcurio installed), so the P0/P1 boot checks below still require a Node.js runtime.
+
 ## 6. Environment prerequisites (runner must prepare)
 
 - **Disposable home**: `DSH_HOME=$(mktemp -d)`; never reuse a real home. Profile data, `.agent-presets`, logs all inside it. (Design stores memcurio data under the same home — the spike keeps memcurio out of the picture entirely except P3/P7.)

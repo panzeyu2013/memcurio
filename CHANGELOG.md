@@ -64,6 +64,14 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   worker route apply live; `scope` applies to new sessions; `registerTools`
   applies at the next plugin apply (restart); `root` is read-only.
 
+### Added
+
+- `scripts/probe-dsh-profile.sh`: installs the packaged plugin into an isolated
+  DSH profile and verifies the composed tree (`--dump-config`) carries the
+  `memcurio` row; verified green against real DSH 0.1.5-rc.1 (boot still needs
+  a Node.js runtime — the web app does not start under bun, with or without
+  this plugin).
+
 ### Changed
 
 - The workbench snapshot reports the real deployment knobs (`settings.maxInjectTokens`
