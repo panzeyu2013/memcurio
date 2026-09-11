@@ -119,7 +119,7 @@ DSH Web（浏览器）
 
 ### 3.3 入口（标题栏单按钮 + 配置面）
 
-**配置入口（v1.5 已实现）**：host 侧经 `@deepseek-ai/dsh-settings` 注册 `memcurio` 命名空间（`src/plugin/settings.ts`），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / hostBridge / provider / model；profile `cordis.patch.yml` 为默认层，settings.yaml 用户层覆盖。`root`（数据位置）只在面板只读展示。生效语义：injectContext/budget/hostBridge/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器半侧的 Settings 面板（`settings.section` 槽位）随 M0 与工作台一同组装。
+**配置入口（v1.5 已实现，host + client 双侧）**：host 侧经 `@deepseek-ai/dsh-settings` 注册 `memcurio` 命名空间（`src/plugin/settings.ts`），client 侧注册 `settings.section` 槽位（`client/entry.ts` + `client/settings/*`，面板标签 "记忆/Memory"），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / hostBridge / provider / model；profile `cordis.patch.yml` 为默认层，settings.yaml 用户层覆盖。`root`（数据位置）在面板只读说明。生效语义：injectContext/budget/hostBridge/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器面板经 `dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一运行期 require = `react`）随包发布；渲染与槽位治理待 S0 实机确认。
 
 **记忆面入口**：标题栏单按钮唤起记忆界面（下述）。
 
@@ -323,7 +323,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置/realtime）；字段名与客户端词汇对齐；delta 过滤与快照标记映射留给传输适配器（S0）；
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
 - v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version、注入预览携带 dynamicText；桥插件级集成测试落地；
-- v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；v1.5：**配置面落定**——`ctx.settings.installSection("memcurio", …)` 注册命名空间（profile config 为 composition base，settings.yaml 用户层覆盖），配置项 scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model；root 只读展示；记忆内容面不变（工作台/对话流，UI 永不静默写）。
+- v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；v1.5：**配置面落定（host + client 双侧）**——`ctx.settings.installSection("memcurio", …)` 命名空间（profile config 为 base，settings.yaml 用户层覆盖）+ `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，字段 scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model，含覆盖徽标/恢复默认/跨字段校验与写后校验）；root 只读说明；记忆内容面不变（工作台/对话流，UI 永不静默写）。
 
 ## 9. 安全与隐私边界
 
@@ -339,6 +339,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 ## 10. 非功能要求
 
 - **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定（S0 确定）。
+- **浏览器半侧打包（v1.5）**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.mjs`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
 - **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
 - **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。

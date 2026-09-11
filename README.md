@@ -47,7 +47,7 @@ bun pm pack            # → memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
-The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Configure from the DSH **Settings** page: the plugin registers a `memcurio` settings namespace (`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`) — profile config is the default layer and the settings document overrides it. Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. `hostBridge: true` turns on the memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`); it defaults to off until a browser transport sink is attached (S0).
+The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Configure from the DSH **Settings** page (a "Memory" section ships with the browser half): the plugin registers a `memcurio` settings namespace (`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`) — profile config is the default layer and the settings document overrides it. Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. `hostBridge: true` turns on the memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`); it defaults to off until a browser transport sink is attached (S0).
 
 ## Memory model
 
@@ -90,6 +90,8 @@ bun run build         # tsc build into dist/ (committed; CI guards drift)
 bun run pack:check    # build + tarball allowlist gate
 bun run eval:lexical  # deterministic retrieval/safety baseline
 ```
+
+The browser half (settings panel) is prebuilt into `lib/client.js` and declared through `dsh.client`; the host discovers it from the installed package.
 
 Releases ship as tag-driven GitHub Releases whose asset is the packed
 `memcurio-dsh-plugin-<version>.tgz` (`npm publish` is prepared but disabled).

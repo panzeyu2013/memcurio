@@ -1,8 +1,12 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const distRoot = join(repoRoot, "dist");
+
+function pkgName(): string {
+  return JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).name as string;
+}
 
 function filesUnder(dir: string): string[] {
   if (!existsSync(dir)) {
@@ -57,7 +61,17 @@ const packed = output
   .split("\n")
   .map((line) => line.match(/^packed\s+\S+\s+(.+)$/)?.[1])
   .filter((path): path is string => Boolean(path));
-const allowed = /^(?:package\.json|README\.md|LICENSE|cordis\.patch\.yml|dist\/)/;
+const allowed = /^(?:package\.json|README\.md|LICENSE|cordis\.patch\.yml|dist\/.*|lib\/client\.js)$/;
+// The browser half ships prebuilt: the loader artifact must exist, wear the
+// official factory shape, and carry the package id the host discovers.
+const clientBundle = join(repoRoot, "lib", "client.js");
+if (!existsSync(clientBundle)) {
+  throw new Error("missing browser artifact: lib/client.js (run `bun run build:client`)");
+}
+const bundle = readFileSync(clientBundle, "utf8");
+if (!bundle.includes("window.__ModuleLoader__.load({") || !bundle.includes(JSON.stringify(pkgName()))) {
+  throw new Error("lib/client.js is not a __ModuleLoader__ artifact for this package name");
+}
 const unexpectedPackageFiles = packed.filter((path) => !allowed.test(path));
 if (unexpectedPackageFiles.length) {
   throw new Error(`unexpected files in package: ${unexpectedPackageFiles.join(", ")}`);

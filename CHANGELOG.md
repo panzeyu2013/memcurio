@@ -38,6 +38,20 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   the release workflow until a token/provenance decision is made — see
   `docs/RELEASE.md`.
 
+### Added (settings panel)
+
+- **Settings panel (browser half)**: the package now declares `dsh.client`
+  (`platform: "web"` + official client inject rows) and ships a prebuilt
+  `lib/client.js` (esbuild bundle wrapped in the official
+  `window.__ModuleLoader__.load({ id, factory })` shape; the only runtime
+  require is the platform-seeded `react`). The panel registers the
+  `settings.section` slot as "Memory/记忆": scope select, injection/tools/
+  bridge toggles, token budget, provider/model route, per-field override
+  badges with reset, bulk reset, and post-write verification (a resolved but
+  unlanded host write reports failure instead of a silent success).
+  `pack:check` now enforces the artifact shape; CI/release drift-check
+  `dist/` and `lib/`.
+
 ### Added (settings surface)
 
 - **`memcurio` settings namespace** (`@deepseek-ai/dsh-settings`): the plugin

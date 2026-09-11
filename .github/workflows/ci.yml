@@ -30,13 +30,13 @@ jobs:
       - run: bun run lint
       - run: bun test
       # Explicitly verify the build artifacts exist (prepare only warned).
-      - run: test -f dist/plugin/index.js -a -f dist/engine.js -a -f dist/core/db.js
+      - run: test -f dist/plugin/index.js -a -f dist/engine.js -a -f dist/core/db.js -a -f lib/client.js
       - run: bun run pack:check
       - run: bun run eval:lexical
       # Committed dist/ must stay in sync with source. This check runs AFTER
       # pack:check (which rebuilds dist): a fresh build must not change the
       # committed artifacts — including the rebuild pack:check itself produced.
-      - run: git diff --exit-code -- dist/
+      - run: git diff --exit-code -- dist/ lib/
       # Validate the published tarball contents (files list / prepare) so a
       # broken `files` field is caught in CI, not at publish time. Note: the
       # command is `bun pm pack` — plain `bun pack` is not a bun subcommand.
