@@ -13,6 +13,7 @@ const required = [
   "dist/plugin/index.js",
   "dist/plugin/index.d.ts",
   "dist/engine.js",
+  "lib/client.js",
 ];
 
 const missing = required.filter((rel) => !existsSync(join(repoRoot, rel)));

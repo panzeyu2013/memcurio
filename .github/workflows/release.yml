@@ -76,6 +76,7 @@ jobs:
           bun test
           bun run pack:check
           test -f lib/client.js
+          git diff --exit-code -- dist/ lib/
           bun pm pack --dry-run
           node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok:', m.name); })"
 

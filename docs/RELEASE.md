@@ -24,7 +24,7 @@ bun install --frozen-lockfile
 bun run build && bun run typecheck && bun run lint && bun test
 bun run pack:check          # rebuild + allowlist + dist reverse check
 bun pm pack --dry-run       # tarball content dry-run
-bun run pack:tgz            # → .smoke/memcurio-dsh-plugin-<version>.tgz
+bun run pack:tgz            # → .smoke/memcurio-dsh-plugin-<version>.tgz (dist + lib/client.js)
 node scripts/release-notes.mjs <version> --out /tmp/release-notes.md   # section must exist
 ```
 
@@ -79,7 +79,7 @@ workflow/script/pin change with one dry run before the formal tag.
   closed; stale drafts are deleted first).
 - Tag pushes run the same CI chain as `main` — a tag can never carry an
   untested commit.
-- `dist/` is committed and drift-checked (`git diff --exit-code -- dist/`);
+- `dist/` and `lib/` are committed and drift-checked in CI and in the release gate (`git diff --exit-code -- dist/ lib/`);
   `prepare` only verifies artifacts (consumers never build).
 - `*.tgz` and `.smoke/` are git-ignored; the release artifact is exactly the
   bytes the local gates produced (sha256 sidecar shipped alongside).

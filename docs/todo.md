@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-11（第二十六轮：客户端 Settings 面板——`dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一 require=react）+ `settings.section` 槽位（"记忆/Memory" 面板：字段编辑/覆盖徽标/恢复默认/写后校验）；456 tests / 27 files / 2913 expect；第二十五轮：配置面落定——`memcurio` settings 命名空间（Settings 页可配置 scope/injectContext/budget/hostBridge/路由；profile 为默认层、settings.yaml 覆盖；live/重启生效语义），448 tests / 26 files / 2883 expect 全绿；第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-11（第二十七轮：三路全量审查修复——host registerTools/live 路由/bridge 播种、client 注入面 hooks/resetAll、构建纯度 gate 与文档一致性，470 tests 全绿；第二十六轮：客户端 Settings 面板——`dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一 require=react）+ `settings.section` 槽位（"记忆/Memory" 面板：字段编辑/覆盖徽标/恢复默认/写后校验）；456 tests / 27 files / 2913 expect；第二十五轮：配置面落定——`memcurio` settings 命名空间（Settings 页可配置 scope/injectContext/budget/hostBridge/路由；profile 为默认层、settings.yaml 覆盖；live/重启生效语义），448 tests / 26 files / 2883 expect 全绿；第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 456 tests / 2913 assertions / 27 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 470 tests / 2961 assertions / 27 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -22,9 +22,9 @@
 
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
-| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（437/25 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
+| 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（470/27 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.5-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
-| 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、快照/投影/读服务（第十七轮）、客户端 view-model 24 测（含 browse 跨 store） | 浏览器 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）后 M0 |
+| 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、读服务/投影/快照（第十七轮）、**Settings 面板已发布**（第二十六轮：`dsh.client` + `lib/client.js` + `settings.section`）、客户端 view-model 30 测 | 工作台 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）；面板渲染待实机验证 |
 
 ## 3. 已完成
 
@@ -67,7 +67,7 @@
 - [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
 - [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
 - [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
-- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md) v1.4：标题栏单按钮入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；host 半侧桥与快照已实现（config.hostBridge），下一步 S0 spike（真实 DSH 环境实测第三方 dsh.client 槽位/推送通道/标题栏入口）
+- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md) v1.5：标题栏单按钮入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；host 半侧桥/快照/配置命名空间与 **Settings 面板**均已发布，下一步 S0 spike（真实 DSH Web 实测面板渲染、工作台槽位与推送通道）
 
 ### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -124,9 +124,9 @@ bun run pack:check
 ### 6.2 最新结果（当前；历史快照见各轮记录）
 
 - `bun test`：437 pass / 2848 expect / 25 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
-- `bun test --coverage`：lines 89.49%，functions 89.45%
+- `bun test --coverage`：lines 93.63%，functions 92.46%（第二十七轮实测）
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：78 文件（单 tarball allowlist + dist 反向校验），干净
+- `bun run pack:check`：79 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
@@ -254,6 +254,20 @@ bun run pack:check
 
 证据窗折叠（evidence delta → `state.evidence`：partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；client 27→30 项测试；全量 **437 tests / 25 files / 2848 expect / 0 fail**；设计 v1.4.2 记录（§8.4 增补）。
 
+### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
+
+收尾并准备首个发布（本地无法实际推送/发版——外部项，流程与产物已就绪）：
+
+- `package.json`：version → **0.0.1**；`publishConfig.access: public`（npm 发布预留、workflow 内禁用说明）；exports 补 `./cordis.patch.yml`、`./package.json`；scripts 补 `pack:tgz`（bun pm pack --destination .smoke --ignore-scripts）与 `release:notes`
+- `CHANGELOG.md`：0.0.1 节（Added + Known limitations，keepachangelog）
+- `.github/workflows/release.yml`：tag `v*` / dispatch(dry_run) → 全量门禁 → 版本一致性 → CHANGELOG 合成 notes（`scripts/release-notes.mjs`）→ tgz + sha256 → 防重发布守卫 → GitHub Release（资产=打包 tgz）；npm publish 注释暂禁
+- `ci.yml`：push `tags: v*` 走同链
+- `docs/RELEASE.md`：checklist/版本纪律/步骤/环境要求/安全规范
+- 版本化文件名引用 8 处 → 0.0.1；README 补 Releases 说明；`.smoke/` 入 gitignore
+- 验证：`bun run pack:tgz` → `.smoke/memcurio-dsh-plugin-0.0.1.tgz`（0.54MB unpacked / 140.67KB packed；表面 = cordis.patch.yml+LICENSE+package.json+README + 72 dist 文件）；release-notes.mjs 提取 0.0.1 节成功
+
+外部项（需凭据/真实环境）：git push、GitHub Release 创建、真实 DSH 安装 smoke、npm publish（NPM_TOKEN + provenance 决策）。
+
 ### 6.14 第二十三轮：放行前三角度验收（2026-09-06）
 
 架构 / 功能 / 前端三路只读验收（并发 3，HEAD f626aa0）：
@@ -286,11 +300,11 @@ bun run pack:check
 - 文档：design v1.5（§3.3 配置入口、§5.1 配置行、§13-14 决策）、README/README_cn/installation §5.1/integration-dsh、CHANGELOG Added
 - 全量 **448 tests / 26 files / 2883 expect / 0 fail**；lint 71 files clean
 
-待续（M0）：浏览器侧 Settings 面板（`dsh.client` + `settings.section` 槽位 + esbuild 产物），与工作台 UI 一同组装。
+（第二十六轮已交付：`dsh.client` 声明 + `lib/client.js`（esbuild loader 产物）+ `settings.section` 面板；剩余为实机渲染验证。）
 
 ### 6.17 第二十六轮：客户端 Settings 面板（2026-09-11）
 
-按 `dsh-mcp-scope` 已验证模板补齐配置面的浏览器半侧：
+按 `dsh-mcp-scope` 模板补齐配置面的浏览器半侧（并在审查后修正其注入面：改用 `hooks` 可观察席位，见第二十七轮）：
 
 - `client/settings/{locales,controller,section,styles}.ts`：框架无关 controller（scope port 窄接口、字段/覆盖判定、跨字段 guard、**写后校验**——resolved 但未落地报错）+ React 面板（`createElement`，字段：scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model；覆盖徽标、单字段/整体恢复默认、状态与提示文案 zh/en）
 - `client/entry.ts`：浏览器半侧入口（`inject = ['slots','locale','settingsScope','remote']`；注册 locale、绑定 `settingsScope`、`remote.$on('settings/document-updated')` 刷新、`slots.inject('settings.section', …)`，order 30）
@@ -301,19 +315,16 @@ bun run pack:check
 - 全量 **456 tests / 27 files / 2913 expect / 0 fail**；lint 78 files clean；typecheck 通过
 - 待实机（S0/用户环境）：面板在真实 DSH Web 的渲染与槽位治理、`settings.yaml` 往返
 
-### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
+### 6.18 第二十七轮：三路全量审查修复（2026-09-11）
 
-收尾并准备首个发布（本地无法实际推送/发版——外部项，流程与产物已就绪）：
+host / client / docs 三路只读审查（并发 3）后的统一修复：
 
-- `package.json`：version → **0.0.1**；`publishConfig.access: public`（npm 发布预留、workflow 内禁用说明）；exports 补 `./cordis.patch.yml`、`./package.json`；scripts 补 `pack:tgz`（bun pm pack --destination .smoke --ignore-scripts）与 `release:notes`
-- `CHANGELOG.md`：0.0.1 节（Added + Known limitations，keepachangelog）
-- `.github/workflows/release.yml`：tag `v*` / dispatch(dry_run) → 全量门禁 → 版本一致性 → CHANGELOG 合成 notes（`scripts/release-notes.mjs`）→ tgz + sha256 → 防重发布守卫 → GitHub Release（资产=打包 tgz）；npm publish 注释暂禁
-- `ci.yml`：push `tags: v*` 走同链
-- `docs/RELEASE.md`：checklist/版本纪律/步骤/环境要求/安全规范
-- 版本化文件名引用 8 处 → 0.0.1；README 补 Releases 说明；`.smoke/` 入 gitignore
-- 验证：`bun run pack:tgz` → `.smoke/memcurio-dsh-plugin-0.0.1.tgz`（0.54MB unpacked / 140.67KB packed；表面 = cordis.patch.yml+LICENSE+package.json+README + 72 dist 文件）；release-notes.mjs 提取 0.0.1 节成功
-
-外部项（需凭据/真实环境）：git push、GitHub Release 创建、真实 DSH 安装 smoke、npm publish（NPM_TOKEN + provenance 决策）。
+- **host blocker**：`registerTools` 改读 `live()`（settings 文档为权威，composition 仅为 base）——双向生效；**major**：`registerMemoryTools` 无条件拿到 bridge（此前 live 开启 hostBridge 后 `memory_read` 打标永久失效）；**major**：`provider/model` 改为消费点 live 解析（`fixedRoute()`/`pinnedRoute()`），不再只在会话创建时 seed
+- **host 其他**：validate 拒绝空/空白 provider/model（镜像 resolveConfig，避免阻断会话路由回退）；`HostBridge.configure()` 让快照 scope/budget 跟随 live；live 启用时播种 refresh 基线（并修 `refresh()` 首次播种语义的真实缺陷——首调用无条件写基线）；插件 fiber 卸载清理桥注册表；warn 去重；`installSection` hooks 同步调用约束注释；settings 硬注入的 reload 耦合与 providerless inert 场景成文；`cordis.patch.yml` inject 列表补 `settings`
+- **client**：**blocker**——注入面改 `hooks: { face: getSnapshot/subscribe }`（renderer 记忆化 inject 结果，值快照会让面板冻结：值回弹/徽标不出现/永久 Loading）；`resetAll` 补最终 notify + 落盘校验 + 部分失败区分；reset 也走路由 guard；状态行/只读文案分支；a11y（role=status/alert、Enter 提交）；错误改 locale 键；单 scope 订阅扇出；`Object.is` 校验；失败后草稿回滚；去掉多余 `remote` 注入与 `as never`
+- **构建/发布**：平台 seed 表抽为共享模块，`pack:check` 增 require 纯度 + factory 返回断言；release gate 增 `git diff --exit-code -- dist/ lib/`；`prepare.mjs` 校验 `lib/client.js`
+- **测试**：settings 11 项（含 registerTools 双向、空串拒绝、live 启用播种+memory_read 打标+快照 scope/budget、重复激活、pinnedRoute）；client-settings 17 项（faceHook 契约、单订阅、resetAll 通知/校验/半路由、loading/unavailable、错误清除）；全量 **470 tests / 27 files / 2961 expect / 0 fail**（coverage 92.51% funcs / 93.63% lines）
+- **文档**：三路发现全部落地（统计块/版本标记 v1.5/"浏览器半侧已发布"表述、架构建模、RELEASE/prepare、client README 两半侧）
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 
@@ -321,9 +332,7 @@ bun run pack:check
 |---|---|---|
 | Bun | 1.3.14 | 构建、bundle、脚本、Unix socket smoke |
 | Codex CLI | 0.147.0 | 已移除适配器（codex 使用原生 memory）；历史 smoke 记录保留于 git 历史 |
-
-smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
-| OpenCode | 1.18.13 | 全局插件目录加载、空 session create/delete、`session_end` queue completed |
+| OpenCode | 1.18.13 | 历史：全局插件目录加载、空 session create/delete、`session_end` queue completed（适配器已于第十五轮移除） |
 
 smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
 

@@ -54,8 +54,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
@@ -69,7 +68,7 @@
     "eval:lexical": "bun run scripts/eval-lexical.ts",
     "pack:tgz": "bun run build && mkdir -p .smoke && bun pm pack --destination .smoke --ignore-scripts",
     "release:notes": "node scripts/release-notes.mjs",
-    "build:client": "bun scripts/build-client.mjs"
+    "build:client": "bun scripts/build-client.ts"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2"

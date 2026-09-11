@@ -9,11 +9,11 @@ This directory carries TWO halves with different maturity:
    DSH Web (S0 run card).
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
 
-> Workbench status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web.**
+> Workbench status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web. (The Settings panel above IS shipped; the workbench below is not.)**
 > Created ahead of the S0 spike (design [plugin-ui-v1.md](../docs/design/plugin-ui-v1.md) §11-S0). Every claim about the
 > DSH client-module machinery is marked UNVERIFIED-until-spike and was grounded in the read-only upstream npm install
 > listed in [§d](#7-d-upstream-docs-read-this-scaffold) — the same rc.1 install the design declares as its reference
-> version (§13.10). Nothing in this directory imports `@deepseek-ai/*`, touches React, or runs a UI.
+> version (§13.10). Nothing in the WORKBENCH SCAFFOLD (`types.ts`/`index.ts`) imports `@deepseek-ai/*`, touches React, or runs a UI; the shipped Settings panel (`entry.ts`/`settings/*`) does use React from the platform seed.
 
 Scope of the S0 milestone this scaffold feeds (design §11-S0): prove in a real DSH Web that (1) a third-party
 `dsh.client` bundle can reach a UI slot, (2) a host→browser push path exists for memcurio deltas, (3) the client
@@ -26,6 +26,7 @@ one pushed event end-to-end.
 
 | File | Role |
 |---|---|
+| `client/entry.ts`, `client/settings/*`, `tests/client-settings.test.ts` | SHIPPED Settings panel (see the top of this file). |
 | `client/types.ts` | Local structural vocabulary: `MemoryClientApi` bridge, delta union (nine kinds, projector-aligned), snapshot payload, `WorkbenchView`, stores/entries/usage/queue/audit/settings shapes, `MemoryUiFactory` seam. Zero external imports. |
 | `client/index.ts` | Pure view-model state machine `createWorkbenchModel(api)` — no DOM/framework. `registerFactory()` S0 stub. |
 | `client/README.md` | This record: wiring plan (UNVERIFIED), S0 spike checklist, S0 acceptance, upstream docs read. |
@@ -135,7 +136,13 @@ The following host→client wire differences are INTENTIONALLY unmapped until th
 
 ## 4. (a) Intended package wiring (UNVERIFIED-until-spike)
 
-Shape to verify first in S0 (evidence above makes it the most probable target):
+SUPERSEDED by round 26 (kept for the S0 record): the shipped shape is
+`dsh.client = {platform:"web", inject:["@deepseek-ai/dsh-client-locale","@deepseek-ai/dsh-client-ui-renderer","@deepseek-ai/dsh-client-ui-settings"]}`,
+`exports["./client"] = {"default":"./lib/client.js"}`, `files: ["dist","lib","README.md","LICENSE","cordis.patch.yml"]`,
+and the bundle is built by `scripts/build-client.ts` (esbuild; externals = the frozen platform seed table; the only runtime
+`require` is `react`). The loader parser reads only `.default` — a `types` condition is unnecessary at runtime.
+
+Original pre-spike hypothesis (historical):
 
 ```jsonc
 // package.json — inside the existing @memcurio/dsh-plugin declaration, UNVERIFIED until S0:
@@ -338,8 +345,8 @@ composed behavior needs confirmation beyond the npm artifacts.
 
 ## 8. (e) Verification performed
 
-- Standalone strict typecheck (repo root tsconfig excludes `client/` by `rootDir: src`), via the repo-local
-  TypeScript 5.9.3 through bun (no `node` on this machine):
+- Workbench-scaffold strict typecheck: `tsconfig.typecheck.json` includes `client/` (and `tests/`), so CI runs this
+  directly now — the standalone command below is historical:
 
   ```bash
   bun x tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 \
@@ -349,12 +356,12 @@ composed behavior needs confirmation beyond the npm artifacts.
   # → exit 0
   ```
 
-- `bun test tests/client-types.test.ts` → **27 pass / 0 fail** (1373 expects): initial state, view switching,
+- `bun test tests/client-types.test.ts` → **30 pass / 0 fail** (1384 expects): initial state, view switching,
   setStore + browse (per-store refill, degradation, error capture), refresh fold + error capture + browsing guard,
   applyDelta per-kind folds (nine delta kinds), queue per-job fold, origin-seq dedupe + window, timeline
   cap 500 + sliding window, evidence-window folds (dedupe/cap/prune), ⭐ bookmark toggles, simulate text +
   trim/reject, registerFactory seam.
 - Biome lint (repo rule set, run via `bun ./node_modules/@biomejs/biome/bin/biome lint client
   tests/client-types.test.ts`) → clean, 0 diagnostics.
-- Client files are tracked additions under `client/` + `tests/client-types.test.ts`; the browser half stays
-  framework-free pending the S0 loader/slot outcome.
+- The workbench scaffold (`types.ts`/`index.ts`) stays framework-free pending the S0 loader/slot outcome; the
+  SHIPPED Settings panel (`entry.ts`/`settings/*`) uses React from the platform seed.

@@ -1,6 +1,6 @@
 # Memcurio 架构（v2）
 
-> 历史：2026-08-10 v2 codex-style 重构快照；2026-09-05 起第 15–19 轮持续演进（单宿主收敛、DSH home 存储、UI host 桥与读服务、客户端骨架）。
+> 历史：2026-08-10 v2 codex-style 重构快照；2026-09-05 起第 15–27 轮持续演进（单宿主收敛、DSH home 存储、UI host 桥与读服务、settings 配置面与浏览器面板）。
 > 实现契约见 [memory-pipeline-v2.md](./memory-pipeline-v2.md)（模块职责、导出签名、数据格式、行为规则以该文档为准）。
 
 ## 1. 分层架构
@@ -84,22 +84,23 @@ src/
 │   ├── projector.ts     8 类 InputRecord → 9 类脱敏 delta（inject/usage/citation/evidence/prune/queue 单 job/memory-list/receipt/snapshot-ready）
 │   └── snapshot.ts      buildSnapshot 全量装配（store 列表/注入预览/条目+usage/队列/雷达/近 60 收据/设置/realtime）
 ├── plugin/
-│   ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装）
-│   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；config.hostBridge 门控）
+│   ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装、settings live 读取）
+│   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；config.hostBridge 门控 + live configure）
+│   ├── settings.ts     `memcurio` settings 命名空间（schema、composition base、live 句柄、跨字段校验）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
-client/                浏览器半侧骨架（types.ts 词汇 / index.ts view-model incl. browse()/browseSnapshot；无框架，React 组装留 S0/M0）
+client/                浏览器半侧：entry.ts + settings/*（**已发布的 Settings 面板**，`dsh.client` + `lib/client.js`）；types.ts + index.ts 为工作台 view-model 骨架（S0 组装）
 docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档
 ├── integration-dsh.md      DSH 接入与安装说明
-├── design/plugin-ui-v1.md  记忆工作台设计基线（v1.4，验收基准）
+├── design/plugin-ui-v1.md  记忆工作台设计基线（v1.5，验收基准）
 ├── design/s0-spike-plan.md / s0-spike-checklist.md   S0 实机 spike 计划与运行卡
 ├── README_cn.md / installation.md / todo.md          CN 说明 / 安装指南 / 轮次账本
 ```
 
 层例外（文档化）：`services/context.ts` 复用 `plugin/scope.ts` 的 `workspaceStoreRoot`——scope.ts 只依赖 node 内建（纯叶子、无 DSH 依赖、无环）；向 scope.ts 新增任何导入前须重新评估此例外。
 
-分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/）后 `bun pm pack` 得到 tarball，`dsh plugin --profile <profile> add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
+分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/ + esbuild → `lib/client.js` loader 产物）后 `bun pm pack` 得到 tarball，`dsh plugin --profile <profile> add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
 
 ## 4. 数据流
 
@@ -149,4 +150,4 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
 | v1 M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 完成（v1 体系，v2 中已移除，改用 codex 原生 memory） |
 | v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ provider-scoped durable extraction queue + 有界证据 + 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v11 + stable artifact ID + generation recovery + consolidation lease（v2 时代的 CLI/MCP 表面在 DSH 收敛中移除） | ✅ 已完成首批实现与本地回归 |
 | DSH 收敛 | 单宿主收敛：opencode 适配器 / MCP server / CLI / HTTP LLM 通道（HttpChannel、`MEMCURIO_LLM_*`）全部移除；引擎 + 插件合并为仓库根单包 `@memcurio/dsh-plugin`（`cordis.patch.yml` bundle manifest）；模型访问只经宿主注入的 `ctx.llm` 通道 | ✅ 已完成 |
-| 真实 harness 验证 | DeepSeek Harness（DSH 0.1.5-rc.1）Cordis 插件与 session lifecycle | ✅ 本地 smoke 已通过；真实模型质量、长会话、崩溃恢复仍待独立验收 |
+| 真实 harness 验证 | DeepSeek Harness（DSH 0.1.5-rc.1）Cordis 插件与 session lifecycle | ⏳ 未验收：缺少真实 DSH 启动/面板渲染 smoke（S0 运行卡）；真实模型质量、长会话、崩溃恢复待独立验收 |

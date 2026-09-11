@@ -9,10 +9,16 @@
  * settings file provider) overrides it, exactly like official dsh plugins.
  *
  * Fields are user-overridable EXCEPT `root` (deployment data location, shown
- * read-only elsewhere). `scope` and `registerTools` are read at session
- * creation / apply time respectively, so changes to them take effect for new
- * sessions or after a restart; the rest (injection toggle, budget, bridge,
- * worker route) apply live through this handle.
+ * read-only elsewhere). `scope` is read per new session; the rest (injection
+ * toggle, budget, bridge, worker route, registerTools at the NEXT apply)
+ * apply live through this handle.
+ *
+ * Coupling: this plugin hard-injects `settings` (the service is guaranteed by
+ * dsh-base and every profile layered on it, and a hard inject makes the
+ * section resolve synchronously before apply). Consequence, documented in
+ * docs/integration-dsh.md: unloading/remounting the settings provider also
+ * unloads and re-applies memcurio, and a profile without any settings
+ * provider would leave the plugin inert — `dsh-sdk-minimal` is such a tree.
  */
 import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
@@ -52,10 +58,9 @@ export interface MemcurioSettingsHandle {
 export interface InstallSettingsOptions {
   /** Composition base: the profile config resolved by the plugin entry. */
   base: MemcurioSettings;
-  /** Called after attach/detach/commit with the next resolved value. */
+  /** Called after attach/commit with the next resolved value. Hooks fire from
+   *  inside the settings provider, so this must never throw. */
   onChange(next: MemcurioSettings): void;
-  /** Plugin logger for change diagnostics. */
-  warn(message: string): void;
 }
 
 /** Register the namespace and return the live read handle. The registration
@@ -73,10 +78,17 @@ export function installMemcurioSettings(
       options.onChange(source());
     },
     validate: (doc) => {
-      // Cross-field rule the schema cannot express: a fixed worker route
-      // needs both halves (mirrors resolveConfig's composition check).
-      if ((doc.provider === undefined) !== (doc.model === undefined)) {
+      // Cross-field rules the schema cannot express, mirroring resolveConfig's
+      // composition checks: a fixed worker route needs BOTH halves, and each
+      // half must be a non-empty string (an empty provider would block the
+      // session-route fallback and dead-end the worker).
+      const provider = doc.provider?.trim();
+      const model = doc.model?.trim();
+      if ((provider === undefined || provider === "") !== (model === undefined || model === "")) {
         throw new Error("memcurio: provider and model must be set together");
+      }
+      if ((doc.provider !== undefined && provider === "") || (doc.model !== undefined && model === "")) {
+        throw new Error("memcurio: provider and model must be non-empty when set");
       }
     },
   });
@@ -85,16 +97,14 @@ export function installMemcurioSettings(
   };
 }
 
-/** Build the composition base from the profile config (only defined keys). */
-export function settingsBase(resolved: {
-  scope: "workspace" | "global";
-  injectContext: boolean;
-  registerTools: boolean;
-  injectBudgetTokens?: number;
-  hostBridge: boolean;
-  provider?: string;
-  model?: string;
-}): MemcurioSettings {
+/** Pinned worker route from a resolved settings value (both halves set). */
+export function pinnedRoute(settings: MemcurioSettings): { provider: string; model: string } | undefined {
+  return settings.provider && settings.model ? { provider: settings.provider, model: settings.model } : undefined;
+}
+
+/** Build the composition base from the profile config (only defined keys;
+ *  the resolved Config is structurally assignable to {@link MemcurioSettings}). */
+export function settingsBase(resolved: MemcurioSettings): MemcurioSettings {
   return {
     scope: resolved.scope,
     injectContext: resolved.injectContext,

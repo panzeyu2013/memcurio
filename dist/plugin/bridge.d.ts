@@ -32,9 +32,10 @@ export interface BridgeSessionInfo {
 }
 export declare class HostBridge {
     private readonly baseRoot;
-    private readonly scope;
+    /** Mutable: the settings document can change them live (configure()). */
+    private scope;
     private readonly version?;
-    private readonly injectBudgetTokens?;
+    private injectBudgetTokens?;
     /** Settings summary carries the plugin reference version. */
     get referenceVersion(): string | undefined;
     private enabled;
@@ -65,6 +66,12 @@ export declare class HostBridge {
     /** Session evidence window, re-redacted for the browser. Empty when no
      *  source is wired or the session is unknown. */
     evidenceSnapshot(sessionId: string): BridgeEvidenceRow[];
+    /** Refresh the deployment facts the snapshot face reports (scope badge,
+     *  injection budget) after a live settings change. */
+    configure(next: {
+        scope?: "workspace" | "global";
+        injectBudgetTokens?: number;
+    }): void;
     /** Session identity facts (label map + session per root). */
     registerSession(info: BridgeSessionInfo): void;
     labelFor(root: string): string | undefined;

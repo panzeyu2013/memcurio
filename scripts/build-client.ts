@@ -12,19 +12,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+import { PLATFORM_EXTERNALS } from "./platform-externals.js";
 
-const externals = [
-  "react",
-  "react/jsx-runtime",
-  "react-dom",
-  "react-dom/client",
-  "@deepseek-ai/cordis",
-  "@deepseek-ai/dsh-client-store",
-  "@deepseek-ai/dsh-client-ui-slots",
-  "@deepseek-ai/dsh-client-ui-primitives",
-];
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name: string };
 
 const result = await build({
   entryPoints: [join(root, "client", "entry.ts")],
@@ -33,7 +24,7 @@ const result = await build({
   platform: "browser",
   target: "es2022",
   jsx: "automatic",
-  external: externals,
+  external: [...PLATFORM_EXTERNALS],
   sourcemap: false,
   minify: false,
   logLevel: "warning",
@@ -41,7 +32,9 @@ const result = await build({
   outfile: join(root, "lib", "client.js"),
 });
 
-const code = result.outputFiles[0].text;
+const output = result.outputFiles?.[0];
+if (!output) throw new Error("esbuild produced no output");
+const code = output.text;
 const wrapped = `window.__ModuleLoader__.load({\n\tid: ${JSON.stringify(pkg.name)},\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n${code}\n\t\treturn module.exports;\n\t}\n});\n`;
 mkdirSync(join(root, "lib"), { recursive: true });
 writeFileSync(join(root, "lib", "client.js"), wrapped);

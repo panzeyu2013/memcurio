@@ -9,10 +9,16 @@
  * settings file provider) overrides it, exactly like official dsh plugins.
  *
  * Fields are user-overridable EXCEPT `root` (deployment data location, shown
- * read-only elsewhere). `scope` and `registerTools` are read at session
- * creation / apply time respectively, so changes to them take effect for new
- * sessions or after a restart; the rest (injection toggle, budget, bridge,
- * worker route) apply live through this handle.
+ * read-only elsewhere). `scope` is read per new session; the rest (injection
+ * toggle, budget, bridge, worker route, registerTools at the NEXT apply)
+ * apply live through this handle.
+ *
+ * Coupling: this plugin hard-injects `settings` (the service is guaranteed by
+ * dsh-base and every profile layered on it, and a hard inject makes the
+ * section resolve synchronously before apply). Consequence, documented in
+ * docs/integration-dsh.md: unloading/remounting the settings provider also
+ * unloads and re-applies memcurio, and a profile without any settings
+ * provider would leave the plugin inert — `dsh-sdk-minimal` is such a tree.
  */
 import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
@@ -38,21 +44,18 @@ export interface MemcurioSettingsHandle {
 export interface InstallSettingsOptions {
     /** Composition base: the profile config resolved by the plugin entry. */
     base: MemcurioSettings;
-    /** Called after attach/detach/commit with the next resolved value. */
+    /** Called after attach/commit with the next resolved value. Hooks fire from
+     *  inside the settings provider, so this must never throw. */
     onChange(next: MemcurioSettings): void;
-    /** Plugin logger for change diagnostics. */
-    warn(message: string): void;
 }
 /** Register the namespace and return the live read handle. The registration
  *  is an effect on the plugin fiber (disposed with the plugin). */
 export declare function installMemcurioSettings(ctx: Context, options: InstallSettingsOptions): MemcurioSettingsHandle;
-/** Build the composition base from the profile config (only defined keys). */
-export declare function settingsBase(resolved: {
-    scope: "workspace" | "global";
-    injectContext: boolean;
-    registerTools: boolean;
-    injectBudgetTokens?: number;
-    hostBridge: boolean;
-    provider?: string;
-    model?: string;
-}): MemcurioSettings;
+/** Pinned worker route from a resolved settings value (both halves set). */
+export declare function pinnedRoute(settings: MemcurioSettings): {
+    provider: string;
+    model: string;
+} | undefined;
+/** Build the composition base from the profile config (only defined keys;
+ *  the resolved Config is structurally assignable to {@link MemcurioSettings}). */
+export declare function settingsBase(resolved: MemcurioSettings): MemcurioSettings;

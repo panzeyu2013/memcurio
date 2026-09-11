@@ -31,7 +31,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 
 ## Tuning and store inspection
 
-Each store root is a complete memcurio data root, so the per-store `config.json` (auto-created `0600` on first use) tunes the pipeline: `budget.maxInjectTokens` and `pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`. The plugin config (`injectBudgetTokens`, `provider`/`model`) is global per DSH profile; injection and tools cannot be disabled per workspace (only per profile via `cordis.patch.yml`).
+Each store root is a complete memcurio data root, so the per-store `config.json` (auto-created `0600` on first use) tunes the pipeline: `budget.maxInjectTokens` and `pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`. The plugin config (`injectBudgetTokens`, `provider`/`model`, `hostBridge`, `scope`, `registerTools`) is deployment- or user-level: the profile `cordis.patch.yml` is the composition base and the `memcurio` settings namespace (Settings page / `<DSH home>/settings.yaml`) overrides it. Injection and tools cannot be disabled per workspace.
 
 There is no standalone CLI anymore (round 15): inspect or drive a store from a test/dev context by pointing the engine modules at its root (see the tests) — or wait for the planned memory-UI milestone, which will surface `memory_status`-class operations in the DSH Web client:
 
@@ -77,7 +77,11 @@ Example configuration:
 ## Settings integration
 
 The host half hard-injects the DSH `settings` service (official plugin pattern) and registers the `memcurio` namespace through `ctx.settings.installSection`:
-`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/`hostBridge`/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) ships with the M0 client assembly.
+`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/`hostBridge`/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`); real-Web rendering and slot governance are S0 verification items.
+
+## Settings coupling and profile requirements
+
+`settings` is a hard injection (the service is guaranteed by dsh-base and every profile layered on it, and a hard inject makes the namespace resolve synchronously before apply). Two consequences, both verified in review: a profile without any settings provider leaves the plugin inert (`dsh-sdk-minimal` is such a tree), and unloading/remounting the settings provider unloads and re-applies memcurio.
 
 ## Current validation boundary
 

@@ -112,9 +112,10 @@ function rolloutKeyFromDetail(detail: string, action: string): string | undefine
 
 export class HostBridge {
   private readonly baseRoot: string;
-  private readonly scope: "workspace" | "global";
+  /** Mutable: the settings document can change them live (configure()). */
+  private scope: "workspace" | "global";
   private readonly version?: string;
-  private readonly injectBudgetTokens?: number;
+  private injectBudgetTokens?: number;
   /** Settings summary carries the plugin reference version. */
   get referenceVersion(): string | undefined {
     return this.version;
@@ -178,6 +179,13 @@ export class HostBridge {
       const text = row.text === undefined ? undefined : contentTextRedacted(row.text);
       return { kind: row.kind, ...(text !== undefined ? { text } : {}), ...(row.name ? { name: row.name } : {}), ...(row.path ? { path: row.path } : {}) };
     });
+  }
+
+  /** Refresh the deployment facts the snapshot face reports (scope badge,
+   *  injection budget) after a live settings change. */
+  configure(next: { scope?: "workspace" | "global"; injectBudgetTokens?: number }): void {
+    if (next.scope !== undefined) this.scope = next.scope;
+    this.injectBudgetTokens = next.injectBudgetTokens;
   }
 
   /** Session identity facts (label map + session per root). */
@@ -268,6 +276,10 @@ export class HostBridge {
   async refresh(root: string): Promise<ProjectedDelta[]> {
     if (!this.enabled) return [];
     const deltas: ProjectedDelta[] = [];
+    // First refresh per root only SEEDS the baselines: pre-existing audit
+    // rows and jobs are history, not deltas. Without this, enabling the
+    // bridge live would replay up to 500 audit rows as fresh receipts.
+    const firstRefresh = !this.lastAuditRowid.has(root);
 
     // 1) Audit tail
     const lastRowid = this.lastAuditRowid.get(root) ?? 0;
@@ -293,9 +305,9 @@ export class HostBridge {
     } finally {
       index.close();
     }
-    if (maxRowid > lastRowid) this.lastAuditRowid.set(root, maxRowid);
+    if (firstRefresh || maxRowid > lastRowid) this.lastAuditRowid.set(root, maxRowid);
 
-    if (auditRows.length > 0) {
+    if (auditRows.length > 0 && !firstRefresh) {
       for (const row of auditRows) {
         if (isWritePathAction(row.action)) {
           const record: AuditRecord = {
@@ -336,7 +348,7 @@ export class HostBridge {
           lastError: job.lastError,
         });
       }
-      if (this.jobsByRoot.has(root)) {
+      if (this.jobsByRoot.has(root) && !firstRefresh) {
         // Baseline exists: emit changes only.
         const changed: QueueJobRow[] = [];
         for (const [jobId, row] of current) {

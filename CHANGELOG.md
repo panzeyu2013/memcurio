@@ -62,8 +62,7 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   stays the composition base; the user layer persists to
   `<DSH home>/settings.yaml`. Injection toggle, budget, host bridge and the
   worker route apply live; `scope` applies to new sessions; `registerTools`
-  needs a restart; `root` is read-only. The browser-side panel
-  (`settings.section`) ships with the M0 client assembly.
+  applies at the next plugin apply (restart); `root` is read-only.
 
 ### Changed
 
@@ -79,8 +78,9 @@ channel are staged behind an S0 spike in a real DSH Web instance.
 
 ### Known limitations (this release)
 
-- The browser UI is not yet assembled: no React/DOM rendering, no transport
-  channel — the client model and host bridge are the verified pre-work.
-  `docs/design/s0-spike-plan.md` covers the real-environment spike.
+- The memory **workbench** UI is not yet assembled: the shipped browser half is
+  the Settings panel only; the workbench view-model, host bridge and delta
+  protocol are the verified pre-work, and its transport channel is still
+  unselected. `docs/design/s0-spike-plan.md` covers the real-environment spike.
 - Git remote push, node:sqlite-driven test runs and npm publish require an
   environment with credentials / a node >= 22.13 binary (CI covers them).

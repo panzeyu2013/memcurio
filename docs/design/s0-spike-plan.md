@@ -1,6 +1,6 @@
 # S0 Spike Plan — Third-party `dsh.client` module assumptions (target: DSH npm `0.1.5-rc.1`)
 
-> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (in-tree **v1.4**, commit `0077aaa` + later doc-sync edits; re-read before the run). Upstream artifacts: the ledger was verified against the local DSH npm `0.1.2-rc.1` install tree; the RUN target is npm `latest` `0.1.5-rc.1` (re-verify every ledger item there — design §"参考版本声明").
+> Status: **draft for the S0 run** (spike = plan + verification, no product code). Baseline: `docs/design/plugin-ui-v1.md` (in-tree **v1.5**, commit `0077aaa` + later doc-sync edits; re-read before the run). Upstream artifacts: the ledger was verified against the local DSH npm `0.1.2-rc.1` install tree; the RUN target is npm `latest` `0.1.5-rc.1` (re-verify every ledger item there — design §"参考版本声明").
 >
 > This plan is executable by a future human/agent in a **real DSH environment** (real host process + real browser). Findings tagged `VERIFIED(rc.1)` were confirmed by reading the rc.1 artifacts **now**; `OPEN` needs the live spike; `UNVERIFIABLE-HERE` cannot be decided without a browser/host run.
 >
@@ -248,7 +248,7 @@ Acceptance (mirrors design §11 S0 验收; no production plumbing):
 
 | R# | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | `dsh web` activation failure after adding the client row (missing bundle etc.) | medium | Boot fails, time lost | Add `dsh.client` only in the *spike package* during S0; real plugin gains it in M0 with the built bundle in `files`; keep `--dump-config` as the no-boot inspector (H1) |
+| R1 | `dsh web` activation failure after adding the client row (missing bundle etc.) | medium | Boot fails, time lost | LANDED (round 26): `dsh.client` + the built bundle (`lib/client.js`, committed, asserted by `pack:check`) ship in the real package; the residual risk is real-Web activation itself — keep `--dump-config` as the no-boot inspector (H1) and verify the tarball install path first |
 | R2 | Browser handoff/loopback issues (SSH session, headless runner) | medium | Can’t verify UI | `--no-open` + printed URL; port forwarding; fall back to HTTP-level probes (curl) where the probe is transport-only |
 | R3 | Version skew: spike run uses an rc.1 other than the one the ledger was read against | low | Verdicts void | Pin the same rc.1 everywhere (report the exact tree path + `dsh --version`); rerun the [checklist](s0-spike-checklist.md) on any upgrade (design §12-5 discipline) |
 | R4 | Row-id collisions with the browser roster (H6) / duplicate package sources (H2) | medium | Composition error, confusing logs | Choose distinct ids (`memcurio-*`); check `--dump-config` for name/id collisions before boot |

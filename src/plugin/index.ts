@@ -28,7 +28,7 @@ export { workspaceStoreRoot } from "./scope.js";
 
 import { memoryWorkspace } from "../core/paths.js";
 import { HostBridge } from "./bridge.js";
-import { installMemcurioSettings, settingsBase } from "./settings.js";
+import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
 
 export const name = "memcurio";
 
@@ -566,26 +566,44 @@ export function apply(ctx: Context, config: Config = {}): void {
   });
   // Configuration surface (design v1.5): profile config is the composition
   // base; the `memcurio` settings namespace (Settings page) overrides it.
+  // NOTE: installSection calls the hooks synchronously during install, so the
+  // callback body may not touch bindings declared after it (live/fixedRoute).
+  const lastWarned = { scope: resolved.scope, registerTools: resolved.registerTools };
+  let bridgeWasEnabled = false;
   const settings = installMemcurioSettings(ctx, {
     base: settingsBase(resolved),
     onChange: (next) => {
-      if (next.hostBridge) {
+      if (next.hostBridge && !bridgeWasEnabled) {
         bridge.enable();
-      } else {
+        bridgeWasEnabled = true;
+        // Seed the refresh baselines for known roots so the first refresh
+        // after a live enable does not replay pre-existing audit rows.
+        for (const root of new Set([...sessions.values()].map((runtime) => runtime.root))) {
+          void bridge.refresh(root).catch(() => undefined);
+        }
+      } else if (!next.hostBridge && bridgeWasEnabled) {
         bridge.disable();
+        bridgeWasEnabled = false;
       }
-      if (next.scope !== resolved.scope) {
+      bridge.configure({ scope: next.scope, injectBudgetTokens: next.injectBudgetTokens });
+      // Warn once per changed behaviour (the settings document commits on
+      // every write, even for unrelated fields).
+      if (next.scope !== lastWarned.scope) {
+        lastWarned.scope = next.scope;
         ctx.logger.warn("memcurio: scope change applies to new sessions (existing stores keep their root)");
       }
-      if (next.registerTools !== resolved.registerTools) {
+      if (next.registerTools !== lastWarned.registerTools) {
+        lastWarned.registerTools = next.registerTools;
         ctx.logger.warn("memcurio: registerTools change takes effect after a restart");
       }
     },
-    warn: (message) => ctx.logger.warn(message),
   });
   /** Live settings read (never cached across operations). */
   const live = (): ReturnType<typeof settings.current> => settings.current();
+  /** Pinned worker route from the settings document, when one is set. */
+  const fixedRoute = (): { provider: string; model: string } | undefined => pinnedRoute(live());
   if (live().hostBridge) bridge.enable();
+  bridgeWasEnabled = bridge.isEnabled;
   bridgesByRoot.set(baseRoot, bridge);
   const warn = (error: unknown): void => ctx.logger.warn("memcurio: %s", String(error));
 
@@ -615,10 +633,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       );
     }
     const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
-    const fixed = live();
-    const seededRoute = fixed.provider && fixed.model
-      ? { provider: fixed.provider, model: fixed.model }
-      : latestRoute(seedEvents);
+    // A pinned route is read LIVE at every consumption point (fixedRoute);
+    // the seed only picks the session's initial fallback route.
+    const seededRoute = fixedRoute() ?? latestRoute(seedEvents);
     let runtime: SessionRuntime;
     const adapter = new MemcurioAdapter({
       root,
@@ -626,7 +643,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       durableQueue: true,
       injectBudgetTokens: live().injectBudgetTokens,
       toolPreset: DSH_TOOL_PRESET,
-      channel: dshChannel(ctx, () => runtime.route, () => runtime.abort.signal),
+      channel: dshChannel(ctx, () => fixedRoute() ?? runtime.route, () => runtime.abort.signal),
       // Preserve warn/error levels: flattening them to debug would hide real
       // failures ("staging failed", "consolidation skipped", "retry failed")
       // under debug-filtered host logging. info stays at debug to keep the
@@ -789,6 +806,15 @@ export function apply(ctx: Context, config: Config = {}): void {
     return retirement;
   };
 
+  ctx.effect(
+    () => () => {
+      // The bridge belongs to this plugin fiber; a stale (enabled) instance
+      // must not stay reachable after unload.
+      bridgesByRoot.delete(baseRoot);
+    },
+    "memcurio bridge registry",
+  );
+
   ctx.effect(() => async () => {
     const active = [...sessions.values()];
     const errors = new Set<unknown>();
@@ -930,7 +956,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const agentRoute = payload.agent.options?.provider && payload.agent.options.model
         ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
         : undefined;
-      if (agentRoute && live().provider === undefined) runtime.route = agentRoute;
+      if (agentRoute && fixedRoute() === undefined) runtime.route = agentRoute;
       await awaitRuntime(runtime);
       let context: string;
       // Injected pieces for the host bridge tag (declared outside the try so
@@ -971,7 +997,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
   }, { global: true });
 
-  if (resolved.registerTools) registerMemoryTools(ctx, sessions, bridge.isEnabled ? bridge : undefined);
+  // The resolved settings document is authoritative (the profile config is
+  // only the composition base), and a hard `settings` inject guarantees the
+  // section resolved before apply.
+  if (live().registerTools) registerMemoryTools(ctx, sessions, bridge);
   for (const session of ctx.sessions.list()) ensureSession(session);
   // Startup drain: pending durable jobs from a previous
   // process run would otherwise sit until the first turn/end in the same

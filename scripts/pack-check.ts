@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
+import { PLATFORM_EXTERNALS } from "./platform-externals.js";
+
 const repoRoot = resolve(import.meta.dir, "..");
 const distRoot = join(repoRoot, "dist");
 
@@ -71,6 +73,17 @@ if (!existsSync(clientBundle)) {
 const bundle = readFileSync(clientBundle, "utf8");
 if (!bundle.includes("window.__ModuleLoader__.load({") || !bundle.includes(JSON.stringify(pkgName()))) {
   throw new Error("lib/client.js is not a __ModuleLoader__ artifact for this package name");
+}
+if (!/return module\.exports;/.test(bundle)) {
+  throw new Error("lib/client.js factory does not return module.exports");
+}
+// Require purity: the loader serves ONLY the frozen platform seed table, so a
+// value import of any other package would throw at runtime with no other gate
+// noticing. Every `require("…")` specifier must be a seed module.
+const required = [...bundle.matchAll(/require\("([^"]+)"\)/g)].flatMap((match) => (match[1] === undefined ? [] : [match[1]]));
+const notSeeded = [...new Set(required)].filter((specifier) => !PLATFORM_EXTERNALS.includes(specifier));
+if (notSeeded.length > 0) {
+  throw new Error(`lib/client.js requires non-platform modules: ${notSeeded.join(", ")}`);
 }
 const unexpectedPackageFiles = packed.filter((path) => !allowed.test(path));
 if (unexpectedPackageFiles.length) {

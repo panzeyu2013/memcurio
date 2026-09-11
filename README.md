@@ -4,7 +4,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D22.13-green?logo=node.js)](https://nodejs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**memcurio** is a memory and context management plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). This repository is the single deliverable package `@memcurio/dsh-plugin`: a Cordis plugin (node half) that turns the harness's own session lifecycle into durable, workspace-scoped memories, injects them back into the agent loop, and registers six native memory tools. The package's client half (a browser UI over the memory store) is the next milestone; see [docs/todo.md](docs/todo.md).
+**memcurio** is a memory and context management plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). This repository is the single deliverable package `@memcurio/dsh-plugin`: a Cordis plugin (node half) that turns the harness's own session lifecycle into durable, workspace-scoped memories, injects them back into the agent loop, and registers six native memory tools. The package's **Settings panel** (browser half, `dsh.client`) ships in this release; the full memory workbench over the store is the next milestone (see [docs/todo.md](docs/todo.md)).
 
 The engine is DSH-native: model access runs exclusively over the harness's own `ctx.llm` route, so there is no API key, no HTTP provider, and no extra daemon. The engine core has zero runtime dependencies (`node:sqlite`); the only runtime dependency is the schemastery schema library used by the plugin's config surface.
 
@@ -47,7 +47,7 @@ bun pm pack            # → memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
-The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Configure from the DSH **Settings** page (a "Memory" section ships with the browser half): the plugin registers a `memcurio` settings namespace (`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`) — profile config is the default layer and the settings document overrides it. Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. `hostBridge: true` turns on the memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`); it defaults to off until a browser transport sink is attached (S0).
+The bundle manifest inserts the plugin with `inject: [tools, llm, sessions, settings]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Configure from the DSH **Settings** page (a "Memory" section ships with the browser half): the plugin registers a `memcurio` settings namespace (`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`) — profile config is the default layer and the settings document overrides it. Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`minUsage`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. `hostBridge: true` turns on the memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`); it defaults to off until a browser transport sink is attached (S0).
 
 ## Memory model
 
@@ -65,7 +65,7 @@ The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and
 | `MEMCURIO_ROOT` | Legacy/override data base (defaults to the memcurio namespace under the DSH home) |
 | `MEMCURIO_LLM_PROVIDER=none` | Disables LLM consolidation (rule provider fallback); Phase-1 extraction inside DSH is unaffected — the plugin embeds the host channel directly |
 
-There are no other runtime knobs: model routes, budgets and isolation are DSH profile / per-store `config.json` settings.
+Besides the settings document (`<DSH home>/settings.yaml`, editable from the Settings page), there are no other runtime knobs: model routes, budgets and isolation are DSH profile / per-store `config.json` settings.
 
 ## Documentation
 
@@ -86,7 +86,7 @@ The dev toolchain runs on [bun](https://bun.sh) 1.3.14 (pinned to match CI; test
 bun test              # full test suite (bun test, isolated)
 bun run typecheck     # typecheck (covers src/tests/scripts)
 bun run lint          # biome lint (formatter intentionally disabled; compact style)
-bun run build         # tsc build into dist/ (committed; CI guards drift)
+bun run build         # tsc → dist/ + esbuild → lib/client.js (both committed; CI guards drift)
 bun run pack:check    # build + tarball allowlist gate
 bun run eval:lexical  # deterministic retrieval/safety baseline
 ```

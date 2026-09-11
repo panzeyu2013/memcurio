@@ -9,20 +9,22 @@
  * persistence into the settings document.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
 import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
-import LlmRuntime, { createUserMessage } from "@deepseek-ai/dsh-llm";
+import LlmRuntime, { ToolCallId, createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SessionId } from "@deepseek-ai/dsh-session";
 import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
+import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
+import { pinnedRoute } from "../src/plugin/settings.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -45,9 +47,10 @@ interface Harness {
   settingsPath: string;
 }
 
-async function harness(): Promise<Harness> {
+async function harness(seedSettingsYaml?: string): Promise<Harness> {
   const home = temporaryRoot();
   const settingsPath = join(home, "settings.yaml");
+  if (seedSettingsYaml !== undefined) writeFileSync(settingsPath, seedSettingsYaml, "utf8");
   const ctx = new Context();
   const fibers = [
     await ctx.plugin(SystemPrompt),
@@ -174,3 +177,126 @@ describe("memcurio settings namespace", () => {
     await disposeFibers(fibers);
   });
 });
+
+/** Apply the plugin through a harness context with a given composition config. */
+async function ctx_plugin(h: Harness, root: string, config: Record<string, unknown>): Promise<Fiber> {
+  return h.ctx.plugin(plugin, { root, scope: "global", ...config });
+}
+
+
+describe("pinned worker route rule", () => {
+  test("a pinned route requires both non-empty halves", () => {
+    const base = { scope: "workspace" as const, injectContext: true, registerTools: true, hostBridge: false };
+    expect(pinnedRoute(base)).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p", model: "m" })).toEqual({ provider: "p", model: "m" });
+  });
+});
+
+describe("resolved settings behaviour (acceptance-round fixes)", () => {
+  test("registerTools follows the resolved document in both directions", async () => {
+    // Document false + composition true: tools must stay unregistered.
+    const offRoot = temporaryRoot();
+    const off = await harness("memcurio:\n  registerTools: false\n");
+    const offFiber = await ctx_plugin(off, offRoot, { registerTools: true });
+    expect(off.ctx.tools.get("memory_search")).toBeUndefined();
+    await offFiber.dispose();
+    await disposeFibers(off.fibers);
+
+    // Document true + composition false: tools must be registered.
+    const onRoot = temporaryRoot();
+    const on = await harness("memcurio:\n  registerTools: true\n");
+    const onFiber = await ctx_plugin(on, onRoot, { registerTools: false });
+    expect(on.ctx.tools.get("memory_search")).toBeDefined();
+    await onFiber.dispose();
+    await disposeFibers(on.fibers);
+  });
+
+  test("empty provider/model is refused by the namespace validation", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
+    await expect(ctx.settings.update("memcurio", { provider: "", model: "" })).rejects.toThrow(/non-empty/);
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("live hostBridge enable seeds refresh baselines, tags read hits, and reports live scope/budget", async () => {
+    const root = temporaryRoot();
+    writeWorkspaceText(root, "MEMORY.md", "# heading\nfact line\n");
+    const { ctx, fibers } = await harness();
+    // Pre-existing audit history + a live session, so live-enable must seed.
+    const { Index } = await import("../src/core/db.js");
+    const { indexDb } = await import("../src/core/paths.js");
+    const seedIndex = await Index.create(indexDb(root));
+    try {
+      seedIndex.audit("adhoc.note", "dsh", "pre-existing note");
+    } finally {
+      seedIndex.close();
+    }
+    const session = ctx.sessions.prepare(SessionId("settings-live"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
+    await ctx.sessions.flush(session);
+
+    const bridge = hostBridgeForRoot(root);
+    expect(bridge?.isEnabled).toBe(false);
+    const sink: Array<{ kind: string }> = [];
+    bridge?.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
+
+    await ctx.settings.update("memcurio", { hostBridge: true, scope: "global", injectBudgetTokens: 900 });
+    expect(bridge?.isEnabled).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 10)); // baseline seeding is async
+    // The seeding refresh must NOT replay the pre-existing audit row.
+    expect(sink.filter((delta) => delta.kind === "receipt")).toHaveLength(0);
+
+    // A memory_read now yields a usage tick (the bridge reference is not frozen).
+    await ctx.tools.execute({
+      callId: ToolCallId("live-memory-read"),
+      name: "memory_read",
+      arguments: { path: "MEMORY.md" },
+      signal: new AbortController().signal,
+      agent: { session },
+    } as never);
+    expect(sink.some((delta) => delta.kind === "usage-tick")).toBe(true);
+
+    // New audit rows after the seeded baseline do surface as receipts.
+    const laterIndex = await Index.create(indexDb(root));
+    try {
+      laterIndex.audit("adhoc.note", "dsh", "post-enable note");
+    } finally {
+      laterIndex.close();
+    }
+    await bridge?.refresh(root);
+    expect(sink.some((delta) => delta.kind === "receipt")).toBe(true);
+
+    const snapshot = await bridge?.snapshot(root, session.id);
+    expect(snapshot?.settings.scopeBadge).toBe("global");
+    expect(snapshot?.settings.injectBudgetTokens).toBe(900);
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("a duplicate activation fails loud (namespace already registered)", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const first = await ctx.plugin(plugin, { root, scope: "global" });
+    // Cordis de-duplicates the SAME plugin object, so a genuine duplicate
+    // activation is a second module identity carrying the same apply.
+    const clone = { name: "memcurio-clone", inject: plugin.inject, apply: plugin.apply };
+    let failed = false;
+    try {
+      await ctx.plugin(clone as never, { root, scope: "global" } as never);
+    } catch {
+      failed = true;
+    }
+    expect(failed).toBe(true);
+    await first.dispose();
+    await disposeFibers(fibers);
+  });
+});
+

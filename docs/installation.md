@@ -78,7 +78,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 `root`（数据位置）在面板只读说明，避免误改数据根。profile 的 `cordis.patch.yml` config 是默认层（composition base），settings 文档为覆盖层；清空用户层即回到 profile 默认。
 
-面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；唯一运行期 require 为平台 seed 的 `react`）。字段改动即时写回 `settings.yaml`；被覆盖字段显示"已覆盖"徽标，可单个或整体恢复默认；写入未落地（host 拒绝）时面板报错而非静默成功。
+面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；唯一运行期 require 为平台 seed 的 `react`，`pack:check` 会校验 require 纯度）。`settings` 是宿主必需服务（dsh-base 及其上的 profile 均提供）：在该服务不可用的极简 profile（如 `dsh-sdk-minimal`）中插件不会激活；卸载/重载 settings provider 会随之重启本插件。字段改动即时写回 `settings.yaml`；被覆盖字段显示"已覆盖"徽标，可单个或整体恢复默认；写入未落地（host 拒绝）时面板报错而非静默成功。
 
 ## 6. 常见问题
 

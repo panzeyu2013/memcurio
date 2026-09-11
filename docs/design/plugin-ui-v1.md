@@ -1,4 +1,4 @@
-# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.4）
+# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.5）
 
 > 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义（实现面详见 §8.4；v1.4.1：A 类收口——桥集成测试、memory_read/shell 打点、evidence 源、雷达候选启发式、快照收据合成与 settings/dynamic 富化）。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
 > 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例版本）；适配目标已随第二十四轮升级为 **npm `latest` = `0.1.5-rc.1`**（0.1.5-rc.2/alpha 未采纳）；S0 实机须在 0.1.5-rc.1 上重核，并沿用「每次 DSH 升级重核 peer/client 契约」纪律。
@@ -384,10 +384,10 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 
 | # | 开放项/风险 | 影响 | 处置 |
 |---|---|---|---|
-| 1 | 标题栏第三方槽位运行时是否可填 | 单按钮入口 | S0 预查：`conversation.session.header.actions`/`conversation.view` 声明级存在；运行时治理待浏览器探针。回退开放项（见 §7.7）|
+| 1 | 标题栏第三方槽位运行时是否可填 | 单按钮入口 | S0 预查：`conversation.session.header.actions`/`conversation.view` 声明级存在；运行时治理待浏览器探针。`settings.section` 已实际注册（第二十六轮），标题栏槽位仍待实机验证；回退开放项（见 §7.7）|
 | 2 | host↔浏览器推送/remote 第三方注册路径 | 推送架构 | **v1.2 实证：rc.1 `ctx.remote` 对第三方关闭**；通道候选 ①自定义 SSE 路由（ctx.webServer.register）② sessionProjections ③ 轮询——S0 门禁定案 |
 | 3 | 时间线"跳到会话历史位置"定位能力 | 回链体验 | S0 顺带验证；不可用 → 文本引用 |
-| 4 | 客户端 bundle 构建与 HMR 工具链 | 开发效率 | S0 建立；`lib/client.js` 约定 |
+| 4 | 客户端 bundle 构建与 HMR 工具链 | 开发效率 | **构建已建立**（`scripts/build-client.ts` esbuild → `lib/client.js`，提交入 git，`pack:check` 校验 loader 形态/require 纯度）；HMR 与实机装载仍待 S0 |
 | 5 | 上游 rc/alpha 升级对 client module 契约影响 | 兼容 | 沿用重核纪律 |
 | 6 | 真实模型质量的 UI 误导风险（展示"记忆"但抽取质量未知） | 用户信任 | 状态面明示 developer preview；记忆质量门槛属 Release Gate |
 | 7 | 多工作区 store 规模（无限制增长） | 性能 | 沿用管线上限 + 分页；后续可加 UI 层归档建议 |
@@ -409,7 +409,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 11. v1.2 实证修订：第三方 `ctx.remote` 通道关闭（§8.1/§12 风险 2 定案）；标题栏候选槽位 `conversation.session.header.actions` / `conversation.view`；seed 模块表恰 8 键（含 react-dom/client）；`/memory` 客户端唤起降为开放项（§7.7）。
 12. v1.3 审查修订：预览与工作台搜索/读**不计数遥测**（trackUsage 开关，默认模型路径仍计数）；usage-tick 语义定为**增量**并在客户端快照上自愈；审计行/收据暴露 object（ns）。
 13. v1.4 实现批次：host 桥接层落定（store 注册表/打标点/refresh diff/快照/写路径收据过滤，config.hostBridge 门控，§8.4）；queue-updated 改**单 job**（jobId/status/attempts，counts 客户端自 jobs 重算，completed 移除）。
-14. v1.5 配置面：**在 DSH Settings 页注册 `memcurio` 命名空间用于插件配置**（用户可在 UI 调整 scope/injectContext/registerTools/budget/hostBridge/provider/model；root 只读）。这不违背"UI 永不静默写记忆"——配置面与记忆内容面分离；写记忆仍是对话流 + 工具卡 + 收据。浏览器面板随 M0 组装（`settings.section` 槽位，需 `dsh.client`）。
+14. v1.5 配置面：**在 DSH Settings 页注册 `memcurio` 命名空间用于插件配置**（scope/injectContext/registerTools/budget/hostBridge/provider/model；root 只读）。配置面与记忆内容面分离，不违背"UI 永不静默写记忆"。**浏览器面板已随包发布**（`dsh.client` + `lib/client.js` + `settings.section`，见 §3.3/§10）；剩余为真实 DSH Web 的渲染与槽位治理验证（S0）。生效语义：injection/budget/hostBridge/路由即时；registerTools 于下次 apply（含重启）生效；scope 对新会话生效。
 
 ---
 

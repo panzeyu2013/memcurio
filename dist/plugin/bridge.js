@@ -71,6 +71,7 @@ function rolloutKeyFromDetail(detail, action) {
 }
 export class HostBridge {
     baseRoot;
+    /** Mutable: the settings document can change them live (configure()). */
     scope;
     version;
     injectBudgetTokens;
@@ -130,6 +131,13 @@ export class HostBridge {
             const text = row.text === undefined ? undefined : contentTextRedacted(row.text);
             return { kind: row.kind, ...(text !== undefined ? { text } : {}), ...(row.name ? { name: row.name } : {}), ...(row.path ? { path: row.path } : {}) };
         });
+    }
+    /** Refresh the deployment facts the snapshot face reports (scope badge,
+     *  injection budget) after a live settings change. */
+    configure(next) {
+        if (next.scope !== undefined)
+            this.scope = next.scope;
+        this.injectBudgetTokens = next.injectBudgetTokens;
     }
     /** Session identity facts (label map + session per root). */
     registerSession(info) {
@@ -219,6 +227,10 @@ export class HostBridge {
         if (!this.enabled)
             return [];
         const deltas = [];
+        // First refresh per root only SEEDS the baselines: pre-existing audit
+        // rows and jobs are history, not deltas. Without this, enabling the
+        // bridge live would replay up to 500 audit rows as fresh receipts.
+        const firstRefresh = !this.lastAuditRowid.has(root);
         // 1) Audit tail
         const lastRowid = this.lastAuditRowid.get(root) ?? 0;
         const index = await Index.create(indexDb(root));
@@ -242,9 +254,9 @@ export class HostBridge {
         finally {
             index.close();
         }
-        if (maxRowid > lastRowid)
+        if (firstRefresh || maxRowid > lastRowid)
             this.lastAuditRowid.set(root, maxRowid);
-        if (auditRows.length > 0) {
+        if (auditRows.length > 0 && !firstRefresh) {
             for (const row of auditRows) {
                 if (isWritePathAction(row.action)) {
                     const record = {
@@ -284,7 +296,7 @@ export class HostBridge {
                     lastError: job.lastError,
                 });
             }
-            if (this.jobsByRoot.has(root)) {
+            if (this.jobsByRoot.has(root) && !firstRefresh) {
                 // Baseline exists: emit changes only.
                 const changed = [];
                 for (const [jobId, row] of current) {
