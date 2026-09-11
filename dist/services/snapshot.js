@@ -13,7 +13,8 @@
  * bridge adapter performs the final wire mapping.
  */
 import { basename } from "node:path";
-import { pipelineConfig } from "../core/config.js";
+import { loadConfig, pipelineConfig } from "../core/config.js";
+import { AUTO_CONSOLIDATE_COOLDOWN_MS } from "../engine.js";
 import { list as memoryList, read as memoryRead } from "./memory.js";
 import { staticParts } from "./inject.js";
 import { listStores } from "./context.js";
@@ -171,6 +172,15 @@ export async function buildSnapshot(options) {
         }
     })();
     const maxInputs = cfg?.maxInputs ?? 8;
+    // Deployment-level budget: the workbench face reports the configured value.
+    const configuredBudget = (() => {
+        try {
+            return loadConfig(root).budget.maxInjectTokens;
+        }
+        catch {
+            return undefined;
+        }
+    })();
     const candidateRolloutIds = usageRows
         .filter((row) => (row.usageCount ?? 0) > 0 && row.status !== "deleted")
         .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0) || (a.rolloutKey < b.rolloutKey ? -1 : 1))
@@ -221,8 +231,8 @@ export async function buildSnapshot(options) {
             scopeBadge: scope,
             workspaceKey,
             injectBudgetTokens: injectBudgetTokens ?? undefined,
-            maxInjectTokens: undefined,
-            consolidationCooldownMs: undefined,
+            maxInjectTokens: configuredBudget,
+            consolidationCooldownMs: AUTO_CONSOLIDATE_COOLDOWN_MS,
             ...(version ? { version } : {}),
         },
         realtime: { mode: "polling", degraded: false },

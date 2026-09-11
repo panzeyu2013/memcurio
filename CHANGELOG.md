@@ -66,6 +66,19 @@ channel are staged behind an S0 spike in a real DSH Web instance.
 
 ### Changed
 
+- The workbench snapshot reports the real deployment knobs (`settings.maxInjectTokens`
+  from the store config, `settings.consolidationCooldownMs` from the engine's
+  automatic-consolidation window) instead of placeholders, and a blocked
+  `memory_read` no longer counts as memory reuse (usage is registered only when
+  the injection scan lets the content through).
+- The browser half gained an automated regression net (`tests/client-panel-render.test.ts`):
+  the shipped `lib/client.js` is loaded through the official module-loader
+  contract, its `settings.section` registration and `hooks`→`useFace` seat are
+  asserted against the framework's own conversion rule, and the panel is
+  rendered with real `react-dom` under jsdom (repaint on transport
+  notification, atomic route-pair writes, readOnly-while-busy, locale-keyed
+  failures).
+
 - **Aligned to DSH `0.1.5-rc.1`** (current npm `latest`; peers now
   `^0.1.5-rc.1`). The only contract delta encountered was
   `assistant/message` events carrying a required `stream` record; plugin

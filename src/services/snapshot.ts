@@ -14,7 +14,8 @@
  */
 import { basename } from "node:path";
 
-import { pipelineConfig } from "../core/config.js";
+import { loadConfig, pipelineConfig } from "../core/config.js";
+import { AUTO_CONSOLIDATE_COOLDOWN_MS } from "../engine.js";
 import type { ListResult, ReadResult, StatusResult } from "./memory.js";
 import { list as memoryList, read as memoryRead } from "./memory.js";
 import { staticParts } from "./inject.js";
@@ -279,6 +280,14 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
     }
   })();
   const maxInputs = cfg?.maxInputs ?? 8;
+  // Deployment-level budget: the workbench face reports the configured value.
+  const configuredBudget = (() => {
+    try {
+      return loadConfig(root).budget.maxInjectTokens;
+    } catch {
+      return undefined;
+    }
+  })();
   const candidateRolloutIds = usageRows
     .filter((row) => (row.usageCount ?? 0) > 0 && row.status !== "deleted")
     .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0) || (a.rolloutKey < b.rolloutKey ? -1 : 1))
@@ -331,8 +340,8 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
       scopeBadge: scope,
       workspaceKey,
       injectBudgetTokens: injectBudgetTokens ?? undefined,
-      maxInjectTokens: undefined,
-      consolidationCooldownMs: undefined,
+      maxInjectTokens: configuredBudget,
+      consolidationCooldownMs: AUTO_CONSOLIDATE_COOLDOWN_MS,
       ...(version ? { version } : {}),
     },
     realtime: { mode: "polling", degraded: false },

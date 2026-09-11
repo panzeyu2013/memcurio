@@ -43,6 +43,9 @@ export interface BackfillEvidenceItem {
     kind: EvidenceInput["kind"];
     text?: string;
 }
+/** Automatic Phase-2 cooldown after a successful consolidation (exported so
+ *  the workbench snapshot reports the deployed value, not a guess). */
+export declare const AUTO_CONSOLIDATE_COOLDOWN_MS: number;
 export interface AdapterOptions {
     log?: AdapterLog;
     /** Fixed store root for this adapter instance. Capturing it once prevents

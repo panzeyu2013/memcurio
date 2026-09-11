@@ -38,7 +38,9 @@ const MAX_SUMMARY_CHARS = 4000;
 const DEFAULT_INJECT_BUDGET = 1500;
 // Codex-style scheduling: after a successful automatic consolidation, wait
 // before running another; after a failure, back off before retrying.
-const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+/** Automatic Phase-2 cooldown after a successful consolidation (exported so
+ *  the workbench snapshot reports the deployed value, not a guess). */
+export const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
 // Codex-style read-only shell whitelist (mirrors codex memories/read usage.rs
 // known-safe set: cat cd cut echo expr false grep head id ls nl paste pwd rev

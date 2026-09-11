@@ -256,6 +256,11 @@ describe("buildSnapshot", () => {
       dataRoot: root,
       scopeBadge: "workspace",
       workspaceKey: "bare-root",
+      // Deployment-level knobs are reported from the resolved config (the
+      // engine cooldown is a real constant, not a placeholder).
+      maxInjectTokens: 1500,
+      consolidationCooldownMs: 6 * 60 * 60 * 1000,
+      injectBudgetTokens: undefined,
     });
   });
 

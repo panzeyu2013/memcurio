@@ -197,16 +197,18 @@ export async function readMemory(
   }
 
   const rel = opts.path;
-  // UI previews opt out (trackUsage:false); model-driven reads keep counting.
-  if (rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
-    await registerMemoryUsage(root, [rel]);
-  }
   // The read path is the only memory->model output that would otherwise skip
   // the injection gate: search filters per line, injection renders a blocked
   // notice, but a raw read returns whole (possibly hand-edited) file content
   // verbatim. Scan the exact content being returned and block it like the
   // static context does.
   const verdict = sanitizeForInjection(content);
+  // Usage counts a genuine memory REUSE: a read whose content the injection
+  // scan blocks never reaches the model, so it must not inflate telemetry.
+  // UI previews opt out explicitly (trackUsage:false).
+  if (verdict.safe && rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
+    await registerMemoryUsage(root, [rel]);
+  }
   if (!verdict.safe) {
     return {
       path: rel,
