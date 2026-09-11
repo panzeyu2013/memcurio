@@ -56,12 +56,19 @@ export interface SettingsScopeSnapshotLike<T> {
   mode: "host" | "memory";
 }
 
+/** One namespaced field operation (mirrors dsh-settings' SettingsPathOpView). */
+export type SettingsPathOp =
+  | { op: "set"; path: string[]; value: unknown }
+  | { op: "unset"; path: string[] };
+
 /** Narrow transport port (the real binder satisfies it structurally). */
 export interface SettingsScopePort<T> {
   getSnapshot(): SettingsScopeSnapshotLike<T>;
   subscribe(listener: () => void): () => void;
   set(field: string, value: unknown): Promise<void>;
   unset(field: string): Promise<void>;
+  /** One atomic namespace mutation; the host reduces and validates ONCE. */
+  mutate(ops: readonly SettingsPathOp[]): Promise<void>;
 }
 
 /** Observable seat consumed by the panel through the `hooks` compartment. */
@@ -79,15 +86,13 @@ export interface SettingsFace {
   /** Fields present in the user layer (presence = overridden). */
   overridden: SettingsField[];
   /** Locale key of the last failure (the panel renders the copy). */
-  errorCode?: string;
+  errorCode?: SettingsErrorCode;
   /** Field currently being written (or "all" for a bulk reset). */
   busy?: SettingsField | "all";
 }
 
-/** Failure carries a locale key, never an English sentence. */
-export type SaveOutcome = { ok: true } | { ok: false; code: string };
-
-/** Locale keys the controller can report. */
+/** Locale keys the controller can report (every one exists in both
+ *  dictionaries — tests assert the copies). */
 export const ERROR_KEYS = {
   routePair: "errRoutePair",
   budgetRange: "errBudgetRange",
@@ -96,6 +101,11 @@ export const ERROR_KEYS = {
   partialReset: "errPartialReset",
   hostRejected: "errHostRejected",
 } as const;
+
+export type SettingsErrorCode = (typeof ERROR_KEYS)[keyof typeof ERROR_KEYS];
+
+/** Failure carries a locale key, never an English sentence. */
+export type SaveOutcome = { ok: true } | { ok: false; code: SettingsErrorCode };
 
 const DEFAULT_VIEW: MemcurioSettingsView = {
   scope: "workspace",
@@ -133,7 +143,11 @@ export function overriddenFields(user: unknown): SettingsField[] {
  *  remains the authority; this only avoids a known-bad round trip). Applies
  *  to writes AND resets: the host validates the RESOLVED section, so clearing
  *  one half of the route while the other half stays overridden is refused. */
-export function routeProblem(field: SettingsField, value: unknown, view: MemcurioSettingsView): string | undefined {
+export function routeProblem(
+  field: SettingsField,
+  value: unknown,
+  view: MemcurioSettingsView,
+): SettingsErrorCode | undefined {
   if (field !== "provider" && field !== "model") return undefined;
   const nextProvider = field === "provider" ? value : view.provider;
   const nextModel = field === "model" ? value : view.model;
@@ -144,7 +158,7 @@ export function routeProblem(field: SettingsField, value: unknown, view: Memcuri
 }
 
 /** Budget guard shared by the panel and the controller. */
-export function budgetProblem(value: unknown): string | undefined {
+export function budgetProblem(value: unknown): SettingsErrorCode | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 128) return ERROR_KEYS.budgetRange;
   return undefined;
 }
@@ -154,26 +168,33 @@ export class MemcurioSettingsController {
   private readonly scope: SettingsScopePort<MemcurioSettingsView>;
   private faceCache: SettingsFace | null = null;
   private readonly listeners = new Set<() => void>();
-  private errorCode: string | undefined;
+  private errorCode: SettingsErrorCode | undefined;
   private busy: SettingsField | "all" | undefined;
   /** ONE underlying scope subscription, fanned out to panel listeners. */
   private unsubscribeScope: (() => void) | undefined;
-  private started = false;
+  /** Refcount so a redundant start()/dispose pair cannot kill the seat. */
+  private starters = 0;
 
   constructor(scope: SettingsScopePort<MemcurioSettingsView>) {
     this.scope = scope;
   }
 
-  /** Attach the transport subscription; returns the disposer (fiber-owned). */
+  /** Attach the transport subscription; returns the disposer (fiber-owned).
+   *  Refcounted: a second caller's disposer releases only its own hold. */
   start(): () => void {
-    if (!this.started) {
-      this.started = true;
+    this.starters += 1;
+    if (this.starters === 1) {
       this.unsubscribeScope = this.scope.subscribe(() => this.notify());
     }
+    let released = false;
     return () => {
-      this.unsubscribeScope?.();
-      this.unsubscribeScope = undefined;
-      this.started = false;
+      if (released) return;
+      released = true;
+      this.starters -= 1;
+      if (this.starters === 0) {
+        this.unsubscribeScope?.();
+        this.unsubscribeScope = undefined;
+      }
     };
   }
 
@@ -234,7 +255,11 @@ export class MemcurioSettingsController {
   }
 
   async reset(field: SettingsField): Promise<SaveOutcome> {
-    const problem = routeProblem(field, undefined, this.face().value);
+    // A reset reverts the field to the composition base, so the pair must be
+    // judged against base[field] (clearing one half of a pinned route is legal
+    // when the other half falls back to a base value that completes it).
+    const face = this.face();
+    const problem = routeProblem(field, face.base[field], face.value);
     if (problem) return this.fail(problem);
     this.busy = field;
     this.notify();
@@ -252,48 +277,75 @@ export class MemcurioSettingsController {
     return { ok: true };
   }
 
-  /** Clear every override; verifies the result and reports partial failures. */
+  /** Clear every override in ONE atomic mutation. Per-field clearing cannot
+   *  express this: the host validates the resolved section on every write, so
+   *  a lone route half would be refused mid-way (and would leave the earlier
+   *  fields cleared). `mutate` reduces all ops and validates once. */
   async resetAll(): Promise<SaveOutcome> {
     const pending = overriddenFields(this.scope.getSnapshot().user);
-    if (pending.length === 0) {
-      this.errorCode = undefined;
-      this.busy = undefined;
-      this.notify();
-      return { ok: true };
-    }
+    if (pending.length === 0) return this.settleCleared();
     this.busy = "all";
     this.notify();
-    for (const field of pending) {
-      // A lone route half cannot be cleared while the other stays overridden.
-      if (routeProblem(field, undefined, this.face().value)) {
-        this.busy = undefined;
-        this.notify();
-        return this.fail(ERROR_KEYS.routePair);
-      }
-      try {
-        await this.scope.unset(field);
-      } catch {
-        this.busy = undefined;
-        this.notify();
-        return this.fail(ERROR_KEYS.partialReset);
-      }
-      if (overriddenFields(this.scope.getSnapshot().user).includes(field)) {
-        this.busy = undefined;
-        this.notify();
-        return this.fail(ERROR_KEYS.partialReset);
-      }
+    try {
+      await this.scope.mutate(pending.map((field) => ({ op: "unset", path: [field] }) as const));
+    } catch {
+      return this.fail(ERROR_KEYS.hostRejected);
     }
     if (overriddenFields(this.scope.getSnapshot().user).length > 0) {
-      this.busy = undefined;
-      this.notify();
       return this.fail(ERROR_KEYS.resetNotLanded);
     }
+    return this.settleCleared();
+  }
+
+  /** Write the worker route as ONE atomic pair (both halves or neither):
+   *  a lone half is illegal in the resolved section, so single-field edits
+   *  could never land on a deployment that pins no route. */
+  async saveRoute(provider: string, model: string): Promise<SaveOutcome> {
+    const nextProvider = provider.trim();
+    const nextModel = model.trim();
+    if ((nextProvider === "") !== (nextModel === "")) return this.fail(ERROR_KEYS.routePair);
+    this.busy = "all";
+    this.notify();
+    const ops: SettingsPathOp[] =
+      nextProvider === ""
+        ? [
+            { op: "unset", path: ["provider"] },
+            { op: "unset", path: ["model"] },
+          ]
+        : [
+            { op: "set", path: ["provider"], value: nextProvider },
+            { op: "set", path: ["model"], value: nextModel },
+          ];
+    try {
+      await this.scope.mutate(ops);
+    } catch {
+      return this.fail(ERROR_KEYS.hostRejected);
+    }
+    if (!this.verifyRoute(nextProvider, nextModel)) return this.fail(ERROR_KEYS.notLanded);
+    return this.settleCleared();
+  }
+
+  /** Revert both route halves to the composition base in one mutation. */
+  async resetRoute(): Promise<SaveOutcome> {
+    return this.saveRoute("", "");
+  }
+
+  /** Clear both route halves… alias kept explicit for panel symmetry. */
+  private settleCleared(): SaveOutcome {
     this.errorCode = undefined;
     this.busy = undefined;
-    // Publish the settled state: every scope notification above fired while
-    // busy was still "all", so without this the panel stays disabled.
     this.notify();
     return { ok: true };
+  }
+
+  private verifyRoute(provider: string, model: string): boolean {
+    const snapshot = this.scope.getSnapshot();
+    if (snapshot.status !== "ready") return false;
+    const user = (snapshot.user ?? {}) as Record<string, unknown>;
+    if (provider === "") {
+      return !Object.hasOwn(user, "provider") && !Object.hasOwn(user, "model");
+    }
+    return user.provider === provider && user.model === model;
   }
 
   /** Post-write verification against the landed user layer. All fields are
@@ -306,7 +358,7 @@ export class MemcurioSettingsController {
     return Object.is((user as Record<string, unknown>)[field], value);
   }
 
-  private fail(code: string): { ok: false; code: string } {
+  private fail(code: SettingsErrorCode): { ok: false; code: SettingsErrorCode } {
     this.errorCode = code;
     this.busy = undefined;
     this.notify();
@@ -315,6 +367,14 @@ export class MemcurioSettingsController {
 
   private notify(): void {
     this.faceCache = null;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) {
+      // Framework convention (renderer fan-out): one broken listener must not
+      // reject the write path or starve the others.
+      try {
+        listener();
+      } catch (error) {
+        console.error("memcurio: settings listener failed", error);
+      }
+    }
   }
 }

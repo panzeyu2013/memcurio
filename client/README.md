@@ -5,8 +5,12 @@ This directory carries TWO halves with different maturity:
 1. **Shipped: the Settings panel** (`entry.ts`, `settings/*`, built to `lib/client.js`) — the
    `dsh.client` browser half that registers the `memcurio` Settings section. It requires only the platform-seeded
    `react`; discovery rides `package.json` `dsh.client` + `exports["./client"]`; `pack:check` validates the artifact.
-   Controller logic is unit-tested (`tests/client-settings.test.ts`); rendering + slot governance still need a real
-   DSH Web (S0 run card).
+   Controller logic is unit-tested (`tests/client-settings.test.ts`, 23: atomic route-pair writes, atomic resetAll,
+   base-aware resets, listener containment, single-subscription relatching, faceHook seat contract). The
+   renderer-facing half (`entry.ts`, `section.ts`, `locales.ts`, `styles.ts`) has NO automated coverage yet: a
+   second-pass review loaded the shipped bundle into the real renderer + react-dom under jsdom and verified the
+   `hooks`→`useFace` conversion, memo-once inject and re-render liveness by hand — porting that harness into the repo
+   is the open follow-up. Rendering + slot governance still need a real DSH Web (S0 run card).
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
 
 > Workbench status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web. (The Settings panel above IS shipped; the workbench below is not.)**

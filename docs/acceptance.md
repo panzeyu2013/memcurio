@@ -8,7 +8,7 @@
 
 **可验收 = 三个独立闸门全过**：
 
-1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：472 tests / 27 files / 2969 expects / 0 fail（coverage 92.63% funcs / 93.64% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（79 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
+1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：477 tests / 27 files / 2990 expects / 0 fail（coverage 92.63% funcs / 93.64% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（79 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计 + 放行前三角度验收修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
 3. **设计闸门**：设计基线 v1.5 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入 §6 外部依赖并挂接 S0 计划。
 
@@ -23,7 +23,7 @@
 | 事件投影器（8→9 类脱敏 delta） | `src/services/projector.ts` | ✅ 完成 | `tests/projector.test.ts`（22→26 项） |
 | 快照装配（含雷达候选/收据合成/settings/dynamic） | `src/services/snapshot.ts` | ✅ 完成 | `tests/snapshot.test.ts`（12 项） |
 | 配置面 host（`memcurio` settings 命名空间） | `src/plugin/settings.ts` + 插件 live 读取 | ✅ 完成 | `tests/settings.test.ts`（12 项：resolved 权威、live 桥/路由、整表尾基线播种、刷新并发合并、重复激活） |
-| 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（18 项）；`pack:check` 校验产物形态与 require 纯度 |
+| 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（23 项：原子 resetAll/saveRoute 成对/base-aware reset/监听者容错/单订阅/注入席位契约）；`pack:check` 校验产物形态与 require 纯度 |
 | host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（config.hostBridge，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
 | 客户端工作台 view-model（含 browse 跨 store、queue 单 job 折叠、增量 usage、证据窗、⭐ 书签） | `client/` | ✅ 完成（框架自由，S0 组装） | `tests/client-types.test.ts`（30 项） |
 | 传输通道（SSE/投影/轮询） | — | ⛔ S0 实机 | s0-spike-plan P0–P8 |
@@ -39,7 +39,7 @@
 ## 4. 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：472 pass / 27 files / 2969 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：477 pass / 27 files / 2990 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 79 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功
@@ -61,7 +61,7 @@ git status --short                                                 # 期望：�
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
 | 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
-| Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | S0 首项验证；控制器逻辑已单测（`tests/client-settings.test.ts`） |
+| Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | S0 首项验证；控制器逻辑已单测（`tests/client-settings.test.ts` 23 项）；**section/entry 尚无自动化回归网**（评审 F5，第二轮 jsdom 手工 harness 已验证 renderer 契约） |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
 | 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |

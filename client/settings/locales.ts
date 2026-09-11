@@ -37,7 +37,8 @@ export const en = {
   restartTools: "Tool registration changes take effect after a restart.",
   scopeNote: "Scope changes apply to new sessions; existing stores keep their root.",
   rootNote: "The data root stays deployment-level (profile config / MEMCURIO_ROOT) and is read-only here.",
-  routeNote: "Provider and model must be set together; leave both empty to follow the session route.",
+  routeNote: "Provider and model are written together as one route; leave both empty to follow the session route.",
+  routeApplyNote: "Edit either half and press Enter (or leave the field) to apply the pair.",
 } as const;
 
 export const zh = {
@@ -72,7 +73,8 @@ export const zh = {
   restartTools: "记忆工具注册变更将在重启后生效。",
   scopeNote: "作用域变更对新会话生效；既有 store 保持原数据根。",
   rootNote: "数据根属部署级（profile 配置 / MEMCURIO_ROOT），此处只读。",
-  routeNote: "provider 与 model 必须同时设置；两者留空则跟随会话路由。",
+  routeNote: "provider 与 model 作为一个路由成对写入；两者留空则跟随会话路由。",
+  routeApplyNote: "修改任一半后按 Enter（或离开输入框）即提交整对。",
 } as const;
 
 export type SettingsKey = keyof typeof en;

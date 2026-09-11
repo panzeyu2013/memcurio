@@ -19,8 +19,12 @@ import type { SettingsKey } from "./locales.js";
 /** Translator seat bound to the `memcurio.settings` namespace. */
 export type SectionT = (key: SettingsKey, params?: Record<string, unknown>) => string;
 
-/** Selector-hook shape of one observable store (the renderer hook seat). */
-export type FaceHook = <T>(selector: (snapshot: SettingsFace) => T) => T;
+/** Selector-hook shape of one observable store (the renderer hook seat);
+ *  mirrors the framework binder, including its optional equality override. */
+export interface FaceHook {
+  <T>(selector: (snapshot: SettingsFace) => T): T;
+  <T>(selector: (snapshot: SettingsFace) => T, equal: (left: T, right: T) => boolean): T;
+}
 
 export interface MemcurioSectionProps {
   t: SectionT;
@@ -29,6 +33,10 @@ export interface MemcurioSectionProps {
   save(field: SettingsField, value: unknown): Promise<SaveOutcome>;
   reset(field: SettingsField): Promise<SaveOutcome>;
   resetAll(): Promise<SaveOutcome>;
+  /** Atomic pair write for the worker route (both halves or neither). */
+  saveRoute(provider: string, model: string): Promise<SaveOutcome>;
+  /** Revert both route halves to the composition base in one mutation. */
+  resetRoute(): Promise<SaveOutcome>;
 }
 
 const h = createElement;
@@ -50,7 +58,7 @@ function checkboxRow(
 
 /** The panel: status line, the seven configurable fields, notes and resets. */
 export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactElement {
-  const { t, useFace, save, reset, resetAll } = props;
+  const { t, useFace, save, reset, resetAll, saveRoute, resetRoute } = props;
   const face = useFace((snapshot) => snapshot);
   const [draftBudget, setDraftBudget] = useState<string>(face.value.injectBudgetTokens === undefined ? "" : String(face.value.injectBudgetTokens));
   const [draftProvider, setDraftProvider] = useState<string>(face.value.provider ?? "");
@@ -66,9 +74,15 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
   }, [face.value.injectBudgetTokens, face.value.provider, face.value.model]);
 
   const busy = face.busy !== undefined;
+  // Latest authoritative view for async callbacks (announce runs after await).
+  const faceRef = useRef(face);
+  useEffect(() => {
+    faceRef.current = face;
+  }, [face]);
+
   const announce = useCallback(
     (outcome: SaveOutcome) => {
-      setNotice(outcome.ok ? t("saved") : t(outcome.code as SettingsKey));
+      setNotice(outcome.ok ? t("saved") : t(outcome.code));
       if (!outcome.ok) {
         // An unlanded write must not stick in the draft: resync from the
         // authoritative face (the value deps may be unchanged).
@@ -80,30 +94,27 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
     },
     [t],
   );
-  // Latest authoritative view for async callbacks (announce runs after await).
-  const faceRef = useRef(face);
-  useEffect(() => {
-    faceRef.current = face;
-  }, [face]);
 
-  const commitText = useCallback(
-    (field: SettingsField, raw: string) => {
-      const trimmed = raw.trim();
-      if (trimmed === "") {
-        void reset(field).then(announce);
-        return;
-      }
-      void save(field, trimmed).then(announce);
-    },
-    [announce, reset, save],
-  );
+  /** Commit the worker route as ONE atomic pair. Single-field writes can never
+   *  land (the host validates the resolved section), so both halves travel
+   *  together; empty drafts revert the pair to the composition base. */
+  const commitRoute = useCallback(() => {
+    const provider = draftProvider.trim();
+    const model = draftModel.trim();
+    const current = faceRef.current.value;
+    if (provider === (current.provider ?? "") && model === (current.model ?? "")) return;
+    void saveRoute(provider, model).then(announce);
+  }, [announce, draftModel, draftProvider, saveRoute]);
 
   const commitBudget = useCallback(() => {
-    if (draftBudget.trim() === "") {
+    const current = faceRef.current.value;
+    const draft = draftBudget.trim();
+    if (draft === (current.injectBudgetTokens === undefined ? "" : String(current.injectBudgetTokens))) return;
+    if (draft === "") {
       void reset("injectBudgetTokens").then(announce);
       return;
     }
-    void save("injectBudgetTokens", Number(draftBudget)).then(announce);
+    void save("injectBudgetTokens", Number(draft)).then(announce);
   }, [announce, draftBudget, reset, save]);
 
   const status = useMemo(() => {
@@ -124,7 +135,11 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
   }
 
   /** One labelled field with its override badge + reset affordance. */
-  const field = (key: SettingsField, control: ReactElement): ReactElement =>
+  const field = (
+    key: SettingsField,
+    control: ReactElement,
+    onReset?: () => Promise<SaveOutcome>,
+  ): ReactElement =>
     h(
       "div",
       { className: "memcurio-field", key },
@@ -144,7 +159,8 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
                   className: "memcurio-reset",
                   disabled: busy || !face.writable,
                   onClick: () => {
-                    void reset(key).then(announce);
+                    const action = onReset ? onReset() : reset(key);
+                    void action.then(announce);
                   },
                 },
                 t("reset"),
@@ -169,7 +185,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
     h("p", { className: "memcurio-note" }, t("intro")),
     h("p", { className: "memcurio-status", role: "status" }, status, notice ? ` · ${notice}` : ""),
     !face.writable ? h("p", { className: "memcurio-warn" }, t("readOnly")) : null,
-    face.errorCode ? h("p", { className: "memcurio-warn", role: "alert" }, t(face.errorCode as SettingsKey)) : null,
+    face.errorCode ? h("p", { className: "memcurio-warn", role: "alert" }, t(face.errorCode)) : null,
     field(
       "scope",
       h(
@@ -206,7 +222,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         min: 128,
         step: 1,
         value: draftBudget,
-        disabled: busy || !face.writable,
+        readOnly: busy || !face.writable,
         onChange: (event: { target: { value: string } }) => setDraftBudget(event.target.value),
         onBlur: commitBudget,
         onKeyDown: keySubmit(commitBudget),
@@ -225,11 +241,12 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         type: "text",
         value: draftProvider,
         placeholder: "deepseek",
-        disabled: busy || !face.writable,
+        readOnly: busy || !face.writable,
         onChange: (event: { target: { value: string } }) => setDraftProvider(event.target.value),
-        onBlur: () => commitText("provider", draftProvider),
-        onKeyDown: keySubmit(() => commitText("provider", draftProvider)),
+        onBlur: commitRoute,
+        onKeyDown: keySubmit(commitRoute),
       }),
+      () => resetRoute(),
     ),
     field(
       "model",
@@ -238,13 +255,15 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         type: "text",
         value: draftModel,
         placeholder: "deepseek-v4",
-        disabled: busy || !face.writable,
+        readOnly: busy || !face.writable,
         onChange: (event: { target: { value: string } }) => setDraftModel(event.target.value),
-        onBlur: () => commitText("model", draftModel),
-        onKeyDown: keySubmit(() => commitText("model", draftModel)),
+        onBlur: commitRoute,
+        onKeyDown: keySubmit(commitRoute),
       }),
+      () => resetRoute(),
     ),
     h("p", { className: "memcurio-note" }, t("routeNote")),
+    h("p", { className: "memcurio-note" }, t("routeApplyNote")),
     h("p", { className: "memcurio-note" }, t("scopeNote")),
     h("p", { className: "memcurio-note" }, t("restartTools")),
     h("p", { className: "memcurio-note" }, t("rootNote")),

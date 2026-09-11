@@ -15,6 +15,8 @@ import {
   overriddenFields,
   routeProblem,
   type MemcurioSettingsView,
+  type SettingsField,
+  type SettingsPathOp,
   type SettingsScopePort,
   type SettingsScopeSnapshotLike,
 } from "../client/settings/controller.js";
@@ -33,6 +35,7 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
   };
   readonly sets: Array<{ field: string; value: unknown }> = [];
   readonly unsets: string[] = [];
+  readonly mutations: Array<readonly SettingsPathOp[]> = [];
   scopeListeners = 0;
   /** When false writes resolve but never land (host refusal). */
   landing = true;
@@ -68,6 +71,31 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
     delete user[field];
     this.snapshot = { ...this.snapshot, user, revision: (this.snapshot.revision ?? 0) + 1 };
+  }
+
+  /** Atomic ops: the host reduces them and validates once (a lone route half
+   *  therefore never lands, while a pair or a full clear does). */
+  async mutate(ops: readonly SettingsPathOp[]): Promise<void> {
+    this.mutations.push(ops);
+    if (!this.landing) return;
+    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
+    const value = { ...(this.snapshot.value ?? BASE) } as unknown as Record<string, unknown>;
+    for (const op of ops) {
+      const field = op.path[0] as SettingsField;
+      if (op.op === "set") {
+        user[field] = op.value;
+        value[field] = op.value;
+      } else {
+        delete user[field];
+        delete value[field];
+      }
+    }
+    this.snapshot = {
+      ...this.snapshot,
+      user,
+      value: value as unknown as MemcurioSettingsView,
+      revision: (this.snapshot.revision ?? 0) + 1,
+    };
   }
 
   private land(field: string, value: unknown): void {
@@ -175,6 +203,40 @@ describe("MemcurioSettingsController", () => {
     expect(scope.scopeListeners).toBe(0); // one scope subscription, released
   });
 
+  test("a throwing listener is contained and never blocks the write path", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    controller.start();
+    let reached = 0;
+    controller.subscribe(() => {
+      throw new Error("broken listener");
+    });
+    controller.subscribe(() => {
+      reached += 1;
+    });
+    const original = console.error;
+    console.error = () => undefined; // the failing listener is intentional
+    try {
+      expect(await controller.save("hostBridge", true)).toEqual({ ok: true });
+    } finally {
+      console.error = original;
+    }
+    expect(reached).toBeGreaterThan(0);
+    expect(controller.face().busy).toBeUndefined();
+  });
+
+  test("a redundant start() disposer cannot kill the shared subscription", () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    const first = controller.start();
+    const second = controller.start();
+    expect(scope.scopeListeners).toBe(1);
+    second();
+    expect(scope.scopeListeners).toBe(1); // still held by the first handle
+    first();
+    expect(scope.scopeListeners).toBe(0);
+  });
+
   test("one scope subscription is shared by every listener", () => {
     const scope = new FakeScope();
     const controller = new MemcurioSettingsController(scope);
@@ -237,7 +299,69 @@ describe("MemcurioSettingsController", () => {
     // The settled state is published (busy cleared), not just the pre-loop one.
     expect(controller.face().busy).toBeUndefined();
     expect(notifications).toBeGreaterThan(1);
-    expect(scope.unsets).toEqual(["hostBridge", "scope"]);
+    // ONE atomic mutation clears everything: per-field unsets could never
+    // clear a route half (the host validates the resolved section per write).
+    expect(scope.mutations).toHaveLength(1);
+    // hostBridge was already cleared by the per-field reset above.
+    expect(scope.mutations[0]).toEqual([{ op: "unset", path: ["scope"] }]);
+  });
+
+  test("resetAll clears a pinned route instead of refusing it", async () => {
+    const scope = new FakeScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      value: { ...BASE, provider: "p", model: "m" },
+      user: { provider: "p", model: "m" },
+    };
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.resetAll()).toEqual({ ok: true });
+    expect(controller.face().overridden).toEqual([]);
+    expect(scope.mutations).toHaveLength(1);
+  });
+
+  test("saveRoute writes the pair atomically and refuses a lone half", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.saveRoute("deepseek", "")).toEqual({ ok: false, code: ERROR_KEYS.routePair });
+    expect(scope.mutations).toEqual([]);
+
+    expect(await controller.saveRoute(" deepseek ", "v4")).toEqual({ ok: true });
+    expect(scope.mutations[0]).toEqual([
+      { op: "set", path: ["provider"], value: "deepseek" },
+      { op: "set", path: ["model"], value: "v4" },
+    ]);
+    expect(controller.face().overridden).toEqual(["provider", "model"]);
+
+    // Clearing both halves is one mutation as well (route back to base).
+    expect(await controller.resetRoute()).toEqual({ ok: true });
+    expect(scope.mutations[1]).toEqual([
+      { op: "unset", path: ["provider"] },
+      { op: "unset", path: ["model"] },
+    ]);
+    expect(controller.face().overridden).toEqual([]);
+  });
+
+  test("a refused atomic route write surfaces failure (no silent success)", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    scope.landing = false;
+    expect(await controller.saveRoute("p", "m")).toEqual({ ok: false, code: ERROR_KEYS.notLanded });
+    expect(controller.face().errorCode).toBe(ERROR_KEYS.notLanded);
+    expect(controller.face().busy).toBeUndefined();
+  });
+
+  test("reset of one route half is allowed when the base completes the pair", async () => {
+    const scope = new FakeScope();
+    // Profile pins the route; the user overrode only the provider.
+    scope.snapshot = {
+      ...scope.snapshot,
+      base: { ...BASE, provider: "profile-p", model: "profile-m" },
+      value: { ...BASE, provider: "user-p", model: "profile-m" },
+      user: { provider: "user-p" },
+    };
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.reset("provider")).toEqual({ ok: true });
+    expect(scope.unsets).toEqual(["provider"]);
   });
 
   test("resetAll on an empty user layer is a verified no-op", async () => {
@@ -255,24 +379,11 @@ describe("MemcurioSettingsController", () => {
     await controller.save("injectContext", false);
     scope.landing = false;
     const outcome = await controller.resetAll();
-    expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.partialReset });
+    // The atomic mutation resolved without landing: the overrides are still
+    // there, so the outcome must not claim success.
+    expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.resetNotLanded });
     expect(controller.face().busy).toBeUndefined();
-    expect(controller.face().errorCode).toBe(ERROR_KEYS.partialReset);
-  });
-
-  test("resetAll refuses a bulk clear that would strand one route half", async () => {
-    const scope = new FakeScope();
-    // Both route halves overridden: clearing them one at a time hits the
-    // host's resolved-section rule on the first unset.
-    scope.snapshot = {
-      ...scope.snapshot,
-      value: { ...BASE, provider: "deepseek", model: "deepseek-v4" },
-      user: { provider: "deepseek", model: "deepseek-v4" },
-    };
-    const controller = new MemcurioSettingsController(scope);
-    const outcome = await controller.resetAll();
-    expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.routePair });
-    expect(scope.unsets).toEqual([]);
+    expect(controller.face().errorCode).toBe(ERROR_KEYS.resetNotLanded);
   });
 
   test("loading/unavailable/writable:false faces surface the raw snapshot state", () => {

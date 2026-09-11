@@ -73,6 +73,8 @@ export function apply(ctx: Context): void {
           save: (field: SettingsField, value: unknown) => controller.save(field, value),
           reset: (field: SettingsField) => controller.reset(field),
           resetAll: () => controller.resetAll(),
+          saveRoute: (provider: string, model: string) => controller.saveRoute(provider, model),
+          resetRoute: () => controller.resetRoute(),
         }),
       },
       MemcurioSettingsSection,
