@@ -163,7 +163,7 @@ bun run pack:check
 - **F6 文档**：无效 settings.yaml 段会让 `apply` 抛错（插件不挂载，属"响亮失败"），与"无 settings 服务 → 静默 inert"区分记录
 - **client 第二轮 major**：`resetAll` 改为**一次原子 `mutate`**（逐字段 unset 在路由半边处必被宿主拒绝，且会先清掉其他字段）；新增 `saveRoute`/`resetRoute` 成对原子写入（未 pin 路由的部署里两个路由字段此前根本无法从 UI 落地）；`reset(field)` 改为按 `base[field]` 评估半边（pin 路由下清半边合法）；面板文本输入 busy 时用 `readOnly` 且 blur 提交前与权威值比较（消除 Enter+blur 双提交与"未请求的 unset"）
 - **client 第二轮 minor**：`notify()` 逐监听者容错（框架约定，坏监听者不得冻结面板）、`start()` 引用计数、`FaceHook` 补 `equal` 重载、错误码类型化为 `SettingsErrorCode`（去掉 `as SettingsKey`）
-- 新增测试：原子 resetAll（含 pin 路由）、`saveRoute` 成对/半边拒绝/未落地、base-aware reset、监听者容错、start 引用计数 —— client-settings 23 项；全量 **477 tests / 27 files / 2990 expect / 0 fail**；coverage 92.63% funcs / 93.64% lines；lint 79 clean；pack 79
+- 新增测试：原子 resetAll（含 pin 路由）、`saveRoute` 成对/半边拒绝/未落地、base-aware reset、监听者容错、start 引用计数 —— client-settings 23 项；全量 **477 tests / 27 files / 2990 expect / 0 fail**（第二十八轮快照，随后由第二十九/三十轮增至 485/28/3027）；coverage 92.63% funcs / 93.64% lines；lint 79 clean；pack 79
 - **已知测试缺口（F5，评审实测）**：`client/settings/section.ts`、`client/entry.ts`、`locales.ts`、`styles.ts` 未被任何测试导入（coverage 只列 `client/index.ts` 与 `controller.ts`），因此"hooks→useFace 组合 props / inject 只跑一次 / 传输通知重渲染"这段契约没有自动化回归网；评审已用真实 renderer + react-dom + jsdom 手工验证通过，并给出可移植的 ~15 行 loader harness。列为下一轮候选（可作为 S0 前的回归网）
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
