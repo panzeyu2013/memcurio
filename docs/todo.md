@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-11（第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-11（第二十五轮：配置面落定——`memcurio` settings 命名空间（Settings 页可配置 scope/injectContext/budget/hostBridge/路由；profile 为默认层、settings.yaml 覆盖；live/重启生效语义），448 tests / 26 files / 2883 expect 全绿；第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 442 tests / 2868 assertions / 25 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 448 tests / 2883 assertions / 26 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -126,7 +126,7 @@ bun run pack:check
 - `bun test`：437 pass / 2848 expect / 25 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
 - `bun test --coverage`：lines 89.49%，functions 89.45%
 - `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：76 文件（单 tarball allowlist + dist 反向校验），干净
+- `bun run pack:check`：78 文件（单 tarball allowlist + dist 反向校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
@@ -220,7 +220,7 @@ bun run pack:check
 - 客户端队列对齐：queue-updated 改**单 job**（jobId/status/attempts，投影器同构），counts 由 jobs 重算，completed 移除；桥 9 项 + 客户端 19 项测试
 - 设计 v1.4：§8.4 host 桥接层（打标点/diff 映射/快照/过滤规则）
 
-**412 tests / 23 files / 2618 expect / 0 fail**；tsc+lint（66 files）clean；pack 76 files。
+**412 tests / 23 files / 2618 expect / 0 fail**；tsc+lint（66 files）clean；pack 78 files。
 
 仍缺（S0/M0 接力）：传输通道（SSE/投影/轮询按 v1.2 §8.1 实测定案）、真正浏览器 UI 组装（槽位实测）、/memory 唤起、每 store 数据路径与 delta 归属 storeId、UI 记忆工具消息折叠。
 
@@ -273,6 +273,20 @@ bun run pack:check
 - 时钟脆弱修复：db/consolidate 测试中硬编码的 8 月 `sourceUpdatedAt` 越过 30 天窗口（系统时钟已到 09-11），改为相对 `daysAgo()` 时间戳
 - 文档版本对齐：design §版本声明/§13-10、integration-dsh、installation、architecture、todo 矩阵、s0 计划/清单（目标 0.1.5-rc.1，rc.1 实证账本来源仍标注 0.1.2-rc.1）、acceptance、client README、CHANGELOG（Changed 节）
 - 全量 **442 tests / 25 files / 2868 expect / 0 fail**（0.1.5-rc.1 依赖下）；tsc+lint clean
+
+### 6.16 第二十五轮：配置面（settings 命名空间）（2026-09-11）
+
+用户诉求"让用户在 Settings 里配置 memory" → 落定配置面（与记忆内容面分离）：
+
+- 新增 `src/plugin/settings.ts`：`memcurio` 命名空间 schema（scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model；provider+model 跨字段校验）；`installSection`（profile config 作 composition base，settings.yaml 用户层覆盖）；`settingsBase()` 组装
+- 插件 `inject` 增加 `settings`（官方模式，硬注入）；新增 live 读取 `live()`：hostBridge（bridge.enable/disable 经 onChange）、injectContext（pre-step 短路）、injectBudgetTokens、provider/model、scope（新会话）即时；registerTools/root 保持重启/只读并 warn 说明
+- pre-step listener 改为始终注册 + live 短路（支持运行期开关注入）
+- peer/devDeps 增 `@deepseek-ai/dsh-settings`（peer ^0.1.5-rc.1）+ `dsh-settings-file`（dev/测试）；测试 harness 挂真实 FileSettingsProvider
+- 新测试 `tests/settings.test.ts`（6 项：命名空间+base、hostBridge live、跨字段校验、schema 拒绝、注入开关 live、settings.yaml 持久化）
+- 文档：design v1.5（§3.3 配置入口、§5.1 配置行、§13-14 决策）、README/README_cn/installation §5.1/integration-dsh、CHANGELOG Added
+- 全量 **448 tests / 26 files / 2883 expect / 0 fail**；lint 71 files clean
+
+待续（M0）：浏览器侧 Settings 面板（`dsh.client` + `settings.section` 槽位 + esbuild 产物），与工作台 UI 一同组装。
 
 ### 6.13 第二十二轮：v0.0.1 发布准备（2026-09-06，参照 dsh-mcp-scope 惯例）
 

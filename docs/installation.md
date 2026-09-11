@@ -63,6 +63,21 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
 | 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.5-rc.1`，peer 范围 `^0.1.5-rc.1` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
 
+## 5.1 从 DSH Settings 页配置（推荐）
+
+插件向 DSH 设置域注册 `memcurio` 命名空间（`<DSH home>/settings.yaml` 的 `memcurio:` 段），可在 Settings 页直接调整：
+
+| 键 | 作用 | 生效 |
+|---|---|---|
+| `scope` | `workspace`（按工作区隔离）/ `global`（共享 store） | 新会话生效 |
+| `injectContext` | pre-step 记忆注入开关 | 即时 |
+| `registerTools` | 是否注册六个原生记忆工具 | 重启生效 |
+| `injectBudgetTokens` | 注入预算（>=128） | 即时 |
+| `hostBridge` | 记忆工作台 host 桥（事件打标/快照） | 即时 |
+| `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由） | 即时 |
+
+`root`（数据位置）只在面板只读展示，避免误改数据根。profile 的 `cordis.patch.yml` config 是默认层（composition base），settings 文档为覆盖层；清空用户层即回到 profile 默认。
+
 ## 6. 常见问题
 
 - **为什么没有 CLI / MCP / 独立服务了？** memcurio 自第十五轮收敛为 DSH 单模块：模型路由由宿主提供，运维操作（整合/重试/审计）将逐步内化为插件 host 服务与未来的可视化界面（见 [docs/todo.md](todo.md)）。

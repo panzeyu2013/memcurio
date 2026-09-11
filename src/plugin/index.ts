@@ -28,6 +28,7 @@ export { workspaceStoreRoot } from "./scope.js";
 
 import { memoryWorkspace } from "../core/paths.js";
 import { HostBridge } from "./bridge.js";
+import { installMemcurioSettings, settingsBase } from "./settings.js";
 
 export const name = "memcurio";
 
@@ -41,7 +42,7 @@ const bridgesByRoot = new Map<string, HostBridge>();
 export function hostBridgeForRoot(root: string): HostBridge | undefined {
   return bridgesByRoot.get(root);
 }
-export const inject = ["tools", "llm", "sessions"];
+export const inject = ["tools", "llm", "sessions", "settings"];
 
 export interface Config {
   root?: string;
@@ -563,7 +564,28 @@ export function apply(ctx: Context, config: Config = {}): void {
     const runtime = sessions.get(sessionId);
     return runtime ? runtime.adapter.memoryEvidenceSnapshot(sessionId) : [];
   });
-  if (resolved.hostBridge) bridge.enable();
+  // Configuration surface (design v1.5): profile config is the composition
+  // base; the `memcurio` settings namespace (Settings page) overrides it.
+  const settings = installMemcurioSettings(ctx, {
+    base: settingsBase(resolved),
+    onChange: (next) => {
+      if (next.hostBridge) {
+        bridge.enable();
+      } else {
+        bridge.disable();
+      }
+      if (next.scope !== resolved.scope) {
+        ctx.logger.warn("memcurio: scope change applies to new sessions (existing stores keep their root)");
+      }
+      if (next.registerTools !== resolved.registerTools) {
+        ctx.logger.warn("memcurio: registerTools change takes effect after a restart");
+      }
+    },
+    warn: (message) => ctx.logger.warn(message),
+  });
+  /** Live settings read (never cached across operations). */
+  const live = (): ReturnType<typeof settings.current> => settings.current();
+  if (live().hostBridge) bridge.enable();
   bridgesByRoot.set(baseRoot, bridge);
   const warn = (error: unknown): void => ctx.logger.warn("memcurio: %s", String(error));
 
@@ -592,16 +614,17 @@ export function apply(ctx: Context, config: Config = {}): void {
         session.id,
       );
     }
-    const root = workspaceStoreRoot(baseRoot, workdir, resolved.scope);
-    const seededRoute = resolved.provider && resolved.model
-      ? { provider: resolved.provider, model: resolved.model }
+    const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
+    const fixed = live();
+    const seededRoute = fixed.provider && fixed.model
+      ? { provider: fixed.provider, model: fixed.model }
       : latestRoute(seedEvents);
     let runtime: SessionRuntime;
     const adapter = new MemcurioAdapter({
       root,
       host: "dsh",
       durableQueue: true,
-      injectBudgetTokens: resolved.injectBudgetTokens,
+      injectBudgetTokens: live().injectBudgetTokens,
       toolPreset: DSH_TOOL_PRESET,
       channel: dshChannel(ctx, () => runtime.route, () => runtime.abort.signal),
       // Preserve warn/error levels: flattening them to debug would hide real
@@ -643,7 +666,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!isPluginMessage(message)) {
             const evidence = messageEvidence(message);
             await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
-            if (resolved.hostBridge) {
+            if (bridge.isEnabled) {
               bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
             }
           }
@@ -675,7 +698,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (event.data.error === undefined) await settleCompaction(runtime, session.id, event.data.compactionId);
         } else if (event.type === "compaction/prune") {
           pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
-          if (resolved.hostBridge) bridge.tagPrune(session.id, event.data.shadowedSeqs);
+          if (bridge.isEnabled) bridge.tagPrune(session.id, event.data.shadowedSeqs);
         }
       }
     }, warn);
@@ -708,7 +731,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         const work = (async () => {
           if (runtime.abort.signal.aborted) return;
           try {
-            if (resolved.hostBridge) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
+            if (bridge.isEnabled) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
           else await harvestCitations(runtime);
           } catch {
             // best effort: citation telemetry must never break retirement
@@ -716,7 +739,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           await runtime.adapter.processPendingExtractions();
           await runtime.adapter.maybeConsolidate();
           // Deliver queue/audit diffs produced by the retire drain.
-          if (resolved.hostBridge) await bridge.refresh(runtime.root).catch(warn);
+          if (bridge.isEnabled) await bridge.refresh(runtime.root).catch(warn);
         })();
         // If the budget expires first, the raced work continues detached;
         // record any late failure instead of letting it become an
@@ -800,7 +823,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         const partId = partIdFor(event.type, event.seq);
         const evidence = messageEvidence(message);
         void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partId, evidence), warn);
-        if (resolved.hostBridge) bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
+        if (bridge.isEnabled) bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
       }
     } else if (event.type === "turn/end") {
       // The idle checkpoint is a fast durable write (event lane, awaited by
@@ -811,7 +834,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       void enqueueWorker(runtime, async () => {
         await idle.catch(() => undefined);
         try {
-          if (resolved.hostBridge) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
+          if (bridge.isEnabled) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
           else await harvestCitations(runtime);
         } catch {
           // best effort: citation telemetry must never break the turn flow
@@ -819,7 +842,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         await runtime.adapter.processPendingExtractions();
         await runtime.adapter.maybeConsolidate();
         // Deliver queue/audit diffs produced by this drain (turn/end lane).
-        if (resolved.hostBridge) await bridge.refresh(runtime.root).catch(warn);
+        if (bridge.isEnabled) await bridge.refresh(runtime.root).catch(warn);
       }, warn);
     } else if (event.type === "compaction/summary") {
       runtime.pendingCompactions.set(event.data.compactionId, {
@@ -839,7 +862,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // (no summary to preserve them), so their evidence parts go too.
       void enqueue(runtime, async () => {
         pruneShadowedEvidence(runtime.adapter, session.id, event.data.shadowedSeqs);
-        if (resolved.hostBridge) bridge.tagPrune(session.id, event.data.shadowedSeqs);
+        if (bridge.isEnabled) bridge.tagPrune(session.id, event.data.shadowedSeqs);
       }, warn);
     }
   }, { global: true });
@@ -862,7 +885,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     // engine's own telemetry counts — the snapshot usage face stays the
     // reconciliation truth). Path -> rollout resolution stays a host-side
     // concern documented in the projector.
-    if (resolved.hostBridge) {
+    if (bridge.isEnabled) {
       if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
         const readPath = details?.filePath ?? details?.path;
         if (readPath && isAbsolute(readPath)) {
@@ -892,19 +915,22 @@ export function apply(ctx: Context, config: Config = {}): void {
     void retireSession(runtime).catch(() => undefined);
   }, { global: true });
 
-  if (resolved.injectContext) {
-    // global: true — agent/pre-step is dispatched through a scope carrier;
-    // every other listener in this plugin opts into global delivery, and
-    // this one must too so a tagged topology can never silently starve it.
-    ctx.on("agent/pre-step", async (payload, next): Promise<PreStepDecision> => {
-      const decision = await next();
-      if (decision.kind !== "enter" || payload.signal.aborted) return decision;
+  // Registered unconditionally so the settings surface can toggle injection
+  // live (the composition default only seeds the settings base).
+  //
+  // global: true — agent/pre-step is dispatched through a scope carrier;
+  // every other listener in this plugin opts into global delivery, and
+  // this one must too so a tagged topology can never silently starve it.
+  ctx.on("agent/pre-step", async (payload, next): Promise<PreStepDecision> => {
+    const decision = await next();
+    if (decision.kind !== "enter" || payload.signal.aborted) return decision;
+    if (!live().injectContext) return decision;
       const runtime = ensureSession(payload.agent.session);
       if (runtime.retirement) return decision;
       const agentRoute = payload.agent.options?.provider && payload.agent.options.model
         ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
         : undefined;
-      if (agentRoute && resolved.provider === undefined) runtime.route = agentRoute;
+      if (agentRoute && live().provider === undefined) runtime.route = agentRoute;
       await awaitRuntime(runtime);
       let context: string;
       // Injected pieces for the host bridge tag (declared outside the try so
@@ -915,11 +941,11 @@ export function apply(ctx: Context, config: Config = {}): void {
         const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
         const parts: string[] = [];
         if (!runtime.staticInjected) {
-          staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, resolved.injectBudgetTokens);
+          staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, live().injectBudgetTokens);
           parts.push(staticPiece);
         }
         if (query) {
-          dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, resolved.injectBudgetTokens);
+          dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, live().injectBudgetTokens);
           if (dynamicPiece) parts.push(dynamicPiece);
         }
         context = parts.filter(Boolean).join("\n\n");
@@ -939,14 +965,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (context === runtime.lastInjectedContext) return decision;
       runtime.lastInjectedContext = context;
       runtime.staticInjected = true;
-      if (resolved.hostBridge) {
-        bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, resolved.injectBudgetTokens);
+      if (bridge.isEnabled) {
+        bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, live().injectBudgetTokens);
       }
-      return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
-    }, { global: true });
-  }
+    return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
+  }, { global: true });
 
-  if (resolved.registerTools) registerMemoryTools(ctx, sessions, resolved.hostBridge ? bridge : undefined);
+  if (resolved.registerTools) registerMemoryTools(ctx, sessions, bridge.isEnabled ? bridge : undefined);
   for (const session of ctx.sessions.list()) ensureSession(session);
   // Startup drain: pending durable jobs from a previous
   // process run would otherwise sit until the first turn/end in the same
@@ -956,6 +981,6 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (drainedRoots.has(runtime.root)) continue;
     drainedRoots.add(runtime.root);
     void runtime.adapter.processPendingExtractions().catch(warn);
-    if (resolved.hostBridge) void bridge.refresh(runtime.root).catch(warn);
+    if (bridge.isEnabled) void bridge.refresh(runtime.root).catch(warn);
   }
 }

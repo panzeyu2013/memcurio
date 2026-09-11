@@ -38,6 +38,19 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   the release workflow until a token/provenance decision is made — see
   `docs/RELEASE.md`.
 
+### Added (settings surface)
+
+- **`memcurio` settings namespace** (`@deepseek-ai/dsh-settings`): the plugin
+  now hard-injects the DSH `settings` service and registers its namespace via
+  `ctx.settings.installSection`, so users configure the plugin from the DSH
+  Settings page — `scope`, `injectContext`, `registerTools`,
+  `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config
+  stays the composition base; the user layer persists to
+  `<DSH home>/settings.yaml`. Injection toggle, budget, host bridge and the
+  worker route apply live; `scope` applies to new sessions; `registerTools`
+  needs a restart; `root` is read-only. The browser-side panel
+  (`settings.section`) ships with the M0 client assembly.
+
 ### Changed
 
 - **Aligned to DSH `0.1.5-rc.1`** (current npm `latest`; peers now

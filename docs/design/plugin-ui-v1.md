@@ -117,7 +117,11 @@ DSH Web（浏览器）
 4. 推送 delta 与全量快照**同源同脱敏**。
 5. 客户端 bundle 是浏览器内核件：不经模型、不进 prompt、不进证据、不进抽取。
 
-### 3.3 入口（标题栏单按钮）
+### 3.3 入口（标题栏单按钮 + 配置面）
+
+**配置入口（v1.5 已实现）**：host 侧经 `@deepseek-ai/dsh-settings` 注册 `memcurio` 命名空间（`src/plugin/settings.ts`），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / hostBridge / provider / model；profile `cordis.patch.yml` 为默认层，settings.yaml 用户层覆盖。`root`（数据位置）只在面板只读展示。生效语义：injectContext/budget/hostBridge/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器半侧的 Settings 面板（`settings.section` 槽位）随 M0 与工作台一同组装。
+
+**记忆面入口**：标题栏单按钮唤起记忆界面（下述）。
 
 主界面只放**一个标题栏按钮**（当前 workspace 的"记忆"入口）；点击唤起**记忆界面**，其余全部内容都在该界面内部承载——DSH 主界面不加任何其他 memcurio chrome。S0 预查（v1.2，rc.1 实证）：候选槽位为 **`conversation.session.header.actions`**（"标题相邻会话操作"，ui-conversation 声明）或全宽 `conversation.view` tab；`settings.section` 仅适合设置页。`/memory` 回退存疑：rc.1 无已验证的"客户端命令唤起 UI"机制（命令在 agent 侧执行）——回退路径待 S0 实测后修订（可能为 conversation.view tab 或设置页直达）。
 
@@ -159,6 +163,7 @@ UI 落位：**注入面 = ①，持久面 = ⑥ 为主 + ②③ 溯源，状态�
 | 状态 | `consolidation.state()` | 自动整合 last/failed/冷却剩余（meta 键） | `metaGet("consolidation_auto_last"/"_failed")` |
 | 状态 | `evidence.session(sessionId)` | 当前会话证据窗口（消息部分/工具/摘要，脱敏） | `engine.memoryEvidenceSnapshot` + 事件投影 |
 | 审计 | `audit.list(limit, filter)` | 审计记录（近尾行 + writePath 标记；写路径才作收据） | db audit 表（查询文本脱敏） |
+| 配置 | `ctx.settings`（`memcurio` 命名空间） | scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model（root 只读） | `@deepseek-ai/dsh-settings` + `dsh-settings-file`（settings.yaml；见 §3.3） |
 | 意图 | `intent.draft(kind, ref)` | **不落库**：合成预填用户消息（remember/update/remove 措辞 + 引用） | 纯服务层文本组装 |
 | 写 | （无直接写服务） | UI 永不直写；写 = 对话草稿 → 模型工具 | `memory_remember` 等既有工具 |
 
@@ -318,7 +323,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置/realtime）；字段名与客户端词汇对齐；delta 过滤与快照标记映射留给传输适配器（S0）；
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
 - v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version、注入预览携带 dynamicText；桥插件级集成测试落地；
-- v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）。
+- v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；v1.5：**配置面落定**——`ctx.settings.installSection("memcurio", …)` 注册命名空间（profile config 为 composition base，settings.yaml 用户层覆盖），配置项 scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model；root 只读展示；记忆内容面不变（工作台/对话流，UI 永不静默写）。
 
 ## 9. 安全与隐私边界
 
@@ -403,6 +408,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 11. v1.2 实证修订：第三方 `ctx.remote` 通道关闭（§8.1/§12 风险 2 定案）；标题栏候选槽位 `conversation.session.header.actions` / `conversation.view`；seed 模块表恰 8 键（含 react-dom/client）；`/memory` 客户端唤起降为开放项（§7.7）。
 12. v1.3 审查修订：预览与工作台搜索/读**不计数遥测**（trackUsage 开关，默认模型路径仍计数）；usage-tick 语义定为**增量**并在客户端快照上自愈；审计行/收据暴露 object（ns）。
 13. v1.4 实现批次：host 桥接层落定（store 注册表/打标点/refresh diff/快照/写路径收据过滤，config.hostBridge 门控，§8.4）；queue-updated 改**单 job**（jobId/status/attempts，counts 客户端自 jobs 重算，completed 移除）。
+14. v1.5 配置面：**在 DSH Settings 页注册 `memcurio` 命名空间用于插件配置**（用户可在 UI 调整 scope/injectContext/registerTools/budget/hostBridge/provider/model；root 只读）。这不违背"UI 永不静默写记忆"——配置面与记忆内容面分离；写记忆仍是对话流 + 工具卡 + 收据。浏览器面板随 M0 组装（`settings.section` 槽位，需 `dsh.client`）。
 
 ---
 

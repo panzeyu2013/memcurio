@@ -9,6 +9,7 @@ import { memcurioBaseRoot, workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { memoryWorkspace } from "../core/paths.js";
 import { HostBridge } from "./bridge.js";
+import { installMemcurioSettings, settingsBase } from "./settings.js";
 export const name = "memcurio";
 /** Bridge registry keyed by the memcurio base root: plugin apply() receives
  *  a Cordis plugin context that is not identity-equal to the outer context,
@@ -19,7 +20,7 @@ const bridgesByRoot = new Map();
 export function hostBridgeForRoot(root) {
     return bridgesByRoot.get(root);
 }
-export const inject = ["tools", "llm", "sessions"];
+export const inject = ["tools", "llm", "sessions", "settings"];
 export const Config = Schema.object({
     root: Schema.string(),
     scope: Schema.union(["workspace", "global"]).default("workspace"),
@@ -450,7 +451,29 @@ export function apply(ctx, config = {}) {
         const runtime = sessions.get(sessionId);
         return runtime ? runtime.adapter.memoryEvidenceSnapshot(sessionId) : [];
     });
-    if (resolved.hostBridge)
+    // Configuration surface (design v1.5): profile config is the composition
+    // base; the `memcurio` settings namespace (Settings page) overrides it.
+    const settings = installMemcurioSettings(ctx, {
+        base: settingsBase(resolved),
+        onChange: (next) => {
+            if (next.hostBridge) {
+                bridge.enable();
+            }
+            else {
+                bridge.disable();
+            }
+            if (next.scope !== resolved.scope) {
+                ctx.logger.warn("memcurio: scope change applies to new sessions (existing stores keep their root)");
+            }
+            if (next.registerTools !== resolved.registerTools) {
+                ctx.logger.warn("memcurio: registerTools change takes effect after a restart");
+            }
+        },
+        warn: (message) => ctx.logger.warn(message),
+    });
+    /** Live settings read (never cached across operations). */
+    const live = () => settings.current();
+    if (live().hostBridge)
         bridge.enable();
     bridgesByRoot.set(baseRoot, bridge);
     const warn = (error) => ctx.logger.warn("memcurio: %s", String(error));
@@ -477,16 +500,17 @@ export function apply(ctx, config = {}) {
         if (!workdir) {
             ctx.logger.warn("memcurio: session %s has no header.cwd; using the shared no-cwd store (workspace isolation unavailable)", session.id);
         }
-        const root = workspaceStoreRoot(baseRoot, workdir, resolved.scope);
-        const seededRoute = resolved.provider && resolved.model
-            ? { provider: resolved.provider, model: resolved.model }
+        const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
+        const fixed = live();
+        const seededRoute = fixed.provider && fixed.model
+            ? { provider: fixed.provider, model: fixed.model }
             : latestRoute(seedEvents);
         let runtime;
         const adapter = new MemcurioAdapter({
             root,
             host: "dsh",
             durableQueue: true,
-            injectBudgetTokens: resolved.injectBudgetTokens,
+            injectBudgetTokens: live().injectBudgetTokens,
             toolPreset: DSH_TOOL_PRESET,
             channel: dshChannel(ctx, () => runtime.route, () => runtime.abort.signal),
             // Preserve warn/error levels: flattening them to debug would hide real
@@ -529,7 +553,7 @@ export function apply(ctx, config = {}) {
                     if (!isPluginMessage(message)) {
                         const evidence = messageEvidence(message);
                         await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
-                        if (resolved.hostBridge) {
+                        if (bridge.isEnabled) {
                             bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
                         }
                     }
@@ -570,7 +594,7 @@ export function apply(ctx, config = {}) {
                 }
                 else if (event.type === "compaction/prune") {
                     pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
-                    if (resolved.hostBridge)
+                    if (bridge.isEnabled)
                         bridge.tagPrune(session.id, event.data.shadowedSeqs);
                 }
             }
@@ -605,7 +629,7 @@ export function apply(ctx, config = {}) {
                     if (runtime.abort.signal.aborted)
                         return;
                     try {
-                        if (resolved.hostBridge)
+                        if (bridge.isEnabled)
                             bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
                         else
                             await harvestCitations(runtime);
@@ -616,7 +640,7 @@ export function apply(ctx, config = {}) {
                     await runtime.adapter.processPendingExtractions();
                     await runtime.adapter.maybeConsolidate();
                     // Deliver queue/audit diffs produced by the retire drain.
-                    if (resolved.hostBridge)
+                    if (bridge.isEnabled)
                         await bridge.refresh(runtime.root).catch(warn);
                 })();
                 // If the budget expires first, the raced work continues detached;
@@ -704,7 +728,7 @@ export function apply(ctx, config = {}) {
                 const partId = partIdFor(event.type, event.seq);
                 const evidence = messageEvidence(message);
                 void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partId, evidence), warn);
-                if (resolved.hostBridge)
+                if (bridge.isEnabled)
                     bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
             }
         }
@@ -717,7 +741,7 @@ export function apply(ctx, config = {}) {
             void enqueueWorker(runtime, async () => {
                 await idle.catch(() => undefined);
                 try {
-                    if (resolved.hostBridge)
+                    if (bridge.isEnabled)
                         bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
                     else
                         await harvestCitations(runtime);
@@ -728,7 +752,7 @@ export function apply(ctx, config = {}) {
                 await runtime.adapter.processPendingExtractions();
                 await runtime.adapter.maybeConsolidate();
                 // Deliver queue/audit diffs produced by this drain (turn/end lane).
-                if (resolved.hostBridge)
+                if (bridge.isEnabled)
                     await bridge.refresh(runtime.root).catch(warn);
             }, warn);
         }
@@ -752,7 +776,7 @@ export function apply(ctx, config = {}) {
             // (no summary to preserve them), so their evidence parts go too.
             void enqueue(runtime, async () => {
                 pruneShadowedEvidence(runtime.adapter, session.id, event.data.shadowedSeqs);
-                if (resolved.hostBridge)
+                if (bridge.isEnabled)
                     bridge.tagPrune(session.id, event.data.shadowedSeqs);
             }, warn);
         }
@@ -778,7 +802,7 @@ export function apply(ctx, config = {}) {
         // engine's own telemetry counts — the snapshot usage face stays the
         // reconciliation truth). Path -> rollout resolution stays a host-side
         // concern documented in the projector.
-        if (resolved.hostBridge) {
+        if (bridge.isEnabled) {
             if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
                 const readPath = details?.filePath ?? details?.path;
                 if (readPath && isAbsolute(readPath)) {
@@ -809,68 +833,71 @@ export function apply(ctx, config = {}) {
             return;
         void retireSession(runtime).catch(() => undefined);
     }, { global: true });
-    if (resolved.injectContext) {
-        // global: true — agent/pre-step is dispatched through a scope carrier;
-        // every other listener in this plugin opts into global delivery, and
-        // this one must too so a tagged topology can never silently starve it.
-        ctx.on("agent/pre-step", async (payload, next) => {
-            const decision = await next();
-            if (decision.kind !== "enter" || payload.signal.aborted)
-                return decision;
-            const runtime = ensureSession(payload.agent.session);
-            if (runtime.retirement)
-                return decision;
-            const agentRoute = payload.agent.options?.provider && payload.agent.options.model
-                ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
-                : undefined;
-            if (agentRoute && resolved.provider === undefined)
-                runtime.route = agentRoute;
-            await awaitRuntime(runtime);
-            let context;
-            // Injected pieces for the host bridge tag (declared outside the try so
-            // the tag site after the dedupe check can read them).
-            let staticPiece;
-            let dynamicPiece;
-            try {
-                const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
-                const parts = [];
-                if (!runtime.staticInjected) {
-                    staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, resolved.injectBudgetTokens);
-                    parts.push(staticPiece);
-                }
-                if (query) {
-                    dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, resolved.injectBudgetTokens);
-                    if (dynamicPiece)
-                        parts.push(dynamicPiece);
-                }
-                context = parts.filter(Boolean).join("\n\n");
+    // Registered unconditionally so the settings surface can toggle injection
+    // live (the composition default only seeds the settings base).
+    //
+    // global: true — agent/pre-step is dispatched through a scope carrier;
+    // every other listener in this plugin opts into global delivery, and
+    // this one must too so a tagged topology can never silently starve it.
+    ctx.on("agent/pre-step", async (payload, next) => {
+        const decision = await next();
+        if (decision.kind !== "enter" || payload.signal.aborted)
+            return decision;
+        if (!live().injectContext)
+            return decision;
+        const runtime = ensureSession(payload.agent.session);
+        if (runtime.retirement)
+            return decision;
+        const agentRoute = payload.agent.options?.provider && payload.agent.options.model
+            ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
+            : undefined;
+        if (agentRoute && live().provider === undefined)
+            runtime.route = agentRoute;
+        await awaitRuntime(runtime);
+        let context;
+        // Injected pieces for the host bridge tag (declared outside the try so
+        // the tag site after the dedupe check can read them).
+        let staticPiece;
+        let dynamicPiece;
+        try {
+            const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
+            const parts = [];
+            if (!runtime.staticInjected) {
+                staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, live().injectBudgetTokens);
+                parts.push(staticPiece);
             }
-            catch (err) {
-                // Injection is read-only augmentation: a memory-store hiccup must
-                // never fail the model step. staticInjected stays false, so the
-                // next pre-step retries the static build.
-                ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
-                return decision;
+            if (query) {
+                dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, live().injectBudgetTokens);
+                if (dynamicPiece)
+                    parts.push(dynamicPiece);
             }
-            if (!context)
-                return decision;
-            // The loop persists every decision message to the durable session log.
-            // Unchanged content is not re-injected (the model already has it from
-            // the previous step); only content changes append a new message, which
-            // bounds log growth and compaction pollution. compaction/end clears
-            // the marker because the log rewrite may have dropped the message.
-            if (context === runtime.lastInjectedContext)
-                return decision;
-            runtime.lastInjectedContext = context;
-            runtime.staticInjected = true;
-            if (resolved.hostBridge) {
-                bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, resolved.injectBudgetTokens);
-            }
-            return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
-        }, { global: true });
-    }
+            context = parts.filter(Boolean).join("\n\n");
+        }
+        catch (err) {
+            // Injection is read-only augmentation: a memory-store hiccup must
+            // never fail the model step. staticInjected stays false, so the
+            // next pre-step retries the static build.
+            ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
+            return decision;
+        }
+        if (!context)
+            return decision;
+        // The loop persists every decision message to the durable session log.
+        // Unchanged content is not re-injected (the model already has it from
+        // the previous step); only content changes append a new message, which
+        // bounds log growth and compaction pollution. compaction/end clears
+        // the marker because the log rewrite may have dropped the message.
+        if (context === runtime.lastInjectedContext)
+            return decision;
+        runtime.lastInjectedContext = context;
+        runtime.staticInjected = true;
+        if (bridge.isEnabled) {
+            bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, live().injectBudgetTokens);
+        }
+        return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
+    }, { global: true });
     if (resolved.registerTools)
-        registerMemoryTools(ctx, sessions, resolved.hostBridge ? bridge : undefined);
+        registerMemoryTools(ctx, sessions, bridge.isEnabled ? bridge : undefined);
     for (const session of ctx.sessions.list())
         ensureSession(session);
     // Startup drain: pending durable jobs from a previous
@@ -882,7 +909,7 @@ export function apply(ctx, config = {}) {
             continue;
         drainedRoots.add(runtime.root);
         void runtime.adapter.processPendingExtractions().catch(warn);
-        if (resolved.hostBridge)
+        if (bridge.isEnabled)
             void bridge.refresh(runtime.root).catch(warn);
     }
 }

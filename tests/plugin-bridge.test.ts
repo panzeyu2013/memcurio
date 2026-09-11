@@ -16,6 +16,7 @@ import LlmRuntime, { createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
+import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 
 import { memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -44,6 +45,12 @@ async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
+    // The plugin hard-injects the settings service (official dsh pattern):
+    // the file-backed provider is the real composition surface.
+    await ctx.plugin(FileSettingsProvider, {
+      path: join(temporaryRoot(), "settings.yaml"),
+      watch: false,
+    }),
   ];
   return { ctx, fibers };
 }

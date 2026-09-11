@@ -12,6 +12,7 @@ import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@de
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
+import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
@@ -41,6 +42,12 @@ async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
+    // The plugin hard-injects the settings service (official dsh pattern):
+    // the file-backed provider is the real composition surface.
+    await ctx.plugin(FileSettingsProvider, {
+      path: join(temporaryRoot(), "settings.yaml"),
+      watch: false,
+    }),
   ];
   return { ctx, fibers };
 }
@@ -101,8 +108,8 @@ describe("DSH plugin contract", () => {
     // Peer contracts must track the DSH release this package is validated
     // against (bumped together with the root devDependencies).
     expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.2");
-    for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools"]) {
-      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.2-rc.1");
+    for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools", "dsh-settings"]) {
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.5-rc.1");
     }
   });
 
