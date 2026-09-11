@@ -13,7 +13,7 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 - Successful compactions (and model-free `compaction/prune` events) prune the evidence parts their `shadowedSeqs` cover, keeping the bounded evidence window focused on the live surface.
 - `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); `<memcurio-citation>` blocks in assistant messages are harvested at `turn/end` into the usage window, so rollouts the model cites without searching still count.
 - Six native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`.
-- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. The latest `request/header` route is used unless `provider` and `model` are pinned in plugin config.
+- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
 - Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget that starts at retirement entry so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.
 - At plugin load, pending durable jobs are drained once per store root (crash recovery), and sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.
 
@@ -63,7 +63,7 @@ Example configuration:
 - insert:
     - id: memcurio
       name: '@memcurio/dsh-plugin'
-      inject: [tools, llm, sessions]
+      inject: [tools, llm, sessions, settings]
       config:
         scope: workspace
         injectContext: true

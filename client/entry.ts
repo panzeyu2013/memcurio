@@ -7,7 +7,7 @@
  * import must be a frozen-platform seed module (`react` only here) — the
  * `@deepseek-ai/dsh-client-*` imports below are TYPE-ONLY, and the actual
  * services arrive through cordis (`ctx.slots` / `ctx.locale` /
- * `ctx.settingsScope` / `ctx.remote`).
+ * `ctx.settingsScope`).
  *
  * Discovery: `package.json` declares `dsh.client` (`platform: "web"`,
  * `inject` rows) and `exports["./client"]`; the host composes the row named in

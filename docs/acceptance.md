@@ -10,7 +10,7 @@
 
 1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：470 tests / 27 files / 2961 expects / 0 fail（coverage 92.51% funcs / 93.63% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（79 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计 + 放行前三角度验收修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
-3. **设计闸门**：设计基线 v1.4 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入 §6 外部依赖并挂接 S0 计划。
+3. **设计闸门**：设计基线 v1.5 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入 §6 外部依赖并挂接 S0 计划。
 
 ## 2. 组件 → 实现状态矩阵
 
@@ -43,18 +43,18 @@ PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：47
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 79 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run pack:check        # 期望：78 文件；dist clean；allowlist 双向一致
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run pack:check        # 期望：79 文件；dist/lib clean；allowlist 双向一致（含 loader 形态与 require 纯度）
 git status --short                                                 # 期望：空（验收即干净树）
 ```
 
 ## 5. 仓库真源与记录（acceptance 依据链）
 
-- 设计/验收基准：`docs/design/plugin-ui-v1.md`（v1.5；§13 决策 1–13 含 v1.2–v1.4 修订）
+- 设计/验收基准：`docs/design/plugin-ui-v1.md`（v1.5；§13 决策 1–14 含 v1.2–v1.5 修订）
 - 实现契约：`docs/memory-pipeline-v2.md`（引擎导出签名已随第 19 轮核对）
 - 架构/存储/模块图：`docs/architecture.md`（第 19 轮刷新：services/client、dsh/<key> 分层、分发命令）
 - 安装/配置：`docs/installation.md`、`docs/integration-dsh.md`、`README.md`/`README_cn.md`（hostBridge 入档）
 - 客户端骨架与 spike 清单：`client/README.md`（30 项测试、9 问清单、S0 验收）
-- 轮次账本：`docs/todo.md`（§6.7–6.13；支持矩阵/统计行 = 470/27/2961）
+- 轮次账本：`docs/todo.md`（§6.7–6.18；支持矩阵/统计行 = 470/27/2961）
 
 ## 6. 外部依赖与遗留（不在本仓库内可验收的部分）
 
@@ -63,11 +63,11 @@ git status --short                                                 # 期望：�
 | 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器 | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md） |
 | Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | S0 首项验证；控制器逻辑已单测（`tests/client-settings.test.ts`） |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
-| 客户端 bundle 构建与 loader 产物 | S0 结果（seed 8 键/tsdown 等价流程） | S0 → M0 |
+| 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（design §7.7、plan L19–L20） |
 | node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
-| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.86% funcs / 94.55% lines |
+| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.51% funcs / 93.63% lines |
 
 ## 7. 结论
 

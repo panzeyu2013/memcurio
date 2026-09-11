@@ -339,7 +339,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 ## 10. 非功能要求
 
 - **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定（S0 确定）。
-- **浏览器半侧打包（v1.5）**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.mjs`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
+- **浏览器半侧打包（v1.5）**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.ts`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
 - **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
 - **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。
@@ -384,7 +384,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 
 | # | 开放项/风险 | 影响 | 处置 |
 |---|---|---|---|
-| 1 | 标题栏第三方槽位运行时是否可填 | 单按钮入口 | S0 预查：`conversation.session.header.actions`/`conversation.view` 声明级存在；运行时治理待浏览器探针。`settings.section` 已实际注册（第二十六轮），标题栏槽位仍待实机验证；回退开放项（见 §7.7）|
+| 1 | 标题栏第三方槽位运行时是否可填 | 单按钮入口 | S0 预查：`conversation.session.header.actions`/`conversation.view` 声明级存在；运行时治理待浏览器探针。`settings.section` 已在代码中注册（单测覆盖；实机待 S0），标题栏槽位仍待实机验证；回退开放项（见 §7.7）|
 | 2 | host↔浏览器推送/remote 第三方注册路径 | 推送架构 | **v1.2 实证：rc.1 `ctx.remote` 对第三方关闭**；通道候选 ①自定义 SSE 路由（ctx.webServer.register）② sessionProjections ③ 轮询——S0 门禁定案 |
 | 3 | 时间线"跳到会话历史位置"定位能力 | 回链体验 | S0 顺带验证；不可用 → 文本引用 |
 | 4 | 客户端 bundle 构建与 HMR 工具链 | 开发效率 | **构建已建立**（`scripts/build-client.ts` esbuild → `lib/client.js`，提交入 git，`pack:check` 校验 loader 形态/require 纯度）；HMR 与实机装载仍待 S0 |
@@ -394,7 +394,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 
 ---
 
-## 13. 决策记录（2026-09-05 第十六轮）
+## 13. 决策记录（第十六轮起，含后续修订）
 
 1. 承载：仅嵌入 DSH Web（`dsh.client` 客户端半侧）；不做独立页分发。
 2. 入口：标题栏**单按钮**唤起记忆界面；其余内容全部写入该界面。候选槽位 `conversation.session.header.actions`/`conversation.view`（v1.2）；`/memory` 斜杠回退无实证、列为开放项（v1.2/v1.3 修订，S0 定夺）。

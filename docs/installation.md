@@ -16,7 +16,7 @@
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
-bun run build                   # tsc → dist/（产物随仓库提交，CI 校验防漂移）
+bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
 bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
@@ -31,7 +31,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 - insert:
     - id: memcurio
       name: '@memcurio/dsh-plugin'
-      inject: [tools, llm, sessions]
+      inject: [tools, llm, sessions, settings]
       config:
         scope: workspace          # workspace | global
         injectContext: true
@@ -94,7 +94,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 bun test              # 全量测试（隔离运行）
 bun run typecheck     # src/tests/scripts 全覆盖
 bun run lint          # biome lint（格式化器有意禁用）
-bun run build         # tsc → dist/
+bun run build         # tsc → dist/ + esbuild → lib/client.js
 bun run pack:check    # 构建 + tarball 白名单门禁
 bun run eval:lexical  # 确定性检索/安全基线
 ```

@@ -8,7 +8,7 @@
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 470 tests / 2961 assertions / 27 files、coverage 92.86% funcs / 94.55% lines（前轮测量）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 470 tests / 2961 assertions / 27 files、coverage 92.51% funcs / 93.63% lines（第二十七轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -24,7 +24,7 @@
 |---|---|---|---|
 | 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（470/27 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
 | DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.5-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
-| 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、读服务/投影/快照（第十七轮）、**Settings 面板已发布**（第二十六轮：`dsh.client` + `lib/client.js` + `settings.section`）、客户端 view-model 30 测 | 工作台 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）；面板渲染待实机验证 |
+| 记忆可视化 UI（里程碑）| 半侧就绪 | host 桥（第十八轮）、读服务/投影/快照（第十七轮）、**Settings 面板已随包交付**（第二十六轮：`dsh.client` + `lib/client.js` + `settings.section`）、客户端 view-model 30 测 | 工作台 UI 组装与传输通道待 S0 实机（标题栏槽位/SSE 路由）；面板渲染待实机验证 |
 
 ## 3. 已完成
 
@@ -67,7 +67,7 @@
 - [x] `agent/pre-step` 静态/动态上下文注入；注册 search/list/read/remember/status/context 六个原生工具
 - [x] 通过 DSH `ctx.llm` 复用当前或固定 provider/model 运行记忆 worker；无路由时保持 durable job 可重试
 - [ ] 真实 DSH profile 安装和 lifecycle smoke；验证 resume、compaction、多 workspace 并发及 DSH rc 升级兼容性
-- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md) v1.5：标题栏单按钮入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；host 半侧桥/快照/配置命名空间与 **Settings 面板**均已发布，下一步 S0 spike（真实 DSH Web 实测面板渲染、工作台槽位与推送通道）
+- [ ] 记忆可视化 UI：设计基线已固化（[design/plugin-ui-v1.md](design/plugin-ui-v1.md) v1.5：标题栏单按钮入口、M0 事件推送、对话即写面、⭐ 两层分离、无 UI 直删）；host 半侧桥/快照/配置命名空间与 **Settings 面板**均已随包交付，下一步 S0 spike（真实 DSH Web 实测面板渲染、工作台槽位与推送通道）
 
 ### 3.4 安全与隐私加固（第二轮多 agent 扫描修复）
 
@@ -84,7 +84,7 @@
 ### 3.5 验证与质量基建
 
 - [x] `evals/fixtures/retrieval.json` + `bun run eval:lexical`：Recall@5=1.00（4/4）、注入拦截 1/1、泄漏检查 5/5（含含秘密行的阳性对照）
-- [x] `scripts/pack-check.ts`：54 文件 allowlist + dist 预期产物反向校验（第十五轮单包化后）
+- [x] `scripts/pack-check.ts`：79 文件 allowlist + dist/lib 预期产物反向校验 + `lib/client.js` loader 形态与 require 纯度校验（第十五轮单包化；第二十六轮起含浏览器产物）
 - [x] CI 接入 typecheck/lint/test/pack:check/eval:lexical；`LANG=C.UTF-8` 保证 i18n 确定性
 - [x] 文档一致性：命令数（20 具名）、search 契约（含 skills/）、pid 文件名、compaction 上下文、CONTRIBUTING 安全基线、事务日志职责边界
 
@@ -123,11 +123,21 @@ bun run pack:check
 
 ### 6.2 最新结果（当前；历史快照见各轮记录）
 
-- `bun test`：437 pass / 2848 expect / 25 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
-- `bun test --coverage`：lines 93.63%，functions 92.46%（第二十七轮实测）
+- `bun test`：470 pass / 2961 expect / 27 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
+- `bun test --coverage`：lines 93.63%，functions 92.51%（第二十七轮实测）
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：79 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
+
+### 6.3 环境（真实 Harness 本地 smoke，历史）
+
+| 组件 | 版本 | 已验证 |
+|---|---|---|
+| Bun | 1.3.14 | 构建、bundle、脚本、Unix socket smoke |
+| Codex CLI | 0.147.0 | 已移除适配器（codex 使用原生 memory）；历史 smoke 记录保留于 git 历史 |
+| OpenCode | 1.18.13 | 历史：全局插件目录加载、空 session create/delete、`session_end` queue completed（适配器已于第十五轮移除） |
+
+smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
 
 ### 6.4 第十轮 review 修复明细（2026-08-13，多 agent 全面审查闭环）
 
@@ -308,7 +318,7 @@ bun run pack:check
 
 - `client/settings/{locales,controller,section,styles}.ts`：框架无关 controller（scope port 窄接口、字段/覆盖判定、跨字段 guard、**写后校验**——resolved 但未落地报错）+ React 面板（`createElement`，字段：scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model；覆盖徽标、单字段/整体恢复默认、状态与提示文案 zh/en）
 - `client/entry.ts`：浏览器半侧入口（`inject = ['slots','locale','settingsScope','remote']`；注册 locale、绑定 `settingsScope`、`remote.$on('settings/document-updated')` 刷新、`slots.inject('settings.section', …)`，order 30）
-- `package.json`：`dsh.client`（platform web + 官方 client inject 行）+ `exports["./client"]` → `lib/client.js` + `files` 增 `lib`；`scripts/build-client.mjs`（esbuild CJS + `__ModuleLoader__.load` 包裹；external=平台 seed；产物仅 require `react`）
+- `package.json`：`dsh.client`（platform web + 官方 client inject 行）+ `exports["./client"]` → `lib/client.js` + `files` 增 `lib`；`scripts/build-client.ts`（esbuild CJS + `__ModuleLoader__.load` 包裹；external=平台 seed；产物仅 require `react`）
 - 打包/CI：`pack:check` 校验产物存在+loader 形态+包名（allowlist 增 `lib/client.js`）；CI/release drift 校验 `dist/` 与 `lib/`；pack 79 文件
 - 测试：`tests/client-settings.test.ts`（8 项：decode/覆盖判定/路由 guard/face 稳定性/写未落地失败/重置/订阅）
 - 文档：design v1.5（配置入口双侧、打包节）、README×2、installation §5.1、CHANGELOG、acceptance
@@ -324,17 +334,7 @@ host / client / docs 三路只读审查（并发 3）后的统一修复：
 - **client**：**blocker**——注入面改 `hooks: { face: getSnapshot/subscribe }`（renderer 记忆化 inject 结果，值快照会让面板冻结：值回弹/徽标不出现/永久 Loading）；`resetAll` 补最终 notify + 落盘校验 + 部分失败区分；reset 也走路由 guard；状态行/只读文案分支；a11y（role=status/alert、Enter 提交）；错误改 locale 键；单 scope 订阅扇出；`Object.is` 校验；失败后草稿回滚；去掉多余 `remote` 注入与 `as never`
 - **构建/发布**：平台 seed 表抽为共享模块，`pack:check` 增 require 纯度 + factory 返回断言；release gate 增 `git diff --exit-code -- dist/ lib/`；`prepare.mjs` 校验 `lib/client.js`
 - **测试**：settings 11 项（含 registerTools 双向、空串拒绝、live 启用播种+memory_read 打标+快照 scope/budget、重复激活、pinnedRoute）；client-settings 17 项（faceHook 契约、单订阅、resetAll 通知/校验/半路由、loading/unavailable、错误清除）；全量 **470 tests / 27 files / 2961 expect / 0 fail**（coverage 92.51% funcs / 93.63% lines）
-- **文档**：三路发现全部落地（统计块/版本标记 v1.5/"浏览器半侧已发布"表述、架构建模、RELEASE/prepare、client README 两半侧）
-
-### 6.3 环境（真实 Harness 本地 smoke，历史）
-
-| 组件 | 版本 | 已验证 |
-|---|---|---|
-| Bun | 1.3.14 | 构建、bundle、脚本、Unix socket smoke |
-| Codex CLI | 0.147.0 | 已移除适配器（codex 使用原生 memory）；历史 smoke 记录保留于 git 历史 |
-| OpenCode | 1.18.13 | 历史：全局插件目录加载、空 session create/delete、`session_end` queue completed（适配器已于第十五轮移除） |
-
-smoke 注意事项：须使用隔离 `HOME` / `XDG_*` 与临时 `MEMCURIO_ROOT`；本 smoke 不含真实模型调用。
+- **文档**：三路发现落地（design H1 升 v1.5 与 decision 14、轮次 §6.11–6.18 归位、架构模块图、RELEASE/prepare/CI、client README 两半侧、"浏览器半侧已交付"表述）；统计块与示例 patch 的残留由第二轮复核（同轮）补齐：§6.2/§1/acceptance 运行卡 = 470/2961/27 + coverage 92.51/93.63 + pack 79，`inject: [tools, llm, sessions, settings]` 示例同步
 
 ## 7. 参考文档
 
