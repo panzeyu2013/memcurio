@@ -99,7 +99,9 @@ export function installMemcurioSettings(
 
 /** Pinned worker route from a resolved settings value (both halves set). */
 export function pinnedRoute(settings: MemcurioSettings): { provider: string; model: string } | undefined {
-  return settings.provider && settings.model ? { provider: settings.provider, model: settings.model } : undefined;
+  const provider = settings.provider?.trim();
+  const model = settings.model?.trim();
+  return provider && model ? { provider, model } : undefined;
 }
 
 /** Build the composition base from the profile config (only defined keys;

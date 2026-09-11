@@ -131,6 +131,7 @@ export class HostBridge {
   private readonly sessionsByRoot = new Map<string, string>();
   /** root -> last audited rowid (refresh baseline). */
   private readonly lastAuditRowid = new Map<string, number>();
+  private readonly refreshInFlight = new Map<string, Promise<ProjectedDelta[]>>();
   /** root -> jobId -> row snapshot (queue diff baseline). */
   private readonly jobsByRoot = new Map<string, Map<string, QueueJobRow>>();
   /** Evidence provider (plugin wires the live adapter snapshot). */
@@ -273,7 +274,20 @@ export class HostBridge {
   /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
    *  updates and queue job-updates for NEW changes only (first call seeds).
    *  Returns the deltas pushed (empty on the seeding call). */
-  async refresh(root: string): Promise<ProjectedDelta[]> {
+  /** Coalesce concurrent refreshes for one root: overlapping calls (the
+   *  fire-and-forget live-enable seeding plus a session-driven refresh) share
+   *  one projection pass instead of delivering duplicate deltas. */
+  refresh(root: string): Promise<ProjectedDelta[]> {
+    const inFlight = this.refreshInFlight.get(root);
+    if (inFlight) return inFlight;
+    const run = this.refreshOnce(root).finally(() => {
+      this.refreshInFlight.delete(root);
+    });
+    this.refreshInFlight.set(root, run);
+    return run;
+  }
+
+  private async refreshOnce(root: string): Promise<ProjectedDelta[]> {
     if (!this.enabled) return [];
     const deltas: ProjectedDelta[] = [];
     // First refresh per root only SEEDS the baselines: pre-existing audit
@@ -287,20 +301,29 @@ export class HostBridge {
     let maxRowid = lastRowid;
     const auditRows: AuditRow[] = [];
     try {
-      const rows = index.rawAll<{ rid: unknown; ts: unknown; action: unknown; ns: unknown; detail: unknown }>(
-        "SELECT rowid AS rid, ts, action, ns, detail FROM audit WHERE rowid > ? ORDER BY rowid ASC LIMIT 500",
-        [lastRowid],
-      );
-      for (const row of rows) {
-        const rid = Number(row.rid ?? 0);
-        if (rid > maxRowid) maxRowid = rid;
-        auditRows.push({
-          rid,
-          time: String(row.ts ?? ""),
-          action: String(row.action ?? ""),
-          ns: row.ns === null ? undefined : String(row.ns),
-          detail: String(row.detail ?? ""),
-        });
+      if (firstRefresh) {
+        // Seed the baseline from the TABLE TAIL, not from the LIMIT-500 page:
+        // with more than 500 historic rows the page would leave the older ones
+        // to be replayed as fresh receipts by later refreshes.
+        const seed = index.rawAll<{ rid: unknown }>("SELECT MAX(rowid) AS rid FROM audit", []);
+        const tail = Number(seed[0]?.rid ?? 0);
+        if (Number.isFinite(tail) && tail > maxRowid) maxRowid = tail;
+      } else {
+        const rows = index.rawAll<{ rid: unknown; ts: unknown; action: unknown; ns: unknown; detail: unknown }>(
+          "SELECT rowid AS rid, ts, action, ns, detail FROM audit WHERE rowid > ? ORDER BY rowid ASC LIMIT 500",
+          [lastRowid],
+        );
+        for (const row of rows) {
+          const rid = Number(row.rid ?? 0);
+          if (rid > maxRowid) maxRowid = rid;
+          auditRows.push({
+            rid,
+            time: String(row.ts ?? ""),
+            action: String(row.action ?? ""),
+            ns: row.ns === null ? undefined : String(row.ns),
+            detail: String(row.detail ?? ""),
+          });
+        }
       }
     } finally {
       index.close();

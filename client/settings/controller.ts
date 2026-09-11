@@ -137,8 +137,8 @@ export function routeProblem(field: SettingsField, value: unknown, view: Memcuri
   if (field !== "provider" && field !== "model") return undefined;
   const nextProvider = field === "provider" ? value : view.provider;
   const nextModel = field === "model" ? value : view.model;
-  const hasProvider = typeof nextProvider === "string" && nextProvider.length > 0;
-  const hasModel = typeof nextModel === "string" && nextModel.length > 0;
+  const hasProvider = typeof nextProvider === "string" && nextProvider.trim().length > 0;
+  const hasModel = typeof nextModel === "string" && nextModel.trim().length > 0;
   if (hasProvider !== hasModel) return ERROR_KEYS.routePair;
   return undefined;
 }

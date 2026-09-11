@@ -81,6 +81,8 @@ The host half hard-injects the DSH `settings` service (official plugin pattern) 
 
 ## Settings coupling and profile requirements
 
+An INVALID stored section (hand-edited `settings.yaml` with a malformed route, budget or scope) makes `apply` throw, so the plugin does not mount at all — a loud boot failure, unlike the silent inertness of a settings-less profile. Fix the document (or clear the user layer) and reload.
+
 `settings` is a hard injection (the service is guaranteed by dsh-base and every profile layered on it, and a hard inject makes the namespace resolve synchronously before apply). Two consequences, both verified in review: a profile without any settings provider leaves the plugin inert (`dsh-sdk-minimal` is such a tree), and unloading/remounting the settings provider unloads and re-applies memcurio.
 
 ## Current validation boundary

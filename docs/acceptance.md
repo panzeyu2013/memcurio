@@ -8,7 +8,7 @@
 
 **可验收 = 三个独立闸门全过**：
 
-1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：470 tests / 27 files / 2961 expects / 0 fail（coverage 92.51% funcs / 93.63% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（79 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
+1. **质量闸门**（每次提交可复跑，见 §4 运行卡）：472 tests / 27 files / 2969 expects / 0 fail（coverage 92.63% funcs / 93.64% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（79 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计 + 放行前三角度验收修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
 3. **设计闸门**：设计基线 v1.5 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入 §6 外部依赖并挂接 S0 计划。
 
@@ -22,8 +22,8 @@
 | host 读服务（context/memory/inject/usage/queue/audit/intent） | `src/services/{context,memory,inject,usage,queue,audit,intent}.ts` | ✅ 完成 | `tests/services.test.ts`（21→26 项） |
 | 事件投影器（8→9 类脱敏 delta） | `src/services/projector.ts` | ✅ 完成 | `tests/projector.test.ts`（22→26 项） |
 | 快照装配（含雷达候选/收据合成/settings/dynamic） | `src/services/snapshot.ts` | ✅ 完成 | `tests/snapshot.test.ts`（12 项） |
-| 配置面 host（`memcurio` settings 命名空间） | `src/plugin/settings.ts` + 插件 live 读取 | ✅ 完成 | `tests/settings.test.ts`（11 项：resolved 权威、live 桥/路由、基线播种、重复激活） |
-| 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（17 项）；`pack:check` 校验产物形态与 require 纯度 |
+| 配置面 host（`memcurio` settings 命名空间） | `src/plugin/settings.ts` + 插件 live 读取 | ✅ 完成 | `tests/settings.test.ts`（12 项：resolved 权威、live 桥/路由、整表尾基线播种、刷新并发合并、重复激活） |
+| 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（18 项）；`pack:check` 校验产物形态与 require 纯度 |
 | host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（config.hostBridge，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
 | 客户端工作台 view-model（含 browse 跨 store、queue 单 job 折叠、增量 usage、证据窗、⭐ 书签） | `client/` | ✅ 完成（框架自由，S0 组装） | `tests/client-types.test.ts`（30 项） |
 | 传输通道（SSE/投影/轮询） | — | ⛔ S0 实机 | s0-spike-plan P0–P8 |
@@ -39,7 +39,7 @@
 ## 4. 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：470 pass / 27 files / 2961 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：472 pass / 27 files / 2969 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 79 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功
@@ -54,7 +54,7 @@ git status --short                                                 # 期望：�
 - 架构/存储/模块图：`docs/architecture.md`（第 19 轮刷新：services/client、dsh/<key> 分层、分发命令）
 - 安装/配置：`docs/installation.md`、`docs/integration-dsh.md`、`README.md`/`README_cn.md`（hostBridge 入档）
 - 客户端骨架与 spike 清单：`client/README.md`（30 项测试、9 问清单、S0 验收）
-- 轮次账本：`docs/todo.md`（§6.7–6.18；支持矩阵/统计行 = 470/27/2961）
+- 轮次账本：`docs/todo.md`（§6.7–6.18；支持矩阵/统计行 = 472/27/2969）
 
 ## 6. 外部依赖与遗留（不在本仓库内可验收的部分）
 
@@ -67,7 +67,7 @@ git status --short                                                 # 期望：�
 | 挂载平面（agent preset 后根平面行解析） | 实机组合验证 | S0 P3（plan H/阶段 P3） |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（design §7.7、plan L19–L20） |
 | node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
-| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.51% funcs / 93.63% lines |
+| 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.63% funcs / 93.64% lines |
 
 ## 7. 结论
 

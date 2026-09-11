@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口，合并自 2026-08-11 的三份 review/verification 记录（`docs/review/2026-08-11-repository-review.md`、`docs/review/2026-08-11-comprehensive-audit-execution-plan.md`、`docs/verification/2026-08-11-harness-smoke.md`，均已删除并入本文）。完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-11（第二十七轮：三路全量审查修复——host registerTools/live 路由/bridge 播种、client 注入面 hooks/resetAll、构建纯度 gate 与文档一致性，470 tests 全绿；第二十六轮：客户端 Settings 面板——`dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一 require=react）+ `settings.section` 槽位（"记忆/Memory" 面板：字段编辑/覆盖徽标/恢复默认/写后校验）；456 tests / 27 files / 2913 expect；第二十五轮：配置面落定——`memcurio` settings 命名空间（Settings 页可配置 scope/injectContext/budget/hostBridge/路由；profile 为默认层、settings.yaml 覆盖；live/重启生效语义），448 tests / 26 files / 2883 expect 全绿；第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
+> 最近更新：2026-09-11（第二十八轮：第二轮复核硬化——审计尾全量播种（>500 行）、刷新并发合并、桥注册表身份守卫、budget live accessor、路由 trim；472 tests / 2969 expect / coverage 92.63+93.64；第二十七轮：三路全量审查修复——host registerTools/live 路由/bridge 播种、client 注入面 hooks/resetAll、构建纯度 gate 与文档一致性，470 tests 全绿；第二十六轮：客户端 Settings 面板——`dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一 require=react）+ `settings.section` 槽位（"记忆/Memory" 面板：字段编辑/覆盖徽标/恢复默认/写后校验）；456 tests / 27 files / 2913 expect；第二十五轮：配置面落定——`memcurio` settings 命名空间（Settings 页可配置 scope/injectContext/budget/hostBridge/路由；profile 为默认层、settings.yaml 覆盖；live/重启生效语义），448 tests / 26 files / 2883 expect 全绿；第二十四轮：DSH 0.1.5-rc.1 适配——peer/devDeps 升级、唯一契约改动 assistant/message.stream、时钟脆弱测试修复、文档版本对齐，442 tests 全绿；第二十三轮：放行前三角度验收（架构/功能/前端，并发 3）——全部 ACCEPT，修复收口：drain 后 refresh、引用计数键过滤、收据 ok/action 腿与 sessionId 生产形态、services 去 api 分层、memory_read 成功后打点、客户端浏览守卫/队列合并/会话级证据窗；442 tests / 25 files / 2868 expect 全绿；第二十一轮：客户端 M1 前置——证据窗折叠与 ⭐ 书签（27 client tests），437 tests / 25 files / 2848 expect；第二十轮：A 类全收口——桥集成测试 3 + 快照富化 3 + 桥扩展 3、shell/memory_read 打点、evidence 源、雷达候选启发式、快照收据合成，434 tests / 25 files / 2840 expect，coverage 92.86% funcs / 94.55% lines；第十九轮：验收推进——快照装配直测 8 项、客户端跨 store browse()/browseSnapshot 数据路径 5 项、文档与账本一致性同步（三路关切审计修复）+ 验收卷宗 [acceptance.md](acceptance.md)；425 tests / 24 files / 2799 expect 全绿；第十八轮：host 桥接层——store 注册表/事件打标/审计尾+任务行 diff/快照装配（config.hostBridge 门控），412 tests / 23 files；第十七轮：记忆工作台 host 服务层+投影器+客户端骨架实现并双 agent 审查闭环，402 tests / 22 files；第十六轮：记忆可视化 UI 全量设计讨论并固化 [design/plugin-ui-v1.md](design/plugin-ui-v1.md)——入口策略（第十六轮双入口，v1.1 起修订为标题栏单按钮）/事件推送/对话即写面（UI 永不静默写，remember=forget=文本编辑走对话流）/三面一轴；第十五轮：单宿主收敛——移除 opencode/MCP/CLI 全部发行面与 HTTP LLM 通道、引擎并入 @memcurio/dsh-plugin 单包（根仓库即包）、模型访问只走 DSH ctx.llm、331 tests / 19 files 全绿；第十四轮：DSH 插件对齐上游 0.1.2-rc.1 契约——`Session.events` → `snapshotEvents()` 迁移、`SessionSeq` 品牌序号与 compaction 范围类型全量核对、真实 seed 会话采纳回归，27 项 dsh-plugin 测试（24 项契约 + 3 项 scope）全绿；第十三轮：DSH 插件对齐 0.1.2-alpha.2 契约、事件/worker 双队列、worker 调用可取消与超时、自动 Phase-2 整合、注入内容去重与证据自污染过滤、相对路径遥测、pre-step 失败降级；第十一轮安全扫描见下）
 
 ## 1. 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 470 tests / 2961 assertions / 27 files、coverage 92.51% funcs / 93.63% lines（第二十七轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
+| 核心单元测试与静态质量 | ✅ Green | 472 tests / 2969 assertions / 27 files、coverage 92.63% funcs / 93.64% lines（第二十八轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -123,11 +123,24 @@ bun run pack:check
 
 ### 6.2 最新结果（当前；历史快照见各轮记录）
 
-- `bun test`：470 pass / 2961 expect / 27 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
-- `bun test --coverage`：lines 93.63%，functions 92.51%（第二十七轮实测）
+- `bun test`：472 pass / 2969 expect / 27 files / 0 failed（第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
+- `bun test --coverage`：lines 93.64%，functions 92.63%（第二十八轮实测）
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：79 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
+
+### 6.19 第二十八轮：第二轮复核硬化（2026-09-11）
+
+第二轮只读复核（host ACCEPT / client、docs 结论见各轮）后的硬化项：
+
+- **F1 审计播种**：`refresh()` 首调用改用 `SELECT MAX(rowid)` 播种整表尾（原按 `LIMIT 500` 页尾播种，>500 行历史会在后续刷新被当作新收据重放，实测 1200 行时重放 700 行）；新增 620 行回归测试
+- **F2 桥注册表**：卸载清理改为身份守卫（`get(baseRoot) === bridge` 才删），避免不同 context 共享同一 root 时误删存活实例
+- **F3 budget live**：adapter 选项支持访问器（`() => live().injectBudgetTokens`），live 清空预算后既有会话不再被构造期快照覆盖
+- **F9 刷新并发**：per-root in-flight 合并，fire-and-forget 播种与事件驱动刷新共享一次投影（不重复投递）；测试断言同一结算
+- **F5/F7/F10/F11**：播种失败改为 warn 级日志；`pinnedRoute` trim（避免 " padded-p " 触发无适配器重试环）；启动期诊断基线取 applied 值（不再把 settings.yaml 的生效值误报为"重启后生效"）；删除安装期冗余 enable
+- **client（F12）**：`routeProblem` 按 trim 判定空白半边（与 host 一致）；faceHook 契约测试改为真实传输通知（`FakeScope.emit`）而非控制器调用
+- **F6 文档**：无效 settings.yaml 段会让 `apply` 抛错（插件不挂载，属"响亮失败"），与"无 settings 服务 → 静默 inert"区分记录
+- 全量 **472 tests / 27 files / 2969 expect / 0 fail**；coverage **92.63% funcs / 93.64% lines**；lint 79 files clean；pack 79
 
 ### 6.3 环境（真实 Harness 本地 smoke，历史）
 
@@ -333,7 +346,7 @@ host / client / docs 三路只读审查（并发 3）后的统一修复：
 - **host 其他**：validate 拒绝空/空白 provider/model（镜像 resolveConfig，避免阻断会话路由回退）；`HostBridge.configure()` 让快照 scope/budget 跟随 live；live 启用时播种 refresh 基线（并修 `refresh()` 首次播种语义的真实缺陷——首调用无条件写基线）；插件 fiber 卸载清理桥注册表；warn 去重；`installSection` hooks 同步调用约束注释；settings 硬注入的 reload 耦合与 providerless inert 场景成文；`cordis.patch.yml` inject 列表补 `settings`
 - **client**：**blocker**——注入面改 `hooks: { face: getSnapshot/subscribe }`（renderer 记忆化 inject 结果，值快照会让面板冻结：值回弹/徽标不出现/永久 Loading）；`resetAll` 补最终 notify + 落盘校验 + 部分失败区分；reset 也走路由 guard；状态行/只读文案分支；a11y（role=status/alert、Enter 提交）；错误改 locale 键；单 scope 订阅扇出；`Object.is` 校验；失败后草稿回滚；去掉多余 `remote` 注入与 `as never`
 - **构建/发布**：平台 seed 表抽为共享模块，`pack:check` 增 require 纯度 + factory 返回断言；release gate 增 `git diff --exit-code -- dist/ lib/`；`prepare.mjs` 校验 `lib/client.js`
-- **测试**：settings 11 项（含 registerTools 双向、空串拒绝、live 启用播种+memory_read 打标+快照 scope/budget、重复激活、pinnedRoute）；client-settings 17 项（faceHook 契约、单订阅、resetAll 通知/校验/半路由、loading/unavailable、错误清除）；全量 **470 tests / 27 files / 2961 expect / 0 fail**（coverage 92.51% funcs / 93.63% lines）
+- **测试**：settings 11 项（含 registerTools 双向、空串拒绝、live 启用播种+memory_read 打标+快照 scope/budget、重复激活、pinnedRoute）；client-settings 17 项（faceHook 契约、单订阅、resetAll 通知/校验/半路由、loading/unavailable、错误清除）；全量 **470 tests / 27 files / 2961 expect / 0 fail**（coverage 92.51% funcs / 93.63% lines）——本轮（第二十七轮）快照，随后由第二十八轮硬化增至 472/2969
 - **文档**：三路发现落地（design H1 升 v1.5 与 decision 14、轮次 §6.11–6.18 归位、架构模块图、RELEASE/prepare/CI、client README 两半侧、"浏览器半侧已交付"表述）；统计块与示例 patch 的残留由第二轮复核（同轮）补齐：§6.2/§1/acceptance 运行卡 = 470/2961/27 + coverage 92.51/93.63 + pack 79，`inject: [tools, llm, sessions, settings]` 示例同步
 
 ## 7. 参考文档

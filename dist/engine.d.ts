@@ -64,7 +64,9 @@ export interface AdapterOptions {
      *  (backfill without explicit session ids) to sessions this adapter owns;
      *  when omitted it is derived from the first sessionCreated call. */
     host?: string;
-    injectBudgetTokens?: number;
+    /** Injection budget override. May be a live accessor so a settings-level
+     *  change (set OR cleared) is honoured without rebuilding the adapter. */
+    injectBudgetTokens?: number | (() => number | undefined);
     /** Harness adapters enable this so hooks only persist a checkpoint and the
      * model runs in the durable worker. Direct core callers retain the legacy
      * inline behavior unless they opt in. */

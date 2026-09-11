@@ -49,6 +49,7 @@ export declare class HostBridge {
     private readonly sessionsByRoot;
     /** root -> last audited rowid (refresh baseline). */
     private readonly lastAuditRowid;
+    private readonly refreshInFlight;
     /** root -> jobId -> row snapshot (queue diff baseline). */
     private readonly jobsByRoot;
     /** Evidence provider (plugin wires the live adapter snapshot). */
@@ -96,7 +97,11 @@ export declare class HostBridge {
     /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
      *  updates and queue job-updates for NEW changes only (first call seeds).
      *  Returns the deltas pushed (empty on the seeding call). */
+    /** Coalesce concurrent refreshes for one root: overlapping calls (the
+     *  fire-and-forget live-enable seeding plus a session-driven refresh) share
+     *  one projection pass instead of delivering duplicate deltas. */
     refresh(root: string): Promise<ProjectedDelta[]>;
+    private refreshOnce;
     /** Full-state read for one store (connect/refresh/polling). Carries the
      *  latest dynamic-context preview captured for the session/root. */
     snapshot(root: string, sessionId?: string): Promise<WorkbenchSnapshot>;

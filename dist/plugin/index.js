@@ -466,7 +466,7 @@ export function apply(ctx, config = {}) {
                 // Seed the refresh baselines for known roots so the first refresh
                 // after a live enable does not replay pre-existing audit rows.
                 for (const root of new Set([...sessions.values()].map((runtime) => runtime.root))) {
-                    void bridge.refresh(root).catch(() => undefined);
+                    void bridge.refresh(root).catch((error) => ctx.logger.warn("memcurio: %s", String(error)));
                 }
             }
             else if (!next.hostBridge && bridgeWasEnabled) {
@@ -488,10 +488,14 @@ export function apply(ctx, config = {}) {
     });
     /** Live settings read (never cached across operations). */
     const live = () => settings.current();
+    // Diagnostics must compare against the value APPLIED on this apply, not the
+    // composition base: a differing settings.yaml is in force right now.
+    lastWarned.scope = live().scope;
+    lastWarned.registerTools = live().registerTools;
     /** Pinned worker route from the settings document, when one is set. */
     const fixedRoute = () => pinnedRoute(live());
-    if (live().hostBridge)
-        bridge.enable();
+    // The install-time onChange above already applied hostBridge; this only
+    // keeps the local latch in step with the bridge's real state.
     bridgeWasEnabled = bridge.isEnabled;
     bridgesByRoot.set(baseRoot, bridge);
     const warn = (error) => ctx.logger.warn("memcurio: %s", String(error));
@@ -527,7 +531,7 @@ export function apply(ctx, config = {}) {
             root,
             host: "dsh",
             durableQueue: true,
-            injectBudgetTokens: live().injectBudgetTokens,
+            injectBudgetTokens: () => live().injectBudgetTokens,
             toolPreset: DSH_TOOL_PRESET,
             channel: dshChannel(ctx, () => fixedRoute() ?? runtime.route, () => runtime.abort.signal),
             // Preserve warn/error levels: flattening them to debug would hide real
@@ -707,8 +711,11 @@ export function apply(ctx, config = {}) {
     };
     ctx.effect(() => () => {
         // The bridge belongs to this plugin fiber; a stale (enabled) instance
-        // must not stay reachable after unload.
-        bridgesByRoot.delete(baseRoot);
+        // must not stay reachable after unload. Identity-guarded: another plugin
+        // instance in a different context may share this base root (the default
+        // <DSH home>/memcurio is reachable that way) and must keep its entry.
+        if (bridgesByRoot.get(baseRoot) === bridge)
+            bridgesByRoot.delete(baseRoot);
     }, "memcurio bridge registry");
     ctx.effect(() => async () => {
         const active = [...sessions.values()];

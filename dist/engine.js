@@ -1164,8 +1164,9 @@ export class MemcurioAdapter {
             .join("\n");
     }
     #injectionBudget() {
-        if (this.injectBudgetTokens !== undefined) {
-            return this.injectBudgetTokens;
+        const configured = typeof this.injectBudgetTokens === "function" ? this.injectBudgetTokens() : this.injectBudgetTokens;
+        if (configured !== undefined) {
+            return configured;
         }
         try {
             return loadConfig(this.root).budget.maxInjectTokens ?? DEFAULT_INJECT_BUDGET;

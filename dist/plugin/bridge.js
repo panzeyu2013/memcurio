@@ -90,6 +90,7 @@ export class HostBridge {
     sessionsByRoot = new Map();
     /** root -> last audited rowid (refresh baseline). */
     lastAuditRowid = new Map();
+    refreshInFlight = new Map();
     /** root -> jobId -> row snapshot (queue diff baseline). */
     jobsByRoot = new Map();
     /** Evidence provider (plugin wires the live adapter snapshot). */
@@ -223,7 +224,20 @@ export class HostBridge {
     /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
      *  updates and queue job-updates for NEW changes only (first call seeds).
      *  Returns the deltas pushed (empty on the seeding call). */
-    async refresh(root) {
+    /** Coalesce concurrent refreshes for one root: overlapping calls (the
+     *  fire-and-forget live-enable seeding plus a session-driven refresh) share
+     *  one projection pass instead of delivering duplicate deltas. */
+    refresh(root) {
+        const inFlight = this.refreshInFlight.get(root);
+        if (inFlight)
+            return inFlight;
+        const run = this.refreshOnce(root).finally(() => {
+            this.refreshInFlight.delete(root);
+        });
+        this.refreshInFlight.set(root, run);
+        return run;
+    }
+    async refreshOnce(root) {
         if (!this.enabled)
             return [];
         const deltas = [];
@@ -237,18 +251,29 @@ export class HostBridge {
         let maxRowid = lastRowid;
         const auditRows = [];
         try {
-            const rows = index.rawAll("SELECT rowid AS rid, ts, action, ns, detail FROM audit WHERE rowid > ? ORDER BY rowid ASC LIMIT 500", [lastRowid]);
-            for (const row of rows) {
-                const rid = Number(row.rid ?? 0);
-                if (rid > maxRowid)
-                    maxRowid = rid;
-                auditRows.push({
-                    rid,
-                    time: String(row.ts ?? ""),
-                    action: String(row.action ?? ""),
-                    ns: row.ns === null ? undefined : String(row.ns),
-                    detail: String(row.detail ?? ""),
-                });
+            if (firstRefresh) {
+                // Seed the baseline from the TABLE TAIL, not from the LIMIT-500 page:
+                // with more than 500 historic rows the page would leave the older ones
+                // to be replayed as fresh receipts by later refreshes.
+                const seed = index.rawAll("SELECT MAX(rowid) AS rid FROM audit", []);
+                const tail = Number(seed[0]?.rid ?? 0);
+                if (Number.isFinite(tail) && tail > maxRowid)
+                    maxRowid = tail;
+            }
+            else {
+                const rows = index.rawAll("SELECT rowid AS rid, ts, action, ns, detail FROM audit WHERE rowid > ? ORDER BY rowid ASC LIMIT 500", [lastRowid]);
+                for (const row of rows) {
+                    const rid = Number(row.rid ?? 0);
+                    if (rid > maxRowid)
+                        maxRowid = rid;
+                    auditRows.push({
+                        rid,
+                        time: String(row.ts ?? ""),
+                        action: String(row.action ?? ""),
+                        ns: row.ns === null ? undefined : String(row.ns),
+                        detail: String(row.detail ?? ""),
+                    });
+                }
             }
         }
         finally {

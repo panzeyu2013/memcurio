@@ -248,9 +248,11 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
 
     await ctx.settings.update("memcurio", { hostBridge: true, scope: "global", injectBudgetTokens: 900 });
     expect(bridge?.isEnabled).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 10)); // baseline seeding is async
-    // The seeding refresh must NOT replay the pre-existing audit row.
+    // Await the seeding refresh directly (coalesced with the fire-and-forget
+    // one from onChange) instead of sleeping.
+    await bridge?.refresh(root);
     expect(sink.filter((delta) => delta.kind === "receipt")).toHaveLength(0);
+    expect(JSON.stringify(sink)).not.toContain("pre-existing note");
 
     // A memory_read now yields a usage tick (the bridge reference is not frozen).
     await ctx.tools.execute({
@@ -281,6 +283,48 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     await disposeFibers(fibers);
   });
 
+  test("live enable seeds the whole audit tail (>500 rows) and coalesces concurrent refreshes", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const { Index } = await import("../src/core/db.js");
+    const { indexDb } = await import("../src/core/paths.js");
+    const seedIndex = await Index.create(indexDb(root));
+    try {
+      for (let i = 0; i < 620; i += 1) seedIndex.audit("adhoc.note", "dsh", `historic ${i}`);
+    } finally {
+      seedIndex.close();
+    }
+    const session = ctx.sessions.prepare(SessionId("settings-seed-tail"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
+    const attached = hostBridgeForRoot(root);
+    if (!attached) throw new Error("host bridge missing for root");
+    const sink: Array<{ kind: string }> = [];
+    attached.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
+
+    await ctx.settings.update("memcurio", { hostBridge: true });
+    // Concurrent refreshes share one projection pass (same settlement).
+    const [first, second] = await Promise.all([attached.refresh(root), attached.refresh(root)]);
+    expect(first).toBe(second);
+    // Not one of the 620 historic rows may surface as a receipt.
+    expect(sink.filter((delta) => delta.kind === "receipt")).toHaveLength(0);
+
+    const laterIndex = await Index.create(indexDb(root));
+    try {
+      laterIndex.audit("adhoc.note", "dsh", "post-seed note");
+    } finally {
+      laterIndex.close();
+    }
+    await attached.refresh(root);
+    const receipts = sink.filter((delta) => delta.kind === "receipt");
+    expect(receipts).toHaveLength(1);
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
   test("a duplicate activation fails loud (namespace already registered)", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await harness();
@@ -288,13 +332,13 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     // Cordis de-duplicates the SAME plugin object, so a genuine duplicate
     // activation is a second module identity carrying the same apply.
     const clone = { name: "memcurio-clone", inject: plugin.inject, apply: plugin.apply };
-    let failed = false;
+    let message = "";
     try {
       await ctx.plugin(clone as never, { root, scope: "global" } as never);
-    } catch {
-      failed = true;
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
     }
-    expect(failed).toBe(true);
+    expect(message).toMatch(/already registered/);
     await first.dispose();
     await disposeFibers(fibers);
   });

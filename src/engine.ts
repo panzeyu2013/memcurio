@@ -233,7 +233,9 @@ export interface AdapterOptions {
    *  (backfill without explicit session ids) to sessions this adapter owns;
    *  when omitted it is derived from the first sessionCreated call. */
   host?: string;
-  injectBudgetTokens?: number;
+  /** Injection budget override. May be a live accessor so a settings-level
+   *  change (set OR cleared) is honoured without rebuilding the adapter. */
+  injectBudgetTokens?: number | (() => number | undefined);
   /** Harness adapters enable this so hooks only persist a checkpoint and the
    * model runs in the durable worker. Direct core callers retain the legacy
    * inline behavior unless they opt in. */
@@ -260,7 +262,7 @@ export class MemcurioAdapter {
    *  memory-file reads (never executed). */
   private readonly shellTools: Set<string>;
   private host: string;
-  private readonly injectBudgetTokens: number | undefined;
+  private readonly injectBudgetTokens: number | (() => number | undefined) | undefined;
   private readonly durableQueue: boolean;
   private workerPromise: Promise<QueueDrainResult[]> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1289,8 +1291,10 @@ export class MemcurioAdapter {
   }
 
   #injectionBudget(): number {
-    if (this.injectBudgetTokens !== undefined) {
-      return this.injectBudgetTokens;
+    const configured =
+      typeof this.injectBudgetTokens === "function" ? this.injectBudgetTokens() : this.injectBudgetTokens;
+    if (configured !== undefined) {
+      return configured;
     }
     try {
       return loadConfig(this.root).budget.maxInjectTokens ?? DEFAULT_INJECT_BUDGET;

@@ -51,6 +51,11 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     };
   }
 
+  /** Push a transport-side change (no controller call involved). */
+  emit(): void {
+    for (const listener of this.listeners) listener();
+  }
+
   async set(field: string, value: unknown): Promise<void> {
     this.sets.push({ field, value });
     if (!this.landing) return;
@@ -118,6 +123,14 @@ describe("decode/override/guard helpers", () => {
     expect(routeProblem("provider", undefined, { ...BASE, provider: "p" })).toBeUndefined();
   });
 
+  test("whitespace-only route halves count as empty (host trims too)", () => {
+    // A blank half against a blank counterpart is not a half-route problem;
+    // the host's own non-empty validate is what refuses it (errNotLanded here).
+    expect(routeProblem("provider", "   ", BASE)).toBeUndefined();
+    expect(routeProblem("provider", "p", { ...BASE, model: "  " })).toBe(ERROR_KEYS.routePair);
+    expect(routeProblem("model", "  ", { ...BASE, provider: "p" })).toBe(ERROR_KEYS.routePair);
+  });
+
   test("budget guard shares the host range rule", () => {
     expect(budgetProblem(128)).toBeUndefined();
     expect(budgetProblem(10)).toBe(ERROR_KEYS.budgetRange);
@@ -151,10 +164,12 @@ describe("MemcurioSettingsController", () => {
     const dispose = hook.subscribe(() => {
       fired += 1;
     });
-    // A transport change (not a controller call) must reach hook subscribers.
-    await controller.save("hostBridge", true);
+    // A TRANSPORT change (not a controller call) must reach hook subscribers.
+    scope.snapshot = { ...scope.snapshot, value: { ...BASE, hostBridge: true } };
+    scope.emit();
     expect(fired).toBeGreaterThan(0);
     expect(hook.getSnapshot()).not.toBe(before);
+    expect(hook.getSnapshot().value.hostBridge).toBe(true);
     dispose();
     stop();
     expect(scope.scopeListeners).toBe(0); // one scope subscription, released
