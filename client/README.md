@@ -2,8 +2,11 @@
 
 This directory carries TWO halves with different maturity:
 
-1. **Shipped: the Settings panel** (`entry.ts`, `settings/*`, built to `lib/client.js`) — the
-   `dsh.client` browser half that registers the `memcurio` Settings section. It requires only the platform-seeded
+1. **Shipped: the Settings panel and the memory visibility surfaces** (`entry.ts`,
+   `settings/*`, `ui/*`, built to `lib/client.js`) — the `dsh.client` browser half that registers the
+   `memcurio` Settings section, the session-header injection indicator (with the injection
+   preview popover and unread write badge), the injection/write toast host, and one keyed
+   `tool.call.toolview` row per native memory tool. It requires only the platform-seeded
    `react`; discovery rides `package.json` `dsh.client` + `exports["./client"]`; `pack:check` validates the artifact.
    Controller logic is unit-tested (`tests/client-settings.test.ts`, 23: atomic route-pair writes, atomic resetAll,
    base-aware resets, listener containment, single-subscription relatching, faceHook seat contract) and the
@@ -13,7 +16,9 @@ This directory carries TWO halves with different maturity:
    `standardHookPropName`, and the panel is rendered with real `react-dom` in jsdom (transport-driven repaint,
    override badges, loading/unavailable faces, checkbox + bulk-reset interactions, atomic route pair, readOnly while
    busy, locale-keyed failures). Real-browser rendering, slot governance and the `settings.yaml` round trip still
-   need a real DSH Web (S0 run card); `client/entry.ts`'s code is exercised through the built bundle rather than
+   were verified in a real DSH Web on 2026-09-15 (isolated profile: bundle execution, boot-token transport,
+   `settings.section` render — see [docs/verification-s0-web.md](../docs/verification-s0-web.md)); the session-header
+   entry still needs a live conversation. `client/entry.ts`'s code is exercised through the built bundle rather than
    imported directly, so it does not appear in the coverage table.
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
 

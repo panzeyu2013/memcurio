@@ -18,11 +18,13 @@ import type { ProjectedDelta } from "../src/services/projector.js";
 
 const SECRET = "sk-proj-reviewBridgeToken1234567890abcdef";
 
-function collector(): { deltas: ProjectedDelta[]; deliver(deltas: ProjectedDelta[]): void } {
+function collector(): { deltas: ProjectedDelta[]; roots: string[]; deliver(deltas: ProjectedDelta[], root: string): void } {
   return {
     deltas: [],
-    deliver(deltas: ProjectedDelta[]) {
+    roots: [],
+    deliver(deltas: ProjectedDelta[], root: string) {
       this.deltas.push(...deltas);
+      this.roots.push(root);
     },
   };
 }
@@ -84,6 +86,7 @@ describe("enabled gate", () => {
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     bridge.tagInjection("s1", "/w", `static with ${SECRET}`, undefined, undefined);
     bridge.tagEvidence("s1", "user/message:0", "user", "hello");
     await bridge.refresh(root);
@@ -96,14 +99,18 @@ describe("enabled gate", () => {
 
 describe("tags", () => {
   test("injection tags are redacted and flagged duplicate on repeat", () => {
+    const root = makeStore("inject");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.enable();
     bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     const staticText = `remember token ${SECRET} please`;
     bridge.tagInjection("s1", "/w", staticText, "dynamic", 1500);
     bridge.tagInjection("s1", "/w", staticText, "dynamic2", 1500);
     expect(sink.deltas.map((d) => d.kind)).toEqual(["inject-updated", "inject-updated"]);
+    // Store attribution rides every delivery (transport routing contract).
+    expect(sink.roots).toEqual([root, root]);
     const first = sink.deltas[0];
     expect(first?.kind).toBe("inject-updated");
     if (first?.kind === "inject-updated") {
@@ -119,10 +126,12 @@ describe("tags", () => {
   });
 
   test("evidence and prune tags redact content but keep identifiers", () => {
+    const root = makeStore("evidence");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.enable();
     bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "sess-abc", workdir: "/w", root });
     bridge.tagEvidence("sess-abc", "user/message:3", "user", `do as I say ${SECRET}`);
     bridge.tagPrune("sess-abc", [0, 1, 2]);
     const evidence = sink.deltas[0];
@@ -137,10 +146,12 @@ describe("tags", () => {
   });
 
   test("citation tags emit the node plus one usage tick per key", () => {
+    const root = makeStore("citation");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.enable();
     bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     bridge.tagCitations("s1", ["dsh|s1", "dsh|s2"]);
     expect(sink.deltas.map((d) => d.kind)).toEqual(["citation", "usage-tick", "usage-tick"]);
   });
@@ -288,10 +299,12 @@ describe("snapshot", () => {
 
 describe("round-19 additions (rel hits, evidence source, dynamic preview)", () => {
   test("tagToolReadHits emits one tick per safe rel and drops traversal entries", () => {
+    const root = makeStore("relhits");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.enable();
     bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     bridge.tagToolReadHits("s1", "memory_read", ["rollout_summaries/a.md", "../config.json", "", "  rollout_summaries/b.md "]);
     expect(sink.deltas.map((d) => d.kind)).toEqual(["usage-tick", "usage-tick"]);
     const keys = sink.deltas.map((d) => (d.kind === "usage-tick" ? d.rolloutKey : undefined));

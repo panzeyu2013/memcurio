@@ -29,6 +29,7 @@ export { workspaceStoreRoot } from "./scope.js";
 import { memoryWorkspace } from "../core/paths.js";
 import { HostBridge } from "./bridge.js";
 import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
+import { installUiTransport } from "./ui-transport.js";
 
 export const name = "memcurio";
 
@@ -36,6 +37,11 @@ export const name = "memcurio";
  *  a Cordis plugin context that is not identity-equal to the outer context,
  *  and the future host transport resolves per store root anyway. */
 const bridgesByRoot = new Map<string, HostBridge>();
+
+/** One browser route table per process: the web server rejects a duplicate
+ *  prefix, so only the first applied instance may mount the transport (later
+ *  ones stay host-only rather than attempting a colliding registration). */
+let uiTransportMounted = false;
 
 /** Live host bridge for a base root (present once the plugin applied; its
  *  isEnabled mirrors config.hostBridge). */
@@ -50,9 +56,9 @@ export interface Config {
   injectContext?: boolean;
   registerTools?: boolean;
   injectBudgetTokens?: number;
-  /** Host bridge for the memory workbench (design §5/§8): tags events,
-   *  diffs store changes and prepares snapshots. Default off until a
-   *  transport sink is attached (S0). */
+  /** Browser-facing memory UI (design §5/§8): tags events, diffs store
+   *  changes, prepares snapshots and serves them over the same-origin
+   *  transport. Default on; a memory UI with the bridge off renders nothing. */
   hostBridge?: boolean;
   provider?: string;
   model?: string;
@@ -64,7 +70,7 @@ export const Config: Schema<Config> = Schema.object({
   injectContext: Schema.boolean().default(true),
   registerTools: Schema.boolean().default(true),
   injectBudgetTokens: Schema.number().step(1).min(128),
-  hostBridge: Schema.boolean().default(false),
+  hostBridge: Schema.boolean().default(true),
   provider: Schema.string(),
   model: Schema.string(),
 });
@@ -207,7 +213,7 @@ function resolveConfig(config: Config = {}): Required<Omit<Config, "root" | "inj
     injectContext: config.injectContext ?? true,
     registerTools: config.registerTools ?? true,
     injectBudgetTokens: config.injectBudgetTokens,
-    hostBridge: config.hostBridge ?? false,
+    hostBridge: config.hostBridge ?? true,
     provider: config.provider,
     model: config.model,
   };
@@ -511,10 +517,17 @@ function registerMemoryTools(
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const runtime = requireSession(exec, sessions);
-      return runTool(runtime, exec, async () => JSON.stringify(await integrationRemember(
-        runtime.root,
-        stringArg(args.content, "content", true, 20_000) ?? "",
-      )));
+      return runTool(runtime, exec, async () => {
+        const result = JSON.stringify(await integrationRemember(
+          runtime.root,
+          stringArg(args.content, "content", true, 20_000) ?? "",
+        ));
+        // The note is durable when integrationRemember returns; push the new
+        // receipt immediately instead of waiting for the turn/end drain, so
+        // the "memory was written" toast lands with the tool card.
+        if (bridge?.isEnabled) void bridge.refresh(runtime.root).catch(() => undefined);
+        return result;
+      });
     },
   }));
 
@@ -612,6 +625,28 @@ export function apply(ctx: Context, config: Config = {}): void {
   bridgeWasEnabled = bridge.isEnabled;
   bridgesByRoot.set(baseRoot, bridge);
   const warn = (error: unknown): void => ctx.logger.warn("memcurio: %s", String(error));
+  // Browser transport (G5/G6): the same-origin snapshot/SSE route plus the
+  // bridge sink. Mounted once per process (the route table is per path).
+  if (!uiTransportMounted) {
+    uiTransportMounted = true;
+    try {
+      installUiTransport(ctx, {
+        bridge,
+        // Sessions resolve strictly (the transport 404s an unknown id);
+      // session-less reads (settings page) fall back to the latest store.
+      resolveRoot: (sessionId) => (sessionId === undefined ? bridge.defaultRoot() : bridge.rootForSession(sessionId)),
+        warn,
+        onDispose: () => {
+          uiTransportMounted = false;
+        },
+      });
+    } catch (error) {
+      // A failed mount must not latch the process-level flag: the next apply
+      // would otherwise be the only chance to serve the UI, ever.
+      uiTransportMounted = false;
+      warn(error);
+    }
+  }
 
   const ensureSession = (session: Session): SessionRuntime => {
     const existing = sessions.get(session.id);
@@ -1018,6 +1053,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (drainedRoots.has(runtime.root)) continue;
     drainedRoots.add(runtime.root);
     void runtime.adapter.processPendingExtractions().catch(warn);
+    // With hostBridge default-on this runs at startup even in profiles with
+    // no browser transport — one audit-tail + queue read per store, kept for
+    // baseline seeding so the live enable path cannot replay old receipts.
     if (bridge.isEnabled) void bridge.refresh(runtime.root).catch(warn);
   }
 }

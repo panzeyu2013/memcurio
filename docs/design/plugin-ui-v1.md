@@ -1,6 +1,6 @@
-# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.5）
+# @memcurio/dsh-plugin 记忆可视化插件设计（完整版 v1.6）
 
-> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义（实现面详见 §8.4；v1.4.1：A 类收口——桥集成测试、memory_read/shell 打点、evidence 源、雷达候选启发式、快照收据合成与 settings/dynamic 富化）。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
+> 状态：**设计基线（frozen）**，2026-09-05 第十六轮讨论定稿；v1.1：存储附属 DSH home、语言政策、标题栏单按钮入口、参考版本声明；v1.2（S0 预查实证）：桥接通道对第三方关闭、标题栏槽位候选名、seed 模块表、挂载平面风险；v1.3（审查修订）：遥测开关（预览不计数）、usage 增量语义、审计 object、入口/通道措辞统一；v1.4（实现批次）：host 桥接层落定——store 注册表/事件打标点/审计尾+队列 diff/快照装配/写路径收据过滤、queue-updated 单 job 语义（实现面详见 §8.4；v1.4.1：A 类收口——桥集成测试、memory_read/shell 打点、evidence 源、雷达候选启发式、快照收据合成与 settings/dynamic 富化）；v1.6（G5/G6 先行批，**S0 依产品决定延期**）：同源传输（prefix 路由 snapshot+SSE+custom guard，§8.5）、客户端 snapshot/SSE+轮询降级、头部注入指示器、注入/写入 Toast、6 个 memory_* 工具行；`hostBridge` 默认开。本文是 S0 spike / M0 / M1 / M2 的唯一验收基准；实现与设计背离时先改本文再改代码。
 > 参考版本声明：本设计全部上游事实（dsh.client/client-modules、workspace/home-paths/storage-*、session JSONL 布局）基于 **DSH npm `0.1.2-rc.1`** 安装物核对（本机运行实例版本）；适配目标已随第二十四轮升级为 **npm `latest` = `0.1.5-rc.1`**（0.1.5-rc.2/alpha 未采纳）；S0 实机须在 0.1.5-rc.1 上重核，并沿用「每次 DSH 升级重核 peer/client 契约」纪律。
 > 前置事实：第十五轮单宿主收敛（fea0fa9 / 83c01dd）后仓库即 `@memcurio/dsh-plugin` 单包——引擎（`src/core`）、适配引擎（`src/engine.ts`）、读写面（`src/api.ts`）、Cordis 插件（`src/plugin/`）同包交付，对齐 DSH `0.1.5-rc.1` 契约。本设计是该包的"浏览器客户端半侧 + host 服务层"里程碑。
 > 阅读建议：先 §1–§3 建立框架，§4 是"对话即写面"核心约束，§5–§7 是实现细节，§11 是排期与验收。
@@ -316,7 +316,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 ### 8.4 host 桥接层（v1.4 实现批次）
 
-已落地的 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`，`config.hostBridge` 门控，默认关）：
+已落地的 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`，`config.hostBridge` 门控；v1.6 起默认开，因为传输 sink 已随包交付）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
 - **事件打标点**：pre-step 注入（static/dynamic/budget；投影器仅置 duplicate 标记，重复注入仍出流——实际去重在插件 pre-step 的 lastInjectedContext）、非插件 user/assistant 证据（沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出 delta；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
@@ -324,6 +324,17 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
 - v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version、注入预览携带 dynamicText；桥插件级集成测试落地；
 - v1.4.2：客户端 M1 前置——证据窗折叠（evidence delta → `state.evidence`，partId 去重置顶、cap 200、compaction-prune 按 partId 序号清除）+ ⭐ 纯 UI 书签（`toggleBookmark`，客户端本地集合，删除仍走对话流）；v1.5：**配置面落定（host + client 双侧）**——`ctx.settings.installSection("memcurio", …)` 命名空间（profile config 为 base，settings.yaml 用户层覆盖）+ `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，字段 scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model，含覆盖徽标/恢复默认/跨字段校验与写后校验）；root 只读说明；记忆内容面不变（工作台/对话流，UI 永不静默写）。
+
+### 8.5 G5/G6 先行批：传输与记忆可见性（v1.6，S0 依产品决定延期）
+
+> 决策依据：产品明确要求“写入记忆与注入上下文都应有明显提示”，并接受在真实 DSH Web 实测（S0）之前先落地代码。因此本批以设计 §8.1 的候选 ① 为主通道、③ 为自动降级实现，安全上取保守替代（S0 的 token/session 绑定仍未验证）。
+
+- **host 传输**（`src/plugin/ui-transport.ts`）：在 `ctx.webServer` 上用 prefix 路由 `/memcurio` 注册 `GET /snapshot?session=<id>`（WorkbenchSnapshot JSON）与 `GET /events?session=<id>`（SSE：`id:` = 状态版本、`data: { seq, deltas }`、`: ping` 心跳；按订阅的 session 过滤带 sessionId 的 delta）。路由/sink/心跳由 inject 回调的 fiber 持有（webServer 更换会重注册）。**自带守卫**（`dsh-host-webserver` 明确不提供鉴权/来源策略）：仅 GET；对端必须 loopback；`Host` 必须是 loopback 主机名（防 DNS rebinding，仅比对 Origin 不成立）；`Origin` 存在时必须等于 `Host`；`Sec-Fetch-Site` 非 same-origin/none 拒绝；**每进程随机 token 必填**，经 `webserver/index-inject` 的 `globalThis.__MEMCURIO_UI__` 下发，常数时间比较，无 token 的页面不请求、UI 置 offline（宁可不显示也不泄露）；不写任何 CORS 头、`Cache-Control: no-store`；SSE 并发上限 8、每流 4MB 背压上限、socket/req close 与心跳存活检查回收槽位。`hostBridge` 关闭时端点 403 且心跳会结束存量流；无 web server 的 profile 保持 host-only。
+- **client 传输**（`client/ui/transport.ts`）：同源 fetch snapshot + SSE 流读取（`text/event-stream` 分帧、`data:` JSON、坏帧丢弃），流断开自动降级为 1–3s 轮询并周期性重试 SSE；模式上报驱动“实时性降级”角标。
+- **G5 注入可见**：会话头部 `conversation.session.header.utilities` 单入口 = 平台 ContextInjection 字形 + 动态命中数 + 未读写入圆点；点开 popover 展示静态上下文 / read 指引 / 最近动态命中 / 预算条；每次内容变化的注入经 Toast 提示（`duplicate=true` 不提示）。
+- **G6 写入可见**：写路径 receipt delta → 状态面最近写入列表 + 未读计数 + Toast（note/extract/consolidate/prune/purge 各自措辞）；`memory_remember` 等 6 个原生工具注册 keyed `tool.call.toolview` 行：book 主标记 leading、参数摘要、可展开参数/结果、终态让位状态点。
+- **图标**：主标记 = 第一版候选的 book（书＋书签丝带）内联 SVG（24 单位、stroke 2、round、`currentColor`、14px，沿用 dsh-chamber-mcp 约定）；注入事件 = 平台 `IconContextInjectionOutline16` 路径内联（零图标包依赖，bundle 运行期仍只 require `react`）。
+- **验证与残留**：boot token 下发、守卫矩阵、SSE 上限/回收与 `settings.section` 注册已在隔离真机验证通过（见 [verification-s0-web.md](../verification-s0-web.md)）；跨 store delta 归属（帧带 root，SSE 按根过滤）与 snapshot↔stream 窗口（`?after=` 重放）已落地。剩余：会话内头部入口需真实会话人工确认一次、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及完整工作台（三面一轴 / 意图草稿 / 时间线回链，M0/M1）。
 
 ## 9. 安全与隐私边界
 
@@ -410,6 +421,7 @@ Release Gate R1 的 DSH 相关项（真实 E2E、故障注入、真实证据、�
 12. v1.3 审查修订：预览与工作台搜索/读**不计数遥测**（trackUsage 开关，默认模型路径仍计数）；usage-tick 语义定为**增量**并在客户端快照上自愈；审计行/收据暴露 object（ns）。
 13. v1.4 实现批次：host 桥接层落定（store 注册表/打标点/refresh diff/快照/写路径收据过滤，config.hostBridge 门控，§8.4）；queue-updated 改**单 job**（jobId/status/attempts，counts 客户端自 jobs 重算，completed 移除）。
 14. v1.5 配置面：**在 DSH Settings 页注册 `memcurio` 命名空间用于插件配置**（scope/injectContext/registerTools/budget/hostBridge/provider/model；root 只读）。配置面与记忆内容面分离，不违背"UI 永不静默写记忆"。**浏览器面板已随包发布**（`dsh.client` + `lib/client.js` + `settings.section`，见 §3.3/§10）；剩余为真实 DSH Web 的渲染与槽位治理验证（S0）。生效语义：injection/budget/hostBridge/路由即时；registerTools 于下次 apply（含重启）生效；scope 对新会话生效。
+15. v1.6 G5/G6 先行批：**用户决定跳过 S0 先行实现**（写注入与写入的可见提示 + 相关 UI 组装）。通道取候选 ①（`ctx.webServer` prefix 路由 + SSE）与候选 ③（轮询降级），安全守卫为 loopback + 同源 Origin（token/session 绑定待 S0）；`hostBridge` 默认开；注入用平台 ContextInjection 图标、写入/工具行用 book 主标记；完整工作台仍在 S0 之后。
 
 ---
 

@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Memory visibility surfaces (G5/G6)**: a session-header injection
+  indicator (injection preview, budget bar, unread write badge), transient
+  injection/write toasts, and custom transcript rows for the six native
+  memory tools. The main mark is an inline book-and-ribbon SVG; injection
+  events use the platform context-injection glyph, inlined so the bundle
+  still requires only `react`.
+- **Authenticated memory transport**: `GET /memcurio/snapshot` (full-state
+  read) and `GET /memcurio/events?session=<id>&after=<seq>` (SSE deltas with
+  bounded replay) on `ctx.webServer`. The route carries its own guard — a
+  required per-process token delivered through the boot payload
+  (`globalThis.__MEMCURIO_UI__`), loopback peer, loopback `Host`,
+  `Origin === Host`, `Sec-Fetch-Site`, no CORS headers, `no-store` — and
+  the client falls back to 1–3 s polling with a degraded badge, or stays
+  offline (never 403-looping) when the page has no token.
+- **Per-store delta attribution**: every bridge delivery carries its store
+  root, SSE streams only receive their own store's batches, frames carry the
+  root, and the client re-checks it against its last snapshot.
+- **Reconnect replay**: a bounded frame history answers
+  `?after=<lastSeq>` on reconnect (replay before subscribe); a cursor older
+  than the buffer receives a `snapshot-ready` marker instead of a silent gap.
+
+### Changed
+
+- `hostBridge` now defaults to **on**: the browser transport sink ships
+  with the package. Set `hostBridge: false` to keep the UI silent.
+
 ## [0.0.1] - 2026-09-11
 
 First release of `@memcurio/dsh-plugin`, a memory and context-management plugin

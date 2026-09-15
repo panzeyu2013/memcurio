@@ -32,7 +32,10 @@ import { buildSnapshot, type WorkbenchSnapshot } from "../services/snapshot.js";
 
 /** Where the bridge delivers browser-bound deltas. */
 export interface BridgeSink {
-  deliver(deltas: ProjectedDelta[]): void;
+  /** Deliver one projector batch for one store root. The root is part of the
+   *  contract so a process-wide transport can route receipts/queue updates to
+   *  the streams of THAT store (design §8.4 store attribution). */
+  deliver(deltas: ProjectedDelta[], root: string): void;
 }
 
 /** One evidence-window row for the browser (state face; §5.1
@@ -127,8 +130,11 @@ export class HostBridge {
   private readonly labels = new Map<string, string>();
   /** root -> raw workdir ("" = no-cwd store). */
   private readonly workdirs = new Map<string, string>();
-  /** root -> session id that resolved it (latest wins). */
+  /** root -> session id that resolved it (last registration wins per root). */
   private readonly sessionsByRoot = new Map<string, string>();
+  /** Root registered most recently (snapshot fallback without a session);
+   *  tracked explicitly because re-registering a root keeps its Map order. */
+  private lastRoot: string | undefined;
   /** root -> last audited rowid (refresh baseline). */
   private readonly lastAuditRowid = new Map<string, number>();
   private readonly refreshInFlight = new Map<string, Promise<ProjectedDelta[]>>();
@@ -194,19 +200,36 @@ export class HostBridge {
     this.labels.set(info.root, info.workdir || "no-cwd");
     this.workdirs.set(info.root, info.workdir);
     this.sessionsByRoot.set(info.root, info.sessionId);
+    this.lastRoot = info.root;
   }
 
   labelFor(root: string): string | undefined {
     return this.labels.get(root);
   }
 
-  private push(deltas: ProjectedDelta[]): void {
-    if (!this.enabled || !this.sink || deltas.length === 0) return;
-    this.sink.deliver(deltas);
+  /** Store root that registered one session (browser transport binding). */
+  rootForSession(sessionId: string): string | undefined {
+    for (const [root, id] of this.sessionsByRoot) {
+      if (id === sessionId) return root;
+    }
+    return undefined;
   }
 
-  private project(record: InputRecord): void {
-    this.push(this.projector.project(record));
+  /** Most recently registered store root (snapshot fallback when the browser
+   *  has no session id yet, e.g. the settings page outside a conversation). */
+  defaultRoot(): string | undefined {
+    return this.lastRoot;
+  }
+
+  private push(deltas: ProjectedDelta[], root: string | undefined): void {
+    // An unattributable batch is dropped: a wrong-store delivery is worse
+    // than a missed one (the store's snapshot reconciles it).
+    if (!this.enabled || !this.sink || deltas.length === 0 || root === undefined) return;
+    this.sink.deliver(deltas, root);
+  }
+
+  private project(record: InputRecord, root: string | undefined): void {
+    this.push(this.projector.project(record), root);
   }
 
   /** Pre-step injection happened (plugin agent/pre-step handler). The
@@ -224,25 +247,25 @@ export class HostBridge {
       ...(dynamicText !== undefined ? { dynamicText } : {}),
       ...(budgetTokens !== undefined ? { budgetTokens } : {}),
     };
-    this.project(record);
+    this.project(record, this.rootForSession(sessionId));
   }
 
   /** Non-plugin user/assistant evidence seen (mirrors adapter.messageSeen). */
   tagEvidence(sessionId: string, partId: string, kind: EvidenceKind, text: string | undefined): void {
     if (!this.enabled || (text === undefined && kind !== "user" && kind !== "assistant")) return;
-    this.project({ kind: "evidence", sessionId, partId, itemKind: kind, text });
+    this.project({ kind: "evidence", sessionId, partId, itemKind: kind, text }, this.rootForSession(sessionId));
   }
 
   /** Compaction pruned surface messages (plugin compaction/prune handler). */
   tagPrune(sessionId: string, seqs: readonly number[]): void {
     if (!this.enabled || seqs.length === 0) return;
-    this.project({ kind: "compaction-prune", sessionId, seqs: [...seqs] });
+    this.project({ kind: "compaction-prune", sessionId, seqs: [...seqs] }, this.rootForSession(sessionId));
   }
 
   /** Answer cited rollouts after citation harvest succeeded. */
   tagCitations(sessionId: string, rolloutKeys: readonly string[]): void {
     if (!this.enabled || rolloutKeys.length === 0) return;
-    this.project({ kind: "citation", sessionId, rolloutKeys: [...rolloutKeys] });
+    this.project({ kind: "citation", sessionId, rolloutKeys: [...rolloutKeys] }, this.rootForSession(sessionId));
   }
 
   /** A DSH read/grep/glob tool touched a file inside the memory workspace.
@@ -255,7 +278,7 @@ export class HostBridge {
     }
     const rel = relative(workspace, absolutePath);
     if (!rel || rel.startsWith("..")) return false;
-    this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+    this.project({ kind: "tool-read-hit", sessionId, tool, path: rel }, storeRoot);
     return true;
   }
 
@@ -264,10 +287,12 @@ export class HostBridge {
    *  identifiers; blank/traversal entries are dropped, never trusted. */
   tagToolReadHits(sessionId: string, tool: string, rels: readonly string[]): void {
     if (!this.enabled) return;
+    const root = this.rootForSession(sessionId);
+    if (root === undefined) return;
     for (const raw of rels) {
       const rel = raw.trim();
       if (!rel || rel.startsWith("..") || rel.includes("\\")) continue;
-      this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+      this.project({ kind: "tool-read-hit", sessionId, tool, path: rel }, root);
     }
   }
 
@@ -403,7 +428,7 @@ export class HostBridge {
       this.jobsByRoot.set(root, current);
     }
 
-    this.push(deltas);
+    this.push(deltas, root);
     return deltas;
   }
 

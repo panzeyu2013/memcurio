@@ -38,6 +38,8 @@ import {
 import { MemcurioSettingsSection } from "../client/settings/section.js";
 import type { SettingsKey } from "../client/settings/locales.js";
 import { en, zh } from "../client/settings/locales.js";
+import { en as uiEn, zh as uiZh } from "../client/ui/locales.js";
+import { MEMORY_TOOL_NAMES } from "../client/ui/tool-rows.js";
 
 const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true, hostBridge: false };
 
@@ -187,7 +189,7 @@ describe("shipped browser bundle", () => {
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.id).toBe("@memcurio/dsh-plugin");
     expect(typeof loaded[0]?.exports.apply).toBe("function");
-    expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "settingsScope"]);
+    expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "settingsScope", "sessions"]);
   });
 
   test("registers the settings section with a hook seat the renderer maps to useFace", async () => {
@@ -223,15 +225,26 @@ describe("shipped browser bundle", () => {
         return scope;
       },
     });
+    // The browser half hard-injects the client session service (official
+    // conversation-plugin pattern); a stub is enough for activation.
+    services.reflect.provide("sessions", {
+      list: {
+        getSnapshot: () => ({ current: undefined }),
+        subscribe: () => () => undefined,
+      },
+    });
 
     const fiber = ctx.plugin({ name: bundle.id, inject: bundle.exports.inject, apply: bundle.exports.apply });
     await fiber;
 
     expect(bindings).toHaveLength(1);
     expect(bindings[0]?.namespace).toBe("memcurio");
-    expect(localeRegistrations).toHaveLength(1);
-    expect(localeRegistrations[0]?.ns).toBe("memcurio.settings");
-    expect(localeRegistrations[0]?.dicts).toMatchObject({ zh, en });
+    // Two namespaces ship: the settings panel's and the memory UI's.
+    expect(localeRegistrations).toHaveLength(2);
+    const settingsDict = localeRegistrations.find((entry) => entry.ns === "memcurio.settings");
+    const uiDict = localeRegistrations.find((entry) => entry.ns === "memcurio.ui");
+    expect(settingsDict?.dicts).toMatchObject({ zh, en });
+    expect(uiDict?.dicts).toMatchObject({ zh: uiZh, en: uiEn });
 
     const spec = registrations[0];
     if (!spec) throw new Error("the browser half registered no settings section");
@@ -257,6 +270,12 @@ describe("shipped browser bundle", () => {
     const hook = injected.hooks.face;
     if (!hook) throw new Error("the inject face exposes no hooks.face seat");
     expect(hook.getSnapshot()).toBe(hook.getSnapshot());
+    // Memory visibility surfaces: one header entry + one keyed row per tool.
+    const header = registrations.find((entry) => entry.name === "conversation.session.header.utilities");
+    expect(header?.id).toBe("memcurio");
+    const toolRows = registrations.filter((entry) => entry.name === "tool.call.toolview");
+    expect(toolRows.map((entry) => entry.key)).toEqual([...MEMORY_TOOL_NAMES]);
+
     // Bundle purity: only the platform seed may be required at runtime.
     expect([...new Set(requiredSpecifiers)]).toEqual(["react"]);
 

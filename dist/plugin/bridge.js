@@ -86,8 +86,11 @@ export class HostBridge {
     labels = new Map();
     /** root -> raw workdir ("" = no-cwd store). */
     workdirs = new Map();
-    /** root -> session id that resolved it (latest wins). */
+    /** root -> session id that resolved it (last registration wins per root). */
     sessionsByRoot = new Map();
+    /** Root registered most recently (snapshot fallback without a session);
+     *  tracked explicitly because re-registering a root keeps its Map order. */
+    lastRoot;
     /** root -> last audited rowid (refresh baseline). */
     lastAuditRowid = new Map();
     refreshInFlight = new Map();
@@ -145,17 +148,33 @@ export class HostBridge {
         this.labels.set(info.root, info.workdir || "no-cwd");
         this.workdirs.set(info.root, info.workdir);
         this.sessionsByRoot.set(info.root, info.sessionId);
+        this.lastRoot = info.root;
     }
     labelFor(root) {
         return this.labels.get(root);
     }
-    push(deltas) {
-        if (!this.enabled || !this.sink || deltas.length === 0)
-            return;
-        this.sink.deliver(deltas);
+    /** Store root that registered one session (browser transport binding). */
+    rootForSession(sessionId) {
+        for (const [root, id] of this.sessionsByRoot) {
+            if (id === sessionId)
+                return root;
+        }
+        return undefined;
     }
-    project(record) {
-        this.push(this.projector.project(record));
+    /** Most recently registered store root (snapshot fallback when the browser
+     *  has no session id yet, e.g. the settings page outside a conversation). */
+    defaultRoot() {
+        return this.lastRoot;
+    }
+    push(deltas, root) {
+        // An unattributable batch is dropped: a wrong-store delivery is worse
+        // than a missed one (the store's snapshot reconciles it).
+        if (!this.enabled || !this.sink || deltas.length === 0 || root === undefined)
+            return;
+        this.sink.deliver(deltas, root);
+    }
+    project(record, root) {
+        this.push(this.projector.project(record), root);
     }
     /** Pre-step injection happened (plugin agent/pre-step handler). The
      *  per-session dynamic piece feeds the snapshot injection preview. */
@@ -173,25 +192,25 @@ export class HostBridge {
             ...(dynamicText !== undefined ? { dynamicText } : {}),
             ...(budgetTokens !== undefined ? { budgetTokens } : {}),
         };
-        this.project(record);
+        this.project(record, this.rootForSession(sessionId));
     }
     /** Non-plugin user/assistant evidence seen (mirrors adapter.messageSeen). */
     tagEvidence(sessionId, partId, kind, text) {
         if (!this.enabled || (text === undefined && kind !== "user" && kind !== "assistant"))
             return;
-        this.project({ kind: "evidence", sessionId, partId, itemKind: kind, text });
+        this.project({ kind: "evidence", sessionId, partId, itemKind: kind, text }, this.rootForSession(sessionId));
     }
     /** Compaction pruned surface messages (plugin compaction/prune handler). */
     tagPrune(sessionId, seqs) {
         if (!this.enabled || seqs.length === 0)
             return;
-        this.project({ kind: "compaction-prune", sessionId, seqs: [...seqs] });
+        this.project({ kind: "compaction-prune", sessionId, seqs: [...seqs] }, this.rootForSession(sessionId));
     }
     /** Answer cited rollouts after citation harvest succeeded. */
     tagCitations(sessionId, rolloutKeys) {
         if (!this.enabled || rolloutKeys.length === 0)
             return;
-        this.project({ kind: "citation", sessionId, rolloutKeys: [...rolloutKeys] });
+        this.project({ kind: "citation", sessionId, rolloutKeys: [...rolloutKeys] }, this.rootForSession(sessionId));
     }
     /** A DSH read/grep/glob tool touched a file inside the memory workspace.
      *  Returns true when tagged (path resolved inside <store>/memory). */
@@ -205,7 +224,7 @@ export class HostBridge {
         const rel = relative(workspace, absolutePath);
         if (!rel || rel.startsWith(".."))
             return false;
-        this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+        this.project({ kind: "tool-read-hit", sessionId, tool, path: rel }, storeRoot);
         return true;
     }
     /** Batch variant for callers that already resolved workspace-relative
@@ -214,11 +233,14 @@ export class HostBridge {
     tagToolReadHits(sessionId, tool, rels) {
         if (!this.enabled)
             return;
+        const root = this.rootForSession(sessionId);
+        if (root === undefined)
+            return;
         for (const raw of rels) {
             const rel = raw.trim();
             if (!rel || rel.startsWith("..") || rel.includes("\\"))
                 continue;
-            this.project({ kind: "tool-read-hit", sessionId, tool, path: rel });
+            this.project({ kind: "tool-read-hit", sessionId, tool, path: rel }, root);
         }
     }
     /** Diff store audit tail + extraction jobs; deliver receipts, memory-list
@@ -350,7 +372,7 @@ export class HostBridge {
             }
             this.jobsByRoot.set(root, current);
         }
-        this.push(deltas);
+        this.push(deltas, root);
         return deltas;
     }
     /** Full-state read for one store (connect/refresh/polling). Carries the

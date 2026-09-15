@@ -68,7 +68,7 @@ Example configuration:
         scope: workspace
         injectContext: true
         registerTools: true
-        # hostBridge: true          # memory-workbench host bridge (event tags/snapshots; default false)
+        # hostBridge: true          # memory UI host bridge (event tags/snapshots/same-origin transport; default true)
         # Optional fixed worker route. Omit both to follow the session route.
         # provider: deepseek
         # model: deepseek-v4
@@ -77,7 +77,7 @@ Example configuration:
 ## Settings integration
 
 The host half hard-injects the DSH `settings` service (official plugin pattern) and registers the `memcurio` namespace through `ctx.settings.installSection`:
-`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/`hostBridge`/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`); real-Web rendering and slot governance are S0 verification items.
+`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/`hostBridge`/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`), together with the memory visibility surfaces (session-header injection indicator, injection/write toasts, six keyed `memory_*` tool rows) served over the same-origin `/memcurio` snapshot/SSE route. Real-Web rendering, slot governance and the route's token/session binding are still S0 verification items.
 
 ## Settings coupling and profile requirements
 

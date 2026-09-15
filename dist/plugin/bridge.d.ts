@@ -3,7 +3,10 @@ import type { ProjectedDelta } from "../services/projector.js";
 import { type WorkbenchSnapshot } from "../services/snapshot.js";
 /** Where the bridge delivers browser-bound deltas. */
 export interface BridgeSink {
-    deliver(deltas: ProjectedDelta[]): void;
+    /** Deliver one projector batch for one store root. The root is part of the
+     *  contract so a process-wide transport can route receipts/queue updates to
+     *  the streams of THAT store (design §8.4 store attribution). */
+    deliver(deltas: ProjectedDelta[], root: string): void;
 }
 /** One evidence-window row for the browser (state face; §5.1
  *  evidence.session). Text is re-redacted + capped on the way out. */
@@ -45,8 +48,11 @@ export declare class HostBridge {
     private readonly labels;
     /** root -> raw workdir ("" = no-cwd store). */
     private readonly workdirs;
-    /** root -> session id that resolved it (latest wins). */
+    /** root -> session id that resolved it (last registration wins per root). */
     private readonly sessionsByRoot;
+    /** Root registered most recently (snapshot fallback without a session);
+     *  tracked explicitly because re-registering a root keeps its Map order. */
+    private lastRoot;
     /** root -> last audited rowid (refresh baseline). */
     private readonly lastAuditRowid;
     private readonly refreshInFlight;
@@ -76,6 +82,11 @@ export declare class HostBridge {
     /** Session identity facts (label map + session per root). */
     registerSession(info: BridgeSessionInfo): void;
     labelFor(root: string): string | undefined;
+    /** Store root that registered one session (browser transport binding). */
+    rootForSession(sessionId: string): string | undefined;
+    /** Most recently registered store root (snapshot fallback when the browser
+     *  has no session id yet, e.g. the settings page outside a conversation). */
+    defaultRoot(): string | undefined;
     private push;
     private project;
     /** Pre-step injection happened (plugin agent/pre-step handler). The

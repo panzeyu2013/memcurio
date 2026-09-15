@@ -13,9 +13,9 @@ export interface Config {
     injectContext?: boolean;
     registerTools?: boolean;
     injectBudgetTokens?: number;
-    /** Host bridge for the memory workbench (design §5/§8): tags events,
-     *  diffs store changes and prepares snapshots. Default off until a
-     *  transport sink is attached (S0). */
+    /** Browser-facing memory UI (design §5/§8): tags events, diffs store
+     *  changes, prepares snapshots and serves them over the same-origin
+     *  transport. Default on; a memory UI with the bridge off renders nothing. */
     hostBridge?: boolean;
     provider?: string;
     model?: string;
