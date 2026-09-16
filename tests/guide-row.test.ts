@@ -103,6 +103,27 @@ describe("guide row definition", () => {
     expect(state.anchorSeq).toBeCloseTo(8.9, 5);
   });
 
+  test("anchors immediately before the system-prompt card (MCP placement)", () => {
+    // First step: the card opens at the TURN start, so the row sits at turn - 0.1.
+    const first = definition.start(undefined, {
+      event: systemEvent(9, PROMPT),
+      location: { kind: "step", turn: { turn: 1, start: { seq: 6 } }, step: { step: 1, start: { seq: 8 } } },
+    });
+    expect(first.anchorSeq).toBeCloseTo(5.9, 5);
+    // A later step: the card opens at the STEP start.
+    const later = definition.start(undefined, {
+      event: systemEvent(41, PROMPT),
+      location: { kind: "step", turn: { turn: 2, start: { seq: 30 } }, step: { step: 3, start: { seq: 40 } } },
+    });
+    expect(later.anchorSeq).toBeCloseTo(39.9, 5);
+    // No resolved step location, or a window that lost the start events: just
+    // above the system message itself.
+    const sessionScoped = definition.start(undefined, { event: systemEvent(9, PROMPT), location: { kind: "session" } });
+    expect(sessionScoped.anchorSeq).toBeCloseTo(8.9, 5);
+    const noStart = definition.start(undefined, { event: systemEvent(9, PROMPT), location: { kind: "step", step: { step: 2 } } });
+    expect(noStart.anchorSeq).toBeCloseTo(8.9, 5);
+  });
+
   test("a predecessor with the same signature marks the state unchanged", () => {
     const first = definition.start(undefined, { event: systemEvent(9, PROMPT) });
     const again = definition.start(undefined, { event: systemEvent(20, PROMPT) }, readerWith(first));

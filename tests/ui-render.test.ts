@@ -81,10 +81,11 @@ describe("system-prompt guide row", () => {
         }),
       );
     });
-    // Collapsed: title + the facts (chars and named tools), no body yet.
-    expect(container.textContent).toContain("guideRowTitle");
-    expect(container.textContent).toContain("guideRowDetail");
-    expect(container.textContent).toContain("1554");
+    // Collapsed: the mark and the SHORT title only - the measured facts open
+    // the body, so the closed row carries no numbers at all.
+    expect(container.textContent).toBe("guideRowTitle");
+    expect(container.textContent).not.toContain("guideRowDetail");
+    expect(container.querySelector("[data-memcurio-guide-detail]")).toBeNull();
     expect(container.querySelector("[data-memcurio-guide-body]")).toBeNull();
 
     const button = container.querySelector("button");
@@ -92,8 +93,11 @@ describe("system-prompt guide row", () => {
     await act(async () => {
       button.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
     });
-    expect(container.textContent).toContain("Reach it only through the memcurio tools.");
-    expect(container.querySelector("[data-memcurio-guide-body]")).not.toBeNull();
+    // The body OPENS with the measured facts, then the injected guide text.
+    const body = container.querySelector("[data-memcurio-guide-body]");
+    expect(body).not.toBeNull();
+    expect(body?.textContent?.startsWith(t("guideRowDetail", { chars: 1554, tools: 6 }))).toBe(true);
+    expect(body?.textContent).toContain("Reach it only through the memcurio tools.");
 
     await act(async () => {
       root.unmount();

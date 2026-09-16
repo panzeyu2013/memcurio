@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guide row refined (v1.9.4)**: the row reads just "记忆指南 / Memory
+  guide" and anchors immediately ABOVE the system-prompt card by mirroring the
+  official `requestPromptAnchor` rule (turn start for a first step, step start
+  otherwise, minus a hair) - the placement `dsh-chamber-mcp` gives its
+  registered-tools row. The measured facts (characters, named tools) moved from
+  the collapsed line into the expanded body's first line, so the closed row is
+  a quiet one-liner.
 - **System-prompt guide row (v1.9.2)**: the read-path guide moved into the
   system prompt in v1.9, which left that injection invisible - the transcript
   row only covered the injected `user/message`. A new derived row

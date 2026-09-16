@@ -12,12 +12,13 @@ This directory carries TWO halves with different maturity:
    status/badge tokens), the injection/write toast host, the "记忆注入 / Memory
    injection" transcript row for injected memory (book mark leading; `ui/context-row.ts`, which shadows the shipped
    `conversation.chat.node` `context` cell at priority -1 and forwards every non-memcurio context
-   node back to that shipped renderer), the "记忆指南已注入系统提示 / Memory guide in system
-   prompt" row for the SYSTEM-PROMPT half of the injection (`ui/guide-row.ts`: a derived
-   `memcurio-guide-injected` node built from the harness's own `system/message` events - section
-   marker scanned, hashed against the nearest predecessor Context, so a constant guide yields one
-   row per session and nothing is written into the session; the `dsh-chamber-mcp` registered-tools
-   pattern), and
+   node back to that shipped renderer), the "记忆指南 / Memory guide" row for the SYSTEM-PROMPT half
+   of the injection (`ui/guide-row.ts`: a derived `memcurio-guide-injected` node built from the
+   harness's own `system/message` events - section marker scanned, hashed against the nearest
+   predecessor Context, so a constant guide yields one row per session and nothing is written into
+   the session; anchored immediately above the system-prompt card by mirroring the official
+   `requestPromptAnchor` rule, the `dsh-chamber-mcp` registered-tools pattern; the collapsed line
+   is mark + title, and the expanded body opens with the measured facts), and
    one keyed `tool.call.toolview` row per native memory tool. The session header carries no memcurio
    entry (v1.7 product instruction): `ui/injection-indicator.ts` is the reserved workbench status
    surface and is deliberately NOT registered. The settings-nav row carries the book

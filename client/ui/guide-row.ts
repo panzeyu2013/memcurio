@@ -48,8 +48,9 @@ export const GUIDE_TOOL_NAMES = [
   "memory_remember",
 ] as const;
 
-/** A hair before the system-prompt card the row heads. */
-const GUIDE_ANCHOR_OFFSET = -0.1;
+/** A hair before the system-prompt card the row heads (the placement
+ *  `dsh-chamber-mcp` uses for its registered-tools row). */
+const GUIDE_CARD_OFFSET = -0.1;
 
 /** Session-scoped location: the row describes the prompt, not a produced step,
  *  so it opts out of the turn/process re-anchoring rules. */
@@ -108,9 +109,18 @@ export interface GuideEventLike {
   readonly data?: unknown;
 }
 
+/** Resolved location of one match (structural; the engine resolves it from the
+ *  event's own turn/step payload). */
+export interface GuideLocationLike {
+  readonly kind?: unknown;
+  readonly turn?: { readonly turn?: unknown; readonly start?: { readonly seq?: unknown } } | undefined;
+  readonly step?: { readonly step?: unknown; readonly start?: { readonly seq?: unknown } } | undefined;
+}
+
 /** One accepted match; the engine reads identity from the event only. */
 export interface GuideMatchLike {
   readonly event: GuideEventLike;
+  readonly location?: GuideLocationLike | undefined;
 }
 
 /** Strict-backward Context reader the engine may pass. */
@@ -154,6 +164,31 @@ function seqOf(event: GuideEventLike): number {
   return typeof event.seq === "number" && Number.isFinite(event.seq) ? event.seq : 0;
 }
 
+/** Sequence of one location field, or undefined when the window does not carry
+ *  the turn/step start event. */
+function locationSeq(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Render position of the row: immediately BEFORE the system-prompt card it
+ * heads, by mirroring the official `requestPromptAnchor` rule (the turn start
+ * for a first step, the step start otherwise) and subtracting a hair — the same
+ * placement `dsh-chamber-mcp` gives its registered-tools row. A window whose
+ * step location was not resolved (a session loaded past its turn start) falls
+ * back to just above the system message itself.
+ */
+function anchorSeqOf(match: GuideMatchLike): number {
+  const seq = seqOf(match.event);
+  const location = match.location;
+  if (location?.kind !== "step") return seq + GUIDE_CARD_OFFSET;
+  const turnStart = locationSeq(location.turn?.start?.seq);
+  const stepStart = locationSeq(location.step?.start?.seq);
+  const firstStep = location.step?.step === 1;
+  const cardAnchor = firstStep ? (turnStart ?? stepStart ?? seq) : (stepStart ?? seq);
+  return cardAnchor + GUIDE_CARD_OFFSET;
+}
+
 function previousStateOf(reader?: GuideContextReaderLike): GuideState | undefined {
   try {
     return reader?.previous<GuideState>(GUIDE_NODE_KIND)?.state;
@@ -189,7 +224,7 @@ export function createGuideNodeDefinition(): GuideNodeDefinition {
         chars: detail.chars,
         tools: detail.tools,
         text: section ?? "",
-        anchorSeq: seqOf(match.event) + GUIDE_ANCHOR_OFFSET,
+        anchorSeq: anchorSeqOf(match),
         unchanged: previous !== undefined && previous.signature === signature,
       };
     },
@@ -264,13 +299,20 @@ export function MemcurioGuideRow(props: GuideRowProps): ReactElement | null {
         onClick: toggle,
       },
       createElement("span", { className: "memcurio-context-icon" }, createElement(MemoryMarkIcon, {})),
+      // Collapsed line: the mark and the short title only. The measured facts
+      // (characters, named tools) open the expanded body — the MCP-row
+      // convention, where the collapsed row stays a quiet one-liner.
       createElement("span", { className: "memcurio-context-title" }, t("guideRowTitle")),
-      createElement("span", { className: "memcurio-context-sep", "aria-hidden": true }),
-      createElement("span", { className: "memcurio-context-source", "data-memcurio-guide-detail": true }, t("guideRowDetail", { chars, tools })),
       createElement("span", { className: "memcurio-context-chevron" }, createElement(ChevronDownIcon, {})),
     ),
     open && text !== ""
-      ? createElement("div", { className: "memcurio-context-body", "data-memcurio-guide-body": true }, text)
+      ? createElement(
+          "div",
+          { className: "memcurio-context-body", "data-memcurio-guide-body": true },
+          t("guideRowDetail", { chars, tools }),
+          "\n\n",
+          text,
+        )
       : null,
   );
 }

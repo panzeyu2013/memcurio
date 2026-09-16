@@ -227,6 +227,25 @@ locale 走 `memcurio.ui`（新增 `guideRowTitle` / `guideRowDetail`）。
   `match`（仅 system/message）、`start`（事实 + `seq-0.1` 锚点）、前驱相同 ⇒ `unchanged`、`buildViewNode` 的静默/可见/HIDDEN 三态、注册调用序列与两条降级路径。
 - `tests/ui-render.test.ts` 新增两例（jsdom + real react-dom）：折叠行渲染标题/计数、点击展开出现指南正文；无 payload 渲染空。
 - 全量：**585 tests / 36 files / 3,389 expect / 0 fail**，lint（1 warning / 6 infos 基线）、typecheck、client bundle drift 全绿。
+## 11. 新会话命中诊断（第四十五轮）
+
+被检查会话：`session-8691a7b6-7afa-4850-afae-2baf9132eaee`（本 workspace，13:45 创建；该会话的 system prompt 已含 `## memcurio memory` ⇒ v1.9 host 已生效）。
+
+### 11.1 事实
+
+- 该会话第一条用户消息就是 `测试`（2 字符）。
+- 注入消息 1,137 字符 = 摘要区块（含标记）+ `Memory hits:` 6 行（合计约 793 字符，单行 208/85/46/155/124/175）。
+- 用新构建对 live store 副本复算：`retrievalQuery(["测试"]) = "测试"`；**全库恰好 6 行含该词**（MEMORY.md 2 行、rollout_summaries 4 行），topK=8 未触顶；最高分 9.835（该行含两次 + 短语奖励），其余 4.918。
+
+### 11.2 结论
+
+- 不是"乱命中"：6 行**全部真实包含"测试"**，且都是本次工作产生的 E2E note / 测试相关 rollout 摘要。
+- 触发原因：首条消息是泛化的 2 字词 ⇒ query 只有这一个 term ⇒ 库里所有含该词的行都被捞出（上限受 topK=8 + 单文件 cap 3 + 220 字符/行 + 注入预算约束）。
+
+### 11.3 可选改进（待产品决定）
+
+1. **低信号 query 闸门**：shaping 后只剩单个 term、且该 term 的全库命中行数 ≥ 阈值（如 6）时跳过动态检索（摘要照常注入）。`测试` 这类词被闸掉，`密钥`/`部署` 这类罕见词仍照常命中。
+2. 维持现状：命中数量本就有界（≤8 行、≤220 字符/行、≤注入预算），且每一行都真实包含查询词。
 
 
 
