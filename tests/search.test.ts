@@ -161,7 +161,7 @@ describe("ranked retrieval", () => {
     // "common" appears on many lines; "zebra" on one. A line matching only
     // "zebra" must outrank a line matching only "common".
     const lines = ["# Group: t", "", ...Array.from({ length: 12 }, () => "- common note line")];
-    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n") + "\n- zebra migration detail\n");
+    writeWorkspaceText(dir, "MEMORY.md", `${lines.join("\n")}\n- zebra migration detail\n`);
     const { hits } = await searchMemory(dir, "common zebra", 10);
     expect(hits[0]?.content).toContain("zebra");
     expect(hits[0]?.rel).toBe("MEMORY.md");
@@ -178,7 +178,7 @@ describe("ranked retrieval", () => {
   });
 
   test("identical lines are de-duplicated", async () => {
-    writeWorkspaceText(dir, "MEMORY.md", ["- repeated clue", "- repeated clue", "- other clue"].join("\n") + "\n");
+    writeWorkspaceText(dir, "MEMORY.md", `${["- repeated clue", "- repeated clue", "- other clue"].join("\n")}\n`);
     const { hits } = await searchMemory(dir, "repeated clue", 10);
     expect(hits.filter((h) => h.content.includes("repeated clue"))).toHaveLength(1);
   });
@@ -186,9 +186,9 @@ describe("ranked retrieval", () => {
   test("one file cannot fill the window (per-entry cap)", async () => {
     const lines = ["# Group: t"];
     for (let i = 0; i < 6; i += 1) {
-      lines.push("- widget case " + i);
+      lines.push(`- widget case ${String(i)}`);
     }
-    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n") + "\n");
+    writeWorkspaceText(dir, "MEMORY.md", `${lines.join("\n")}\n`);
     const { hits } = await searchMemory(dir, "widget case", 10);
     expect(hits.filter((h) => h.rel === "MEMORY.md")).toHaveLength(3);
   });

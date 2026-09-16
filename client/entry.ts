@@ -40,6 +40,7 @@ import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
 import { CONTEXT_ROW_PRIORITY, createContextRow } from "./ui/context-row.js";
+import { registerGuideRow, type GuideRegistrationHost } from "./ui/guide-row.js";
 import { NS as UI_NS, en as uiEn, zh as uiZh, type UiKey } from "./ui/locales.js";
 import { actionCategory, createMemoryUiStore, type MemoryUiEvent } from "./ui/model.js";
 import { mountUiStyles } from "./ui/styles.js";
@@ -288,6 +289,15 @@ export function apply(ctx: Context): void {
       createContextRow({ slots: ctx.slots, chatT: chatTranslate(ctx) }),
     ),
   );
+
+  // The read-path guide lives in the SYSTEM PROMPT (v1.9), so the injected
+  // message row never covered it and its injection was invisible. This lane
+  // derives one disclosure row from the harness's own `system/message` events
+  // (the seam dsh-chamber-mcp uses for its registered-tools row) and writes
+  // nothing into the session — see client/ui/guide-row.ts.
+  // Structural slice: the conversation client package is not installed in this
+  // dev tree, so the optional-service host is narrowed locally.
+  registerGuideRow(ctx as unknown as GuideRegistrationHost);
 
   // One custom transcript row per native memory tool.
   ctx.effect(() => {

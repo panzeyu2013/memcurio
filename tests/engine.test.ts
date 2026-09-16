@@ -288,7 +288,7 @@ describe("dynamic context wire format", () => {
   test("header + prefix-free rel:line hits, each capped at MAX_HIT_CHARS", async () => {
     ensureLayout(dir);
     const long = `- references ${"path/segment/".repeat(40)}`;
-    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: x\n\n- 双层注入 system prompt\n" + long + "\n");
+    writeWorkspaceText(dir, "MEMORY.md", `# Task Group: x\n\n- 双层注入 system prompt\n${long}\n`);
     const adapter = new MemcurioAdapter({
       root: dir,
       durableQueue: true,

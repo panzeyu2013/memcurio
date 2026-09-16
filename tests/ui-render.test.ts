@@ -15,6 +15,7 @@ import {
   MemcurioInjectionRow,
   type ContextRowProps,
 } from "../client/ui/context-row.js";
+import { MemcurioGuideRow } from "../client/ui/guide-row.js";
 import type { MemoryHook } from "../client/ui/injection-indicator.js";
 import { MemoryInjectionIndicator } from "../client/ui/injection-indicator.js";
 import { createMemoryUiStore } from "../client/ui/model.js";
@@ -68,6 +69,48 @@ function mount(): { container: HTMLElement; root: ReturnType<typeof createRoot> 
   if (!container) throw new Error("no root container");
   return { container, root: createRoot(container) };
 }
+
+describe("system-prompt guide row", () => {
+  test("renders the guide disclosure and expands the injected text", async () => {
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(
+        React.createElement(MemcurioGuideRow, {
+          t,
+          node: { data: { chars: 1554, tools: 6, text: "## memcurio memory\nReach it only through the memcurio tools." } },
+        }),
+      );
+    });
+    // Collapsed: title + the facts (chars and named tools), no body yet.
+    expect(container.textContent).toContain("guideRowTitle");
+    expect(container.textContent).toContain("guideRowDetail");
+    expect(container.textContent).toContain("1554");
+    expect(container.querySelector("[data-memcurio-guide-body]")).toBeNull();
+
+    const button = container.querySelector("button");
+    if (!button) throw new Error("no guide row button");
+    await act(async () => {
+      button.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Reach it only through the memcurio tools.");
+    expect(container.querySelector("[data-memcurio-guide-body]")).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("renders nothing without a payload", async () => {
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(React.createElement(MemcurioGuideRow, { t, node: {} }));
+    });
+    expect(container.textContent).toBe("");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
 
 describe("memory indicator", () => {
   test("renders the hit count and opens the injection preview on click", async () => {

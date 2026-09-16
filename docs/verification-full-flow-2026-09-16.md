@@ -195,6 +195,38 @@
 ### 9.5 待重启完成项
 
 重启后加载 v1.9 / v1.9.1 + F5/F6/F7：① 指南只出现在 system prompt，user message 只有记忆数据，命中块为紧凑格式；② 首个会话 adoption 即 requeue 14 个策略 dead 并 drain（F5）；③ retire 为整合预留 10s（F6）；④ 任意会话（含子代理/多标签）的 snapshot 均可解析（F7）。
+## 10. 系统提示注入可见化 v1.9.2（第四十三轮）
+
+### 10.1 检查结论：此前是静默的
+
+- v1.9 把 read_path 指南从 user message 移到 SYSTEM PROMPT 段落（order 2950），而 UI 的"记忆注入"行只覆盖注入的 `user/message`：
+  指南既不在转录里、也没有任何 UI 提示——用户看到的只是"没有提示"。
+- 对照物：`dsh-chamber-mcp` 在注册 MCP 工具时会在 ui-chat 渲染一行 "MCP tools registered"，其做法是**派生**（derived）而非写入：
+  私有 session event 会让日志不可打开（0.1.5 无公开路径可置 `ignorable: true`），因此它从 harness 自有的 `request/header` + 渲染后的 system prompt 中推导，并用
+  `ctx.uiConversation.events.register(definition)` + keyed `conversation.chat.node` seat 渲染；仅在集合变化时输出一行（与同类前驱 Context 比较签名）。
+
+### 10.2 移植实现
+
+| 项 | MCP 行 | memcurio 行（`client/ui/guide-row.ts`）|
+|---|---|---|
+| 数据源 | `request/header` + `system-message` Context 的 effective prompt | 自有 `system/message` 事件的 `data.message` 文本 |
+| 关注点 | 声明的 `mcp__*` 工具集合 | `## memcurio memory` 段落（`extractGuideSection`，止于下一个 `## ` 标题）|
+| 去重 | 与同类前驱签名比较 | FNV-1a 段落签名比较（常量指南 ⇒ 每会话一行）|
+| 锚点 | `request/header.seq - 0.1`（对齐 system-prompt 卡片）| `system/message.seq - 0.1`，location = `{kind:"session"}`（跳出 turn/process 重锚）|
+| 渲染 | disclosure 行 + 141px code scrollport | 同几何，书本主标记 leading，展开显示指南正文 |
+| 写入 | 无 | 无（派生行，不落盘）|
+| 降级 | 无 `uiConversation` 时静默 | 同左（`ctx.inject` 可选，重复注册/座位冲突只降级行）|
+
+细节：node data 为 `{ chars, tools, text }`（折叠行显示 `{chars} 字符 · {tools} 个记忆工具`）；
+已物化后转为不可见时按引擎要求回吐 HIDDEN（不撤回 target）；`registerGuideRow` 在 `client/entry.ts` 中注册，
+locale 走 `memcurio.ui`（新增 `guideRowTitle` / `guideRowDetail`）。
+
+### 10.3 验证
+
+- `tests/guide-row.test.ts`（12 例）：`promptTextOf`/`extractGuideSection`（含"止于下一个标题"、末尾段落、无标记）、签名稳定与差异、工具计数、
+  `match`（仅 system/message）、`start`（事实 + `seq-0.1` 锚点）、前驱相同 ⇒ `unchanged`、`buildViewNode` 的静默/可见/HIDDEN 三态、注册调用序列与两条降级路径。
+- `tests/ui-render.test.ts` 新增两例（jsdom + real react-dom）：折叠行渲染标题/计数、点击展开出现指南正文；无 payload 渲染空。
+- 全量：**585 tests / 36 files / 3,389 expect / 0 fail**，lint（1 warning / 6 infos 基线）、typecheck、client bundle drift 全绿。
 
 
 

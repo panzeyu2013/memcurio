@@ -18,7 +18,7 @@ describe("retrievalQuery", () => {
 
   test("strips code fences, URLs and filesystem paths", () => {
     const query = retrievalQuery([
-      "fix \`\`\`ts\nconst x = 1;\n\`\`\` and see https://example.com/a/b for /root/projects/memcurio/src/app.ts details",
+      "fix ```ts\nconst x = 1;\n``` and see https://example.com/a/b for /root/projects/memcurio/src/app.ts details",
     ]);
     expect(query).not.toContain("https");
     expect(query).not.toContain("/root");
@@ -32,7 +32,7 @@ describe("retrievalQuery", () => {
   });
 
   test("caps the term count", () => {
-    const long = Array.from({ length: 80 }, (_, i) => "term" + i).join(" ");
+    const long = Array.from({ length: 80 }, (_, i) => `term${String(i)}`).join(" ");
     expect(retrievalQuery([long]).split(" ")).toHaveLength(32);
   });
 });

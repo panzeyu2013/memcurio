@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **System-prompt guide row (v1.9.2)**: the read-path guide moved into the
+  system prompt in v1.9, which left that injection invisible - the transcript
+  row only covered the injected `user/message`. A new derived row
+  (`memcurio-guide-injected`, `client/ui/guide-row.ts`) now announces it the way
+  `dsh-chamber-mcp` announces registered MCP tools: the harness's own
+  `system/message` events are scanned for the section marker, the section is
+  hashed, and ONE disclosure row is emitted when the hash changes (a constant
+  guide yields at most one row per session, and nothing when the prompt carries
+  none). It anchors a hair above the system-prompt card, uses the shipped
+  disclosure geometry with the book mark leading, and expands into the injected
+  guide text. Nothing is written into the session: a foreign private session
+  event would make the stored log unopenable on 0.1.5 (no public append path
+  can set `ignorable: true`), so the row is derived, never persisted.
 - **Memory visibility surfaces (G5/G6)**: the **memory injection row** on
   the session transcript — an injected memory message reads
   "记忆注入 / Memory injection" (the plugin's own row, which shadows the
