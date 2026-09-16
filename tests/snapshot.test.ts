@@ -1,5 +1,5 @@
 /**
- * Full-state snapshot assembly tests (design plugin-ui-v1 §5/§8.3): buildSnapshot
+ * Full-state snapshot assembly tests (docs/ui.md: host service layer / realtime design): buildSnapshot
  * is the read the memory workbench host bridge folds on connect/refresh/polling.
  * These exercise it directly (no HostBridge layer — that surface is covered by
  * bridge.test.ts): entries over the rollout + manual layers joined with usage

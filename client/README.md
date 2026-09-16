@@ -46,7 +46,7 @@ This directory carries TWO halves with different maturity:
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
 
 > Workbench status: **STRUCTURAL SCAFFOLD + SPIKE-QUESTION SPEC — not yet wired, not yet loadable in a real DSH Web. (The Settings panel above IS shipped; the workbench below is not.)**
-> Created ahead of the S0 spike (design [plugin-ui-v1.md](../docs/design/plugin-ui-v1.md) §11-S0). Every claim about the
+> Created ahead of the S0 spike (design [ui.md](../docs/ui.md) §11-S0). Every claim about the
 > DSH client-module machinery is marked UNVERIFIED-until-spike and was grounded in the read-only upstream npm install
 > listed in [§d](#7-d-upstream-docs-read-this-scaffold) — the same rc.1 install the design declares as its reference
 > version (§13.10). Nothing in the WORKBENCH SCAFFOLD (`types.ts`/`index.ts`) imports `@deepseek-ai/*`, touches React, or runs a UI; the shipped Settings panel (`entry.ts`/`settings/*`) does use React from the platform seed.
@@ -367,7 +367,7 @@ install (design §13.10 reference version):
 12. Full census: `dsh.client` declarations of all 47 installed client packages — every one uses `platform: "web"`
     + `inject`; only `dsh-api-session-controller`/`dsh-api-workspace-controller` also use `external`
     (`["@deepseek-ai/dsh-api-gateway/client"]`); all export `./client` with the `lib/client.js` default.
-13. **Design baseline:** `docs/design/plugin-ui-v1.md` — §1/§3 (architecture, title-bar entry), §5 (host service
+13. **Design baseline:** `docs/ui.md` — §1/§3 (architecture, title-bar entry), §5 (host service
     table), §7 (UI), §8 (realtime), §11-S0 (spike scope/acceptance), §12 (open items), §13 (decisions).
 
 Two referenced docs are **not available in the npm install**: the client-authoring rules

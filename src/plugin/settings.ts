@@ -20,7 +20,7 @@
  * Coupling: this plugin hard-injects `settings` (the service is guaranteed by
  * dsh-base and every profile layered on it, and a hard inject makes the
  * section resolve synchronously before apply). Consequence, documented in
- * docs/integration-dsh.md: unloading/remounting the settings provider also
+ * docs/operations.md: unloading/remounting the settings provider also
  * unloads and re-applies memcurio, and a profile without any settings
  * provider would leave the plugin inert — `dsh-sdk-minimal` is such a tree.
  */

@@ -1,5 +1,5 @@
 /**
- * Host bridge for the memory workbench (design plugin-ui-v1 §5/§8).
+ * Host bridge for the memory workbench (docs/ui.md: host service layer / realtime design).
  *
  * The plugin-side adapter between DSH runtime facts and the browser-facing
  * delta/snapshot vocabulary. Responsibilities:

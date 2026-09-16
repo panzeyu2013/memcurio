@@ -1,5 +1,5 @@
 /**
- * Host bridge tests (design plugin-ui-v1 §5/§8): tags → projector deltas
+ * Host bridge tests (docs/ui.md: host service layer / realtime design): tags → projector deltas
  * (redaction, duplicate window, read-hit scoping), refresh audit-tail +
  * extraction-job diffs (receipts / memory-list updates / queue job-updates,
  * seeding vs change-only) and snapshot assembly.

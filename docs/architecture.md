@@ -1,9 +1,9 @@
 # Memcurio 架构（v2）
 
 > 历史：2026-08-10 v2 codex-style 重构快照；2026-09-05 起第 15–27 轮持续演进（单宿主收敛、DSH home 存储、UI host 桥与读服务、settings 配置面与浏览器面板）。
-> 实现契约见 [memory-pipeline-v2.md](./memory-pipeline-v2.md)（模块职责、导出签名、数据格式、行为规则以该文档为准）。
+> 实现契约见 [contract.md](./contract.md)（模块职责、导出签名、数据格式、行为规则以该文档为准）。
 
-## 1. 分层架构
+## 分层架构
 
 ```
 Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
@@ -26,7 +26,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 - **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
 - **用户显式操作（remember）走 ad-hoc note**，下次整合时生效；forget/update 为遗留 kind，只由 LLM 整合 agent 语义执行。
 
-## 2. 存储布局
+## 存储布局
 
 默认 `scope: workspace`：每个绝对工作区一个 store，落在 `<DSH home>/memcurio/dsh/<sha256-16 密钥>/`；无 cwd 会话固定共享 `dsh/no-cwd/`。`scope: global` 时 store 即 `<DSH home>/memcurio/` 本身（下图扁平方块）。每个 store 内：
 
@@ -47,7 +47,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。codex 适配器（daemon/hook/spool/plugin 生成）已整体移除，codex 用户使用 codex 原生 memory 机制。DSH 单宿主收敛重构（已完成）移除 opencode 适配器、MCP server、CLI 与 HTTP LLM 通道（`src/core/llm.ts`、HttpChannel 与 `MEMCURIO_LLM_*` 家族；**仅保留 `MEMCURIO_LLM_PROVIDER=none`** 作为 Phase-2 熔断门禁，engine.ts）：memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），模型访问仅来自宿主注入的 `ctx.llm` 通道。
 
-## 3. 模块地图
+## 模块地图
 
 ```
 src/
@@ -90,19 +90,20 @@ src/
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
 client/                浏览器半侧：entry.ts + settings/*（**已发布的 Settings 面板**，`dsh.client` + `lib/client.js`）；types.ts + index.ts 为工作台 view-model 骨架（S0 组装）
 docs/
-├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
-├── architecture.md         本文档
-├── integration-dsh.md      DSH 接入与安装说明
-├── design/plugin-ui-v1.md  记忆工作台设计基线（验收基准）
-├── acceptance.md / RELEASE.md                        验收卷宗 / 发布检查单
-├── README_cn.md / installation.md / todo.md          CN 说明 / 安装指南 / 轮次账本
+├── README.md        文档索引（每类事实的唯一真源 + 阅读路径）
+├── architecture.md  本文档：分层架构、存储布局、模块地图、数据流
+├── contract.md      实现契约：模块职责、导出签名、schema、行为规则
+├── ui.md            记忆 UI 契约：面、槽位、传输、写语义、非功能要求
+├── operations.md    运维手册：安装、配置、DSH 集成、发布
+├── todo.md          进度、待办、开放决策与验收
+└── README_cn.md     中文用户入口
 ```
 
 层例外（文档化）：`services/context.ts` 复用 `plugin/scope.ts` 的 `workspaceStoreRoot`——scope.ts 只依赖 node 内建（纯叶子、无 DSH 依赖、无环）；向 scope.ts 新增任何导入前须重新评估此例外。
 
 分发：仓库根即单一包 `@memcurio/dsh-plugin`（`cordis.patch.yml` 为 bundle manifest）。`bun run build`（tsc → dist/ + esbuild → `lib/client.js` loader 产物）后 `bun pm pack` 得到 tarball，`dsh plugin --profile <profile> add <tarball>` 装入 DSH profile 即完成安装；无其他分发面（无 bin、无 CLI/MCP 包）。
 
-## 4. 数据流
+## 数据流
 
 ### 写路径
 
@@ -141,15 +142,6 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
   → stagePruneRetention 物理回收 deleted 行 + pruneExtensionResources 清理过期扩展资源（保留期）
 ```
 
-## 5. 里程碑状态
+## 里程碑状态
 
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| v1 M0 | 骨架：存储层 + 事务化写入 + CLI | ✅ 完成（v1 体系，已被 v2 替代） |
-| v1 M1 | MCP server + AGENTS.md 基线注入 | ✅ 完成（v1 体系，已被 v2 替代） |
-| v1 M2 | 剪枝状态机 + pin/revive + JSONL 导入导出 + 合并 | ✅ 完成（v1 体系，已被 v2 替代） |
-| v1 M3 | opencode 高集成适配器 | ✅ 完成（v1 体系，已被 v2 替代） |
-| v1 M4 | codex 适配器（daemon+薄壳+plugin 生成） | ✅ 完成（v1 体系，v2 中已移除，改用 codex 原生 memory） |
-| v2 重构 | 两阶段管线（Phase 1 抽取 / Phase 2 整合）+ provider-scoped durable extraction queue + 有界证据 + 选择窗口遗忘 + ad-hoc notes + 读路径渐进式披露 + DB schema v11 + stable artifact ID + generation recovery + consolidation lease（v2 时代的 CLI/MCP 表面在 DSH 收敛中移除） | ✅ 已完成首批实现与本地回归 |
-| DSH 收敛 | 单宿主收敛：opencode 适配器 / MCP server / CLI / HTTP LLM 通道（HttpChannel、`MEMCURIO_LLM_*`）全部移除；引擎 + 插件合并为仓库根单包 `@memcurio/dsh-plugin`（`cordis.patch.yml` bundle manifest）；模型访问只经宿主注入的 `ctx.llm` 通道 | ✅ 已完成 |
-| 真实 harness 验证 | DeepSeek Harness（DSH 0.1.5-rc.1）Cordis 插件与 session lifecycle | ⏳ 未验收：缺少真实 DSH 启动/面板渲染 smoke（S0 运行卡）；真实模型质量、长会话、崩溃恢复待独立验收 |
+见 [todo.md](todo.md) 的当前状态、待办与验收小节。

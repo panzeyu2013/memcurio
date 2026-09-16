@@ -28,7 +28,7 @@
 - **整合（Phase 2）** —— `turn/end` 与退役时在墙钟预算内自动运行；worker 调用携带会话 abort 与单次超时。
 - **六个原生工具** —— `memory_search` / `memory_list` / `memory_read` / `memory_remember` / `memory_status` / `memory_context`，与注入共用同一读写门禁。
 
-细节见 [integration-dsh.md](integration-dsh.md)。
+细节见 [operations.md](operations.md)。
 
 ## 从本仓库安装（开发者预览）
 
@@ -65,12 +65,13 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 
 | 文档 | 内容 |
 |---|---|
-| [docs/architecture.md](architecture.md) | 架构（分层 / 数据流 / 模块图 / 存储布局 / 里程碑）|
-| [docs/memory-pipeline-v2.md](memory-pipeline-v2.md) | v2 管线契约：模块职责、导出、格式、行为规则 |
-| [docs/integration-dsh.md](integration-dsh.md) | DSH 集成：生命周期映射、隔离模型、调优、验证边界 |
-| [docs/installation.md](installation.md) | 安装：前置、构建打包、profile 安装、验证、升级/回滚/卸载、FAQ |
+| [docs/README.md](README.md) | 文档索引：每类事实的唯一真源与阅读路径 |
+| [docs/architecture.md](architecture.md) | 架构：分层、存储布局、模块地图、数据流 |
+| [docs/contract.md](contract.md) | 实现契约：模块职责、导出签名、schema v11、行为规则 |
+| [docs/ui.md](ui.md) | 记忆 UI 契约：面与入口、host 服务层、写语义、实时性 |
+| [docs/operations.md](operations.md) | 运维手册：安装、配置、DSH 集成、发布 |
+| [docs/todo.md](todo.md) | 进度/待办/验收：支持矩阵、Release Gate R1、开放决策、验证记录 |
 | [README.md](../README.md) | English |
-| [docs/todo.md](todo.md) | 进度/待办：支持矩阵、已完成、Release Gate R1、开放决策、验证记录 |
 
 ## 开发
 

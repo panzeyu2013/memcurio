@@ -28,7 +28,7 @@ The plugin registers `session/created`, `session/event`, `session/flush` and `se
 - **Consolidation (Phase 2)** — runs automatically after `turn/end` and at session retirement under a wall-clock budget; worker calls carry the session abort plus a per-call timeout.
 - **Six native tools** — `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`, sharing the same read/write gates as injection.
 
-Full detail: [docs/integration-dsh.md](docs/integration-dsh.md).
+Full detail: [docs/operations.md](docs/operations.md).
 
 ## Install from this repository (developer preview)
 
@@ -40,7 +40,7 @@ bun install --frozen-lockfile
 bun run build
 bun pm pack            # → memcurio-dsh-plugin-0.0.1.tgz
 # Releases: tag-driven GitHub Release shipping the packed tarball (asset URL
-# install); npm publish is prepared but disabled — see docs/RELEASE.md and
+# install); npm publish is prepared but disabled — see docs/operations.md and
 # CHANGELOG.md for the full mechanics.
 
 # 2. Install into a DSH profile (activates cordis.patch.yml automatically)
@@ -71,15 +71,13 @@ Besides the settings document (`<DSH home>/settings.yaml`, editable from the Set
 
 | Doc | Content |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | Architecture (layers / data flow / module map / storage layout / milestones) |
-| [docs/memory-pipeline-v2.md](docs/memory-pipeline-v2.md) | v2 pipeline contract: module responsibilities, exports, formats, behavior rules |
-| [docs/integration-dsh.md](docs/integration-dsh.md) | DeepSeek Harness integration: lifecycle mapping, isolation model, tuning, validation boundary |
-| [docs/installation.md](docs/installation.md) | Installation walkthrough: prerequisites, build/pack, DSH profile setup, verification, upgrade/rollback, FAQ |
-| [docs/design/plugin-ui-v1.md](docs/design/plugin-ui-v1.md) | Memory-UI design baseline (frozen): surfaces, service contracts, phase roadmap |
-| [docs/acceptance.md](docs/acceptance.md) | Acceptance dossier: overall state, how to accept, remaining gaps |
-| [docs/RELEASE.md](docs/RELEASE.md) | Release checklist and mechanics for the tarball |
+| [docs/README.md](docs/README.md) | Documentation index: the single source of truth per topic, plus reading paths |
+| [docs/architecture.md](docs/architecture.md) | Architecture: layers, storage layout, module map, data flow |
+| [docs/contract.md](docs/contract.md) | Implementation contract: module responsibilities, exports, schema v11, behavior rules |
+| [docs/ui.md](docs/ui.md) | Memory-UI contract: surfaces and entry, host service layer, write semantics, realtime |
+| [docs/operations.md](docs/operations.md) | Operations: install, configure, DSH integration, release |
+| [docs/todo.md](docs/todo.md) | Progress / todo / acceptance: support matrix, Release Gate R1, open decisions, verification records |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
-| [docs/todo.md](docs/todo.md) | Progress/todo tracker: support matrix, completed work, Release Gate R1, open decisions, verification records |
 
 ## Development
 
@@ -98,7 +96,7 @@ The browser half (settings panel) is prebuilt into `lib/client.js` and declared 
 
 Releases ship as tag-driven GitHub Releases whose asset is the packed
 `memcurio-dsh-plugin-<version>.tgz` (`npm publish` is prepared but disabled).
-See [docs/RELEASE.md](docs/RELEASE.md) for the release checklist and
+See [docs/operations.md](docs/operations.md) for the release checklist and
 [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for design principles, code style, testing, and commit conventions.

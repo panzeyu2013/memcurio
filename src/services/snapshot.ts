@@ -1,5 +1,5 @@
 /**
- * Snapshot assembly for the memory workbench (design plugin-ui-v1 §5/§8.3).
+ * Snapshot assembly for the memory workbench (docs/ui.md: host service layer / realtime design).
  *
  * Builds the FULL-state read the client folds on connect/refresh/polling:
  * current store + browsable store list, injection preview (static summary +

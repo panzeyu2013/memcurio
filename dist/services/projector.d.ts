@@ -1,7 +1,7 @@
 /**
  * Projector: host event tags → redacted browser deltas.
  *
- * Host half of the browser memory workbench (docs/design/plugin-ui-v1.md
+ * Host half of the browser memory workbench (docs/ui.md
  * §8): the DSH plugin already subscribes the full session event surface
  * (src/plugin/index.ts) and will adapt those events into {@link InputRecord}
  * tags; this module turns each tag into the {@link ProjectedDelta} payloads

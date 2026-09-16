@@ -1,23 +1,8 @@
-# memcurio v2 Memory Pipeline（codex 式重构）— 契约文档
+# memcurio 实现契约（memory pipeline）
 
-> 本文是 v2 重构的实现契约：模块职责、导出签名、数据格式、行为规则。
-> 所有模块以 `src/core/*.ts` 为准，实现时不得偏离本契约（如需变更先改本文档）。
-
-## 0. 设计目标
-
-参照 codex-rs `memories/` 两阶段管线，替换 memcurio 现有"§条目 + 命名空间 + 规则剪枝"体系：
-
-- **写记忆的决策交给模型**：Phase 1 抽取（模型判断"什么值得记"），Phase 2 整合（模型直接改写 MEMORY.md 文档）；
-- **遗忘 = 选择窗口 + diff 驱动的外科删除**：不再有 active/stale/archived 状态机；
-- **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
-- **用户显式操作（remember）走 ad-hoc note**，下次整合时生效；note 文件为真源，永不删除，编辑过的已应用 note 会被重新合并（codex 式 diff 语义）；forget/update 为遗留 kind，仅 LLM 整合 agent 语义执行；
-- **Phase 2 自动触发**：会话结束/闲置后由引擎（经 DSH 插件接线）自动运行整合（codex 式 startup 链的对应物），成功冷却 6h、失败退避 1h（meta 键 `consolidation_auto_last`/`_failed`）；无手动 CLI 触发面（原 `curate` 命令随 CLI 移除）；
-- **LLM 通道（宿主注入，无 HTTP 兜底）**：模型访问只来自宿主注入的 `LlmChannel {name; chat(system,user)}` 通道——DSH 宿主把 `ctx.llm` 路由封装为插件侧 LlmChannel（路由跟随会话 `request/header`，亦可在插件配置固定 `provider`/`model`）；无任何通道时 Phase 1 抽取 job 保持 `blocked`（不计 attempts），Phase 2 回退确定性规则整合器（Rule）；
-- **使用遥测**：三类输入 → stage-1 `usage_count`/`last_usage`，驱动选择窗口；写工具不计：① read 类只读工具（read/grep/rg/glance/list/search/view）的 `filePath` 命中记忆文件；② 目录检索工具的 `args.path`（grep/rg/search/list 的目录读按子目录内记忆文件计数）；③ shell 工具（bash/exec_command/command/shell）命令串仅做词法解析（绝不执行）：仅读取类命令（cat/head/tail/grep/rg/find/base64/ls/nl/paste/rev/stat/uniq/wc/cut，对齐 codex read usage.rs 的 Read/Search 语义）的路径操作数才计数，检测类命令（cd/echo/expr/false/id/pwd/seq/tr/true/uname/which/whoami）只识别不计数（防 echo/expr 操作数通胀遥测），目录操作数仅 grep/rg/find/ls 按子目录内记忆文件计；命令串上限 8KB、单条命令至多计 50 个路径，`>`/`>>`/`<`/`|`/`||`/`&&`/`;`/`&` 分隔符终止扫描（重定向输出永不计为读），引号段整体成 token（`cat "a b.md"` 正确计数），单次调用按路径去重；另解析模型输出 `<memcurio-citation>` 块——结构对齐 codex citations.rs：`<citation_entries>` 节每行 `<file>:<start>-<end>|note=[...]`、`<rollout_ids>` 节每行裸 rollout key（host|sessionId），条目剥行号与 note、rollout key 直配；旧的 `citation_entries:`/`rollout_ids:` 行式节仍兼容解析（在飞会话）；
-- **保留清理**：物理删除"已剪枝且从未 selected"的 stage-1 行（批次 200；曾整合行保留；回收顺序最旧优先 `COALESCE(last_usage, source_updated_at) ASC, source_updated_at ASC`）与符合 codex 契约的过期 `extensions/*/resources/` 文件（须有 instructions.md、`.md`、`YYYY-MM-DDTHH-MM-SS` 文件名前缀、按文件名时间戳计龄）；整合提交内执行（幂等），每次自动整合检查（maybeConsolidate 入口）另无条件执行一次（best-effort，不受冷却/退避影响）；
-- **note 真源**：孤儿 note 文件（无 DB 行）被采纳为 pending remember note；删除的 note 文件跳过不再合并。
-
-## 1. 存储布局
+> 本文是唯一的实现契约：模块职责、导出签名、数据格式与行为规则；与实现不一致时**先改本文再改代码**。
+> 设计目标与数据流见 [architecture.md](architecture.md)，安装/发布见 [operations.md](operations.md)，进度与验收见 [todo.md](todo.md)。
+## 存储布局
 
 ```
 <DSH home>/memcurio/
@@ -36,7 +21,7 @@
 
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md、MEMORY.md 旧格式全部废弃。
 
-## 2. DB schema v11（index.sqlite）
+## DB schema v11（index.sqlite）
 
 迁移：schema_version = 11；v4 及以下删除 `entries/fts/contradictions`，v6 增加可重试的 `extraction_jobs`，v7 增加 workspace 级 `consolidation_leases` 单写者租约，v8 增加由 rollout key 派生的稳定 artifact ID/filename 及唯一索引，v9 增加 provider 隔离、claim token fencing 和 checkpoint 单调性字段，v10 修复旧 Codex 任务被错误回填为 HTTP provider 的升级数据，v11 增加保留清理覆盖索引 `idx_stage1_retention(status, selected_for_phase2, last_usage, source_updated_at)` 与 backfill 查询索引 `idx_extraction_jobs_host_session(host, session_id)`，
 
@@ -123,7 +108,7 @@ consolidationRenew(key, owner, now?, leaseMs?): boolean
 consolidationRelease(key, owner): boolean
 ```
 
-## 3. 模块与导出契约
+## 模块与导出契约
 
 ### src/core/channel.ts（LLM 通道契约；随收敛精简）
 
@@ -148,7 +133,7 @@ export interface AdapterOptions {
   injectBudgetTokens?: number;
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
 }
-export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见 §7） */ }
+export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见「宿主集成契约」） */ }
 // 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions]；
 //   事件接线 + 记忆注入 + ctx.tools.register 6 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
 // 删除：HarnessAdapter 接口、capabilities/hostModel/createChannel 抽象——DSH 为唯一宿主，无需再抽象。
@@ -436,23 +421,7 @@ export interface Config {
 ### src/core/sanitize.ts / budget.ts / transaction.ts / events.ts / json.ts / sqlite.ts / ids.ts
 保留现状；`json.ts` 承载 JSON 提取与工具调用解析（原 `llm.ts` HTTP 客户端已随收敛移除，JSON 逻辑未变）；`ids.ts` 新增 `newNoteId()`（UUIDv4 32hex，与旧 newEntryId 同）。
 
-## 4. 删除的文件
-
-`mdStore.ts`、`prune.ts`、`curate.ts`、`reflect.ts`、`retriever.ts`、`safeSearch.ts`、`select.ts`、`transfer.ts`。
-（v2 重构期：`curate.ts` 的 HttpProvider JSON 解析逻辑并入 extract/consolidate；`reflect.ts` 的三级降级链并入 extract/consolidate 的通道选择——该降级链本身已在 DSH 收敛时移除，见 §0/§3 channel.ts。）
-
-DSH 单宿主收敛（后续重构）再删除：`src/cli/`、`src/mcp/`、`src/adapters/`（含 opencode 插件）、`src/integration.ts`、`src/core/llm.ts`、`core/channel.ts` 中的 HttpChannel/resolveChannel 与 `MEMCURIO_LLM_*` 配置；`@opencode-ai/plugin`、`@modelcontextprotocol/sdk`、`zod` 依赖及全部 CLI/MCP 分发面随包合并移除。收敛后仓库根即单包 `@memcurio/dsh-plugin`：`src/engine.ts` 承载 MemcurioAdapter（原 shared/engine.ts），`src/plugin/` 承载 DSH Cordis 插件（原 opencode 插件的对应物），`src/api.ts` 承载稳定集成读写边界（原 integration.ts 的对应物）。
-
-## 5. 操作面（CLI 已移除，全部由 DSH 插件驱动）
-
-v2 时代的 CLI（`memcurio init/status/remember/list/search/prune/curate/reindex/repair/purge/doctor/audit/export/import/retry-extraction/event/mcp`，退出码 0/1/2）已随 DSH 单宿主收敛整体移除：没有 `memcurio` bin、没有 `memcurio setup`、没有 CLI/MCP 分发面。对应能力改由以下路径承载：
-
-- Phase 1 / Phase 2 自动运行：DSH session 事件经插件入队（幂等 + lease + retry/dead-letter），worker 借 `ctx.llm` 通道执行抽取；turn/end 与会话退休后引擎自动 `maybeConsolidate`（冷却/退避见 §0）；
-- 检索/读取/写入：插件注册 6 个 DSH 原生工具（§6），覆盖原 CLI/MCP 的 search/list/read/remember/status/context 表面；`remember` 语义 = `memory_remember` 工具或宿主写 note 文件；
-- 记忆外化：AGENTS.md 基线注入（`renderBaselineSection`/`updateAgentsMd`）保留为引擎导出能力，DSH 插件不接线（宿主以 pre-step 注入替代）；不再有 `memcurio baseline` 命令；
-- 运维：保留清理（stagePruneRetention / pruneExtensionResources）在整合提交与 `maybeConsolidate` 入口自动执行，无用户命令；审计仍逐操作落库；hard purge 与显式 JSONL export scrub 语义保留在 `purge.ts` 作为引擎能力（无用户命令）。
-
-## 6. 原生工具契约（6 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
+## 原生工具契约（6 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
 
 ```
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
@@ -463,7 +432,7 @@ memory_status {}                      → pipeline 状态
 memory_context {}                     → renderMemoryContext + read path 指引（模型自行检索入口）
 ```
 
-## 7. 宿主集成契约（src/engine.ts + DSH 插件）
+## 宿主集成契约（src/engine.ts + DSH 插件）
 
 ### src/engine.ts（MemcurioAdapter；原 adapters/shared/engine.ts 收敛至仓库根）
 
@@ -513,20 +482,14 @@ export class MemcurioAdapter {
 - 注入：`agent/pre-step` 静态注入（**仅摘要区块**，每会话一次；read path 指引在 system prompt section）+ 相关命中动态注入 top-K（IDF/短语/去重/单文件 cap）；注入内容与 worker 消息不进证据（防回注 feed-back）；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与会话退休时自动 drain + maybeConsolidate（退休入口起 30s wall-clock 预算，超时 abort 在飞 worker 调用后 dispose，queue 稍后重试）；
-- 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见 §2）。
+- 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。
 
 > codex 适配器（daemon/hook/spool/transcript/plugin 生成）已整体移除：codex 用户直接使用 codex 原生 memory 机制，memcurio 不再提供 codex 插件。
 
-## 8. 测试契约
+## 测试契约
 
 （bun test，`MEMCURIO_ROOT` 指向临时目录）：
 - workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + LlmLoop 用 mock channel）/ search.test.ts / read.test.ts（list/read 语义、分页/转义拒绝、截断、脱敏、遥测）/ inject.test.ts
 - db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
 - plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 与退休自动整合、无 channel → blocked / 回退 Rule 等）
 - 删除：cli/mcp/adapters/opencode 相关测试，以及 mdStore/retriever/safeSearch/prune/curate/compact/transfer/baseline/select 相关测试（随收敛/重构移除）
-
-## 9. 验收标准
-
-1. `bun test` 全绿；`bun run typecheck`、`bun run lint`、`bun run eval:lexical`、`bun run pack:check` 干净；
-2. 端到端：DSH 会话事件 → Phase 1 抽取（ctx.llm 通道）→ turn/end 自动 `maybeConsolidate`（Rule 或 llm-loop）→ MEMORY.md / raw_memories.md 更新 → memory_search 命中 → 无通道时 durable job 保持 blocked、自动整合回退 Rule → 审计可查；
-3. 删除的旧文件无残留 import（typecheck 通过保证）；generation 故障恢复和 hard purge 回归通过。
