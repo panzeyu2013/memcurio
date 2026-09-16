@@ -75,6 +75,9 @@ Besides the settings document (`<DSH home>/settings.yaml`, editable from the Set
 | [docs/memory-pipeline-v2.md](docs/memory-pipeline-v2.md) | v2 pipeline contract: module responsibilities, exports, formats, behavior rules |
 | [docs/integration-dsh.md](docs/integration-dsh.md) | DeepSeek Harness integration: lifecycle mapping, isolation model, tuning, validation boundary |
 | [docs/installation.md](docs/installation.md) | Installation walkthrough: prerequisites, build/pack, DSH profile setup, verification, upgrade/rollback, FAQ |
+| [docs/design/plugin-ui-v1.md](docs/design/plugin-ui-v1.md) | Memory-UI design baseline (frozen): surfaces, service contracts, phase roadmap |
+| [docs/acceptance.md](docs/acceptance.md) | Acceptance dossier: overall state, how to accept, remaining gaps |
+| [docs/RELEASE.md](docs/RELEASE.md) | Release checklist and mechanics for the tarball |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
 | [docs/todo.md](docs/todo.md) | Progress/todo tracker: support matrix, completed work, Release Gate R1, open decisions, verification records |
 

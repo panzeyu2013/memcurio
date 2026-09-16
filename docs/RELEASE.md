@@ -67,8 +67,8 @@ workflow/script/pin change with one dry run before the formal tag.
   plugin entry runs under node:sqlite once the host loads it; CI imports
   `dist/plugin/index.js`).
 - Local smoke of the tarball into a real DSH instance needs a live
-  `dsh` CLI + profile (see `docs/design/s0-spike-plan.md` for the
-  real-environment spike scope). The sandbox/CI gates cover everything else
+  `dsh` CLI + profile (see `docs/integration-dsh.md` for the
+  real-environment probe scope). The sandbox/CI gates cover everything else
   deterministically.
 - npm publishing additionally requires an `NPM_TOKEN` secret and a
   provenance decision (`id-token: write` + `--provenance`).

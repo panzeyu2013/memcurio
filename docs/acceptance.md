@@ -1,9 +1,9 @@
 # memcurio 验收卷宗（Acceptance Dossier）
 
 > 状态：**内部可验收基线**（2026-09-11，第二十七轮，v0.0.1 放行前）。本卷宗回答"整体处于什么状态、如何验收、还差什么"。
-> **更新（2026-09-15，第三十一轮 G5/G6 先行批）**：记忆可见性 UI 与传输通道已交付并通过**真机 S0 验证**（boot token 下发、守卫矩阵、SSE 槽位上限/回收、真实 Chromium 中 settings.section 渲染），证据见 [verification-s0-web.md](verification-s0-web.md)；下方仍标"S0 待验"的行以该报告为准。
+> **更新（2026-09-15，第三十一轮 G5/G6 先行批）**：记忆可见性 UI 与传输通道已交付并通过**真机 S0 验证**（boot token 下发、守卫矩阵、SSE 槽位上限/回收、真实 Chromium 中 settings.section 渲染），证据见 git 历史中的 S0 实机报告（`verification-s0-web.md`，已随文档清理移除）；下方仍标"S0 待验"的行以该次验证为准。
 > 唯一行为/设计基准：[design/plugin-ui-v1.md](design/plugin-ui-v1.md)（v1.5）+ [memory-pipeline-v2.md](memory-pipeline-v2.md)；
-> 轮次账本：[todo.md](todo.md)（§6.7–6.18）；S0 实机计划：[design/s0-spike-plan.md](design/s0-spike-plan.md)。
+> 轮次账本：[todo.md](todo.md)（§6 关键验证记录）；逐轮历史见 git log 与 CHANGELOG。
 
 ## 1. 验收定义
 
@@ -27,13 +27,13 @@
 | 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（23 项：原子 resetAll/saveRoute 成对/base-aware reset/监听者容错/单订阅/注入席位契约）；`pack:check` 校验产物形态与 require 纯度 |
 | host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（恒开，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
 | 客户端工作台 view-model（含 browse 跨 store、queue 单 job 折叠、增量 usage、证据窗、⭐ 书签） | `client/` | ✅ 完成（框架自由，S0 组装） | `tests/client-types.test.ts`（30 项） |
-| 传输通道（同源 snapshot + SSE + 带游标重放 + 轮询降级） | `src/plugin/ui-transport.ts` + `client/ui/transport.ts` | ✅ 已交付并**真机验证** | `tests/ui.test.ts` + `tests/ui-transport.test.ts`（6 项真实 HTTP：token/403/404/400/405、按根路由、`?after=` 重放、abort 回收、seq 语义、boot payload）+ [verification-s0-web.md](verification-s0-web.md) |
-| 记忆可见性 UI（记忆注入行/注入与写入 Toast/6 个工具行） | `client/ui/*` + `client/entry.ts` | ✅ 已交付；`settings.section` **真机已验**；注入行（`client/ui/context-row.ts`，v1.8：自有「记忆注入 / Memory injection」标题 + 其余 context 节点转发 shipped 行）待真实会话人工确认；会话头部不承载 memcurio 面（v1.7） | `tests/ui-render.test.ts`（jsdom+真实 react-dom）+ `client-panel-render.test.ts`（注册面/纯度）+ [verification-s0-web.md](verification-s0-web.md) §2 #11–14 |
+| 传输通道（同源 snapshot + SSE + 带游标重放 + 轮询降级） | `src/plugin/ui-transport.ts` + `client/ui/transport.ts` | ✅ 已交付并**真机验证** | `tests/ui.test.ts` + `tests/ui-transport.test.ts`（6 项真实 HTTP：token/403/404/400/405、按根路由、`?after=` 重放、abort 回收、seq 语义、boot payload）+ S0 实机报告（2026-09-15）|
+| 记忆可见性 UI（记忆注入行/注入与写入 Toast/6 个工具行） | `client/ui/*` + `client/entry.ts` | ✅ 已交付；`settings.section` **真机已验**；注入行（`client/ui/context-row.ts`，v1.8：自有「记忆注入 / Memory injection」标题 + 其余 context 节点转发 shipped 行）待真实会话人工确认；会话头部不承载 memcurio 面（v1.7） | `tests/ui-render.test.ts`（jsdom+真实 react-dom）+ `client-panel-render.test.ts`（注册面/纯度）+ S0 实机报告 §2 #11–14 |
 | 完整工作台（三面一轴/意图草稿/时间线回链/跨 store 浏览 UI） | view-model 侧就绪 | 🕒 M0/M1（S0 后） | design §11 |
 
 ## 3. 与设计基线 §11 路线图的对照
 
-- **S0 spike**：计划与运行卡齐备（`s0-spike-plan.md` + `s0-spike-checklist.md`，rc.1 实证账本 L1–L21）；前置代码面全部就绪（桥 sink 接口、快照、模型 browse、`registerFactory` 桩）。缺口已基本闭合：2026-09-15 在隔离真机完成 token/守卫/SSE/槽位验证（[verification-s0-web.md](verification-s0-web.md)）；仅会话内 header 入口需真实会话人工确认。
+- **S0 spike**：已完成——2026-09-15 在隔离真机完成 token/守卫/SSE 槽位/真实渲染器槽位验证（rc.1 实证账本 L1–L21）；前置代码面（桥 sink 接口、快照、模型 browse、`registerFactory` 桩）全部就绪；仅会话内 header 入口需真实会话人工确认。
 - **M0/M1/M2**：见 design §11；其中"host 半侧 + 客户端逻辑"先行完成，实机后仅剩槽位/通道接线与 UI 组件渲染。
 - 行为面纪律（对话即写面、⭐ 两层分离、无 UI 直删、预览不计数遥测）均已固化并在测试中体现。
 
@@ -62,9 +62,9 @@ git status --short                                                 # 期望：�
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
 | 真实 DSH 组合（profile 装载 + patch 行 + 包导入） | ✅ 已验证（`scripts/probe-dsh-profile.sh`，真实 DSH 0.1.5-rc.1） | `--dump-config` 组合树含 `id: memcurio`/四项 inject/config；包导入成功（第三十轮） |
-| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器（需 Node.js 运行时） | S0 运行卡 P0–P8（docs/design/s0-spike-plan.md）；bun 下官方 web app 基线亦无法启动 |
-| web 启动 + 面板渲染 | 真实 Node.js 运行时（bun 缺 node 语义/pnpm postinstall） | 实机已验证（2026-09-15，verification-s0-web.md）；本仓库另以 jsdom + 真实 renderer/react 覆盖渲染契约 |
-| Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | 控制器逻辑 23 项 + **浏览器半侧回归网 8 项**（`tests/client-panel-render.test.ts`：loader 契约/`hooks→useFace`/jsdom 活性/交互/成对写）；真实浏览器渲染与槽位治理已于 2026-09-15 验证（verification-s0-web.md） |
+| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器（需 Node.js 运行时） | 已于 2026-09-15 实机验证（S0 运行卡 P0–P8）；bun 下官方 web app 基线亦无法启动 |
+| web 启动 + 面板渲染 | 真实 Node.js 运行时（bun 缺 node 语义/pnpm postinstall） | 实机已验证（2026-09-15）；本仓库另以 jsdom + 真实 renderer/react 覆盖渲染契约 |
+| Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | 控制器逻辑 23 项 + **浏览器半侧回归网 8 项**（`tests/client-panel-render.test.ts`：loader 契约/`hooks→useFace`/jsdom 活性/交互/成对写）；真实浏览器渲染与槽位治理已于 2026-09-15 验证 |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
 | web profile 下读命中遥测面 | 组合层已定性（第三十轮） | `tool-fs`/`tool-fs-search` 在 web profile 被 disable → 内置 `read`/`grep`/`glob` 不触发；命中来自本插件 `memory_read`/`memory_search`（`DSH_TOOL_PRESET` 保持无害） |
 | 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |

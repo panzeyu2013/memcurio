@@ -93,8 +93,8 @@ docs/
 ├── memory-pipeline-v2.md   v2 实现契约（本仓库唯一行为基准）
 ├── architecture.md         本文档
 ├── integration-dsh.md      DSH 接入与安装说明
-├── design/plugin-ui-v1.md  记忆工作台设计基线（v1.5，验收基准）
-├── design/s0-spike-plan.md / s0-spike-checklist.md   S0 实机 spike 计划与运行卡
+├── design/plugin-ui-v1.md  记忆工作台设计基线（验收基准）
+├── acceptance.md / RELEASE.md                        验收卷宗 / 发布检查单
 ├── README_cn.md / installation.md / todo.md          CN 说明 / 安装指南 / 轮次账本
 ```
 

@@ -86,7 +86,7 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 ## Verification status
 
-`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. That ran green against real DSH 0.1.5-rc.1 (third-round probe, s0-spike-plan "sandbox pre-check"). Booting the web app still requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
+`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. That ran green against real DSH 0.1.5-rc.1 (third-round probe, "sandbox pre-check"). Booting the web app still requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
 
 ## Profile-plane facts (composition-verified)
 

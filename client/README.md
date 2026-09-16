@@ -40,7 +40,7 @@ This directory carries TWO halves with different maturity:
    unmark) and the bundle test renders the shipped probe component against the shell's row shape. Real-browser
    rendering, slot governance and the `settings.yaml` round trip still
    were verified in a real DSH Web on 2026-09-15 (isolated profile: bundle execution, boot-token transport,
-   `settings.section` render — see [docs/verification-s0-web.md](../docs/verification-s0-web.md)); the session-header
+   `settings.section` render, verified on the isolated DSH Web on 2026-09-15); the session-header
    entry still needs a live conversation. `client/entry.ts`'s code is exercised through the built bundle rather than
    imported directly, so it does not appear in the coverage table.
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
