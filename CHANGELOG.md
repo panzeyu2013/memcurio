@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet - the first release is v0.0.1 below.
+
+## [0.0.1] - 2026-09-16
+
+First release of `@memcurio/dsh-plugin`, a memory and context-management plugin for the
+DeepSeek Harness (DSH): the engine, the Cordis plugin and the browser half ship in one
+package (developer preview). The durable memory pipeline (two-phase extraction and
+consolidation over Markdown + SQLite, safe read-path injection, usage telemetry, full
+audit trail) and the shipped browser half (Settings panel, the memory-injection rows for
+both the message half and the system-prompt guide half, write toasts, six memory tool
+rows, served over a same-origin snapshot + SSE route) are complete and tested. The full
+memory workbench over the store remains the next milestone.
+
 ### Added
+
+- **Durable memory pipeline** (per-workspace stores anchored under the DSH
+  home): two-phase extraction/consolidation over Markdown + SQLite, safe
+  read-path injection, usage telemetry with forgetting-window retention,
+  full audit trail, ad-hoc notes, developer-preview dry-run discipline.
+- **DSH host plugin**: session lifecycle wiring, six native memory tools,
+  worker queue lanes with durable retries, automatic Phase-2 consolidation,
+  promptware-injection scan + secret redaction on every write path.
+- **Memory-workbench host half**: read services (search/status/usage/queue/
+  audit/intent drafts), injection simulator (previews never count usage
+  telemetry), delta projector, snapshot assembly, and a host bridge
+  (event tags, audit-tail/job diffs, evidence source) gated by
+  `config.hostBridge` (off by default).
+- **Memory-workbench client half** (framework-free view model): nine-kind
+  delta folds, evidence window, star bookmarks, read-only cross-store
+  browsing, per-job queue semantics — verified by unit tests only until the
+  S0 spike pins the real browser slots/transport.
+- **Release mechanics**: committed `dist/` with drift check, `pack:check`
+  allowlist, `prepare` artifact verification (no build on consumer
+  machines), tag-driven GitHub Release shipping the packed
+  `memcurio-dsh-plugin-<version>.tgz` with a `.sha256` sidecar; npm
+  publishing is prepared (`publishConfig.access: public`) but disabled in
+  the release workflow until a token/provenance decision is made — see
+  `docs/RELEASE.md`.
+
+- **Settings panel (browser half)**: the package now declares `dsh.client`
+  (`platform: "web"` + official client inject rows) and ships a prebuilt
+  `lib/client.js` (esbuild bundle wrapped in the official
+  `window.__ModuleLoader__.load({ id, factory })` shape; the only runtime
+  require is the platform-seeded `react`). The panel registers the
+  `settings.section` slot as "Memory/记忆": scope select, injection/tools/
+  bridge toggles, token budget, provider/model route, per-field override
+  badges with reset, bulk reset, and post-write verification (a resolved but
+  unlanded host write reports failure instead of a silent success).
+  `pack:check` now enforces the artifact shape; CI/release drift-check
+  `dist/` and `lib/`.
+
+- **`memcurio` settings namespace** (`@deepseek-ai/dsh-settings`): the plugin
+  now hard-injects the DSH `settings` service and registers its namespace via
+  `ctx.settings.installSection`, so users configure the plugin from the DSH
+  Settings page — `scope`, `injectContext`, `registerTools`,
+  `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config
+  stays the composition base; the user layer persists to
+  `<DSH home>/settings.yaml`. Injection toggle, budget, host bridge and the
+  worker route apply live; `scope` applies to new sessions; `registerTools`
+  applies at the next plugin apply (restart); `root` is read-only.
+
+- `scripts/probe-dsh-profile.sh`: installs the packaged plugin into an isolated
+  DSH profile and verifies the composed tree (`--dump-config`) carries the
+  `memcurio` row; verified green against real DSH 0.1.5-rc.1 (boot still needs
+  a Node.js runtime — the web app does not start under bun, with or without
+  this plugin).
 
 - **Guide row refined (v1.9.4)**: the row reads just "记忆指南 / Memory
   guide" and anchors immediately ABOVE the system-prompt card by mirroring the
@@ -130,96 +195,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The memory switch row carries no explainer (v1.9.3)**: the Settings row for
-  memory injection is label + switch only. The `injectContextNote` line
-  (per-step evaluation / unchanged content is not re-injected) was removed from
-  both dictionaries and from the row; the injection semantics are implementation
-  detail, not panel copy. The panel assertion follows.
-- **Memory tool rows always lead with the book mark**: running, settled, error
-  and interrupted states all render memcurio's book; a terminal state only
-  colours the mark (error/warning token) instead of swapping it for the shipped
-  status dot, so all six native memory tool rows carry one leading glyph.
-- **Static injection is guide-first**: every new session receives the read-path
-  guide; the `memory_summary.md` block is appended only when the store
-  actually has a summary, so an empty store no longer puts the
-  `(memcurio memory not consolidated yet)` placeholder into the model's
-  context (the preview API reports the summary as an empty string).
-- `hostBridge` is now always **on**: the browser transport sink ships with
-  the package and the switch was removed from Config, the `memcurio`
-  settings namespace and the Settings panel (no supported scenario needs it
-  off).
-- The session header carries no memcurio surface: the injection indicator is
-  kept as the workbench status surface but is deliberately not registered.
-
-## [0.0.1] - 2026-09-11
-
-First release of `@memcurio/dsh-plugin`, a memory and context-management plugin
-for the DeepSeek Harness (DSH). Developer preview: the durable memory pipeline
-is complete and tested; the memory-workbench UI assembly and its transport
-channel are staged behind an S0 spike in a real DSH Web instance.
-
-### Added
-
-- **Durable memory pipeline** (per-workspace stores anchored under the DSH
-  home): two-phase extraction/consolidation over Markdown + SQLite, safe
-  read-path injection, usage telemetry with forgetting-window retention,
-  full audit trail, ad-hoc notes, developer-preview dry-run discipline.
-- **DSH host plugin**: session lifecycle wiring, six native memory tools,
-  worker queue lanes with durable retries, automatic Phase-2 consolidation,
-  promptware-injection scan + secret redaction on every write path.
-- **Memory-workbench host half**: read services (search/status/usage/queue/
-  audit/intent drafts), injection simulator (previews never count usage
-  telemetry), delta projector, snapshot assembly, and a host bridge
-  (event tags, audit-tail/job diffs, evidence source) gated by
-  `config.hostBridge` (off by default).
-- **Memory-workbench client half** (framework-free view model): nine-kind
-  delta folds, evidence window, star bookmarks, read-only cross-store
-  browsing, per-job queue semantics — verified by unit tests only until the
-  S0 spike pins the real browser slots/transport.
-- **Release mechanics**: committed `dist/` with drift check, `pack:check`
-  allowlist, `prepare` artifact verification (no build on consumer
-  machines), tag-driven GitHub Release shipping the packed
-  `memcurio-dsh-plugin-<version>.tgz` with a `.sha256` sidecar; npm
-  publishing is prepared (`publishConfig.access: public`) but disabled in
-  the release workflow until a token/provenance decision is made — see
-  `docs/RELEASE.md`.
-
-### Added (settings panel)
-
-- **Settings panel (browser half)**: the package now declares `dsh.client`
-  (`platform: "web"` + official client inject rows) and ships a prebuilt
-  `lib/client.js` (esbuild bundle wrapped in the official
-  `window.__ModuleLoader__.load({ id, factory })` shape; the only runtime
-  require is the platform-seeded `react`). The panel registers the
-  `settings.section` slot as "Memory/记忆": scope select, injection/tools/
-  bridge toggles, token budget, provider/model route, per-field override
-  badges with reset, bulk reset, and post-write verification (a resolved but
-  unlanded host write reports failure instead of a silent success).
-  `pack:check` now enforces the artifact shape; CI/release drift-check
-  `dist/` and `lib/`.
-
-### Added (settings surface)
-
-- **`memcurio` settings namespace** (`@deepseek-ai/dsh-settings`): the plugin
-  now hard-injects the DSH `settings` service and registers its namespace via
-  `ctx.settings.installSection`, so users configure the plugin from the DSH
-  Settings page — `scope`, `injectContext`, `registerTools`,
-  `injectBudgetTokens`, `hostBridge`, `provider`, `model`. The profile config
-  stays the composition base; the user layer persists to
-  `<DSH home>/settings.yaml`. Injection toggle, budget, host bridge and the
-  worker route apply live; `scope` applies to new sessions; `registerTools`
-  applies at the next plugin apply (restart); `root` is read-only.
-
-### Added
-
-- `scripts/probe-dsh-profile.sh`: installs the packaged plugin into an isolated
-  DSH profile and verifies the composed tree (`--dump-config`) carries the
-  `memcurio` row; verified green against real DSH 0.1.5-rc.1 (boot still needs
-  a Node.js runtime — the web app does not start under bun, with or without
-  this plugin).
-
-### Changed
-
 - The workbench snapshot reports the real deployment knobs (`settings.maxInjectTokens`
   from the store config, `settings.consolidationCooldownMs` from the engine's
   automatic-consolidation window) instead of placeholders, and a blocked
@@ -243,11 +218,34 @@ channel are staged behind an S0 spike in a real DSH Web instance.
   window were made clock-independent (`daysAgo()` helpers), so the suite no
   longer rots as wall-clock time advances.
 
+- **The memory switch row carries no explainer (v1.9.3)**: the Settings row for
+  memory injection is label + switch only. The `injectContextNote` line
+  (per-step evaluation / unchanged content is not re-injected) was removed from
+  both dictionaries and from the row; the injection semantics are implementation
+  detail, not panel copy. The panel assertion follows.
+- **Memory tool rows always lead with the book mark**: running, settled, error
+  and interrupted states all render memcurio's book; a terminal state only
+  colours the mark (error/warning token) instead of swapping it for the shipped
+  status dot, so all six native memory tool rows carry one leading glyph.
+- **Static injection is guide-first**: every new session receives the read-path
+  guide; the `memory_summary.md` block is appended only when the store
+  actually has a summary, so an empty store no longer puts the
+  `(memcurio memory not consolidated yet)` placeholder into the model's
+  context (the preview API reports the summary as an empty string).
+- `hostBridge` is now always **on**: the browser transport sink ships with
+  the package and the switch was removed from Config, the `memcurio`
+  settings namespace and the Settings panel (no supported scenario needs it
+  off).
+- The session header carries no memcurio surface: the injection indicator is
+  kept as the workbench status surface but is deliberately not registered.
+
 ### Known limitations (this release)
 
-- The memory **workbench** UI is not yet assembled: the shipped browser half is
-  the Settings panel only; the workbench view-model, host bridge and delta
-  protocol are the verified pre-work, and its transport channel is still
-  unselected. `docs/design/s0-spike-plan.md` covers the real-environment spike.
-- Git remote push, node:sqlite-driven test runs and npm publish require an
-  environment with credentials / a node >= 22.13 binary (CI covers them).
+- The full memory **workbench** over the store is not assembled yet: the shipped browser
+  half covers the Settings panel, the memory-injection rows (message half and
+  system-prompt guide half), write toasts and the six tool rows; the workbench
+  view-model, host bridge and delta protocol are delivered as verified pre-work.
+- DSH itself is a developer preview: every DSH upgrade needs a peer-contract re-check
+  (currently aligned with `0.1.5-rc.1`).
+- Git remote push, node:sqlite-driven test runs and npm publish require an environment
+  with credentials / a node >= 22.13 binary (CI covers them).

@@ -225,9 +225,11 @@ All must be green and `git status --short` empty except the release commit.
    bump `package.json#version` to the same X.Y.Z, and update any tarball-name
    examples in `README.md` / `docs/*` that embed the version. Commit
    (`docs(release): prepare vX.Y.Z` style).
-   ⚠ v0.0.1's section is dated 2026-09-11 and everything since sits under
-   `[Unreleased]` — re-tagging v0.0.1 would ship the stale 2026-09-11 notes,
-   so the next release must be a NEW version (e.g. 0.0.2).
+   The section must describe what actually ships: fold the `[Unreleased]`
+   block into it (and leave `[Unreleased]` empty) rather than tagging a stale
+   snapshot. Nothing has been published yet — no git tag, no GitHub Release, no
+   npm package — so the first release is `v0.0.1` with the section dated
+   2026-09-16 (already prepared in the tree).
 2. Run the local pre-flight above.
 3. Push `main` (CI runs the full chain), then tag:
    `git tag vX.Y.Z && git push origin vX.Y.Z`.
