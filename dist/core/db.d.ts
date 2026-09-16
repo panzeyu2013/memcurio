@@ -248,6 +248,9 @@ export declare class Index {
     purgeAuditMatches(values: string[]): number;
     purgeAuditExact(values: string[]): number;
     metaGet(key: string): string | undefined;
+    /** Remove one meta row: used to clear a one-shot marker (e.g. the last
+     *  automatic-consolidation failure) once it no longer applies. */
+    metaDelete(key: string): void;
     metaSet(key: string, value: string): void;
     rawAll<T = SqlRow>(sql: string, params?: unknown[]): T[];
     close(): void;

@@ -895,6 +895,11 @@ export class Index {
     metaGet(key) {
         return this.driver.get("SELECT value FROM meta WHERE key = ?", [key])?.value;
     }
+    /** Remove one meta row: used to clear a one-shot marker (e.g. the last
+     *  automatic-consolidation failure) once it no longer applies. */
+    metaDelete(key) {
+        this.driver.run("DELETE FROM meta WHERE key = ?", [key]);
+    }
     metaSet(key, value) {
         this.driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", [key, value]);
     }

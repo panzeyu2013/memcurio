@@ -4,7 +4,6 @@ import type { LlmChannel } from "./channel.js";
 import type { WorkspaceDiff } from "./workspace.js";
 export interface PipelineConfig {
     maxUnusedDays: number;
-    minUsage: number;
     maxInputs: number;
     retentionDays: number;
     /** Retention window for files under extensions/<name>/resources/. codex

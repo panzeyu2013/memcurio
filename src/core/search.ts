@@ -134,20 +134,18 @@ export async function searchMemory(
   if (!words.length) {
     return { hits, blocked };
   }
-  const lowerWords = [...new Set(words.map((w) => w.toLowerCase()))];
-  const phrase = words.length > 1 ? lowerWords.join(" ") : "";
+  const lowerWords = queryTerms(words);
+  if (!lowerWords.length) {
+    return { hits, blocked };
+  }
+  const phrase = words.length > 1 ? words.map((w) => w.toLowerCase()).join(" ") : "";
 
   type Candidate = { rel: string; line: number; text: string; pending: boolean; counts: Map<string, number> };
   const candidates: Candidate[] = [];
   const documentFrequency = new Map<string, number>();
-  const usedRels: string[] = [];
   let lineCount = 0;
   let scannedBytes = 0;
   const scan = (rel: string, text: string, pending: boolean): void => {
-    // Usage tracking: a hit on a rollout summary (or a MEMORY.md line citing
-    // one) counts as reuse of that stage-1 output; pending notes are not
-    // stage-1 artifacts and never move the selection window.
-    const track = rel.startsWith("rollout_summaries/") ? rel : undefined;
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";
@@ -169,9 +167,6 @@ export async function searchMemory(
         continue;
       }
       candidates.push({ rel, line: i + 1, text: line, pending, counts });
-      if (!pending) {
-        usedRels.push(track ?? line);
-      }
     }
   };
   for (const rel of searchableRels(listWorkspaceFiles(root))) {
@@ -232,13 +227,60 @@ export async function searchMemory(
     }
   }
 
-  // UI previews (injection simulator, workbench search) must never inflate
-  // real reuse telemetry: opt out via trackUsage:false (default true keeps
-  // model-driven paths counting).
+  // Usage telemetry counts ONLY what the model actually receives: the hits
+  // that survived ranking and the per-entry cap (a MEMORY.md hit counts the
+  // rollout it cites). Registering every matching candidate — the previous
+  // behavior — inflated usage for files that were never surfaced: a single
+  // broad query with topK=8 bumped 11 stage rows while showing 6 files, and
+  // the refreshed last_usage extended their retention window too. UI previews
+  // must never inflate real telemetry: opt out via trackUsage:false.
   if (opts.trackUsage !== false) {
+    const usedRels: string[] = [];
+    for (const hit of hits) {
+      if (hit.pending) continue;
+      usedRels.push(hit.rel.startsWith("rollout_summaries/") ? hit.rel : hit.content);
+    }
     await registerMemoryUsage(root, usedRels);
   }
   return { hits, blocked };
+}
+
+/** Unicode ranges whose scripts have no word separators (Han, kana, Hangul).
+ *  The scanner is substring-based, so a Chinese sentence arrives as one long
+ *  token that can never match the corpus; expanding CJK-bearing terms into
+ *  adjacent two-character grams gives those queries the same recall English
+ *  gets from whitespace tokens. Whole terms stay in the list, so the exact
+ *  phrase bonus still applies when the source wording repeats verbatim. */
+const CJK_CHAR = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
+
+function queryTerms(words: readonly string[]): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  const push = (term: string): void => {
+    const lower = term.toLowerCase();
+    if (lower && !seen.has(lower)) {
+      seen.add(lower);
+      terms.push(lower);
+    }
+  };
+  for (const word of words) {
+    const lower = word.toLowerCase();
+    if (lower.length < 2) {
+      continue;
+    }
+    push(lower);
+    if (CJK_CHAR.test(lower)) {
+      for (let i = 0; i + 2 <= lower.length; i += 1) {
+        const gram = lower.slice(i, i + 2);
+        if (CJK_CHAR.test(gram)) {
+          push(gram);
+        }
+      }
+    }
+  }
+  // Bound the expanded set: scanning is terms × lines, and a long CJK sentence
+  // would otherwise multiply into hundreds of grams.
+  return terms.slice(0, MAX_SEARCH_QUERY_WORDS * 4);
 }
 
 /** Occurrences of one term in an already lowercased line (non-overlapping

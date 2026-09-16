@@ -13,8 +13,7 @@ import {
   recoverPendingGenerations,
 } from "./generation.js";
 import type { GenerationFileSnapshot, GenerationManifest } from "./generation.js";
-import { extractJsonObject } from "./json.js";
-import type { LlmChannel } from "./channel.js";
+import type { AgentTurnMessage, LlmChannel, ToolCallRequest, ToolSpec } from "./channel.js";
 import { ensureLayout, indexDb, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import {
@@ -34,7 +33,6 @@ import type { WorkspaceDiff } from "./workspace.js";
 
 export interface PipelineConfig {
   maxUnusedDays: number;
-  minUsage: number;
   maxInputs: number;
   retentionDays: number;
   /** Retention window for files under extensions/<name>/resources/. codex
@@ -47,7 +45,6 @@ export interface PipelineConfig {
 
 export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   maxUnusedDays: 60,
-  minUsage: 1,
   maxInputs: 50,
   retentionDays: 90,
   resourceRetentionDays: 7,
@@ -726,10 +723,62 @@ function isConsolidationEditable(rel: string): boolean {
   return CONSOLIDATION_EDIT_RE.test(rel);
 }
 
-interface AgentToolCall {
-  name: string;
-  args: Record<string, unknown>;
-}
+/** Native tool schemas for the Phase-2 agent loop. The host forwards them to
+ *  the provider tools field; the model calls them through the provider's real
+ *  tool-calling channel, so there is no JSON-in-prose protocol to parse. */
+const CONSOLIDATE_TOOLS: readonly ToolSpec[] = [
+  {
+    name: "list_files",
+    description: "List every path available in the memory workspace.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "read_file",
+    description:
+      "Read one memory-workspace file (MEMORY.md, memory_summary.md, raw_memories.md, rollout_summaries/*.md, skills/*/SKILL.md, extensions/**).",
+    parameters: {
+      type: "object",
+      properties: { rel: { type: "string", description: "Workspace-relative path." } },
+      required: ["rel"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "write_file",
+    description:
+      "Stage one memory file write. Only MEMORY.md, memory_summary.md and allowlisted skills/<name>/SKILL.md are writable; content is scanned for secrets and injection patterns.",
+    parameters: {
+      type: "object",
+      properties: {
+        rel: { type: "string", description: "Workspace-relative target path." },
+        content: { type: "string", description: "Complete new file content." },
+      },
+      required: ["rel", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "finish",
+    description:
+      "Finish the consolidation run. Call exactly once, after all writes, with a short report and the pending note filenames actually incorporated.",
+    parameters: {
+      type: "object",
+      properties: {
+        report: { type: "string", description: "Short summary of what changed." },
+        applied_notes: {
+          type: "array",
+          items: { type: "string" },
+          description: "Pending note filenames incorporated (omit ignored notes).",
+        },
+      },
+      required: ["report"],
+      additionalProperties: false,
+    },
+  },
+];
+
+const AGENT_BEGIN = "Begin. Inspect the workspace and the diff with the provided tools, then write the memory files. Call finish exactly once when done.";
+const AGENT_NUDGE = "Use the provided tools (list_files, read_file, write_file, finish). Do not answer with prose only; call finish when the work is done.";
 
 /** A bounded tool loop that lets the LLM read the workspace and write memory
  *  docs directly (codex Phase-2 style), with engine-side validation on every
@@ -746,43 +795,70 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     if (!channel) {
       return { edits: [], report: "no LLM channel configured; use the rule provider", rejected: [], consumedNoteFilenames: [], completed: false };
     }
+    if (!channel.agent) {
+      return { edits: [], report: "host model channel has no native tool-calling turn; use the rule provider", rejected: [], consumedNoteFilenames: [], completed: false };
+    }
     const edits: ConsolidateEdit[] = [];
     const rejected: Array<{ rel: string; reason: string }> = [];
     const safeInput = sanitizeConsolidateInput(input);
     const pendingNoteNames = new Set(safeInput.notes.map((note) => note.filename));
     const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? []);
-    const transcript: Array<{ role: string; content: string }> = [];
+    const messages: AgentTurnMessage[] = [{ role: "user", text: AGENT_BEGIN }];
     let report = "";
     let completed = false;
     let consumedNoteFilenames: string[] = [];
 
     for (let step = 0; step < this.steps; step++) {
-      const user = transcript.length
-        ? transcript.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n")
-        : "Begin. Inspect the diff and memory files, then start writing.";
-      let reply: string;
-      try {
-        reply = await channel.chat(system, user);
-      } catch (err) {
-        console.warn(`[memcurio] consolidation agent failed: ${String(err)}`);
-        return { edits, report: report || `agent failed at step ${step}`, rejected, completed: false };
+      const reply = await channel.agent(system, messages, CONSOLIDATE_TOOLS);
+      if (reply.finish === "max-tokens") {
+        return {
+          edits,
+          report: report || `agent reply hit the max-tokens limit at step ${step}`,
+          rejected,
+          consumedNoteFilenames,
+          completed: false,
+        };
       }
-      const tool = parseToolCall(reply);
-      if (!tool) {
-        return { edits, report: report || "no tool call parsed; nothing applied", rejected, completed: false };
+      if (!reply.toolCalls.length) {
+        // A native tool-calling model may still answer with prose. It gets one
+        // corrective nudge; a prose reply is NEVER parsed as an imitation tool
+        // call (that was the old JSON-in-text protocol this loop replaced).
+        if (reply.text.trim() && !messages.some((m) => m.role === "user" && m.text === AGENT_NUDGE)) {
+          messages.push({ role: "assistant", text: reply.text, toolCalls: [] });
+          messages.push({ role: "user", text: AGENT_NUDGE });
+          continue;
+        }
+        return {
+          edits,
+          report: report || "agent returned no tool call",
+          rejected,
+          consumedNoteFilenames,
+          completed: false,
+        };
       }
-      if (tool.name === "finish") {
-        report = typeof tool.args.report === "string" ? tool.args.report : "consolidation finished";
-        const appliedNotes = Array.isArray(tool.args.applied_notes) ? tool.args.applied_notes : [];
-        consumedNoteFilenames = [...new Set(
-          appliedNotes.filter((value): value is string => typeof value === "string" && pendingNoteNames.has(value)),
-        )];
-        completed = true;
-        break;
+      messages.push({ role: "assistant", text: reply.text || undefined, toolCalls: reply.toolCalls });
+      let finished = false;
+      for (const call of reply.toolCalls) {
+        if (call.name === "finish") {
+          const parsed = parseToolArguments(call.arguments);
+          if (!parsed.ok) {
+            messages.push(toolResultMessage(call, `rejected: invalid finish arguments (${parsed.error})`, true));
+            continue;
+          }
+          report = typeof parsed.args.report === "string" ? parsed.args.report : "consolidation finished";
+          const appliedNotes = Array.isArray(parsed.args.applied_notes) ? parsed.args.applied_notes : [];
+          consumedNoteFilenames = [...new Set(
+            appliedNotes.filter((value): value is string => typeof value === "string" && pendingNoteNames.has(value)),
+          )];
+          completed = true;
+          finished = true;
+          messages.push(toolResultMessage(call, "ok: consolidation finished", false));
+          continue;
+        }
+        const outcome = this.#executeTool(call.name, call.arguments, safeInput, edits, rejected);
+        messages.push(toolResultMessage(call, outcome.content, outcome.isError));
       }
-      const outcome = this.#executeTool(tool, safeInput, edits, rejected);
-      transcript.push({ role: "assistant", content: reply });
-      transcript.push({ role: "user", content: outcome });
+      if (finished) break;
     }
     return {
       edits,
@@ -794,45 +870,54 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
   }
 
   #executeTool(
-    tool: AgentToolCall,
+    name: string,
+    rawArguments: string,
     input: ConsolidateInput,
     edits: ConsolidateEdit[],
     rejected: Array<{ rel: string; reason: string }>,
-  ): string {
-    switch (tool.name) {
+  ): { content: string; isError: boolean } {
+    const parsed = parseToolArguments(rawArguments);
+    if (!parsed.ok) {
+      return { content: `rejected: invalid tool arguments (${parsed.error})`, isError: true };
+    }
+    const args = parsed.args;
+    switch (name) {
       case "list_files": {
-        return Object.keys(input.workspace).sort().join("\n");
+        return { content: Object.keys(input.workspace).sort().join("\n") || "(workspace is empty)", isError: false };
       }
       case "read_file": {
         let rel: string;
         try {
-          rel = assertWorkspaceRel(String(tool.args.rel ?? ""));
+          rel = assertWorkspaceRel(String(args.rel ?? ""));
         } catch {
-          rejected.push({ rel: String(tool.args.rel ?? ""), reason: "invalid workspace path" });
-          return "rejected: invalid workspace path (use a relative path inside the memory workspace)";
+          rejected.push({ rel: String(args.rel ?? ""), reason: "invalid workspace path" });
+          return { content: "rejected: invalid workspace path (use a relative path inside the memory workspace)", isError: true };
         }
-        return input.workspace[rel] ?? "(file does not exist)";
+        const content = input.workspace[rel];
+        return content === undefined
+          ? { content: "(file does not exist)", isError: true }
+          : { content, isError: false };
       }
       case "write_file": {
         let rel: string;
         try {
-          rel = assertWorkspaceRel(String(tool.args.rel ?? ""));
+          rel = assertWorkspaceRel(String(args.rel ?? ""));
         } catch {
-          rejected.push({ rel: String(tool.args.rel ?? ""), reason: "invalid workspace path" });
-          return "rejected: invalid workspace path (use a relative path inside the memory workspace)";
+          rejected.push({ rel: String(args.rel ?? ""), reason: "invalid workspace path" });
+          return { content: "rejected: invalid workspace path (use a relative path inside the memory workspace)", isError: true };
         }
-        const content = String(tool.args.content ?? "");
+        const content = String(args.content ?? "");
         if (!rel.endsWith(".md")) {
           rejected.push({ rel, reason: "only .md files may be written" });
-          return "rejected: only .md files may be written";
+          return { content: "rejected: only .md files may be written", isError: true };
         }
         if (!isConsolidationEditable(rel)) {
           rejected.push({ rel, reason: "target is outside the consolidation edit allowlist" });
-          return "rejected: target is outside the consolidation edit allowlist";
+          return { content: "rejected: target is outside the consolidation edit allowlist", isError: true };
         }
         if (Buffer.byteLength(content, "utf-8") > MAX_EDIT_BYTES) {
           rejected.push({ rel, reason: "content exceeds size cap" });
-          return "rejected: content exceeds size cap";
+          return { content: "rejected: content exceeds size cap", isError: true };
         }
         // Scan the RAW content first: redacting before scanning would launder
         // payloads whose secret value is replaced by "[REDACTED]"
@@ -842,12 +927,12 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         const flags = sanitizeForInjection(content);
         if (!flags.safe) {
           rejected.push({ rel, reason: `injection pattern: ${flags.flags[0] ?? ""}` });
-          return `rejected: injection pattern (${flags.flags[0] ?? ""})`;
+          return { content: `rejected: injection pattern (${flags.flags[0] ?? ""})`, isError: true };
         }
         const redacted = redactSecrets(content);
         if (redacted.redacted) {
           rejected.push({ rel, reason: "secret redacted (rewrite without secrets)" });
-          return "rejected: content contained secrets; rewrite with [REDACTED]";
+          return { content: "rejected: content contained secrets; rewrite with [REDACTED]", isError: true };
         }
         const existing = edits.findIndex((e) => e.rel === rel);
         if (existing >= 0) {
@@ -855,27 +940,37 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         } else {
           edits.push({ rel, content });
         }
-        return "ok: write staged (applied after the run)";
+        return { content: "ok: write staged (applied after the run)", isError: false };
       }
       default:
-        return `unknown tool: ${tool.name}`;
+        return { content: `unknown tool: ${name}`, isError: true };
     }
   }
 }
 
-function parseToolCall(reply: string): AgentToolCall | null {
-  try {
-    const parsed = extractJsonObject(reply) as { tool?: unknown; args?: unknown };
-    if (typeof parsed.tool !== "string") {
-      return null;
-    }
-    return {
-      name: parsed.tool,
-      args: typeof parsed.args === "object" && parsed.args !== null ? (parsed.args as Record<string, unknown>) : {},
-    };
-  } catch {
-    return null;
+type ParsedToolArguments = { ok: true; args: Record<string, unknown> } | { ok: false; error: string };
+
+/** Parse one native tool call's raw JSON arguments. Invalid JSON becomes a
+ *  tool-error result the model can correct on the next turn; it is never
+ *  re-interpreted as a text protocol. */
+function parseToolArguments(raw: string): ParsedToolArguments {
+  if (!raw.trim()) {
+    return { ok: true, args: {} };
   }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, error: `arguments are not JSON: ${String(err)}` };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "arguments must be a JSON object" };
+  }
+  return { ok: true, args: value as Record<string, unknown> };
+}
+
+function toolResultMessage(call: ToolCallRequest, content: string, isError: boolean): AgentTurnMessage {
+  return { role: "tool", toolCallId: call.id, name: call.name, content, isError };
 }
 
 function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources: string[] = []): string {
@@ -966,10 +1061,10 @@ function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources
     "- Write memory content in the LANGUAGE OF THE SOURCE conversation (user wording verbatim where useful); never translate or normalize user phrasing \u2014 only the prompts/instructions themselves are English.",
     "- Keep memory_summary.md starting with exactly 'v1'.",
     "- write_file may target only MEMORY.md, memory_summary.md, or an approved skills/<name>/SKILL.md; never write raw_memories.md, rollout summaries, notes, config, or state.",
-    "- Respond with ONE JSON object per turn: {\"tool\": \"read_file|write_file|list_files|finish\", \"args\": {...}}",
-    "  read_file{rel}, write_file{rel,content}, list_files{}, finish{report,applied_notes}.",
+    "- Use the provided tools to inspect and edit memory files; never reply with raw JSON or prose-only answers.",
+    "  list_files{} / read_file{rel} inspect, write_file{rel,content} stages a write, finish{report,applied_notes} ends the run.",
     "  applied_notes is the exact array of pending note filenames actually incorporated; omit ignored notes.",
-    "  No prose outside JSON.",
+    "  A write is applied only after the run; call finish exactly once when done.",
     "",
     ...sections,
   ].join("\n");

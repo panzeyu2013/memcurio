@@ -74,6 +74,44 @@ describe("searchMemory", () => {
     }
   });
 
+  test("a Chinese sentence retrieves through adjacent bigrams", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: 记忆\n\n- 跨会话记忆注入采用分层策略，指南进 system prompt\n");
+    const { hits } = await searchMemory(dir, "请你检查跨会话记忆注入的分层策略是否正常", 10);
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]?.rel).toBe("MEMORY.md");
+  });
+
+  test("only surfaced hits bump usage, not every matching candidate", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        const rolloutKey = `test|s${String(i)}`;
+        const filename = artifactFilenameForId(artifactIdForRolloutKey(rolloutKey));
+        writeRolloutSummary(dir, filename, `shared-token detail ${String(i)}\n`);
+        idx.stageUpsert({
+          rolloutKey,
+          rawMemory: "x",
+          rolloutSummary: "y",
+          rolloutSlug: `slug-${String(i)}`,
+          sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+        });
+      }
+    } finally {
+      idx.close();
+    }
+    const { hits } = await searchMemory(dir, "shared-token", 1);
+    expect(hits).toHaveLength(1);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      const bumped = idx2.stageList().filter((row) => row.usageCount > 0);
+      // Previously every matching candidate counted: four files, one shown.
+      expect(bumped).toHaveLength(1);
+      expect(hits[0]?.rel).toBe(`rollout_summaries/${bumped[0]?.artifactFilename ?? ""}`);
+    } finally {
+      idx2.close();
+    }
+  });
+
   test("searchable content is re-redacted at read time", async () => {
     writeWorkspaceText(dir, "MEMORY.md", "- token sk-abcdef123456789012345678 在文档中\n");
     const { hits } = await searchMemory(dir, "sk-abcdef", 10);

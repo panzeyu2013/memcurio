@@ -5,7 +5,7 @@ import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
 import { LlmLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
-import type { LlmChannel } from "../src/core/channel.js";
+import type { AgentTurnMessage, LlmChannel } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
 import { Index } from "../src/core/db.js";
@@ -1105,22 +1105,136 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(egress).not.toContain(secret);
     expect(egress).toContain("[REDACTED]");
   });
+
+  test("a channel without a native tool turn never falls back to a text protocol", async () => {
+    const channel: LlmChannel = {
+      name: "text-only",
+      async chat() {
+        return JSON.stringify({ tool: "finish", args: { report: "would have parsed under the old protocol" } });
+      },
+    };
+    const provider = new LlmLoopConsolidateProvider(3, channel);
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(false);
+    expect(result.report).toContain("no native tool-calling turn");
+    expect(result.edits).toHaveLength(0);
+  });
+
+  test("a prose-only reply is nudged once instead of being parsed as a tool call", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      4,
+      scriptedChannel(
+        [{ text: "I will inspect the files first." }, { calls: [{ name: "finish", args: { report: "after nudge" } }] }],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    expect(result.report).toBe("after nudge");
+    expect(prompts[1]?.user ?? "").toContain("Do not answer with prose only");
+  });
+
+  test("invalid tool arguments come back as a tool error the model can correct", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      4,
+      scriptedChannel(
+        [
+          { calls: [{ name: "write_file", raw: "{not json" }] },
+          { calls: [{ name: "finish", args: { report: "corrected" } }] },
+        ],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    expect(result.rejected).toEqual([]);
+    expect(prompts[1]?.user ?? "").toContain("arguments are not JSON");
+  });
+
+  test("tool results are delivered back to the model with their call names", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      4,
+      scriptedChannel(
+        [
+          { calls: [{ name: "list_files", args: {} }] },
+          { calls: [{ name: "finish", args: { report: "listed" } }] },
+        ],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({ workspace: { "MEMORY.md": "x" }, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    expect(prompts[1]?.user ?? "").toContain("TOOL list_files: MEMORY.md");
+  });
+
+  test("a max-tokens finish ends the run as incomplete so the rule provider takes over", async () => {
+    const channel: LlmChannel = {
+      name: "capped",
+      async chat() {
+        throw new Error("unused");
+      },
+      async agent() {
+        return { text: "", toolCalls: [], finish: "max-tokens" as const };
+      },
+    };
+    const provider = new LlmLoopConsolidateProvider(3, channel);
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(false);
+    expect(result.report).toContain("max-tokens");
+  });
 });
 
-/** A scripted host model channel: replays canned replies in order (the last
- *  reply repeats) and optionally records every prompt for assertions. */
+/** One scripted native tool-calling turn. */
+interface ScriptedTurn {
+  text?: string;
+  calls?: Array<{ name: string; args?: unknown; raw?: string }>;
+}
+
+/** A scripted native tool-calling channel: replays canned turns in order (the
+ *  last turn repeats) and optionally records every system prompt + transcript.
+ *
+ *  A scripted entry may be a {@link ScriptedTurn} or the JSON-prose string the
+ *  old text protocol used; the string form is decoded into the tool call it
+ *  named so existing scripts still describe the same run through the native
+ *  channel. The channel has NO working chat(): the loop must reach the model
+ *  through a real tool-calling turn. */
 function scriptedChannel(
-  replies: string[],
+  script: Array<string | ScriptedTurn>,
   prompts?: Array<{ system: string; user: string }>,
 ): LlmChannel {
+  const turns = script.map<ScriptedTurn>((entry) => {
+    if (typeof entry !== "string") return entry;
+    const parsed = JSON.parse(entry) as { tool?: string; args?: unknown };
+    return parsed.tool ? { calls: [{ name: parsed.tool, args: parsed.args ?? {} }] } : {};
+  });
   let i = 0;
   return {
     name: "scripted",
-    async chat(system, user) {
-      prompts?.push({ system, user });
-      const reply = replies[Math.min(i, replies.length - 1)] ?? JSON.stringify({ tool: "finish", args: { report: "fallback" } });
+    async chat() {
+      throw new Error("scripted channel received a text chat; the native tool loop must not fall back to a text protocol");
+    },
+    async agent(system, messages) {
+      prompts?.push({ system, user: messages.map(renderScriptedTurn).join("\n") });
+      const turn = turns[Math.min(i, turns.length - 1)] ?? { calls: [{ name: "finish", args: { report: "fallback" } }] };
       i += 1;
-      return reply;
+      const calls = (turn.calls ?? []).map((call, index) => ({
+        id: `call-${String(i)}-${String(index)}`,
+        name: call.name,
+        arguments: call.raw ?? JSON.stringify(call.args ?? {}),
+      }));
+      return { text: turn.text ?? "", toolCalls: calls, finish: calls.length > 0 ? "tool-calls" : "stop" };
     },
   };
+}
+
+function renderScriptedTurn(message: AgentTurnMessage): string {
+  if (message.role === "user") return `USER: ${message.text}`;
+  if (message.role === "assistant") {
+    const calls = message.toolCalls.map((call) => `${call.name}(${call.arguments})`).join(" ");
+    return `ASSISTANT: ${message.text ?? ""} ${calls}`.trim();
+  }
+  return `TOOL ${message.name}${message.isError === true ? " ERROR" : ""}: ${message.content}`;
 }

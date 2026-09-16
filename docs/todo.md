@@ -2,18 +2,18 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口（合并自 2026-08-11 的三份 review/verification 记录）；完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-16（第 45 轮：记忆注入分层到 system prompt、注入文本精简、系统提示指南派生行、抽取/整合管线修复；586 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
+> 最近更新：2026-09-16（第 46 轮：Phase-2 改为宿主原生 tool calling、阻塞队列热循环/遥测通胀/休眠 store 排空/CJK 检索修复；597 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
 
 ## 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 586 tests / 3395 assertions / 36 files（第 45 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 597 tests / 3435 assertions / 36 files（第 46 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode / MCP / CLI 发行面 | 🗑️ 已移除（第十五轮） | 代码/测试/产物/文档整体移除；运维操作语义（curate/retry/audit 等）将内化为 host 服务与 UI |
-| DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.5-rc.1：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
+| DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.5-rc.1（本机实机运行 0.1.5-rc.2，实机验证均在其上完成）：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2（**原生 tool calling**：list/read/write/finish 走宿主 provider tools 通道）、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
 | 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见「待办」） |
@@ -23,7 +23,7 @@
 | 层/宿主 | 状态 | 已验证范围 | 尚未承诺 |
 |---|---|---|---|
 | 引擎（单包内 `src/core` + `src/engine.ts`）| tested locally | SQLite/Markdown 全量测试（全仓 586/36 files）、静态检查、clean build、pack allowlist（含反向校验）、consolidation 无振荡、purge 破坏半径收敛、事件字段校验 | 跨进程故障注入与真实断电演练 |
-| DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.5-rc.1 事件/工具/模型通道契约核对（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
+| DeepSeek Harness 插件包 | developer preview | 单包构建、workspace root 确定性隔离（含 no-cwd）、0.1.5-rc.1 编译契约核对（实机 0.1.5-rc.2）（Session 快照 API 与 `SessionSeq` 品牌序号）、双队列与取消语义、自动整合触发、注入/证据隔离、真实 seed 会话采纳 | 真实 DSH 启动、resume/compaction、多 workspace 并发、上游 rc/alpha 升级兼容性 |
 | 记忆可视化 UI（里程碑）| **可见性面已交付** | host 桥（第十八轮）、读服务/投影/快照（第十七轮）、Settings 面板（第二十六轮）、**G5/G6 先行批（第三十一轮）**：host 传输（bridge.ts/ui-transport.ts）+ 注入/写入 Toast + 6 个 memory_* 工具行 + 客户端传输（SSE/轮询降级）；**注入行标题（第三十三轮）**：「记忆注入 / Memory injection」自有行 + 其余 context 节点转发（v1.8） | 真实 DSH Web 的槽位治理与 SSE 链路实测（S0）；完整工作台（三面一轴/意图草稿/时间线回链）仍属 M0/M1 |
 
 ## 已完成
@@ -125,7 +125,7 @@ bun run pack:check
 
 ### 最新结果（当前）
 
-- `bun test`：**586 pass / 3395 expect / 36 files / 0 failed**
+- `bun test`：**597 pass / 3435 expect / 36 files / 0 failed**
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：83 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
@@ -136,18 +136,18 @@ bun run pack:check
 
 **可验收 = 三个独立闸门全过**：
 
-1. **质量闸门**（每次提交可复跑，见「验收运行卡」）：518 tests / 31 files / 3148 expects / 0 fail（coverage 92.17% funcs / 93.76% lines）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（81 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
+1. **质量闸门**（每次提交可复跑，见「验收运行卡」）：597 tests / 36 files / 3435 expects / 0 fail（coverage 90.85% funcs / 92.88% lines，第 46 轮实测）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（83 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计 + 放行前三角度验收修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
 3. **设计闸门**：设计基线 v1.5 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入「外部依赖与遗留」并挂接 S0 计划。**2026-09-15 更新**：token 下发、路由守卫、SSE 槽位与 settings 槽位已在隔离真机验证通过，仅"会话内 header 入口"仍需真实会话人工确认。
 
 ### 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：499 pass / 30 files / 3082 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：597 pass / 36 files / 3435 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 92 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run pack:check        # 期望：81 文件；dist/lib clean；allowlist 双向一致（含 loader 形态与 require 纯度）
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run pack:check        # 期望：83 文件；dist/lib clean；allowlist 双向一致（含 loader 形态与 require 纯度）
 git status --short                                                 # 期望：空（验收即干净树）
 ```
 
@@ -155,8 +155,8 @@ git status --short                                                 # 期望：�
 
 | 项 | 依赖 | 归属/下一步 |
 |---|---|---|
-| 真实 DSH 组合（profile 装载 + patch 行 + 包导入） | ✅ 已验证（`scripts/probe-dsh-profile.sh`，真实 DSH 0.1.5-rc.1） | `--dump-config` 组合树含 `id: memcurio`/四项 inject/config；包导入成功（第三十轮） |
-| 第三方 client 槽位/桥通道实测 | 真实 DSH 0.1.5-rc.1 Web + 浏览器（需 Node.js 运行时） | 已于 2026-09-15 实机验证（S0 运行卡 P0–P8）；bun 下官方 web app 基线亦无法启动 |
+| 真实 DSH 组合（profile 装载 + patch 行 + 包导入） | ✅ 已验证（`scripts/probe-dsh-profile.sh`；本机实机运行 0.1.5-rc.2，插件正常装载） | `--dump-config` 组合树含 `id: memcurio`/四项 inject/config；包导入成功（第三十轮） |
+| 第三方 client 槽位/桥通道实测 | 真实 DSH Web + 浏览器（本机 0.1.5-rc.2） | 已于 2026-09-15 实机验证（S0 运行卡 P0–P8）；bun 下官方 web app 基线亦无法启动 |
 | web 启动 + 面板渲染 | 真实 Node.js 运行时（bun 缺 node 语义/pnpm postinstall） | 实机已验证（2026-09-15）；本仓库另以 jsdom + 真实 renderer/react 覆盖渲染契约 |
 | Settings 面板渲染 / 槽位治理 / `settings.yaml` 往返 | 真实 DSH Web（已随包发布 `lib/client.js`） | 控制器逻辑 23 项 + **浏览器半侧回归网 8 项**（`tests/client-panel-render.test.ts`：loader 契约/`hooks→useFace`/jsdom 活性/交互/成对写）；真实浏览器渲染与槽位治理已于 2026-09-15 验证 |
 | 推送远端 / node:sqlite 双驱动实跑 | git 凭据；node >= 22.13 | 需具备凭据/二进制的环境（沙箱不可用） |
@@ -164,7 +164,7 @@ git status --short                                                 # 期望：�
 | 客户端 bundle 构建与 loader 产物 | ✅ 已落地（第二十六轮：esbuild → `lib/client.js`，seed 8 键外部化，committed + pack:check 校验） | 仅剩实机装载/活化（S0） |
 | 挂载平面（agent preset 后根平面行解析） | ✅ 组合层已定性（第三十轮） | root 平面自带 `llm`/`tools`/`session`/`settings` 服务，web-app 仅 disable 具体工具与 skill；root-plane insert 即正确挂载点（组合树实测，L17 担忧不复现）；实机启动仍待 S0 |
 | `/memory` 客户端唤起、消息级跳转、审计收据客户端映射 | 上游能力/适配器 | 开放项（上游能力） |
-| node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 沙箱无 node 二进制，未实跑（bun 下全绿） |
+| node:sqlite 驱动下的桥/快照测试 | node >= 22.13 运行环境 | 本机 nvm node v22.22.3 / v24.20.0 实跑 node:sqlite 冒烟（Index 建库/写入/search/读路径）通过（22 上有 ExperimentalWarning）；全量测试仍以 bun 为准 |
 | 覆盖率回归 | 轮次终了补跑 | ✅ 本轮：92.17% funcs / 93.76% lines |
 
 ### 结论

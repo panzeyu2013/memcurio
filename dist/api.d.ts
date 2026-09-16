@@ -2,7 +2,7 @@
 export { MemcurioAdapter } from "./engine.js";
 export type { AdapterOptions } from "./engine.js";
 export type { HarnessToolPreset } from "./engine.js";
-export type { LlmChannel } from "./core/channel.js";
+export type { AgentFinish, AgentToolReply, AgentTurnMessage, LlmChannel, ToolCallRequest, ToolSpec, } from "./core/channel.js";
 export declare function integrationSearch(root: string, query: string, topK?: number, options?: {
     trackUsage?: boolean;
 }): Promise<{

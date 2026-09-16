@@ -33,7 +33,7 @@ function normalizeConfig(value: unknown, strict: boolean): Config {
   const bd = isRecord(budget) ? budget : {};
   const pl = isRecord(pipeline) ? pipeline : {};
   if (strict && bd.maxInjectTokens !== undefined && validInteger(bd.maxInjectTokens, -1, 128, 1_000_000) === -1) throw new Error("config.budget.maxInjectTokens must be an integer in [128, 1000000]");
-  for (const key of ["maxUnusedDays", "minUsage", "maxInputs", "retentionDays", "resourceRetentionDays", "maxAgentSteps"] as const) {
+  for (const key of ["maxUnusedDays", "maxInputs", "retentionDays", "resourceRetentionDays", "maxAgentSteps"] as const) {
     if (strict && pl[key] !== undefined && validInteger(pl[key], -1, key === "maxInputs" || key === "maxAgentSteps" || key === "retentionDays" || key === "resourceRetentionDays" ? 1 : 0, key === "maxAgentSteps" ? 1000 : 36_500) === -1) throw new Error(`config.pipeline.${key} must be an integer`);
   }
   return {
@@ -42,7 +42,6 @@ function normalizeConfig(value: unknown, strict: boolean): Config {
     },
     pipeline: {
       maxUnusedDays: validInteger(pl.maxUnusedDays, DEFAULT_PIPELINE_CONFIG.maxUnusedDays, 0, 36_500),
-      minUsage: validInteger(pl.minUsage, DEFAULT_PIPELINE_CONFIG.minUsage, 0, 1_000_000),
       maxInputs: validInteger(pl.maxInputs, DEFAULT_PIPELINE_CONFIG.maxInputs, 1, 10_000),
       // A 0 retentionDays would make the next consolidation delete ALL
       // eligible extension resources, so the floor is 1 day.

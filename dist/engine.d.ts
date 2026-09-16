@@ -222,6 +222,10 @@ export declare class MemcurioAdapter {
      *  audit is written only when something actually moved. */
     requeuePolicyRejectedExtractions(): Promise<number>;
     processPendingExtractions(limit?: number, deadline?: number): Promise<QueueDrainResult[]>;
+    /** Epoch ms of the next scheduled worker wake, or undefined when none is
+     *  armed. Exposed for tests and queue observability; never a scheduling
+     *  input (the durable queue is the source of truth). */
+    nextWakeDueAt(): number | undefined;
     /** Codex-style automatic Phase 2: after a session ends (or idles), drain
      *  pending extractions first, then run a consolidation when there is pending
      *  work (unapplied notes or never-selected stage-1 rows inside the window).
@@ -237,6 +241,11 @@ export declare class MemcurioAdapter {
     maybeConsolidate(): Promise<void>;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
     buildDynamicContext(workdir: string, query: string, budgetTokens?: number): Promise<string>;
+    /** Record that a dynamic retrieval query produced no injectable hit.
+     *  Diagnostics only — a silent miss is indistinguishable from "no memory
+     *  matches" in the audit tail. The caller (plugin pre-step) enforces
+     *  once-per-session to keep the audit quiet. */
+    recordDynamicMiss(workdir: string, query: string): Promise<void>;
     buildCompactionContext(sessionId: string, workdir: string): Promise<string>;
     buildReplacePrompt(sessionId: string, context: string): string;
     private addEvidence;

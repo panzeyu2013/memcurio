@@ -321,15 +321,14 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
   //    存在且 v1 且无 note 无 raw 变更 → 不改（churn 最小化）；
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
-  // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.chat 跑同一套工具循环；无通道 → completed=false 零提交（回退 Rule）
-  // 工具循环：channel.chat + JSON tool calls（provider 内解析；read/list 即时执行，write 暂存 edits 待提交校验后应用，不占宿主工具通道）；工具：read_file{rel} / write_file{rel,content} / list_files{} / finish{report}；
+  // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无通道或无 agent → completed=false 零提交（回退 Rule）
+  // 工具循环：channel.agent(system, transcript, tools) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
   // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、红action），
   // 含降噪条款：删除 stale/重复/低信号内容、不设固定数量目标、最有用的记忆排前、摘要索引清理失效主题；
   // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
   // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；校验 memory_summary 若存在首行须为 "v1"。
 export interface PipelineConfig {
   maxUnusedDays: number;         // 默认 60（stage1 选择窗口）
-  minUsage: number;              // 默认 1（预留）
   maxInputs: number;             // 默认 50（单次整合 stage1 上限）
   retentionDays: number;         // 默认 90：completed extraction job 的保留天数（audit 表另有 20k 行自动裁剪）；配置最小 1（0 拒绝）
   resourceRetentionDays: number; // 默认 7（对齐 codex RETENTION_DAYS）：extensions/<name>/resources 清理窗口；与 retentionDays 解耦

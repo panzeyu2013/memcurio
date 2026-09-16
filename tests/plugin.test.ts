@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ import { Index } from "../src/core/db.js";
 import { indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
-import { dshHome, memcurioBaseRoot, workspaceStoreRoot } from "../src/plugin/scope.js";
+import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -74,6 +74,57 @@ describe("memcurio data root", () => {
         process.env.DSH_HOME = prev;
       }
     }
+  });
+});
+
+describe("storeRootsUnder", () => {
+  test("lists only store roots that already hold an index.sqlite", () => {
+    const base = temporaryRoot();
+    mkdirSync(join(base, "dsh", "aaaaaaaaaaaaaaaa"), { recursive: true });
+    writeFileSync(join(base, "dsh", "aaaaaaaaaaaaaaaa", "index.sqlite"), "");
+    // A directory without a database is not a store yet.
+    mkdirSync(join(base, "dsh", "bbbbbbbbbbbbbbbb"), { recursive: true });
+    // A regular file in the namespace is ignored, not an error.
+    writeFileSync(join(base, "dsh", "not-a-dir"), "file");
+    expect(storeRootsUnder(base)).toEqual([join(base, "dsh", "aaaaaaaaaaaaaaaa")]);
+    expect(storeRootsUnder(join(base, "missing"))).toEqual([]);
+  });
+});
+
+describe("dshWorkerMessage", () => {
+  test("maps a native tool loop transcript onto DSH messages", () => {
+    const route = { provider: "deepseek-official", model: "deepseek-v4.1-flash-oai" };
+    const user = plugin.dshWorkerMessage({ role: "user", text: "inspect" }, route);
+    expect(user.role).toBe("user");
+    expect(user.content).toEqual([{ type: "text", text: "inspect" }]);
+
+    const assistant = plugin.dshWorkerMessage(
+      {
+        role: "assistant",
+        text: "checking",
+        toolCalls: [{ id: "call-1", name: "read_file", arguments: '{"rel":"MEMORY.md"}' }],
+      },
+      route,
+    );
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.source).toEqual({ kind: "model", provider: route.provider, model: route.model });
+    expect(assistant.content[0]).toEqual({ type: "text", text: "checking" });
+    expect(assistant.content[1]).toMatchObject({ type: "tool-call", name: "read_file", arguments: '{"rel":"MEMORY.md"}' });
+
+    const tool = plugin.dshWorkerMessage(
+      { role: "tool", toolCallId: "call-1", name: "read_file", content: "body", isError: false },
+      route,
+    );
+    expect(tool.role).toBe("user");
+    // The provider-issued call id correlates the result with the call block.
+    expect(tool.content).toEqual([
+      {
+        type: "tool-result",
+        toolCallId: ToolCallId("call-1"),
+        content: [{ type: "text", text: "body" }],
+        isError: false,
+      },
+    ]);
   });
 });
 
@@ -340,7 +391,7 @@ describe("DSH plugin contract", () => {
     // recall context. Such messages must never become extraction evidence.
     const injected = createUserMessage({
       content: [{ type: "text", text: "INJECTED MEMORY CONTENT that must not be remembered" }],
-      source: { kind: "plugin", plugin: "@memcurio/dsh-plugin", form: "recall" },
+      source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
     });
     const real = createUserMessage({ content: [{ type: "text", text: "real user text" }], source: { kind: "user" } });
     ctx.emit("session/event", session, {

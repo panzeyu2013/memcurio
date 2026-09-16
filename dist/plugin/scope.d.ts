@@ -17,5 +17,10 @@ export declare function dshHome(): string;
  *  The explicit plugin `root` / MEMCURIO_ROOT override is applied by the
  *  plugin apply() (plugin/index.ts), not here. */
 export declare function memcurioBaseRoot(): string;
+/** Every existing store root under one base root, dormant workspaces
+ *  included: a `<base>/dsh/<key>` directory that holds an index.sqlite. Used
+ *  by the plugin's dormant-store sweep, which needs the stores no live session
+ *  has adopted; a missing namespace simply means no stores exist yet. */
+export declare function storeRootsUnder(baseRoot: string): string[];
 /** Resolve the store used by one DSH workspace without exposing its path. */
 export declare function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string;

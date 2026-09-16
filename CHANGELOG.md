@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet - the first release is v0.0.1 below.
+### Fixed
+
+- **Phase 2 is a real tool-calling agent loop.** The consolidation provider no
+  longer asks the model to emit a JSON object in prose: the host channel now
+  exposes a native tool turn (`agent()` over DSH's `llm.stream` tools field),
+  the model calls `list_files` / `read_file` / `write_file` / `finish`
+  schemas, and tool results travel back as correlated tool-result messages. A
+  channel without native tool calling reports the run as incomplete and the
+  deterministic rule provider takes over — the JSON-in-prose protocol and its
+  parser are removed. The live instance had never succeeded at the old protocol
+  ("no tool call parsed": four failures plus a rule fallback).
+- **Blocked extractions no longer hot-loop.** A route-less provider parked jobs
+  as blocked, and `scheduleNextWake()` then replaced the 5-minute probe with a
+  ~100 ms retry (live-observed: 7.5 wakeups/s for 17 minutes, 15,052 audit rows
+  = 97% of the table). The wake is now suppressed while the provider is blocked.
+- **Usage telemetry counts only what the model receives.** `searchMemory`
+  registered every matching candidate line as reuse, so one broad query bumped
+  11 stage rows while showing 6 files and refreshed their retention window.
+  Only the surfaced hits (and the rollout a MEMORY.md citation names) count.
+- **Dormant stores drain.** Recovery was bound to the first live session of a
+  store, so a workspace whose sessions had all ended kept an expired processing
+  lease and pending jobs forever (live: one store with 1 expired-lease
+  processing job, 2 pending, 1 blocked, zero extracted rows). A bounded sweep
+  now drains every store root once a worker route is known.
+- **CJK retrieval.** A Chinese sentence was one un-matchable token for the
+  substring scanner; query terms now expand into adjacent two-character grams,
+  and the first dynamic query with zero hits is audited
+  (`adapter.dynamic_miss`) instead of failing silently.
+- **Work-driven consolidation trigger.** A three-row pending batch, a pending
+  row older than two hours, or an unapplied note bypasses the 6 h success
+  cooldown (the failure backoff still applies); a successful run clears the
+  stale `consolidation_auto_failed` marker.
+- **Injected messages stop claiming a form they cannot satisfy.**
+  `form: "recall"` only renders a platform recall body when the source also
+  carries `references` (label/retainedMessages/omittedMessages/truncated); the
+  summary block is opaque context and memcurio's own row renders it anyway.
+- Removed the reserved-but-inert `pipeline.minUsage` knob (validated,
+  persisted and documented, but never read by selection). Config files that
+  still carry it keep loading; the key is ignored.
+- Dynamic memory hits are derived from the injection budget (≈1 hit per 176
+  tokens, clamped to 4–8) instead of a second hard-coded limit.
+
+### Changed
+
+- `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
+  not implement it lose the LLM consolidation path (rule fallback) rather than
+  receiving a text protocol.
+
 
 ## [0.0.1] - 2026-09-16
 

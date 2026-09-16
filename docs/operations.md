@@ -48,7 +48,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 #### 每 store 级配置（data root 的 config.json，首用时自动创建 `0600`）
 
-`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `minUsage` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`。memcurio 不单独创建顶层数据位置：store 附属 DSH 数据根下 `＜DSH home＞/memcurio/dsh/<16 位 workspace 密钥>/`（DSH home 源为配置路径 → `$DSH_HOME` → `~/.dsh`；`MEMCURIO_ROOT`/插件 `root` 为可选覆盖）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
+`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps`。memcurio 不单独创建顶层数据位置：store 附属 DSH 数据根下 `＜DSH home＞/memcurio/dsh/<16 位 workspace 密钥>/`（DSH home 源为配置路径 → `$DSH_HOME` → `~/.dsh`；`MEMCURIO_ROOT`/插件 `root` 为可选覆盖）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
 
 ### 安装后验证
 
@@ -115,9 +115,9 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 - Successful compactions (and model-free `compaction/prune` events) prune the evidence parts their `shadowedSeqs` cover, keeping the bounded evidence window focused on the live surface.
 - `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); `<memcurio-citation>` blocks in assistant messages are harvested at `turn/end` into the usage window, so rollouts the model cites without searching still count.
 - Six native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`.
-- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
+- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. Phase 2 is a **native tool-calling** agent loop: `list_files` / `read_file` / `write_file` / `finish` schemas are forwarded through the provider's tools field, and tool results travel back as correlated tool-result messages. A host channel without a native tool-calling turn reports the run as incomplete and the deterministic rule provider takes over — there is no JSON-in-prose fallback. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
 - Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget that starts at retirement entry so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.
-- At plugin load, pending durable jobs are drained once per store root (crash recovery), and sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.
+- Per-store recovery drains run for the first live session of a store and, independently, a bounded periodic sweep drains dormant stores once a worker route is known — so crash recovery covers every workspace, not only the one that happens to open a session. Sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.
 
 ### Storage isolation
 

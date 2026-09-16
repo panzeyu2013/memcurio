@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -31,6 +32,23 @@ export function dshHome(): string {
  *  plugin apply() (plugin/index.ts), not here. */
 export function memcurioBaseRoot(): string {
   return join(dshHome(), "memcurio");
+}
+
+/** Every existing store root under one base root, dormant workspaces
+ *  included: a `<base>/dsh/<key>` directory that holds an index.sqlite. Used
+ *  by the plugin's dormant-store sweep, which needs the stores no live session
+ *  has adopted; a missing namespace simply means no stores exist yet. */
+export function storeRootsUnder(baseRoot: string): string[] {
+  const dshDir = join(resolve(baseRoot), "dsh");
+  let entries: string[];
+  try {
+    entries = readdirSync(dshDir);
+  } catch {
+    return [];
+  }
+  return entries
+    .map((entry) => join(dshDir, entry))
+    .filter((root) => existsSync(join(root, "index.sqlite")));
 }
 
 /** Resolve the store used by one DSH workspace without exposing its path. */

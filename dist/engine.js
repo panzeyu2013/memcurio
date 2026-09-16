@@ -36,11 +36,24 @@ const MAX_TRACKED_TOOLS = 256;
 const MAX_TRACKED_FILES = 256;
 const MAX_SUMMARY_CHARS = 4000;
 const DEFAULT_INJECT_BUDGET = 1500;
+/** Dynamic-hit bounds for one injection: roughly one hit per this many tokens
+ *  (path plus capped text), clamped so a tiny budget still injects context and
+ *  a large one cannot flood the window. Derived — not a second independent
+ *  limit — so the hit cap and the token budget cannot disagree. */
+const DYNAMIC_HIT_TOKENS = 176;
+const MIN_DYNAMIC_HITS = 4;
+const MAX_DYNAMIC_HITS = 8;
 // Codex-style scheduling: after a successful automatic consolidation, wait
 // before running another; after a failure, back off before retrying.
 /** Automatic Phase-2 cooldown after a successful consolidation (exported so
  *  the workbench snapshot reports the deployed value, not a guess). */
 export const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+/** Work-driven override for the wall-clock success cooldown: a pending batch
+ *  this large, or a pending row this old, consolidates without waiting out the
+ *  cooldown (a copied codex cooldown is wall-clock only and can strand a
+ *  growing batch for hours). The failure backoff is never overridden. */
+const AUTO_CONSOLIDATE_PENDING_TRIGGER = 3;
+const AUTO_CONSOLIDATE_MAX_WAIT_MS = 2 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
 /** Slow probe for a provider parked in the blocked state. Configuration
  *  changes normally reactivate it, but a restart can leave a job blocked in a
@@ -932,6 +945,7 @@ export class MemcurioAdapter {
         }
         const work = (async () => {
             const results = [];
+            let blocked = false;
             for (let i = 0; i < limit; i += 1) {
                 // Retire-time callers pass a deadline reserving room for the automatic
                 // Phase-2 pass: without it a slow extraction stream eats the whole
@@ -947,8 +961,13 @@ export class MemcurioAdapter {
                 if (result.status === "blocked") {
                     // Configuration changes (a usable route appearing) reactivate this
                     // provider; the slow probe is the safety net for the case where no
-                    // further host event ever arrives.
+                    // further host event ever arrives. It must NOT be followed by
+                    // scheduleNextWake(): the jobs just unblocked are pending with a past
+                    // next_attempt_at, so re-reading the earliest wake would replace the
+                    // 5-minute probe with a ~100ms retry loop (live-observed: 7.5
+                    // wakeups/s for 17 minutes and 15k audit rows).
                     this.scheduleRetry(AUTO_BLOCKED_PROBE_MS);
+                    blocked = true;
                     break;
                 }
                 if (result.status === "retry" && result.retryInMs !== undefined) {
@@ -956,7 +975,9 @@ export class MemcurioAdapter {
                     break;
                 }
             }
-            await this.scheduleNextWake();
+            if (!blocked) {
+                await this.scheduleNextWake();
+            }
             return results;
         })();
         this.workerPromise = work;
@@ -966,6 +987,12 @@ export class MemcurioAdapter {
         finally {
             this.workerPromise = null;
         }
+    }
+    /** Epoch ms of the next scheduled worker wake, or undefined when none is
+     *  armed. Exposed for tests and queue observability; never a scheduling
+     *  input (the durable queue is the source of truth). */
+    nextWakeDueAt() {
+        return this.retryDueAt;
     }
     /** Codex-style automatic Phase 2: after a session ends (or idles), drain
      *  pending extractions first, then run a consolidation when there is pending
@@ -1048,7 +1075,16 @@ export class MemcurioAdapter {
                 const last = idx.metaGet("consolidation_auto_last");
                 const failed = idx.metaGet("consolidation_auto_failed");
                 const now = Date.now();
-                if (last !== undefined) {
+                // Work-driven override: a long success cooldown must not strand a
+                // growing pending batch, an aging pending row, or a note the user just
+                // asked to remember. The failure backoff below is never overridden —
+                // a failing LLM route must not be hammered on every turn.
+                const pendingRows = idx.stageList().filter((r) => r.status === "pending" && !r.selectedForPhase2);
+                const oldestPending = pendingRows.reduce((min, r) => (min === undefined || r.generatedAt < min ? r.generatedAt : min), undefined);
+                const urgent = pendingRows.length >= AUTO_CONSOLIDATE_PENDING_TRIGGER ||
+                    (oldestPending !== undefined && now - Date.parse(oldestPending) >= AUTO_CONSOLIDATE_MAX_WAIT_MS) ||
+                    idx.noteList().some((n) => !n.applied);
+                if (last !== undefined && !urgent) {
                     const elapsed = now - Date.parse(last);
                     if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
                         cooldownMs = AUTO_CONSOLIDATE_COOLDOWN_MS - elapsed;
@@ -1120,6 +1156,9 @@ export class MemcurioAdapter {
             const idx3 = await Index.create(indexDb(root));
             try {
                 idx3.metaSet("consolidation_auto_last", new Date().toISOString());
+                // A past failure must not keep shortening the next window after a
+                // successful run; the failure branch above ignores the empty marker.
+                idx3.metaDelete("consolidation_auto_failed");
                 idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${channel?.name ?? "rule"})`);
             }
             finally {
@@ -1178,7 +1217,8 @@ export class MemcurioAdapter {
     async buildDynamicContext(workdir, query, budgetTokens) {
         const root = this.root;
         const budget = budgetTokens ?? this.#injectionBudget();
-        const { hits, blocked } = await searchMemory(root, query, 8);
+        const hitLimit = Math.max(MIN_DYNAMIC_HITS, Math.min(MAX_DYNAMIC_HITS, Math.floor(budget / DYNAMIC_HIT_TOKENS)));
+        const { hits, blocked } = await searchMemory(root, query, hitLimit);
         // Audits are for events, not for every quiet step: a miss stays silent so
         // the audit tail (and the workbench feed) is not flooded by "0 hit(s)".
         if (hits.length > 0 || blocked > 0) {
@@ -1200,6 +1240,19 @@ export class MemcurioAdapter {
         // header, then "rel:line content" lines capped per hit. No per-line prefix:
         // 8 hits × "[memcurio] " was pure overhead and the header says it once.
         return fitContext(renderHitBlock(hits).split("\n"), budget);
+    }
+    /** Record that a dynamic retrieval query produced no injectable hit.
+     *  Diagnostics only — a silent miss is indistinguishable from "no memory
+     *  matches" in the audit tail. The caller (plugin pre-step) enforces
+     *  once-per-session to keep the audit quiet. */
+    async recordDynamicMiss(workdir, query) {
+        const idx = await Index.create(indexDb(this.root));
+        try {
+            idx.audit("adapter.dynamic_miss", workdir, query.slice(0, 200));
+        }
+        finally {
+            idx.close();
+        }
     }
     // Reserved engine API: DSH exposes no compaction-prompt seam, so the
     // plugin never calls this; kept for future host services.

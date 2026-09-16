@@ -11,7 +11,14 @@ import { searchMemory } from "./core/search.js";
 export { MemcurioAdapter } from "./engine.js";
 export type { AdapterOptions } from "./engine.js";
 export type { HarnessToolPreset } from "./engine.js";
-export type { LlmChannel } from "./core/channel.js";
+export type {
+  AgentFinish,
+  AgentToolReply,
+  AgentTurnMessage,
+  LlmChannel,
+  ToolCallRequest,
+  ToolSpec,
+} from "./core/channel.js";
 
 async function withIndex<T>(root: string, run: (index: Index) => Promise<T> | T): Promise<T> {
   ensureLayout(root);

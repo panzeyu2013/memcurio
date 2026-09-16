@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/engine.js";
-import { LlmExtractProvider } from "../src/core/extract.js";
+import { LlmExtractProvider, ProviderNotConfiguredError } from "../src/core/extract.js";
 import type { LlmChannel } from "../src/core/channel.js";
 import { addAdHocNote } from "../src/core/adhoc.js";
 import { Index } from "../src/core/db.js";
@@ -219,6 +219,75 @@ describe("automatic consolidation LLM fallback", () => {
       expect(actions).not.toContain("consolidate.auto_failed");
       expect(idx.noteList().every((note) => note.applied)).toBe(true);
       expect(existsSync(join(dir, "memory", "MEMORY.md"))).toBe(true);
+    } finally {
+      idx.close();
+    }
+  });
+});
+
+describe("blocked extraction wake scheduling", () => {
+  test("a route-less provider arms the slow probe, never an immediate retry loop", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      async chat() {
+        throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
+      },
+    };
+    const adapter = new MemcurioAdapter({
+      durableQueue: true,
+      extract: new LlmExtractProvider(channel, "dsh"),
+    });
+    await adapter.sessionCreated("s1", PROJ, "dsh");
+    await adapter.messageSeen("s1", "p1", { kind: "user", text: "hello" });
+    await adapter.sessionIdle("s1");
+    const first = await adapter.processPendingExtractions();
+    expect(first.map((result) => result.status)).toEqual(["blocked"]);
+    const due = adapter.nextWakeDueAt();
+    expect(due).toBeDefined();
+    // The 5-minute blocked probe — NOT the ~100ms re-arm that produced the live
+    // 7.5 wakeups/s loop: the jobs unblocked by the first probe are pending
+    // with a past next_attempt_at, so scheduleNextWake would otherwise
+    // overwrite the probe with an immediate retry.
+    expect((due ?? 0) - Date.now()).toBeGreaterThan(4 * 60_000);
+    await adapter.processPendingExtractions();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const count = (action: string): number =>
+        idx.rawAll<{ c: number }>("SELECT COUNT(*) AS c FROM audit WHERE action = ?", [action])[0]?.c ?? 0;
+      expect(count("extract.queue_blocked")).toBeLessThanOrEqual(2);
+      expect(count("extract.queue_unblocked")).toBeLessThanOrEqual(2);
+    } finally {
+      idx.close();
+    }
+  });
+});
+
+describe("work-driven automatic consolidation", () => {
+  test("a three-row pending batch bypasses the wall-clock success cooldown", async () => {
+    const adapter = new MemcurioAdapter({ durableQueue: true });
+    const autoCount = async (): Promise<number> => {
+      const idx = await Index.create(indexDb(dir));
+      try {
+        return idx.rawAll<{ c: number }>("SELECT COUNT(*) AS c FROM audit WHERE action = 'consolidate.auto'")[0]?.c ?? 0;
+      } finally {
+        idx.close();
+      }
+    };
+    await addAdHocNote(dir, "seed the first consolidation", "remember");
+    await adapter.maybeConsolidate();
+    expect(await autoCount()).toBe(1);
+    // One pending row is not urgent: the 6h success cooldown still holds.
+    await seedRollout("dsh|pending-1");
+    await adapter.maybeConsolidate();
+    expect(await autoCount()).toBe(1);
+    // A three-row pending batch trips AUTO_CONSOLIDATE_PENDING_TRIGGER.
+    await seedRollout("dsh|pending-2");
+    await seedRollout("dsh|pending-3");
+    await adapter.maybeConsolidate();
+    expect(await autoCount()).toBe(2);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.stageList().filter((row) => row.status === "pending")).toHaveLength(0);
     } finally {
       idx.close();
     }

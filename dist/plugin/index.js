@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import Schema from "@deepseek-ai/schemastery";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
-import { memcurioBaseRoot, workspaceStoreRoot } from "./scope.js";
+import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { memoryWorkspace } from "../core/paths.js";
@@ -97,6 +97,12 @@ const DSH_CONSOLIDATE_RESERVE_MS = 10_000;
  *  DSH shutdown) stays bounded; the durable queue retries the leftovers. */
 const DSH_RETIRE_WORK_BUDGET_MS = 30_000;
 /** Bounded self-retry for a rejected retirement (transient DB failures). */
+/** Dormant-store sweep bounds: stores per sweep, jobs per store, and the
+ *  intervals that keep the sweep from becoming a busy loop. */
+const STORE_SWEEP_MAX_ROOTS = 8;
+const STORE_SWEEP_DRAIN_LIMIT = 4;
+const STORE_SWEEP_PER_ROOT_MS = 30 * 60 * 1000;
+const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
 const DSH_RETIRE_RETRY_MS = 5_000;
 /** System-prompt section order for the read-path guide: after the per-tool
@@ -218,7 +224,37 @@ function latestRoute(events) {
 function memoryMessage(text) {
     return createUserMessage({
         content: [{ type: "text", text }],
-        source: { kind: "plugin", plugin: "@memcurio/dsh-plugin", form: "recall" },
+        // No declared context form: the injected block is an opaque cross-session
+        // summary, not a session-transcript recall. A `form: "recall"` source
+        // only renders a recall body when it also carries `references`
+        // (label/retainedMessages/omittedMessages/truncated), which a summary
+        // cannot supply — the dedicated memcurio row renders on the plugin id.
+        source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+    });
+}
+/** Map one native-loop transcript entry onto DSH's message vocabulary:
+ *  plugin-sourced user text, model assistant messages carrying real
+ *  tool-call blocks, and tool-result messages correlated by call id. */
+export function dshWorkerMessage(message, route) {
+    if (message.role === "user") {
+        return createUserMessage({
+            content: [{ type: "text", text: message.text }],
+            source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+        });
+    }
+    if (message.role === "assistant") {
+        const content = [];
+        if (message.text)
+            content.push({ type: "text", text: message.text });
+        for (const call of message.toolCalls) {
+            content.push({ type: "tool-call", id: ToolCallId(call.id), name: call.name, arguments: call.arguments });
+        }
+        return createAssistantMessage({ content, source: { provider: route.provider, model: route.model } });
+    }
+    return createToolResultMessage({
+        callId: ToolCallId(message.toolCallId),
+        content: [{ type: "text", text: message.content }],
+        isError: message.isError === true,
     });
 }
 function dshChannel(ctx, route, abortSignal) {
@@ -263,6 +299,74 @@ function dshChannel(ctx, route, abortSignal) {
             if (!output.trim())
                 throw new Error("DSH model returned no text for the Memcurio worker");
             return output;
+        },
+        // Native tool-calling turn: provider tool schemas go out, real tool-call
+        // blocks come back, and the results travel as DSH tool-result messages.
+        // This is the Phase-2 agent loop's only transport — there is no
+        // JSON-in-prose protocol.
+        async agent(system, messages, tools, signal) {
+            const selected = route();
+            if (!selected)
+                throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
+            const signals = [AbortSignal.timeout(DSH_WORKER_CHAT_TIMEOUT_MS)];
+            const runtimeSignal = abortSignal();
+            if (runtimeSignal)
+                signals.push(runtimeSignal);
+            if (signal)
+                signals.push(signal);
+            const combined = AbortSignal.any(signals);
+            const wire = messages.map((message) => dshWorkerMessage(message, selected));
+            let text = "";
+            let finish = "stop";
+            let failure;
+            const calls = new Map();
+            for await (const chunk of ctx.llm.stream({
+                ...selected,
+                system,
+                messages: wire,
+                tools: [...tools],
+                signal: combined,
+            })) {
+                if (chunk.type === "text-delta" && typeof chunk.text === "string") {
+                    text += chunk.text;
+                }
+                else if (chunk.type === "tool-call-delta") {
+                    const current = calls.get(chunk.index) ?? { id: String(chunk.id), name: "", args: "" };
+                    if (typeof chunk.name === "string" && chunk.name)
+                        current.name = chunk.name;
+                    if (chunk.id)
+                        current.id = String(chunk.id);
+                    current.args += chunk.argumentsDelta;
+                    calls.set(chunk.index, current);
+                }
+                else if (chunk.type === "block-end" && chunk.block.type === "tool-call") {
+                    const block = chunk.block;
+                    calls.set(chunk.index, { id: String(block.id), name: block.name, args: block.arguments });
+                }
+                else if (chunk.type === "finish") {
+                    const reason = chunk.reason;
+                    if (reason.kind === "error" || reason.kind === "aborted") {
+                        finish = reason.kind;
+                        failure = reason.failure.message;
+                    }
+                    else {
+                        finish = reason.kind;
+                    }
+                }
+            }
+            if (finish === "error")
+                throw new Error(failure || "DSH model call failed");
+            if (finish === "aborted")
+                throw new Error(failure || "DSH model call aborted");
+            const toolCalls = [...calls.entries()]
+                .sort(([a], [b]) => a - b)
+                .map(([, call]) => ({ id: call.id, name: call.name, arguments: call.args }))
+                .filter((call) => call.name !== "");
+            // Some adapters end a tool turn as "stop"; the presence of calls is the
+            // authoritative signal for the loop.
+            if (finish === "stop" && toolCalls.length > 0)
+                finish = "tool-calls";
+            return { text: text.trim(), toolCalls, finish, ...(failure === undefined ? {} : { failure }) };
         },
     };
 }
@@ -552,6 +656,75 @@ export function apply(ctx, config = {}) {
         // on; this runs even in profiles with no web server).
         void bridge.refresh(runtime.root).catch(warn);
     };
+    /** Drain stores that no live session bootstrapped. The per-session
+     *  bootstrap above leaves dormant workspaces stranded forever: a live
+     *  instance showed one expired processing lease plus two pending jobs and
+     *  zero extracted rows for a workspace whose last session had ended hours
+     *  earlier. The sweep is bounded per run and per root, runs only once a
+     *  worker route is known (a route-less drain would just re-block every job),
+     *  and never touches a root a live session already bootstrapped. */
+    const sweptRoots = new Map();
+    const sweepDormantStores = (reason) => {
+        const globalRoute = fixedRoute() ?? lastKnownRoute;
+        if (!globalRoute) {
+            return;
+        }
+        const now = Date.now();
+        // Never drain a store a live session owns: its own adapter is already
+        // draining it, and two workers would only fence each other's claims.
+        const activeRoots = new Set([...sessions.values()].map((runtime) => runtime.root));
+        const roots = storeRootsUnder(baseRoot)
+            .filter((root) => !bootstrappedRoots.has(root) && !activeRoots.has(root))
+            .filter((root) => now - (sweptRoots.get(root) ?? 0) >= STORE_SWEEP_PER_ROOT_MS)
+            .slice(0, STORE_SWEEP_MAX_ROOTS);
+        if (roots.length === 0) {
+            return;
+        }
+        ctx.logger.debug(`memcurio: sweeping ${String(roots.length)} dormant store(s) (${reason})`);
+        void (async () => {
+            for (const root of roots) {
+                sweptRoots.set(root, Date.now());
+                const adapter = new MemcurioAdapter({
+                    root,
+                    host: "dsh",
+                    durableQueue: true,
+                    injectBudgetTokens: () => live().injectBudgetTokens,
+                    toolPreset: DSH_TOOL_PRESET,
+                    channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => undefined),
+                    log: (level, message, details) => {
+                        if (level === "warn" || level === "error") {
+                            ctx.logger[level](`memcurio[${level}]: ${message}`, details);
+                        }
+                        else {
+                            ctx.logger.debug(`memcurio[${level}]: ${message}`, details);
+                        }
+                    },
+                });
+                try {
+                    const revived = await adapter.requeuePolicyRejectedExtractions();
+                    if (revived > 0) {
+                        ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
+                    }
+                    await adapter.processPendingExtractions(STORE_SWEEP_DRAIN_LIMIT);
+                }
+                catch (error) {
+                    warn(error);
+                }
+                finally {
+                    adapter.dispose();
+                }
+            }
+        })();
+    };
+    // Safety net for routes that appear without a new session (a restored
+    // session replays its route; a pinned route can change live) and for stores
+    // whose jobs stay blocked until a later route appears.
+    const sweepTimer = setInterval(() => sweepDormantStores("periodic"), STORE_SWEEP_INTERVAL_MS);
+    sweepTimer.unref?.();
+    ctx.effect(() => () => {
+        clearInterval(sweepTimer);
+    }, "memcurio dormant-store sweep");
+    sweepDormantStores("apply");
     const ensureSession = (session) => {
         const existing = sessions.get(session.id);
         if (existing)
@@ -579,8 +752,9 @@ export function apply(ctx, config = {}) {
         // A pinned route is read LIVE at every consumption point (fixedRoute);
         // the seed only picks the session's initial fallback route.
         const seededRoute = fixedRoute() ?? latestRoute(seedEvents) ?? lastKnownRoute;
-        if (seededRoute)
+        if (seededRoute) {
             lastKnownRoute = seededRoute;
+        }
         let runtime;
         const adapter = new MemcurioAdapter({
             root,
@@ -610,6 +784,7 @@ export function apply(ctx, config = {}) {
             queue: Promise.resolve(),
             workerQueue: Promise.resolve(),
             staticInjected: false,
+            dynamicMissAudited: false,
             route: seededRoute,
             pendingCompactions: new Map(),
             abort: new AbortController(),
@@ -618,6 +793,9 @@ export function apply(ctx, config = {}) {
         sessions.set(session.id, runtime);
         bridge.registerSession({ sessionId: session.id, workdir, root });
         bootstrapRoot(runtime);
+        // A route just became known: dormant stores can now drain. Runs after this
+        // session is registered, so its own (bootstrapped) store is excluded.
+        sweepDormantStores("session route");
         void enqueue(runtime, async () => {
             await adapter.sessionCreated(session.id, workdir, "dsh");
             // Seed summaries live in the SAME map the live handler consumes, so a
@@ -943,6 +1121,7 @@ export function apply(ctx, config = {}) {
         if (agentRoute && fixedRoute() === undefined) {
             runtime.route = agentRoute;
             lastKnownRoute = agentRoute;
+            sweepDormantStores("pre-step route");
         }
         await awaitRuntime(runtime);
         let context;
@@ -967,8 +1146,13 @@ export function apply(ctx, config = {}) {
             }
             if (query) {
                 dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, live().injectBudgetTokens);
-                if (dynamicPiece)
+                if (dynamicPiece) {
                     parts.push(dynamicPiece);
+                }
+                else if (!runtime.dynamicMissAudited) {
+                    runtime.dynamicMissAudited = true;
+                    void runtime.adapter.recordDynamicMiss(runtime.workdir, query).catch(warn);
+                }
             }
             context = parts.filter(Boolean).join("\n\n");
         }
