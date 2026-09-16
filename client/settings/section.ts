@@ -237,7 +237,8 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         void save("injectContext", next).then(announce);
       }),
       {
-        description: t("injectContextNote"),
+        // No description line (product instruction, 2026-09-16): the switch
+        // needs no explainer, and the row keeps the panel compact.
         badge: face.overridden.includes("injectContext") ? resetBadge(() => reset("injectContext")) : null,
       },
     ),

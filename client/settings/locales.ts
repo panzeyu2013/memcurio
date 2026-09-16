@@ -13,8 +13,6 @@ export const en = {
   scopeWorkspace: "Per workspace (isolated store)",
   scopeGlobal: "Shared store (global)",
   injectContext: "Memory",
-  injectContextNote:
-    "Evaluated on every agent step, but unchanged content is never re-injected: the static context once per session, dynamic hits only when they change.",
   registerTools: "Register the memory tools",
   registerToolsNote:
     "On: the six memory_* tools are registered for the agent (write / read / curate memory). Off: the model has no such tools; stored memory and automatic injection are unaffected. Changes apply after a restart.",
@@ -51,8 +49,6 @@ export const zh = {
   scopeWorkspace: "按工作区隔离",
   scopeGlobal: "共享 store（全局）",
   injectContext: "记忆",
-  injectContextNote:
-    "每个 agent step 都评估；内容未变不重复注入：静态上下文每会话一次，动态命中仅在变化时注入。",
   registerTools: "注册记忆工具",
   registerToolsNote:
     "开启：把 6 个 memory_* 工具注册给 agent（记忆写入 / 检索 / 整理）。关闭：模型没有这些工具，已存记忆与自动注入不受影响。变更需重启生效。",

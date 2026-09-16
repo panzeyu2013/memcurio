@@ -411,8 +411,12 @@ describe("settings panel in jsdom (real react-dom)", () => {
     expect(panel.container.querySelector(".memcurio-select-wrap #memcurio-scope")?.className).toBe("memcurio-select");
     const resetAll = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.resetAll);
     expect(resetAll?.className).toBe("memcurio-button");
-    // The master switch row carries the measured injection semantics.
-    expect(panel.container.querySelector(".memcurio-field .memcurio-desc")?.textContent).toBe(en.injectContextNote);
+    // The master switch row carries NO explainer line (product instruction):
+    // the row is label + switch only, so the first description in the panel
+    // belongs to the next field.
+    const switchRow = panel.container.querySelector(".memcurio-field");
+    expect(switchRow?.querySelector(".memcurio-desc")).toBeNull();
+    expect(switchRow?.textContent).toBe(en.injectContext);
     // One row per setting: the worker route shares a single control group, so
     // the panel never stacks a label line and a control line per field.
     const provider = panel.container.querySelector("#memcurio-provider");

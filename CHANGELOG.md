@@ -123,6 +123,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The memory switch row carries no explainer (v1.9.3)**: the Settings row for
+  memory injection is label + switch only. The `injectContextNote` line
+  (per-step evaluation / unchanged content is not re-injected) was removed from
+  both dictionaries and from the row; the injection semantics are implementation
+  detail, not panel copy. The panel assertion follows.
 - **Memory tool rows always lead with the book mark**: running, settled, error
   and interrupted states all render memcurio's book; a terminal state only
   colours the mark (error/warning token) instead of swapping it for the shipped
