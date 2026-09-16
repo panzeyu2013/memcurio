@@ -163,4 +163,38 @@
 
 验证：`bun test` **569 pass / 35 files**（新增/更新的断言覆盖 marker 变更、命中前缀移除、截断上限、客户端 hit 计数按 `rel:line` 形状）；`bun run lint` 干净；`bun run build` 重建 dist 与 `lib/client.js`（客户端 formatter 变为形状匹配，drift 门禁通过）；pack-check 83 files 干净；已安装（materialize op 见下）。实测渲染：摘要块 115 字符、动态块 87 字符（单命中示例）。
 
+## 9. 定版轮（第四十二轮）：全量检查、提交、装机与 live 管线闭环
+
+### 9.1 全量检查
+
+- `bun run typecheck`、`bun run lint`（1 warning / 6 infos，均为既有项）、`bun test` **571 pass / 35 files / 3,344 expect / 0 fail**、`bun run build`（dist + lib/client.js 重建）、`pack-check`（83 files，dist 干净）。
+- 定版轮新增：`tests/engine.test.ts` 动态上下文线格式回归（`Memory hits:` 头、无 `[memcurio]` 前缀、单条 220 字符上限 + `…`、零命中返回空串）；修掉本轮引入的两条 lint info（正则多余转义、字符串拼接改模板）与一处测试边界（locator 长度按实际计算）。
+- 文档一致性扫描：`MEMORY_SUMMARY BEGINS` 仅作为历史前后对照保留在 §5/§8.4 表格中，其余无失效描述。
+
+### 9.2 提交与推送
+
+- `2ec0e8d feat(memory): injection layering, memory visibility surfaces, pipeline fixes`（89 files, +4,978 / −1,646）。
+- 已推送：`8ae2e96..2ec0e8d main -> main`。
+
+### 9.3 打包与安装
+
+- `.smoke/memcurio-dsh-plugin-0.0.1.tgz`（182,197 B，sha256 `6bc615a82d7309806286f130cd7118b75b6d0698beea441b74f1b7e8121b4f08`），`pack-check` 通过。
+- gateway materialize op `7f9b92e0-…` **ok**。安装物核对：指南 1,554 字符、无绝对路径、`MAX_HIT_CHARS=220`、引擎不再拼 `[memcurio]` 行、客户端按形状计数。
+
+### 9.4 live 管线闭环（运行中进程 = 重启前构建，含 F1–F4）
+
+| 证据 | 结果 |
+|---|---|
+| `consolidate.done provider=rule, edits=2, selected=11`（13:03:50） | **F3 生效**：LLM 失败降级 rule provider，产出 `MEMORY.md`（1,584 B）+ `memory_summary.md`（246 B） |
+| `consolidate.auto` + `consolidate.fallback`（13:03） | 自动 Phase-2 真正跑完（此前每轮 `auto_failed`，无任何产出） |
+| 队列 completed 48 / **dead 14** / pending 0 | **F1 生效**：策略误杀不再新增（dead 自 12:06 起未变），10 个任务走完 staged |
+| stage1 11 selected；notes 1 applied / 1 pending | 整合消费了全部待选集，并应用了 1 条 ad-hoc note |
+| `adapter.static_context injected`（12:40、13:00） | 摘要产出后按步注入（重启后由 latch 修复保证及时性） |
+| `adapter.dynamic_context 8 hit(s)`（13:06） | 动态命中正常 |
+
+### 9.5 待重启完成项
+
+重启后加载 v1.9 / v1.9.1 + F5/F6/F7：① 指南只出现在 system prompt，user message 只有记忆数据，命中块为紧凑格式；② 首个会话 adoption 即 requeue 14 个策略 dead 并 drain（F5）；③ retire 为整合预留 10s（F6）；④ 任意会话（含子代理/多标签）的 snapshot 均可解析（F7）。
+
+
 
