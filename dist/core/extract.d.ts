@@ -127,11 +127,19 @@ export declare function processExtractionQueue(root: string, provider: ExtractPr
  *  could be rendered into one). Truncation is lossy but recoverable; a
  *  rejected reply would burn retries and dead-letter instead. */
 export declare const MAX_EXTRACT_FIELD_BYTES: number;
+/** Out-parameter for {@link parseExtractReply}: how many reply lines the
+ *  injection-policy REPAIR had to drop (undefined when the reply scanned
+ *  clean and was accepted untouched). */
+export interface ExtractionPolicyReport {
+    repairedLines?: number;
+}
 /** Parse the Phase-1 LLM reply into a Stage1Output. Only the explicit,
  *  schema-valid all-empty object is a no-op; malformed or safety-rejected
  *  replies throw so durable workers retry/dead-letter instead of silently
- *  acknowledging lost extraction work. */
-export declare function parseExtractReply(raw: string, fallback: Partial<Stage1Output>): Stage1Output | null;
+ *  acknowledging lost extraction work. A reply that trips the injection
+ *  scanner is first REPAIRED line-wise (see repairInjectionLines) and only
+ *  rejected when the repaired text is still unsafe or empty. */
+export declare function parseExtractReply(raw: string, fallback: Partial<Stage1Output>, report?: ExtractionPolicyReport): Stage1Output | null;
 /** Run Phase 1 for one session: extract via the provider and stage the result
  *  in the state DB (never directly in the memory workspace — artifacts are
  *  synced by Phase 2). Returns the staged output, or null when the provider

@@ -11,6 +11,7 @@ export declare function integrationSearch(root: string, query: string, topK?: nu
         rel: string;
         line: number;
         score: number;
+        pending?: boolean;
     }[];
     blocked: number;
 }>;

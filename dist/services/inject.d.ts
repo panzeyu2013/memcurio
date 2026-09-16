@@ -6,9 +6,9 @@ export interface SimulateHit {
 export interface SimulateResult {
     hits: SimulateHit[];
     blocked: number;
-    /** Token cost the simulated dynamic context would occupy, estimated over
-     *  the engine-shaped lines (`[memcurio] rel:line content`) so the budget
-     *  bar matches what buildDynamicContext would actually inject. */
+    /** Token cost the simulated dynamic context would occupy, estimated over the
+     *  engine's exact hit block so the budget bar matches what
+     *  buildDynamicContext would actually inject. */
     budgetTokens: number;
 }
 /** Budget-capped summary plus read-path instructions, separately — the two

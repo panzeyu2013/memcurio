@@ -4,9 +4,21 @@ This directory carries TWO halves with different maturity:
 
 1. **Shipped: the Settings panel and the memory visibility surfaces** (`entry.ts`,
    `settings/*`, `ui/*`, built to `lib/client.js`) — the `dsh.client` browser half that registers the
-   `memcurio` Settings section, the session-header injection indicator (with the injection
-   preview popover and unread write badge), the injection/write toast host, and one keyed
-   `tool.call.toolview` row per native memory tool. It requires only the platform-seeded
+   `memcurio` Settings section (which owns the memory ON/OFF switch as its first row, writing
+   `injectContext`, and wears the shipped settings vocabulary as COMPACT rows — one line per
+   setting (text left, control right, description folded in), the worker route stacked on its own
+   full-width control line with an explicit Save button (label + note keep the row's first line), an icon-only status dot in the title row (green ready /
+   grey idle / red error, the chamber-mcp convention), 34px inputs, capsule actions,
+   status/badge tokens), the injection/write toast host, the "记忆注入 / Memory
+   injection" transcript row for injected memory (book mark leading; `ui/context-row.ts`, which shadows the shipped
+   `conversation.chat.node` `context` cell at priority -1 and forwards every non-memcurio context
+   node back to that shipped renderer), and
+   one keyed `tool.call.toolview` row per native memory tool. The session header carries no memcurio
+   entry (v1.7 product instruction): `ui/injection-indicator.ts` is the reserved workbench status
+   surface and is deliberately NOT registered. The settings-nav row carries the book
+   mark through the `settings.action` probe, an interaction-level watcher and the section mount,
+   plus the `[data-memcurio-nav]` stylesheet rules
+   (`settings/nav-mark.ts`), because the shell owns every section icon. It requires only the platform-seeded
    `react`; discovery rides `package.json` `dsh.client` + `exports["./client"]`; `pack:check` validates the artifact.
    Controller logic is unit-tested (`tests/client-settings.test.ts`, 23: atomic route-pair writes, atomic resetAll,
    base-aware resets, listener containment, single-subscription relatching, faceHook seat contract) and the
@@ -14,8 +26,13 @@ This directory carries TWO halves with different maturity:
    `lib/client.js` is executed through the official `__ModuleLoader__` contract, its registration is inspected in a
    real cordis context, the `hooks`→`useFace` conversion is asserted with the framework's own
    `standardHookPropName`, and the panel is rendered with real `react-dom` in jsdom (transport-driven repaint,
-   override badges, loading/unavailable faces, checkbox + bulk-reset interactions, atomic route pair, readOnly while
-   busy, locale-keyed failures). Real-browser rendering, slot governance and the `settings.yaml` round trip still
+   override badges, loading/unavailable faces, switch + bulk-reset interactions, atomic route pair, readOnly while
+   busy, locale-keyed failures); `tests/ui-render.test.ts` renders the indicator's active and injection-off faces
+   against the settings seat (disabled state hides the counts and labels the preview as history), one memory tool
+   row, and the injected-memory context row (own title + expansion, delegation to the shipped context row for
+   foreign producers, no delegation for memcurio nodes); `tests/client-nav-mark.test.ts` pins the settings-nav marking contract (match, idempotence,
+   unmark) and the bundle test renders the shipped probe component against the shell's row shape. Real-browser
+   rendering, slot governance and the `settings.yaml` round trip still
    were verified in a real DSH Web on 2026-09-15 (isolated profile: bundle execution, boot-token transport,
    `settings.section` render — see [docs/verification-s0-web.md](../docs/verification-s0-web.md)); the session-header
    entry still needs a live conversation. `client/entry.ts`'s code is exercised through the built bundle rather than

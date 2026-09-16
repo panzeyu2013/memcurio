@@ -7,7 +7,10 @@
  * the platform icon set is never imported at runtime. The context-injection
  * glyph is the platform's own `IconContextInjectionOutline16` path data,
  * inlined verbatim: injection events keep the platform vocabulary while the
- * bundle stays dependency-free.
+ * bundle stays dependency-free. The book mark leads memcurio's own surfaces —
+ * the six tool rows, the settings-nav mask, the write toasts and (v1.8) the
+ * injected-memory row (`context-row.ts`); the platform glyph remains for the
+ * injection toasts and the adapter's generic fallback row.
  *
  * String builders exist for the imperative toast host (document-level, no
  * React root); the components are the slot-rendered form of the same marks.
@@ -42,6 +45,22 @@ export function memoryMarkSvg(size = 14): string {
 export function contextInjectionSvg(size = 14): string {
   const paths = CONTEXT_INJECTION_PATHS.map((d) => `<path d="${d}" fill="currentColor"/>`).join("");
   return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" aria-hidden="true">${paths}</svg>`;
+}
+
+/** The book mark as a CSS mask image (data URI), for surfaces whose glyph is
+ *  painted by a stylesheet rather than rendered into a DOM node — currently
+ *  the settings-nav row, whose icon the shell owns. */
+export function memoryMarkMaskDataUrl(): string {
+  const paths = MEMORY_MARK_PATHS.map((d) => `<path d="${d}"/>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+/** The select chevron as a CSS mask image (data URI, 24-unit stroke), painted
+ *  by the stylesheet in `currentColor` — the platform select pattern. */
+export function chevronMaskDataUrl(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 
 /** memcurio's main mark: a book with a ribbon (the chosen "书页" glyph). */
@@ -91,14 +110,4 @@ export function ChevronDownIcon({ size = 14 }: { size?: number }): ReactElement 
     },
     createElement("path", { d: "M6 9l6 6 6-6" }),
   );
-}
-
-/**
- * Terminal-state mark of one tool row: the shipped `StateDot` geometry (a
- * solid core inside a 10% halo), colour supplied by the `data-state` rule in
- * the stylesheet. Replaces the mark for error/stopped settlements, exactly as
- * the shipped tool rows do.
- */
-export function MemoryStateDot({ state }: { state: "error" | "warning" }): ReactElement {
-  return createElement("span", { className: "memcurio-dot", "data-state": state, "aria-hidden": true });
 }

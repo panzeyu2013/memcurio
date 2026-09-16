@@ -1,14 +1,13 @@
 import { estimateTokens } from "../core/budget.js";
-import { renderMemoryContext, renderReadPathInstructions } from "../core/inject.js";
+import { MAX_HIT_CHARS, renderHitBlock, renderMemoryContext, renderReadPathInstructions, renderStaticContext, } from "../core/inject.js";
 import { redactSecrets } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
-const MAX_HIT_CHARS = 500;
 /** Budget-capped summary plus read-path instructions, separately — the two
  *  pieces real injection composes (and the workbench preview keeps apart). */
 export function staticParts(root, budgetTokens) {
     return {
         summary: renderMemoryContext(root, budgetTokens),
-        instructions: renderReadPathInstructions(root),
+        instructions: renderReadPathInstructions(),
     };
 }
 /** Full static injection preview: the budget-capped summary plus the read-path
@@ -18,8 +17,7 @@ export function staticParts(root, budgetTokens) {
  *  parity), and no audit row is written (real injections audit
  *  adapter.static_context / adapter.dynamic_context). */
 export function staticContext(root, budgetTokens) {
-    const { summary, instructions } = staticParts(root, budgetTokens);
-    return { text: `${summary}\n${instructions}` };
+    return { text: renderStaticContext(root, budgetTokens) };
 }
 /** Injection simulator: run one arbitrary query through the real search path
  *  (re-redacted, per-hit 500-char truncation) and report what the model would
@@ -36,10 +34,9 @@ export async function simulate(root, query, topK = 8) {
             content: redacted.length > MAX_HIT_CHARS ? `${redacted.slice(0, MAX_HIT_CHARS)}…` : redacted,
         };
     });
-    const engineLines = result.hits.map((hit) => `[memcurio] ${hit.rel}:${hit.line} ${hit.content}`);
     return {
         hits,
         blocked: result.blocked,
-        budgetTokens: estimateTokens(engineLines.join("\n")),
+        budgetTokens: estimateTokens(renderHitBlock(result.hits)),
     };
 }

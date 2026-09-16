@@ -5,8 +5,8 @@
  * it via `ctx.settings.installSection`.
  *
  * Asserts: namespace registration + composition base; live application of
- * hostBridge / injectContext; the cross-field provider+model validation; and
- * persistence into the settings document.
+ * injectContext / budget / scope; the cross-field provider+model validation;
+ * and persistence into the settings document.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -73,7 +73,6 @@ describe("memcurio settings namespace", () => {
     const pluginFiber = await ctx.plugin(plugin, {
       root,
       scope: "global",
-      hostBridge: false,
       provider: "profile-provider",
       model: "profile-model",
     });
@@ -83,26 +82,9 @@ describe("memcurio settings namespace", () => {
       scope: "global",
       provider: "profile-provider",
       model: "profile-model",
-      hostBridge: false,
     });
     // No user layer yet: the resolved value is the composition base.
     expect(descriptor?.user ?? {}).toEqual({});
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
-  });
-
-  test("applies hostBridge live through the settings document", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
-    const bridge = hostBridgeForRoot(root);
-    expect(bridge?.isEnabled).toBe(false);
-
-    await ctx.settings.update("memcurio", { hostBridge: true });
-    expect(hostBridgeForRoot(root)?.isEnabled).toBe(true);
-
-    await ctx.settings.update("memcurio", { hostBridge: false });
-    expect(hostBridgeForRoot(root)?.isEnabled).toBe(false);
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });
@@ -137,6 +119,8 @@ describe("memcurio settings namespace", () => {
     ctx.sessions.announce(session);
     const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: true });
     await ctx.sessions.flush(session);
+    // v1.9: only memory DATA is injected, so the store needs a summary.
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- keep it short\n");
 
     const agent = { session, options: {} } as never;
     const userMsg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
@@ -167,11 +151,10 @@ describe("memcurio settings namespace", () => {
   test("persists the user layer into the settings document", async () => {
     const root = temporaryRoot();
     const { ctx, fibers, settingsPath } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
-    await ctx.settings.update("memcurio", { hostBridge: true, injectBudgetTokens: 900 });
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
+    await ctx.settings.update("memcurio", { injectBudgetTokens: 900 });
     const text = readFileSync(settingsPath, "utf8");
     expect(text).toContain("memcurio:");
-    expect(text).toContain("hostBridge: true");
     expect(text).toContain("injectBudgetTokens: 900");
     await pluginFiber.dispose();
     await disposeFibers(fibers);
@@ -186,7 +169,7 @@ async function ctx_plugin(h: Harness, root: string, config: Record<string, unkno
 
 describe("pinned worker route rule", () => {
   test("a pinned route requires both non-empty halves", () => {
-    const base = { scope: "workspace" as const, injectContext: true, registerTools: true, hostBridge: false };
+    const base = { scope: "workspace" as const, injectContext: true, registerTools: true };
     expect(pinnedRoute(base)).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();
@@ -222,11 +205,12 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     await disposeFibers(fibers);
   });
 
-  test("live hostBridge enable seeds refresh baselines, tags read hits, and reports live scope/budget", async () => {
+  test("the startup refresh seeds the audit baseline, tags read hits, and reports live scope/budget", async () => {
     const root = temporaryRoot();
     writeWorkspaceText(root, "MEMORY.md", "# heading\nfact line\n");
     const { ctx, fibers } = await harness();
-    // Pre-existing audit history + a live session, so live-enable must seed.
+    // Pre-existing audit history + a live session: the plugin's startup
+    // refresh must seed the baseline so historic rows never surface.
     const { Index } = await import("../src/core/db.js");
     const { indexDb } = await import("../src/core/paths.js");
     const seedIndex = await Index.create(indexDb(root));
@@ -238,19 +222,16 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     const session = ctx.sessions.prepare(SessionId("settings-live"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
     await ctx.sessions.flush(session);
 
     const bridge = hostBridgeForRoot(root);
-    expect(bridge?.isEnabled).toBe(false);
+    if (!bridge) throw new Error("host bridge missing for root");
     const sink: Array<{ kind: string }> = [];
-    bridge?.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
+    bridge.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
 
-    await ctx.settings.update("memcurio", { hostBridge: true, scope: "global", injectBudgetTokens: 900 });
-    expect(bridge?.isEnabled).toBe(true);
-    // Await the seeding refresh directly (coalesced with the fire-and-forget
-    // one from onChange) instead of sleeping.
-    await bridge?.refresh(root);
+    await ctx.settings.update("memcurio", { scope: "global", injectBudgetTokens: 900 });
+    await bridge.refresh(root);
     expect(sink.filter((delta) => delta.kind === "receipt")).toHaveLength(0);
     expect(JSON.stringify(sink)).not.toContain("pre-existing note");
 
@@ -271,10 +252,10 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     } finally {
       laterIndex.close();
     }
-    await bridge?.refresh(root);
+    await bridge.refresh(root);
     expect(sink.some((delta) => delta.kind === "receipt")).toBe(true);
 
-    const snapshot = await bridge?.snapshot(root, session.id);
+    const snapshot = await bridge.snapshot(root, session.id);
     expect(snapshot?.settings.scopeBadge).toBe("global");
     expect(snapshot?.settings.injectBudgetTokens).toBe(900);
 
@@ -283,7 +264,7 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     await disposeFibers(fibers);
   });
 
-  test("live enable seeds the whole audit tail (>500 rows) and coalesces concurrent refreshes", async () => {
+  test("the startup refresh seeds the whole audit tail (>500 rows) and coalesces concurrent refreshes", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await harness();
     const { Index } = await import("../src/core/db.js");
@@ -297,13 +278,12 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     const session = ctx.sessions.prepare(SessionId("settings-seed-tail"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", hostBridge: false });
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
     const attached = hostBridgeForRoot(root);
     if (!attached) throw new Error("host bridge missing for root");
     const sink: Array<{ kind: string }> = [];
     attached.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
 
-    await ctx.settings.update("memcurio", { hostBridge: true });
     // Concurrent refreshes share one projection pass (same settlement).
     const [first, second] = await Promise.all([attached.refresh(root), attached.refresh(root)]);
     expect(first).toBe(second);

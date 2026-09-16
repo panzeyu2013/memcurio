@@ -8,6 +8,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { JSDOM } from "jsdom";
 
+import type { MemorySettingsFaceLike, MemorySettingsHook, MemoryToolBlockLike } from "../client/ui/contracts.js";
+import {
+  CONTEXT_ROW_PRIORITY,
+  createContextRow,
+  MemcurioInjectionRow,
+  type ContextRowProps,
+} from "../client/ui/context-row.js";
 import type { MemoryHook } from "../client/ui/injection-indicator.js";
 import { MemoryInjectionIndicator } from "../client/ui/injection-indicator.js";
 import { createMemoryUiStore } from "../client/ui/model.js";
@@ -35,12 +42,19 @@ afterEach(() => {
 const t = (key: string, params?: Record<string, unknown>): string =>
   params === undefined ? key : `${key}:${JSON.stringify(params)}`;
 
+const SETTINGS: MemorySettingsFaceLike = { status: "ready", writable: true, value: { injectContext: true } };
+
+/** Observable settings seat, as the renderer binds it from `hooks.settings`. */
+function settingsHook(face: MemorySettingsFaceLike): MemorySettingsHook {
+  return (selector) => selector(face);
+}
+
 const SNAPSHOT: UiSnapshot = {
   at: "2026-09-14T00:00:00.000Z",
   store: { id: "w1", root: "/tmp/store", isolated: false },
   injection: {
     staticSummary: "[memcurio] summary",
-    dynamicText: "[memcurio] a.md:3 hit one\n[memcurio] b.md:9 hit two",
+    dynamicText: "Memory hits:\na.md:3 hit one\nb.md:9 hit two",
   },
   receipts: [
     { seq: 1, time: "2026-09-14T00:00:01.000Z", action: "adhoc.note", object: "dsh|s1", detail: "note saved", writePath: true, id: "r1" },
@@ -65,7 +79,14 @@ describe("memory indicator", () => {
     const useMemory: MemoryHook = (selector) => selector(store.getSnapshot());
     const { container, root } = mount();
     await act(async () => {
-      root.render(React.createElement(MemoryInjectionIndicator, { t, useMemory, markSeen: () => store.markSeen() }));
+      root.render(
+        React.createElement(MemoryInjectionIndicator, {
+          t,
+          useMemory,
+          useSettings: settingsHook(SETTINGS),
+          markSeen: () => store.markSeen(),
+        }),
+      );
     });
     expect(container.querySelector("button")?.getAttribute("data-state")).toBe("active");
     expect(container.textContent).toContain("2");
@@ -78,6 +99,81 @@ describe("memory indicator", () => {
     expect(container.textContent).toContain("panelInjection");
     expect(container.textContent).toContain("hit one");
 
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("renders injection off as its own read-only state (the switch lives in Settings)", async () => {
+    const store = createMemoryUiStore();
+    store.setRealtime("push");
+    const useMemory: MemoryHook = (selector) => selector(store.getSnapshot());
+    const off: MemorySettingsFaceLike = { status: "ready", writable: true, value: { injectContext: false } };
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(
+        React.createElement(MemoryInjectionIndicator, {
+          t,
+          useMemory,
+          useSettings: settingsHook(off),
+          markSeen: () => undefined,
+        }),
+      );
+    });
+    // Off is its own glyph state, never a healthy idle one.
+    expect(container.querySelector(".memcurio-indicator")?.getAttribute("data-state")).toBe("disabled");
+    const button = container.querySelector(".memcurio-indicator");
+    await act(async () => {
+      button?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("panelInjectionOff");
+    // The header is status-only: no switch, no write path.
+    expect(container.querySelector(".memcurio-switch")).toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("keeps the preview as labelled history while injection is off", async () => {
+    const store = createMemoryUiStore();
+    store.applySnapshot(SNAPSHOT);
+    // The first snapshot seeds the receipt baseline; the second one adds a
+    // write, which raises the unread count the off state must hide.
+    store.applySnapshot({
+      ...SNAPSHOT,
+      receipts: [
+        { seq: 2, time: "2026-09-14T00:00:02.000Z", action: "adhoc.note", object: "dsh|s1", detail: "second note", writePath: true, id: "r2" },
+        ...SNAPSHOT.receipts,
+      ],
+    });
+    store.setRealtime("push");
+    expect(store.getSnapshot().unread).toBe(1);
+    const useMemory: MemoryHook = (selector) => selector(store.getSnapshot());
+    let seen = 0;
+    const off: MemorySettingsFaceLike = { status: "ready", writable: true, value: { injectContext: false } };
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(
+        React.createElement(MemoryInjectionIndicator, {
+          t,
+          useMemory,
+          useSettings: settingsHook(off),
+          markSeen: () => {
+            seen += 1;
+          },
+        }),
+      );
+    });
+    expect(container.querySelector(".memcurio-indicator")?.getAttribute("data-state")).toBe("disabled");
+    // Off hides both the hit count and the unread dot.
+    expect(container.querySelector(".memcurio-indicator-count")).toBeNull();
+    expect(container.querySelector(".memcurio-indicator-unread")).toBeNull();
+    const button = container.querySelector(".memcurio-indicator");
+    await act(async () => {
+      button?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("panelInjectionPaused");
+    expect(seen).toBe(0);
     await act(async () => {
       root.unmount();
     });
@@ -111,4 +207,157 @@ describe("memory tool row", () => {
       root.unmount();
     });
   });
+
+  test("every state leads with the book mark, never a status dot", async () => {
+    // The row's own mark is memcurio's book in running, ok, error and
+    // interrupted settlements; the terminal state only colours it.
+    const BOOK = "M5 6a3 3 0 0 1 3-3h11v18";
+    const cases: readonly (readonly [string, MemoryToolBlockLike])[] = [
+      ["running", { argsRaw: JSON.stringify({ query: "deployment" }) }],
+      [
+        "ok",
+        {
+          kind: "tool-result",
+          isError: false,
+          call: { argsRaw: JSON.stringify({ query: "deployment" }) },
+          content: [{ type: "text", text: "[memcurio] a.md:3 hit" }],
+        },
+      ],
+      [
+        "error",
+        {
+          kind: "tool-result",
+          isError: true,
+          error: { name: "Error", code: "boom" },
+          content: [{ type: "text", text: "tool exploded" }],
+        },
+      ],
+      ["stopped", { kind: "tool-result", isError: true, error: { code: "interrupted" } }],
+    ];
+    for (const [state, block] of cases) {
+      const { container, root } = mount();
+      await act(async () => {
+        root.render(React.createElement(MemoryToolRow, { t, toolName: "memory_search", block }));
+      });
+      const path = container.querySelector(".memcurio-tool-leading-state svg path")?.getAttribute("d") ?? "";
+      expect(`${state}: book=${path.startsWith(BOOK)}`).toBe(`${state}: book=true`);
+      expect(`${state}: dots=${container.querySelectorAll(".memcurio-tool-leading .memcurio-dot").length}`).toBe(
+        `${state}: dots=0`,
+      );
+      expect(container.querySelector(".memcurio-tool-head")?.getAttribute("data-state")).toBe(state);
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
 });
+
+describe("memory injection context row", () => {
+  const MEMORY_DATA = {
+    content: [{ type: "text", text: "[memcurio] MEMORY.md:3 remember this" }],
+    source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+  };
+
+  test("titles a memcurio injection 记忆注入 and expands the model-facing text", async () => {
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(React.createElement(MemcurioInjectionRow, { t, data: MEMORY_DATA }));
+    });
+    // The platform's generic "上下文注入 / Context injection" title is replaced.
+    expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("contextRowTitle");
+    expect(container.querySelector(".memcurio-context-source")?.textContent).toBe("@memcurio/dsh-plugin");
+    expect(container.querySelector(".memcurio-context-body")).toBeNull();
+    // The row leads with memcurio's own book mark, not the platform glyph.
+    const iconPath = container.querySelector(".memcurio-context-icon svg path")?.getAttribute("d") ?? "";
+    expect(iconPath.startsWith("M5 6a3 3 0 0 1 3-3h11v18")).toBe(true);
+
+    const head = container.querySelector(".memcurio-context-head");
+    if (!head) throw new Error("no context row head");
+    await act(async () => {
+      head.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    });
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".memcurio-context-body")?.textContent).toContain("remember this");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("shadows the shipped context cell and delegates every other node to it", async () => {
+    const shipped = (props: ContextRowProps): ReturnType<typeof React.createElement> =>
+      React.createElement(
+        "div",
+        { className: "shipped-context-row" },
+        String((props.node?.data?.source as { plugin?: string } | undefined)?.plugin ?? ""),
+      );
+    const row = createContextRow({
+      slots: {
+        entries: () => [
+          { component: row, options: { key: "context", priority: CONTEXT_ROW_PRIORITY } },
+          { component: shipped, options: { key: "context", priority: 0 } },
+        ],
+      },
+      chatT: (key) => key,
+    });
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(
+        React.createElement(row, {
+          node: {
+            kind: "context",
+            data: { content: [{ type: "text", text: "runtime fact" }], source: { kind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt" } },
+          },
+          t,
+        }),
+      );
+    });
+    // A foreign producer keeps the shipped row, never the memcurio title.
+    expect(container.querySelector(".shipped-context-row")?.textContent).toBe("@deepseek-ai/dsh-system-prompt");
+    expect(container.querySelector(".memcurio-context-title")).toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("renders memcurio nodes itself, not through the shipped row", async () => {
+    const shipped = (): ReturnType<typeof React.createElement> => React.createElement("div", { className: "shipped-context-row" });
+    const row = createContextRow({
+      slots: { entries: () => [{ component: shipped, options: { key: "context", priority: 0 } }] },
+      chatT: (key) => key,
+    });
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(React.createElement(row, { node: { kind: "context", data: MEMORY_DATA }, t }));
+    });
+    expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("contextRowTitle");
+    expect(container.querySelector(".shipped-context-row")).toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("keeps the platform glyph on the fallback row when no shipped row exists", async () => {
+    const row = createContextRow({ slots: { entries: () => [] }, chatT: (key) => key });
+    const { container, root } = mount();
+    await act(async () => {
+      root.render(
+        React.createElement(row, {
+          node: {
+            kind: "context",
+            data: { content: [{ type: "text", text: "orphan fact" }], source: { kind: "plugin", plugin: "@other/plugin" } },
+          },
+          t,
+        }),
+      );
+    });
+    expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("message.contextInjection");
+    const iconPath = container.querySelector(".memcurio-context-icon svg path")?.getAttribute("d") ?? "";
+    expect(iconPath.startsWith("M11.9512")).toBe(true);
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+

@@ -18,7 +18,7 @@ import { isSameOriginLoopbackRequest } from "../src/plugin/ui-transport.js";
 const SNAPSHOT: UiSnapshot = {
   at: "2026-09-14T00:00:00.000Z",
   store: { id: "w1", root: "/tmp/store", isolated: false },
-  injection: { staticSummary: "[memcurio] summary", dynamicText: "[memcurio] a.md:3 hit one\n[memcurio] b.md:9 hit two" },
+  injection: { staticSummary: "[memcurio] summary", dynamicText: "Memory hits:\na.md:3 hit one\nb.md:9 hit two" },
   receipts: [
     { seq: 1, time: "2026-09-14T00:00:00.000Z", action: "adapter.created", object: "-", detail: "noise", writePath: false },
     { seq: 2, time: "2026-09-14T00:00:01.000Z", action: "adhoc.note", object: "dsh|s1", detail: "note saved", writePath: true, id: "r2" },
@@ -29,7 +29,7 @@ const SNAPSHOT: UiSnapshot = {
 
 describe("injection derivations", () => {
   test("counts engine dynamic hit lines and estimates tokens", () => {
-    expect(countDynamicHits("[memcurio] a:1 x\nnot a hit\n[memcurio] b:2 y")).toBe(2);
+    expect(countDynamicHits("a:1 x\nnot a hit\nMemory hits:\nb:2 y")).toBe(2);
     expect(countDynamicHits(undefined)).toBe(0);
     expect(estimateTokens("abcd")).toBe(1);
     expect(estimateTokens("")).toBe(0);
@@ -64,7 +64,7 @@ describe("memory UI store", () => {
     store.applySnapshot(SNAPSHOT);
     const events = store.applyDeltas(
       [
-        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "[memcurio] a:1 z", budgetTokens: 900, duplicate: false },
+        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "a:1 z", budgetTokens: 900, duplicate: false },
         { kind: "receipt", time: Date.parse("2026-09-14T00:00:05.000Z"), action: "adhoc.note", detail: "second note" },
       ],
       "s1",
@@ -136,7 +136,7 @@ describe("memory UI store session binding", () => {
     const events = store.applyDeltas(
       [
         { kind: "inject-updated", sessionId: "other", staticText: "[memcurio] wrong", duplicate: false },
-        { kind: "inject-updated", sessionId: "mine", staticText: "[memcurio] right", dynamicText: "[memcurio] a:1 x", duplicate: false },
+        { kind: "inject-updated", sessionId: "mine", staticText: "[memcurio] right", dynamicText: "a:1 x", duplicate: false },
         { kind: "receipt", time: Date.parse("2026-09-14T00:00:09.000Z"), action: "adhoc.note", detail: "store-level" },
       ],
       "mine",
@@ -203,7 +203,7 @@ describe("snapshot receipt folding (review regressions)", () => {
     const store = createMemoryUiStore();
     store.applySnapshot({ ...SNAPSHOT, injection: {} });
     store.applyDeltas(
-      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "[memcurio] a:1 x", duplicate: false }],
+      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "a:1 x", duplicate: false }],
       "s1",
     );
     expect(store.getSnapshot().injection?.hits).toBe(1);

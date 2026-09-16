@@ -249,8 +249,9 @@ describe("buildSnapshot", () => {
     expect(snapshot.usage).toEqual({ byKey: {} });
     // No store layout: the queue/consolidation face degrades to null (never throws).
     expect(snapshot.consolidation).toBeNull();
-    expect(snapshot.injection.staticSummary).toContain("not consolidated");
-    expect(snapshot.injection.readGuide).toContain("read path");
+    // An empty store has no summary block to preview (the guide is separate).
+    expect(snapshot.injection.staticSummary).toBe("");
+    expect(snapshot.injection.readGuide).toContain("## memcurio memory");
     expect(snapshot.realtime).toEqual({ mode: "polling", degraded: false });
     expect(snapshot.settings).toEqual({
       dataRoot: root,
@@ -374,7 +375,7 @@ describe("round-19 enrichment (receipt synthesis, radar candidates, settings/dyn
       baseRoot: dir,
       injectBudgetTokens: 900,
       version: "rc.1 contract",
-      dynamicText: "[memcurio] rollout_summaries/x.md:1 some dynamic line",
+      dynamicText: "Memory hits:\nrollout_summaries/x.md:1 some dynamic line",
     });
     expect(snapshot.injection.dynamicText).toContain("dynamic line");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);

@@ -1,9 +1,13 @@
 import { estimateTokens } from "../core/budget.js";
-import { renderMemoryContext, renderReadPathInstructions } from "../core/inject.js";
+import {
+  MAX_HIT_CHARS,
+  renderHitBlock,
+  renderMemoryContext,
+  renderReadPathInstructions,
+  renderStaticContext,
+} from "../core/inject.js";
 import { redactSecrets } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
-
-const MAX_HIT_CHARS = 500;
 
 export interface SimulateHit {
   rel: string;
@@ -14,9 +18,9 @@ export interface SimulateHit {
 export interface SimulateResult {
   hits: SimulateHit[];
   blocked: number;
-  /** Token cost the simulated dynamic context would occupy, estimated over
-   *  the engine-shaped lines (`[memcurio] rel:line content`) so the budget
-   *  bar matches what buildDynamicContext would actually inject. */
+  /** Token cost the simulated dynamic context would occupy, estimated over the
+   *  engine's exact hit block so the budget bar matches what
+   *  buildDynamicContext would actually inject. */
   budgetTokens: number;
 }
 
@@ -25,7 +29,7 @@ export interface SimulateResult {
 export function staticParts(root: string, budgetTokens?: number): { summary: string; instructions: string } {
   return {
     summary: renderMemoryContext(root, budgetTokens),
-    instructions: renderReadPathInstructions(root),
+    instructions: renderReadPathInstructions(),
   };
 }
 
@@ -36,8 +40,7 @@ export function staticParts(root: string, budgetTokens?: number): { summary: str
  *  parity), and no audit row is written (real injections audit
  *  adapter.static_context / adapter.dynamic_context). */
 export function staticContext(root: string, budgetTokens?: number): { text: string } {
-  const { summary, instructions } = staticParts(root, budgetTokens);
-  return { text: `${summary}\n${instructions}` };
+  return { text: renderStaticContext(root, budgetTokens) };
 }
 
 /** Injection simulator: run one arbitrary query through the real search path
@@ -55,10 +58,9 @@ export async function simulate(root: string, query: string, topK = 8): Promise<S
       content: redacted.length > MAX_HIT_CHARS ? `${redacted.slice(0, MAX_HIT_CHARS)}…` : redacted,
     };
   });
-  const engineLines = result.hits.map((hit) => `[memcurio] ${hit.rel}:${hit.line} ${hit.content}`);
   return {
     hits,
     blocked: result.blocked,
-    budgetTokens: estimateTokens(engineLines.join("\n")),
+    budgetTokens: estimateTokens(renderHitBlock(result.hits)),
   };
 }

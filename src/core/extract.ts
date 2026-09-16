@@ -4,7 +4,7 @@ import type { ExtractionJobRow } from "./db.js";
 import { extractJsonObject } from "./json.js";
 import type { LlmChannel } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
-import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
+import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 
 export interface RolloutSnapshot {
@@ -191,7 +191,7 @@ export class LlmExtractProvider implements ExtractProvider {
         buildExtractPrompt(snapshot),
       );
       return parseExtractReply(raw, snapshotToFallback(snapshot));
-  } catch (err) {
+    } catch (err) {
       console.warn(`[memcurio] llm extraction failed: ${String(err)}`);
       // Transport/provider failures must escape so the durable queue can
       // retry instead of acknowledging a lost extraction as if it were an
@@ -581,11 +581,24 @@ function clipField(text: string): string {
   return clipped;
 }
 
+/** Out-parameter for {@link parseExtractReply}: how many reply lines the
+ *  injection-policy REPAIR had to drop (undefined when the reply scanned
+ *  clean and was accepted untouched). */
+export interface ExtractionPolicyReport {
+  repairedLines?: number;
+}
+
 /** Parse the Phase-1 LLM reply into a Stage1Output. Only the explicit,
  *  schema-valid all-empty object is a no-op; malformed or safety-rejected
  *  replies throw so durable workers retry/dead-letter instead of silently
- *  acknowledging lost extraction work. */
-export function parseExtractReply(raw: string, fallback: Partial<Stage1Output>): Stage1Output | null {
+ *  acknowledging lost extraction work. A reply that trips the injection
+ *  scanner is first REPAIRED line-wise (see repairInjectionLines) and only
+ *  rejected when the repaired text is still unsafe or empty. */
+export function parseExtractReply(
+  raw: string,
+  fallback: Partial<Stage1Output>,
+  report?: ExtractionPolicyReport,
+): Stage1Output | null {
   let value: unknown;
   try {
     value = extractJsonObject(raw);
@@ -619,8 +632,33 @@ export function parseExtractReply(raw: string, fallback: Partial<Stage1Output>):
   // reply, otherwise a payload beyond the truncation point would be cut away
   // before scanning and never flagged. Truncation happens after the scan.
   const flags = sanitizeForInjection(`${rolloutSummaryRaw}\n${rawMemoryRaw}`);
-  const rolloutSummary = clipField(rolloutSummaryRaw);
-  const rawMemory = clipField(rawMemoryRaw);
+  let summaryText = rolloutSummaryRaw;
+  let memoryText = rawMemoryRaw;
+  if (flags.safe === false) {
+    // REPAIR before rejecting: extraction replies routinely quote session
+    // prose ("… sends the token to the gateway") that the exfiltration rule
+    // flags as a false positive. Dropping the offending lines keeps the
+    // rollout; a reply still unsafe (or emptied) after repair is real
+    // promptware and keeps failing.
+    const summaryRepair = repairInjectionLines(summaryText);
+    const memoryRepair = repairInjectionLines(memoryText);
+    summaryText = summaryRepair.text;
+    memoryText = memoryRepair.text;
+    const recheck = sanitizeForInjection(`${summaryText}\n${memoryText}`);
+    if (!recheck.safe || !summaryText.trim() || !memoryText.trim()) {
+      throw new ExtractReplyError(
+        "rejected",
+        `extraction reply rejected by injection policy: ${flags.flags[0] ?? "unsafe output"}`,
+      );
+    }
+    const removed = summaryRepair.removed + memoryRepair.removed;
+    if (report) report.repairedLines = removed;
+    console.warn(
+      `[memcurio] extraction reply repaired by injection policy: dropped ${String(removed)} line(s); rollout=${rolloutSlug || fallback.rolloutKey || "unknown"}`,
+    );
+  }
+  const rolloutSummary = clipField(summaryText);
+  const rawMemory = clipField(memoryText);
   const redSummary = redactSecrets(rolloutSummary);
   const redMemory = redactSecrets(rawMemory);
   const output: Stage1Output = {
@@ -630,9 +668,6 @@ export function parseExtractReply(raw: string, fallback: Partial<Stage1Output>):
     rolloutSlug: (rolloutSlug || fallback.rolloutSlug || "rollout").replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80),
     sourceUpdatedAt: fallback.sourceUpdatedAt ?? new Date().toISOString(),
   };
-  if (flags.safe === false) {
-    throw new ExtractReplyError("rejected", `extraction reply rejected by injection policy: ${flags.flags[0] ?? "unsafe output"}`);
-  }
   return output;
 }
 

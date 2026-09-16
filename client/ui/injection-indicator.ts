@@ -5,15 +5,20 @@
  * Registered into `conversation.session.header.utilities`; the glyph is the
  * platform context-injection mark, the count is the latest pre-step dynamic
  * hit count, and the badge is the unread write-receipt count. The popover
- * carries the injection preview (static text, read guide, dynamic hits,
- * budget) plus the recent memory-write receipts (G6). All values come from
- * the injected store seat, never from a value snapshot.
+ * carries the injection switch (the same injectContext setting the Settings
+ * panel owns), the injection preview (static text, read guide, dynamic hits,
+ * budget) plus the recent memory-write receipts (G6).
+ *
+ * All values come from the injected seats, never from a value snapshot. An
+ * instance with injection switched off renders as off — never as a healthy
+ * idle glyph — and every state carries a text label next to its colour.
  *
  * @module
  */
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 
+import type { MemorySettingsFaceLike, MemorySettingsHook } from "./contracts.js";
 import { ContextInjectionIcon } from "./icons.js";
 import type { UiKey } from "./locales.js";
 import type { InjectionView, MemoryReceipt, MemoryUiState, RealtimeMode } from "./model.js";
@@ -24,6 +29,7 @@ export type MemoryHook = <T>(selector: (state: MemoryUiState) => T) => T;
 export interface MemoryIndicatorProps {
   t: (key: UiKey, params?: Record<string, unknown>) => string;
   useMemory: MemoryHook;
+  useSettings: MemorySettingsHook;
   markSeen(): void;
 }
 
@@ -85,10 +91,16 @@ function panel(props: {
   injection: InjectionView | null;
   receipts: readonly MemoryReceipt[];
   realtime: RealtimeMode;
+  enabled: boolean;
 }): ReactElement {
-  const { t, injection, receipts, realtime } = props;
+  const { t, injection, receipts, realtime, enabled } = props;
   const sections: ReactElement[] = [];
   if (injection !== null) {
+    // A disabled injection keeps the last preview only as history: saying so
+    // keeps a stale value from reading as the current one.
+    if (!enabled) {
+      sections.push(h("p", { className: "memcurio-empty", key: "paused" }, t("panelInjectionPaused")));
+    }
     if (injection.staticText !== undefined) sections.push(preview(t("panelStatic"), injection.staticText));
     if (injection.readGuide !== undefined) sections.push(preview(t("panelReadGuide"), injection.readGuide));
     if (injection.dynamicText !== undefined) {
@@ -97,7 +109,9 @@ function panel(props: {
     const budget = budgetBar(injection, t);
     if (budget !== null) sections.push(budget);
   } else {
-    sections.push(h("p", { className: "memcurio-empty", key: "empty" }, t("panelNoInjection")));
+    sections.push(
+      h("p", { className: "memcurio-empty", key: "empty" }, enabled ? t("panelNoInjection") : t("panelInjectionOff")),
+    );
   }
   sections.push(
     h(
@@ -127,8 +141,9 @@ function panel(props: {
 
 /** The header entry: injection glyph + hit count + unread dot + popover. */
 export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElement {
-  const { t, useMemory, markSeen } = props;
+  const { t, useMemory, useSettings, markSeen } = props;
   const state = useMemory((snapshot) => snapshot);
+  const settings: MemorySettingsFaceLike = useSettings((snapshot) => snapshot);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   // Dismiss on an outside pointer press or Escape: a header popover that only
@@ -153,23 +168,33 @@ export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElem
   const injection = state.injection;
   const count = injection?.hits ?? 0;
   const active = injection !== null;
-  // The transport mode is visible even with no injection: "off" (bridge
-  // disabled / no token) must not masquerade as a healthy idle glyph.
-  const dataState =
-    state.realtime === "off" ? "offline" : state.realtime === "polling" && active ? "degraded" : active ? "active" : "idle";
-  const label = active
-    ? count > 0
-      ? t("statusActive", { count, tokens: injection.tokens })
-      : t("statusStatic", { tokens: injection.tokens })
-    : t("statusIdle");
+  const enabled = settings.value.injectContext;
+  // The transport mode stays visible even with no injection, and a disabled
+  // injection is its own state: "off" must never masquerade as healthy idle.
+  const dataState = !enabled
+    ? "disabled"
+    : state.realtime === "off"
+      ? "offline"
+      : state.realtime === "polling" && active
+        ? "degraded"
+        : active
+          ? "active"
+          : "idle";
+  const label = !enabled
+    ? t("statusDisabled")
+    : active
+      ? count > 0
+        ? t("statusActive", { count, tokens: injection.tokens })
+        : t("statusStatic", { tokens: injection.tokens })
+      : t("statusIdle");
   const modeNote = state.realtime === "polling" ? t("statusDegraded") : state.realtime === "off" ? t("statusOffline") : "";
   const toggle = useCallback(() => {
     setOpen((value) => {
       const next = !value;
-      if (next && state.unread > 0) markSeen();
+      if (next && enabled && state.unread > 0) markSeen();
       return next;
     });
-  }, [markSeen, state.unread]);
+  }, [enabled, markSeen, state.unread]);
   return h(
     "div",
     { style: { position: "relative" }, ref: wrapRef },
@@ -185,9 +210,17 @@ export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElem
         onClick: toggle,
       },
       h(ContextInjectionIcon, {}),
-      active ? h("span", { className: "memcurio-indicator-count" }, count > 0 ? String(count) : "•") : null,
-      state.unread > 0 ? h("span", { className: "memcurio-indicator-unread" }) : null,
+      enabled && active ? h("span", { className: "memcurio-indicator-count" }, count > 0 ? String(count) : "•") : null,
+      enabled && state.unread > 0 ? h("span", { className: "memcurio-indicator-unread" }) : null,
     ),
-    open ? panel({ t, injection, receipts: state.receipts, realtime: state.realtime }) : null,
+    open
+      ? panel({
+          t,
+          injection,
+          receipts: state.receipts,
+          realtime: state.realtime,
+          enabled,
+        })
+      : null,
   );
 }

@@ -41,15 +41,20 @@ export declare class HostBridge {
     private injectBudgetTokens?;
     /** Settings summary carries the plugin reference version. */
     get referenceVersion(): string | undefined;
-    private enabled;
     private sink;
     private readonly projector;
     /** root -> workdir label, seeded by the plugin's ensureSession. */
     private readonly labels;
     /** root -> raw workdir ("" = no-cwd store). */
     private readonly workdirs;
-    /** root -> session id that resolved it (last registration wins per root). */
+    /** root -> session id that resolved it (the LATEST registration per root;
+     *  used as a fallback when a snapshot has no session id). */
     private readonly sessionsByRoot;
+    /** session id -> root. Every session keeps its binding: a workspace can host
+     *  several sessions at once (subagents, extra tabs), and the browser must
+     *  still resolve its own session — a last-writer-wins map would 404 every
+     *  other session's snapshot. */
+    private readonly sessionRoots;
     /** Root registered most recently (snapshot fallback without a session);
      *  tracked explicitly because re-registering a root keeps its Map order. */
     private lastRoot;
@@ -63,9 +68,6 @@ export declare class HostBridge {
     /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
     private readonly lastInjection;
     constructor(options: HostBridgeOptions);
-    get isEnabled(): boolean;
-    enable(): void;
-    disable(): void;
     attachSink(sink: BridgeSink): void;
     detachSink(): void;
     /** Wire the evidence provider (plugin: adapter.memoryEvidenceSnapshot). */

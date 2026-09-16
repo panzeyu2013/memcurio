@@ -21,7 +21,7 @@ import {
   type SettingsScopeSnapshotLike,
 } from "../client/settings/controller.js";
 
-const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true, hostBridge: false };
+const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
 class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
   snapshot: SettingsScopeSnapshotLike<MemcurioSettingsView> = {
@@ -59,10 +59,25 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     for (const listener of this.listeners) listener();
   }
 
+  /** Publish a new user layer plus the host's resolved document: base merged
+   *  with the user layer (a cleared field falls back to the composition base,
+   *  exactly like the real mirror). */
+  private publish(user: Record<string, unknown>): void {
+    const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
+    const value = { ...base, ...(user as Partial<MemcurioSettingsView>) };
+    this.snapshot = {
+      ...this.snapshot,
+      user,
+      value,
+      revision: (this.snapshot.revision ?? 0) + 1,
+    };
+  }
+
   async set(field: string, value: unknown): Promise<void> {
     this.sets.push({ field, value });
     if (!this.landing) return;
-    this.land(field, value);
+    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: value };
+    this.publish(user);
   }
 
   async unset(field: string): Promise<void> {
@@ -70,7 +85,7 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     if (!this.landing) return;
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
     delete user[field];
-    this.snapshot = { ...this.snapshot, user, revision: (this.snapshot.revision ?? 0) + 1 };
+    this.publish(user);
   }
 
   /** Atomic ops: the host reduces them and validates once (a lone route half
@@ -79,43 +94,22 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     this.mutations.push(ops);
     if (!this.landing) return;
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    const value = { ...(this.snapshot.value ?? BASE) } as unknown as Record<string, unknown>;
     for (const op of ops) {
       const field = op.path[0] as SettingsField;
-      if (op.op === "set") {
-        user[field] = op.value;
-        value[field] = op.value;
-      } else {
-        delete user[field];
-        delete value[field];
-      }
+      if (op.op === "set") user[field] = op.value;
+      else delete user[field];
     }
-    this.snapshot = {
-      ...this.snapshot,
-      user,
-      value: value as unknown as MemcurioSettingsView,
-      revision: (this.snapshot.revision ?? 0) + 1,
-    };
-  }
-
-  private land(field: string, value: unknown): void {
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: value };
-    this.snapshot = {
-      ...this.snapshot,
-      user,
-      value: { ...(this.snapshot.value ?? BASE), [field]: value } as MemcurioSettingsView,
-      revision: (this.snapshot.revision ?? 0) + 1,
-    };
+    this.publish(user);
   }
 }
 
 describe("decode/override/guard helpers", () => {
   test("decode narrows odd wire shapes to safe defaults", () => {
-    expect(decodeSettings(undefined)).toEqual({ scope: "workspace", injectContext: true, registerTools: true, hostBridge: false });
-    expect(decodeSettings({ scope: "global", injectContext: false, hostBridge: true, injectBudgetTokens: 900 })).toMatchObject({
+    expect(decodeSettings(undefined)).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
+    expect(decodeSettings({ scope: "global", injectContext: false, registerTools: false, injectBudgetTokens: 900 })).toMatchObject({
       scope: "global",
       injectContext: false,
-      hostBridge: true,
+      registerTools: false,
       injectBudgetTokens: 900,
     });
   });
@@ -126,11 +120,10 @@ describe("decode/override/guard helpers", () => {
       injectContext: "yes",
       registerTools: null,
       injectBudgetTokens: "900",
-      hostBridge: 1,
       provider: 42,
       model: "",
     });
-    expect(view).toEqual({ scope: "workspace", injectContext: true, registerTools: true, hostBridge: false });
+    expect(view).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
     const arrays = decodeSettings({ scope: ["global"], injectBudgetTokens: [900] });
     expect(arrays.scope).toBe("workspace");
     expect(arrays.injectBudgetTokens).toBeUndefined();
@@ -138,14 +131,14 @@ describe("decode/override/guard helpers", () => {
 
   test("overridden fields are presence-based", () => {
     expect(overriddenFields(undefined)).toEqual([]);
-    expect(overriddenFields({ hostBridge: false, scope: "global" })).toEqual(["scope", "hostBridge"]);
+    expect(overriddenFields({ registerTools: false, scope: "global" })).toEqual(["scope", "registerTools"]);
   });
 
   test("route guard requires provider and model together (write and reset)", () => {
     expect(routeProblem("provider", "p", BASE)).toBe(ERROR_KEYS.routePair);
     expect(routeProblem("model", "m", BASE)).toBe(ERROR_KEYS.routePair);
     expect(routeProblem("provider", "p", { ...BASE, model: "m" })).toBeUndefined();
-    expect(routeProblem("hostBridge", true, BASE)).toBeUndefined();
+    expect(routeProblem("registerTools", true, BASE)).toBeUndefined();
     // Reset semantics: clearing one overridden half while the other stays.
     expect(routeProblem("provider", undefined, { ...BASE, provider: "p", model: "m" })).toBe(ERROR_KEYS.routePair);
     expect(routeProblem("provider", undefined, { ...BASE, provider: "p" })).toBeUndefined();
@@ -172,13 +165,13 @@ describe("MemcurioSettingsController", () => {
     const controller = new MemcurioSettingsController(scope);
     const first = controller.face();
     expect(controller.face()).toBe(first); // stable until a change
-    expect(first.value.hostBridge).toBe(false);
-    expect(await controller.save("hostBridge", true)).toEqual({ ok: true });
+    expect(first.value.registerTools).toBe(true);
+    expect(await controller.save("registerTools", false)).toEqual({ ok: true });
     const next = controller.face();
     expect(next).not.toBe(first);
-    expect(next.value.hostBridge).toBe(true);
-    expect(next.overridden).toEqual(["hostBridge"]);
-    expect(scope.sets).toEqual([{ field: "hostBridge", value: true }]);
+    expect(next.value.registerTools).toBe(false);
+    expect(next.overridden).toEqual(["registerTools"]);
+    expect(scope.sets).toEqual([{ field: "registerTools", value: false }]);
   });
 
   test("faceHook is the renderer-safe seat: identity-stable getSnapshot + notify", async () => {
@@ -193,11 +186,11 @@ describe("MemcurioSettingsController", () => {
       fired += 1;
     });
     // A TRANSPORT change (not a controller call) must reach hook subscribers.
-    scope.snapshot = { ...scope.snapshot, value: { ...BASE, hostBridge: true } };
+    scope.snapshot = { ...scope.snapshot, value: { ...BASE, registerTools: false } };
     scope.emit();
     expect(fired).toBeGreaterThan(0);
     expect(hook.getSnapshot()).not.toBe(before);
-    expect(hook.getSnapshot().value.hostBridge).toBe(true);
+    expect(hook.getSnapshot().value.registerTools).toBe(false);
     dispose();
     stop();
     expect(scope.scopeListeners).toBe(0); // one scope subscription, released
@@ -217,7 +210,7 @@ describe("MemcurioSettingsController", () => {
     const original = console.error;
     console.error = () => undefined; // the failing listener is intentional
     try {
-      expect(await controller.save("hostBridge", true)).toEqual({ ok: true });
+      expect(await controller.save("registerTools", false)).toEqual({ ok: true });
     } finally {
       console.error = original;
     }
@@ -265,6 +258,19 @@ describe("MemcurioSettingsController", () => {
     expect(controller.face().errorCode).toBeUndefined();
   });
 
+  test("a ready state lost before the read-back reports 'could not verify', not a refusal", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    const originalSet = scope.set.bind(scope);
+    scope.set = async (field: string, value: unknown) => {
+      await originalSet(field, value);
+      // The transport leaves ready between the write and the verification.
+      scope.snapshot = { ...scope.snapshot, status: "loading", value: undefined };
+    };
+    expect(await controller.save("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.notReady });
+    expect(controller.face().errorCode).toBe(ERROR_KEYS.notReady);
+  });
+
   test("cross-field guard rejects a lone provider without touching the wire", async () => {
     const scope = new FakeScope();
     const controller = new MemcurioSettingsController(scope);
@@ -284,10 +290,10 @@ describe("MemcurioSettingsController", () => {
     const scope = new FakeScope();
     const controller = new MemcurioSettingsController(scope);
     controller.start();
-    await controller.save("hostBridge", true);
+    await controller.save("registerTools", false);
     await controller.save("scope", "global");
-    expect(controller.face().overridden).toEqual(["scope", "hostBridge"]);
-    expect(await controller.reset("hostBridge")).toEqual({ ok: true });
+    expect(controller.face().overridden).toEqual(["scope", "registerTools"]);
+    expect(await controller.reset("registerTools")).toEqual({ ok: true });
     expect(controller.face().overridden).toEqual(["scope"]);
 
     let notifications = 0;
@@ -302,7 +308,7 @@ describe("MemcurioSettingsController", () => {
     // ONE atomic mutation clears everything: per-field unsets could never
     // clear a route half (the host validates the resolved section per write).
     expect(scope.mutations).toHaveLength(1);
-    // hostBridge was already cleared by the per-field reset above.
+    // registerTools was already cleared by the per-field reset above.
     expect(scope.mutations[0]).toEqual([{ op: "unset", path: ["scope"] }]);
   });
 
@@ -375,7 +381,7 @@ describe("MemcurioSettingsController", () => {
   test("resetAll reports a refused bulk clear instead of silent success", async () => {
     const scope = new FakeScope();
     const controller = new MemcurioSettingsController(scope);
-    await controller.save("hostBridge", true);
+    await controller.save("registerTools", false);
     await controller.save("injectContext", false);
     scope.landing = false;
     const outcome = await controller.resetAll();
@@ -417,4 +423,67 @@ describe("MemcurioSettingsController", () => {
     expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.routePair });
     expect(scope.unsets).toEqual([]);
   });
+
+  test("writing a field back to its base value clears the override instead of pinning it", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.save("injectContext", false)).toEqual({ ok: true });
+    expect(controller.face().overridden).toEqual(["injectContext"]);
+    // Toggling back to the default is a REVERT: the user entry is unset, so
+    // the "overridden" badge and its reset action disappear on their own.
+    expect(await controller.save("injectContext", true)).toEqual({ ok: true });
+    expect(scope.sets).toEqual([{ field: "injectContext", value: false }]);
+    expect(scope.unsets).toEqual(["injectContext"]);
+    expect(controller.face().overridden).toEqual([]);
+    expect(controller.face().value.injectContext).toBe(true);
+  });
+
+  test("a budget written back to its base value is a revert too", async () => {
+    const scope = new FakeScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      base: { ...BASE, injectBudgetTokens: 1500 },
+      value: { ...BASE, injectBudgetTokens: 1500 },
+    };
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.save("injectBudgetTokens", 900)).toEqual({ ok: true });
+    expect(controller.face().overridden).toEqual(["injectBudgetTokens"]);
+    expect(await controller.save("injectBudgetTokens", 1500)).toEqual({ ok: true });
+    expect(scope.unsets).toEqual(["injectBudgetTokens"]);
+    expect(controller.face().overridden).toEqual([]);
+  });
+
+  test("a worker route typed back to the base pair clears both halves", async () => {
+    const scope = new FakeScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      base: { ...BASE, provider: "base-p", model: "base-m" },
+      value: { ...BASE, provider: "base-p", model: "base-m" },
+    };
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.saveRoute("p", "m")).toEqual({ ok: true });
+    expect(controller.face().overridden).toEqual(["provider", "model"]);
+    expect(await controller.saveRoute("base-p", "base-m")).toEqual({ ok: true });
+    expect(scope.mutations[1]).toEqual([
+      { op: "unset", path: ["provider"] },
+      { op: "unset", path: ["model"] },
+    ]);
+    expect(controller.face().overridden).toEqual([]);
+  });
+
+  test("a revert the host pins as an equal user value is reported as unlanded", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    await controller.save("injectContext", false);
+    // A host that stores the base value back instead of clearing the entry
+    // leaves exactly the state the panel must not present as resolved.
+    scope.unset = async (field: string) => {
+      const user = { ...((scope.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: true };
+      scope.snapshot = { ...scope.snapshot, user };
+    };
+    const outcome = await controller.save("injectContext", true);
+    expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.notLanded });
+    expect(controller.face().overridden).toEqual(["injectContext"]);
+  });
 });
+

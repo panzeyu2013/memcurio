@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Memory visibility surfaces (G5/G6)**: a session-header injection
-  indicator (injection preview, budget bar, unread write badge), transient
-  injection/write toasts, and custom transcript rows for the six native
-  memory tools. The main mark is an inline book-and-ribbon SVG; injection
-  events use the platform context-injection glyph, inlined so the bundle
-  still requires only `react`.
+- **Memory visibility surfaces (G5/G6)**: the **memory injection row** on
+  the session transcript — an injected memory message reads
+  "记忆注入 / Memory injection" (the plugin's own row, which shadows the
+  shipped chat context cell and forwards every non-memcurio context node back
+  to the shipped renderer), transient injection/write toasts, the `memcurio`
+  Settings section (memory ON/OFF switch first row), and custom transcript
+  rows for the six native memory tools. The main mark is an inline
+  book-and-ribbon SVG, which also leads the memory injection row on the
+  transcript; injection toasts use the platform context-injection glyph,
+  inlined so the bundle still requires only `react`.
 - **Authenticated memory transport**: `GET /memcurio/snapshot` (full-state
   read) and `GET /memcurio/events?session=<id>&after=<seq>` (SSE deltas with
   bounded replay) on `ctx.webServer`. The route carries its own guard — a
@@ -30,10 +34,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?after=<lastSeq>` on reconnect (replay before subscribe); a cursor older
   than the buffer receives a `snapshot-ready` marker instead of a silent gap.
 
+### Fixed
+
+- **Extraction survives the injection scanner's false positives**: a Phase-1
+  reply that trips the scanner is now REPAIRED line-wise (the offending lines
+  are dropped, the rollout survives) instead of being rejected into a dead
+  letter; a reply that is still unsafe after repair (whole-reply promptware)
+  keeps failing. Dead jobs already killed by the old policy gate are requeued
+  once at plugin start.
+- **Malformed/truncated extraction replies no longer dead-letter**: the JSON
+  reader escapes raw control characters inside string literals and closes a
+  reply truncated at the output-token cap before giving up.
+- **Injection text compacted (v1.9.1)**: the dynamic block lost its per-line
+  `[memcurio] ` prefix (one `Memory hits:` header instead), every hit is
+  whitespace-collapsed and capped at 220 chars with `…`, and the summary block
+  uses a one-line label with `<<<MEMORY_SUMMARY` / `>>>MEMORY_SUMMARY`
+  delimiters instead of two `=========` banner lines. The read-path guide was
+  cut from 3,387 to 1,554 chars with the same contracts. The engine and the
+  workbench simulator share one formatter, so previews cannot drift.
+- **The read-path guide is a system-prompt section now (v1.9)**: how-to-use
+  instructions no longer ride an injected user message. The plugin registers
+  `memcurio-read-path` through `ctx.systemPrompt.section()` (order 2950, next
+  to the tool schemas), so the model still learns the decision boundary, the
+  quick-pass budget, the citation contract and the write gate — but the
+  transcript carries memory **data** only.
+- **Injected messages carry memory content only**: with the guide prompt-side,
+  `renderStaticContext()` is the sanitized summary block alone, and a store
+  without a summary injects nothing at all (no guide, no placeholder). The
+  summary latch still tracks content changes, so a summary arriving later is
+  injected once.
+- **No filesystem paths in model-facing text**: the guide and the
+  `memory_context` result name the memory tools (`memory_search`,
+  `memory_list`, `memory_read`, `memory_remember`) instead of absolute store
+  paths — the store lives outside the session workspace, and the model must
+  never be pointed at it. Citation locators are entry ids (they feed usage
+  telemetry), not paths.
+- **Skilled dynamic retrieval**: the pre-step query is no longer the raw
+  message dump — it is built from the newest non-plugin user text with code
+  fences, URLs, paths, markup and stop words removed (`src/core/query.ts`).
+  Search now scores in two passes with inverse document frequency, adds a
+  phrase bonus for multi-word queries, drops duplicated lines, and caps hits
+  per entry so one verbose file cannot fill the window.
+- **Store bootstrap runs on the first session, not on a startup list**: the
+  session list is empty while a plugin applies, so the startup drain (and the
+  policy dead-letter requeue) never ran in the live composition. Each store is
+  now bootstrapped once, when its first session is adopted.
+- **The retire budget reserves room for consolidation**: a slow extraction
+  drain used to consume the whole 30 s retire budget, after which the runtime
+  abort disposed the adapter before the automatic Phase-2 pass could run —
+  consolidation was starved on every event. The drain now stops at a deadline
+  leaving a 10 s slice for consolidation.
+- **Every session keeps its store binding**: the browser transport resolved a
+  session through a last-writer-wins root map, so a subagent (or a second tab)
+  in the same workspace evicted the GUI's binding and its snapshot 404ed. The
+  bridge now maps every registered session id to its root.
+- **A missing worker route no longer parks the queue**: the channel falls back
+  to the last route observed anywhere in the process (a session that retires
+  during shutdown now keeps a usable route) and the engine re-probes a blocked
+  provider every 5 minutes instead of waiting for a host event.
+- **Automatic consolidation falls back to the rule provider** when the LLM
+  provider fails (no tool call parsed, an edit citing a missing artifact, an
+  aborted call): unapplied notes and stage-1 rows still land, audited as
+  `consolidate.fallback`, and the next cycle tries the LLM again.
+- **Unapplied ad-hoc notes are searchable** before consolidation (marked
+  `pending` in the hit shape) instead of being invisible until the next
+  Phase-2 run; applied notes are skipped to avoid double-reporting.
+- **Settings overrides now clear themselves**: writing a field back to its
+  composition base — the memory switch toggled off and on again, the worker
+  route typed back to the base pair, the budget returned to its base — now
+  clears the user-layer override instead of pinning an equal value, so the
+  "overridden" badge and its reset action disappear on their own.
+- **The worker route row no longer crams**: its control group (provider input,
+  model input, Save button) occupies its own full-width line beneath the label
+  and note, instead of squeezing the note into a narrow column beside it.
+
 ### Changed
 
-- `hostBridge` now defaults to **on**: the browser transport sink ships
-  with the package. Set `hostBridge: false` to keep the UI silent.
+- **Memory tool rows always lead with the book mark**: running, settled, error
+  and interrupted states all render memcurio's book; a terminal state only
+  colours the mark (error/warning token) instead of swapping it for the shipped
+  status dot, so all six native memory tool rows carry one leading glyph.
+- **Static injection is guide-first**: every new session receives the read-path
+  guide; the `memory_summary.md` block is appended only when the store
+  actually has a summary, so an empty store no longer puts the
+  `(memcurio memory not consolidated yet)` placeholder into the model's
+  context (the preview API reports the summary as an empty string).
+- `hostBridge` is now always **on**: the browser transport sink ships with
+  the package and the switch was removed from Config, the `memcurio`
+  settings namespace and the Settings panel (no supported scenario needs it
+  off).
+- The session header carries no memcurio surface: the injection indicator is
+  kept as the workbench status surface but is deliberately not registered.
 
 ## [0.0.1] - 2026-09-11
 

@@ -13,6 +13,10 @@
  * toggle, budget, bridge, worker route, registerTools at the NEXT apply)
  * apply live through this handle.
  *
+ * The memory-UI data plane (the host bridge) is deliberately NOT a setting
+ * (product decision 2026-09-16): it is always on, because there is no case
+ * that needs it off and no front-end flow that would toggle it.
+ *
  * Coupling: this plugin hard-injects `settings` (the service is guaranteed by
  * dsh-base and every profile layered on it, and a hard inject makes the
  * section resolve synchronously before apply). Consequence, documented in
@@ -33,7 +37,6 @@ export interface MemcurioSettings {
   injectContext: boolean;
   registerTools: boolean;
   injectBudgetTokens?: number;
-  hostBridge: boolean;
   provider?: string;
   model?: string;
 }
@@ -45,7 +48,6 @@ export const MemcurioSettingsSchema: Schema<MemcurioSettings> = Schema.object({
   injectContext: Schema.boolean(),
   registerTools: Schema.boolean(),
   injectBudgetTokens: Schema.number().step(1).min(128),
-  hostBridge: Schema.boolean(),
   provider: Schema.string(),
   model: Schema.string(),
 }) as Schema<MemcurioSettings>;
@@ -111,7 +113,6 @@ export function settingsBase(resolved: MemcurioSettings): MemcurioSettings {
     scope: resolved.scope,
     injectContext: resolved.injectContext,
     registerTools: resolved.registerTools,
-    hostBridge: resolved.hostBridge,
     ...(resolved.injectBudgetTokens !== undefined ? { injectBudgetTokens: resolved.injectBudgetTokens } : {}),
     ...(resolved.provider && resolved.model ? { provider: resolved.provider, model: resolved.model } : {}),
   };

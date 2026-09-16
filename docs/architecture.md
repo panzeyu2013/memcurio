@@ -34,7 +34,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 <DSH home>/memcurio/dsh/<workspace-key>/     （scope: global 则为 <DSH home>/memcurio/）
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
-│   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
+│   ├── memory_summary.md            # v1 头；非空时每会话注入；User Profile / User preferences / General Tips / What's in Memory
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
@@ -84,8 +84,8 @@ src/
 │   ├── projector.ts     8 类 InputRecord → 9 类脱敏 delta（inject/usage/citation/evidence/prune/queue 单 job/memory-list/receipt/snapshot-ready）
 │   └── snapshot.ts      buildSnapshot 全量装配（store 列表/注入预览/条目+usage/队列/雷达/近 60 收据/设置/realtime）
 ├── plugin/
-│   ├── index.ts        DSH Cordis 插件（事件接线、上下文注入、6 个原生工具、ctx.llm 通道封装、settings live 读取）
-│   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；config.hostBridge 门控 + live configure）
+│   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、6 个原生工具、ctx.llm 通道封装、settings live 读取）
+│   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；恒开（v1.7 起无开关）+ live configure）
 │   ├── settings.ts     `memcurio` settings 命名空间（schema、composition base、live 句柄、跨字段校验）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
 client/                浏览器半侧：entry.ts + settings/*（**已发布的 Settings 面板**，`dsh.client` + `lib/client.js`）；types.ts + index.ts 为工作台 view-model 骨架（S0 组装）
@@ -109,12 +109,12 @@ docs/
 ```
 session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
   → 插件组装有界、脱敏 EvidenceSnapshot（消息/工具/文件/压缩摘要）
-  → SQLite extraction_jobs（幂等键 + lease + retry/dead-letter）
-  → worker 执行 Phase 1 抽取：模型判断 no-op 门 → stage1_outputs（raw_memory / rollout_summary / slug）
+  → SQLite extraction_jobs（幂等键 + lease + retry/dead-letter；`blocked` 是配置等待态，路由/模型可用后自动复活，另有 5 分钟慢探兜底）
+  → worker 执行 Phase 1 抽取：模型判断 no-op 门 → 回复解析（严格 JSON → 容忍字符串内控制字符/截断 → 注入策略**按行修复**，修复后仍不安全才拒绝）→ stage1_outputs（raw_memory / rollout_summary / slug）
   → stage1 DB（stageUpsert + audit）
   → Phase 2 整合（consolidate.ts，会话结束后由引擎自动触发 maybeConsolidate）：
        planConsolidation 选窗口内 stage1 → 渲染 artifacts（raw_memories 升序合并 / rollout_summaries）
-       → provider（llm-loop 或 Rule；无 ctx.llm 通道时自动回退 Rule）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
+       → provider（llm-loop 或 Rule；无 ctx.llm 通道时回退 Rule，LLM 通道失败时同样降级 Rule 并审计 consolidate.fallback）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
        → workspace lease + revision check → generation manifest 原子阶段/提交/恢复 + audit + note 标记 applied + noteSyncContent + saveBaseline
        → 剪枝行 stagePruneRetention 物理回收 + pruneExtensionResources（保留期清理）
   → MEMORY.md 改写完成（模型组织 Task Group，引擎只做校验/原子写/脱敏/注入扫描）
@@ -123,9 +123,11 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 ### 读路径
 
 ```
-恒注入：memory_summary.md（脱敏 + 注入扫描 + 预算裁剪）→ session 启动上下文
-模型自检索：完整 read_path 指引（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / codex 式 citation 输出要求）→ 模型按需 grep / memory_search / memory_list / memory_read
-动态注入（每次用户输入）：searchMemory top-K 命中拼接
+SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 输出要求 / 写入纪律）——指令进提示词，且全文无文件系统路径
+注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南）
+模型自检索：按需 memory_search / memory_list / memory_read / memory_status（指南描述的自助路径，不经文件系统）
+动态注入（每次用户输入）：检索 query 由"最近一条用户文本"经去噪/停用词处理后生成 → searchMemory 两遍打分（IDF + 短语奖励 + 去重 + 单文件 cap）取 top-K
+注入线格式（v1.9.1，引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块 = 一行 "Memory hits:" + 每行 "rel:line content"（空白折叠、220 字符截断），无逐行前缀
 使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ 解析 <memcurio-citation> 引用块（<citation_entries>/<rollout_ids>）+ search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）
 ```

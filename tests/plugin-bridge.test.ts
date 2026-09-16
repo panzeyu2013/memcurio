@@ -82,7 +82,6 @@ describe("hostBridge plugin wiring (real ctx)", () => {
       root,
       scope: "global",
       injectContext: false,
-      hostBridge: true,
       provider: "test",
       model: "test",
     });
@@ -154,7 +153,6 @@ describe("hostBridge plugin wiring (real ctx)", () => {
       root,
       scope: "global",
       injectContext: true,
-      hostBridge: true,
       provider: "test",
       model: "test",
     });
@@ -164,6 +162,10 @@ describe("hostBridge plugin wiring (real ctx)", () => {
     expect(bridge).toBeDefined();
     const sink = collector();
     bridge?.attachSink(sink);
+
+    // A store WITH a summary: v1.9 injects data only, so an empty store would
+    // inject nothing at all and there would be no delta to tag.
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
 
     const agent = { session, options: {} } as never;
     const userMsg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
@@ -188,11 +190,15 @@ describe("hostBridge plugin wiring (real ctx)", () => {
     const inject = injects[0];
     if (inject?.kind === "inject-updated") {
       expect(inject.duplicate).toBe(false);
-      expect(inject.staticText).toContain("memory not consolidated yet");
+      // Data only: the summary block, never the read-path guide or a placeholder.
+      expect(inject.staticText).toContain("<<<MEMORY_SUMMARY");
+      expect(inject.staticText).toContain("项目用 bun");
+      expect(inject.staticText).not.toContain("## memcurio memory");
+      expect(inject.staticText).not.toContain("not consolidated yet");
     }
 
     const snapshot = await bridge?.snapshot(root, session.id);
-    expect(snapshot?.injection.staticSummary).toContain("memory not consolidated yet");
+    expect(snapshot?.injection.staticSummary).toContain("<<<MEMORY_SUMMARY");
     expect(snapshot?.settings.version).toBe("rc.1 contract");
 
     detach();
@@ -200,25 +206,4 @@ describe("hostBridge plugin wiring (real ctx)", () => {
     await disposeFibers(fibers);
   });
 
-  test("disabled hostBridge exposes no bridge", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await runtime();
-    const session = ctx.sessions.prepare(SessionId("bridge-off"), { meta: { cwd: join(root, "w") } });
-    const detach = ctx.sessions.enter(session);
-    ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, {
-      root,
-      scope: "global",
-      injectContext: false,
-      hostBridge: false,
-      provider: "test",
-      model: "test",
-    });
-    await ctx.sessions.flush(session);
-    expect(hostBridgeForRoot(root)).toBeDefined(); // instance exists (registry) but disabled
-    expect(hostBridgeForRoot(root)?.isEnabled).toBe(false);
-    detach();
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
-  });
 });

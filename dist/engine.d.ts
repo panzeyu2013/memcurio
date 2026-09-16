@@ -216,7 +216,12 @@ export declare class MemcurioAdapter {
     /** Drain durable jobs outside the host event request. Only one drain runs
      * per adapter; a failed job remains pending/dead in SQLite and schedules its
      * next retry without blocking future Hook responses. */
-    processPendingExtractions(limit?: number): Promise<QueueDrainResult[]>;
+    /** One-shot recovery for jobs dead-lettered by the pre-repair policy gate:
+     *  the reply parser now repairs false-positive lines, so those rejections
+     *  get exactly one more attempt each. Called once per store at startup; the
+     *  audit is written only when something actually moved. */
+    requeuePolicyRejectedExtractions(): Promise<number>;
+    processPendingExtractions(limit?: number, deadline?: number): Promise<QueueDrainResult[]>;
     /** Codex-style automatic Phase 2: after a session ends (or idles), drain
      *  pending extractions first, then run a consolidation when there is pending
      *  work (unapplied notes or never-selected stage-1 rows inside the window).

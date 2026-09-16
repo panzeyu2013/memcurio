@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { addAdHocNote, markAdHocNotesApplied } from "../src/core/adhoc.js";
 import { searchMemory, registerMemoryUsage } from "../src/core/search.js";
 import { ensureLayout } from "../src/core/paths.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
@@ -81,6 +82,20 @@ describe("searchMemory", () => {
     expect(hits[0]?.content).toContain("[REDACTED]");
   });
 
+  test("unapplied ad-hoc notes are searchable before consolidation", async () => {
+    const note = await addAdHocNote(dir, "pending note about trigram ranking", "remember");
+    const first = await searchMemory(dir, "trigram", 10);
+    const pending = first.hits.filter((hit) => hit.pending === true);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.rel).toBe(`extensions/ad_hoc/notes/${note.filename}`);
+
+    // Once applied the note is folded into MEMORY.md by consolidation and must
+    // not double-report as a pending hit.
+    await markAdHocNotesApplied(dir, [note.id]);
+    const second = await searchMemory(dir, "trigram", 10);
+    expect(second.hits.some((hit) => hit.pending === true)).toBe(false);
+  });
+
   test("a repeated bare rollout key in one citation block counts once", async () => {
     const idx = await Index.create(indexDb(dir));
     try {
@@ -138,6 +153,44 @@ describe("registerMemoryUsage return semantics (acceptance round)", () => {
     } finally {
       idx2.close();
     }
+  });
+});
+
+describe("ranked retrieval", () => {
+  test("a rare term outweighs a ubiquitous one (IDF)", async () => {
+    // "common" appears on many lines; "zebra" on one. A line matching only
+    // "zebra" must outrank a line matching only "common".
+    const lines = ["# Group: t", "", ...Array.from({ length: 12 }, () => "- common note line")];
+    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n") + "\n- zebra migration detail\n");
+    const { hits } = await searchMemory(dir, "common zebra", 10);
+    expect(hits[0]?.content).toContain("zebra");
+    expect(hits[0]?.rel).toBe("MEMORY.md");
+  });
+
+  test("an exact phrase beats scattered terms", async () => {
+    writeWorkspaceText(
+      dir,
+      "MEMORY.md",
+      ["# Group: t", "", "- alpha filler beta", "- alpha beta together", ""].join("\n"),
+    );
+    const { hits } = await searchMemory(dir, "alpha beta", 10);
+    expect(hits[0]?.content).toContain("alpha beta together");
+  });
+
+  test("identical lines are de-duplicated", async () => {
+    writeWorkspaceText(dir, "MEMORY.md", ["- repeated clue", "- repeated clue", "- other clue"].join("\n") + "\n");
+    const { hits } = await searchMemory(dir, "repeated clue", 10);
+    expect(hits.filter((h) => h.content.includes("repeated clue"))).toHaveLength(1);
+  });
+
+  test("one file cannot fill the window (per-entry cap)", async () => {
+    const lines = ["# Group: t"];
+    for (let i = 0; i < 6; i += 1) {
+      lines.push("- widget case " + i);
+    }
+    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n") + "\n");
+    const { hits } = await searchMemory(dir, "widget case", 10);
+    expect(hits.filter((h) => h.rel === "MEMORY.md")).toHaveLength(3);
   });
 });
 

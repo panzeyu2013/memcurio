@@ -138,14 +138,23 @@ describe("memory services", () => {
 });
 
 describe("inject services", () => {
-  test("staticContext renders summary markers plus read-path instructions", async () => {
+  test("staticContext renders the summary block only (data, no guide)", async () => {
     const root = makeStore("inj");
     ensureLayout(root);
     writeWorkspaceText(root, "memory_summary.md", "cross-session summary about deployment");
     const { text } = staticContext(root);
-    expect(text).toContain("MEMORY_SUMMARY BEGINS");
+    expect(text).toContain("<<<MEMORY_SUMMARY");
     expect(text).toContain("cross-session summary about deployment");
-    expect(text).toContain("## memcurio memory (read path)");
+    // v1.9: the read-path guide is a SYSTEM PROMPT section, not injected text.
+    expect(text).not.toContain("## memcurio memory");
+  });
+
+  test("staticContext is empty while the store has no summary (nothing to inject)", async () => {
+    const root = makeStore("inj-empty");
+    ensureLayout(root);
+    const { text } = staticContext(root);
+    expect(text).toBe("");
+    expect(text).not.toContain("not consolidated yet");
   });
 
   test("staticContext blocks an injection-carrying summary", async () => {
@@ -171,13 +180,14 @@ describe("inject services", () => {
     expect(result.budgetTokens).toBeGreaterThan(0);
   });
 
-  test("simulate truncates long hit content at 500 chars", async () => {
+  test("simulate truncates long hit content at the shared per-hit cap", async () => {
     const root = makeStore("inj");
     await seedRollout(root, "dsh|inj-2", ["alpha token ".repeat(100)]);
     const result = await simulate(root, "alpha");
     expect(result.blocked).toBe(0);
     expect(result.hits).toHaveLength(1);
-    expect(result.hits[0]?.content.length).toBe(501);
+    // 220-char cap + the ellipsis: the preview and the engine agree (v1.9.1).
+    expect(result.hits[0]?.content.length).toBe(221);
     expect(result.hits[0]?.content.endsWith("…")).toBe(true);
   });
 });

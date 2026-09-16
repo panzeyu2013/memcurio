@@ -21,6 +21,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ReactElement } from "react";
 
 import { Context } from "@deepseek-ai/cordis";
 import { standardHookPropName } from "@deepseek-ai/dsh-client-ui-slots";
@@ -41,7 +42,7 @@ import { en, zh } from "../client/settings/locales.js";
 import { en as uiEn, zh as uiZh } from "../client/ui/locales.js";
 import { MEMORY_TOOL_NAMES } from "../client/ui/tool-rows.js";
 
-const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true, hostBridge: false };
+const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
 /* ------------------------------------------------------------------ DOM --- */
 
@@ -94,21 +95,18 @@ class PanelScope implements SettingsScopePort<MemcurioSettingsView> {
 
   private fold(ops: readonly SettingsPathOp[]): void {
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    const value = { ...(this.snapshot.value ?? BASE) } as unknown as Record<string, unknown>;
     for (const op of ops) {
       const field = op.path[0] ?? "";
-      if (op.op === "set") {
-        user[field] = op.value;
-        value[field] = op.value;
-      } else {
-        delete user[field];
-        delete value[field];
-      }
+      if (op.op === "set") user[field] = op.value;
+      else delete user[field];
     }
+    // The host's resolved document is base merged with the user layer: a
+    // cleared field falls back to the base instead of losing the key.
+    const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
     this.snapshot = {
       ...this.snapshot,
       user,
-      value: value as unknown as MemcurioSettingsView,
+      value: { ...base, ...(user as Partial<MemcurioSettingsView>) },
       revision: (this.snapshot.revision ?? 0) + 1,
     };
   }
@@ -208,8 +206,8 @@ describe("shipped browser bundle", () => {
       inject(_key: string, callback: () => void) {
         callback();
       },
-      register(spec: Record<string, unknown>) {
-        registrations.push(spec);
+      register(spec: Record<string, unknown>, component: unknown) {
+        registrations.push({ ...spec, component });
       },
     });
     services.reflect.provide("locale", {
@@ -270,16 +268,63 @@ describe("shipped browser bundle", () => {
     const hook = injected.hooks.face;
     if (!hook) throw new Error("the inject face exposes no hooks.face seat");
     expect(hook.getSnapshot()).toBe(hook.getSnapshot());
-    // Memory visibility surfaces: one header entry + one keyed row per tool.
-    const header = registrations.find((entry) => entry.name === "conversation.session.header.utilities");
-    expect(header?.id).toBe("memcurio");
+    // The settings-nav mark probe rides the settings.action seat, which the
+    // shell renders whenever its panel is open.
+    const navProbe = registrations.find((entry) => entry.id === "memcurio-nav-mark");
+    expect(navProbe?.name).toBe("settings.action");
+    expect(navProbe?.order).toBe(90);
+    expect(navProbe?.locale).toBe("memcurio.settings");
+    const probeSpec = navProbe;
+
+    // Product instruction (v1.7): the session header carries NO memcurio
+    // surface. Memory lives in Settings; injection/write feedback is transient.
+    const headerEntries = registrations.filter((entry) => entry.name === "conversation.session.header.utilities");
+    expect(headerEntries).toHaveLength(0);
+    // The generic name conversion still belongs to the platform contract the
+    // reserved status surface would ride if it is re-registered.
+    expect(standardHookPropName("settings")).toBe("useSettings");
+
+    // The probe is the shipped component: rendering it against the shell's
+    // rendered nav row (glyph + label) must tag that row, and unmounting must
+    // take the tag back.
+    const Probe = probeSpec?.component;
+    if (typeof Probe !== "function") throw new Error("the nav probe exposes no component");
+    document.body.innerHTML = '<div role="dialog" aria-modal="true"><nav><button type="button"><svg></svg><span>Memory</span></button></nav></div>';
+    const probeHost = document.createElement("div");
+    document.body.append(probeHost);
+    const probeRoot = createRoot(probeHost);
+    await act(async () => {
+      probeRoot.render(React.createElement(Probe as (props: Record<string, unknown>) => ReactElement | null, {}));
+    });
+    const navRow = document.querySelector("nav button");
+    expect(navRow?.getAttribute("data-memcurio-nav")).toBe("true");
+    await act(async () => {
+      probeRoot.unmount();
+    });
+    // Ownership after this point is timing-dependent (the entry's interaction
+    // watcher may hold the tag); the probe's own claim/release is pinned in
+    // tests/client-nav-mark.test.ts against a deterministic DOM.
+    document.body.innerHTML = '<div id="root"></div>';
+
     const toolRows = registrations.filter((entry) => entry.name === "tool.call.toolview");
     expect(toolRows.map((entry) => entry.key)).toEqual([...MEMORY_TOOL_NAMES]);
+
+    // The injected-memory row shadows the shipped chat context cell so the
+    // transcript reads "记忆注入 / Memory injection" instead of the platform's
+    // generic context title (the adapter delegates every other node back).
+    const contextRows = registrations.filter((entry) => entry.name === "conversation.chat.node");
+    expect(contextRows).toHaveLength(1);
+    expect(contextRows[0]?.key).toBe("context");
+    expect(contextRows[0]?.priority).toBe(-1);
+    expect(contextRows[0]?.locale).toBe("memcurio.ui");
 
     // Bundle purity: only the platform seed may be required at runtime.
     expect([...new Set(requiredSpecifiers)]).toEqual(["react"]);
 
+    // Disposing the fiber (the watcher's disposer) takes the tag back, even
+    // after the node left the document.
     await fiber.dispose();
+    expect(navRow?.getAttribute("data-memcurio-nav")).toBeNull();
   });
 });
 
@@ -339,28 +384,99 @@ describe("settings panel in jsdom (real react-dom)", () => {
     const panel = await mountPanel();
     expect(panel.container.textContent).toContain(en.title);
 
-    panel.scope.snapshot = { ...panel.scope.snapshot, value: { ...BASE, hostBridge: true }, user: { hostBridge: true } };
+    panel.scope.snapshot = { ...panel.scope.snapshot, value: { ...BASE, registerTools: false }, user: { registerTools: false } };
     panel.scope.emit();
     await panel.repaint();
 
-    // The checkbox reflects the transport change and the override badge appeared.
-    const checkbox = panel.container.querySelector("#memcurio-hostBridge") as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    // The switch reflects the transport change and the override badge appeared;
+    // the control keeps the platform atom contract (role + accessible label).
+    const control = panel.container.querySelector("#memcurio-registerTools");
+    expect(control?.getAttribute("role")).toBe("switch");
+    expect(control?.getAttribute("aria-checked")).toBe("false");
+    expect(control?.getAttribute("aria-label")).toBe(en.registerTools);
     expect(panel.container.textContent).toContain(en.overridden);
     panel.unmount();
   });
 
-  test("writes the route as one atomic pair and never as a lone half", async () => {
+  test("styles the fields with the shipped settings vocabulary", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector("#memcurio-injectBudgetTokens");
+    // The compact numeric control: the shipped input plus the narrow variant.
+    expect(budget?.className).toBe("memcurio-input memcurio-input-num");
+    // The official number pattern: text input + inputMode, not type=number.
+    expect(budget?.getAttribute("type")).toBe("text");
+    expect(budget?.getAttribute("inputmode")).toBe("numeric");
+    expect(panel.container.querySelector("#memcurio-provider")?.className).toBe("memcurio-input");
+    expect(panel.container.querySelector("#memcurio-model")?.className).toBe("memcurio-input");
+    expect(panel.container.querySelector(".memcurio-select-wrap #memcurio-scope")?.className).toBe("memcurio-select");
+    const resetAll = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.resetAll);
+    expect(resetAll?.className).toBe("memcurio-button");
+    // The master switch row carries the measured injection semantics.
+    expect(panel.container.querySelector(".memcurio-field .memcurio-desc")?.textContent).toBe(en.injectContextNote);
+    // One row per setting: the worker route shares a single control group, so
+    // the panel never stacks a label line and a control line per field.
+    const provider = panel.container.querySelector("#memcurio-provider");
+    const model = panel.container.querySelector("#memcurio-model");
+    expect(provider?.closest(".memcurio-control")).not.toBeNull();
+    expect(provider?.closest(".memcurio-control")).toBe(model?.closest(".memcurio-control"));
+    // The worker route STACKS: the control group owns a full-width line, so
+    // the two inputs + Save never squeeze the note into a narrow column.
+    const routeRow = provider?.closest(".memcurio-field-stack");
+    expect(routeRow).not.toBeNull();
+    expect(routeRow?.querySelector(".memcurio-route #memcurio-provider")).not.toBeNull();
+    expect(routeRow?.querySelector(".memcurio-route #memcurio-model")).not.toBeNull();
+    expect(routeRow?.querySelector(".memcurio-route button")?.className).toContain("memcurio-button-primary");
+    expect(routeRow?.querySelector(".memcurio-desc")?.textContent).toBe(en.routeNote);
+    // Five rows: master, budget, scope, tools, route (the host bridge is
+    // deployment-level config and has no panel row).
+    expect(panel.container.querySelectorAll(".memcurio-field")).toHaveLength(5);
+    panel.unmount();
+  });
+
+  test("marks the offending field invalid and disables read-only inputs", async () => {
+    const panel = await mountPanel();
+    await act(async () => {
+      await panel.controller.save("injectBudgetTokens", 10);
+      await Promise.resolve();
+    });
+    await panel.repaint();
+    const budget = panel.container.querySelector("#memcurio-injectBudgetTokens");
+    expect(budget?.getAttribute("aria-invalid")).toBe("true");
+    expect(panel.container.textContent).toContain(en.errBudgetRange);
+
+    // A read-only transport disables the controls instead of faking editability.
+    panel.scope.snapshot = { ...panel.scope.snapshot, writable: false };
+    panel.scope.emit();
+    await panel.repaint();
+    expect((panel.container.querySelector("#memcurio-provider") as HTMLInputElement).disabled).toBe(true);
+    expect((panel.container.querySelector("#memcurio-scope") as HTMLSelectElement).disabled).toBe(true);
+    panel.unmount();
+  });
+
+  test("writes the route as one atomic pair through its Save button", async () => {
     const panel = await mountPanel();
     const provider = panel.container.querySelector("#memcurio-provider") as HTMLInputElement;
     const model = panel.container.querySelector("#memcurio-model") as HTMLInputElement;
+    const save = (): HTMLButtonElement | undefined =>
+      [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.save) as
+        | HTMLButtonElement
+        | undefined;
 
+    // Nothing to save before an edit; the button is the only write path.
+    expect(save()?.disabled).toBe(true);
     await act(async () => {
       typeInto(provider, "deepseek");
       typeInto(model, "deepseek-v4");
     });
+    expect(save()?.disabled).toBe(false);
+    // Leaving a field writes NOTHING (no implicit blur commit).
     await act(async () => {
       blur(provider);
+      await Promise.resolve();
+    });
+    expect(panel.scope.mutations).toHaveLength(0);
+    await act(async () => {
+      save()?.click();
       await Promise.resolve();
     });
 
@@ -383,7 +499,7 @@ describe("settings panel in jsdom (real react-dom)", () => {
       await slow;
       await originalSet(field, value);
     };
-    const pending = panel.controller.save("hostBridge", true);
+    const pending = panel.controller.save("registerTools", false);
     await panel.repaint();
     const budget = panel.container.querySelector("#memcurio-injectBudgetTokens") as HTMLInputElement;
     // readOnly (not disabled): a disabled control would blur in a real browser
@@ -394,6 +510,18 @@ describe("settings panel in jsdom (real react-dom)", () => {
     await pending;
     await panel.repaint();
     expect(budget.readOnly).toBe(false);
+    panel.unmount();
+  });
+
+  test("shows status as a right-side icon, never as a text line", async () => {
+    const panel = await mountPanel();
+    const state = panel.container.querySelector(".memcurio-state");
+    expect(state?.getAttribute("data-state")).toBe("ready");
+    expect(state?.getAttribute("title")).toBe(en.ready);
+    expect(state?.getAttribute("aria-label")).toBe(en.ready);
+    // "Ready" is only the icon's name: no paragraph repeats it.
+    const texts = [...panel.container.querySelectorAll("p")].map((node) => node.textContent);
+    expect(texts).not.toContain(en.ready);
     panel.unmount();
   });
 
@@ -414,24 +542,33 @@ describe("settings panel in jsdom (real react-dom)", () => {
 
   test("toggles and the bulk reset go through the controller", async () => {
     const panel = await mountPanel();
-    const checkbox = panel.container.querySelector("#memcurio-injectContext") as HTMLInputElement;
+    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
+    expect(control.getAttribute("role")).toBe("switch");
     await act(async () => {
-      checkbox.click();
+      control.click();
       await Promise.resolve();
     });
     expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(false);
 
+    // Toggling back to the default REVERTS the override: the user entry is
+    // cleared (so the badge disappears), never pinned as an equal value.
     await act(async () => {
-      checkbox.click();
+      control.click();
       await Promise.resolve();
     });
-    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(true);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBeUndefined();
+    expect(panel.controller.face().overridden).toEqual([]);
 
     // Two overrides, then the bulk reset clears them in ONE atomic mutation.
     await act(async () => {
-      (panel.container.querySelector("#memcurio-hostBridge") as HTMLInputElement).click();
+      control.click();
       await Promise.resolve();
     });
+    await act(async () => {
+      (panel.container.querySelector("#memcurio-registerTools") as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(panel.controller.face().overridden).toEqual(["injectContext", "registerTools"]);
     const resetAllButton = [...panel.container.querySelectorAll("button")].find(
       (button) => button.textContent === en.resetAll,
     );
@@ -452,8 +589,9 @@ describe("settings panel in jsdom (real react-dom)", () => {
     await act(async () => {
       typeInto(provider, "only-provider");
     });
+    const save = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.save);
     await act(async () => {
-      blur(provider);
+      save?.click();
       await Promise.resolve();
     });
     expect(panel.controller.face().errorCode).toBe(ERROR_KEYS.routePair);

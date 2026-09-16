@@ -633,6 +633,18 @@ export class Index {
        WHERE provider=? AND status='blocked'`, [now, provider]);
         return this.driver.get("SELECT changes() AS c")?.c ?? 0;
     }
+    /** Requeue dead jobs that a pre-repair injection-policy rejection killed.
+     *  The reply parser now drops the false-positive lines and stages the
+     *  rollout, so those rejections are recoverable; only the recorded error
+     *  class is revived — every other dead letter stays dead. */
+    extractionRequeuePolicyRejected(provider, now = new Date().toISOString()) {
+        this.driver.run(`UPDATE extraction_jobs
+       SET status='pending', attempts=0, next_attempt_at=?, lease_until=NULL,
+           claim_token=NULL, last_error=NULL, completed_at=NULL
+       WHERE provider=? AND status='dead'
+         AND last_error LIKE '%rejected by injection policy%'`, [now, provider]);
+        return this.driver.get("SELECT changes() AS c")?.c ?? 0;
+    }
     /** Handle configuration disappearing after a worker claimed a job. Undo
      * the claim's attempt increment while retaining normal lease fencing. */
     extractionBlockClaim(jobId, claimToken, error, now = new Date().toISOString()) {

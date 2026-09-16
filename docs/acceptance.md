@@ -25,10 +25,10 @@
 | 快照装配（含雷达候选/收据合成/settings/dynamic） | `src/services/snapshot.ts` | ✅ 完成 | `tests/snapshot.test.ts`（12 项） |
 | 配置面 host（`memcurio` settings 命名空间） | `src/plugin/settings.ts` + 插件 live 读取 | ✅ 完成 | `tests/settings.test.ts`（12 项：resolved 权威、live 桥/路由、整表尾基线播种、刷新并发合并、重复激活） |
 | 配置面 client（Settings 页面板） | `client/entry.ts` + `client/settings/*` + `lib/client.js`（esbuild loader 产物，`dsh.client` 声明） | ✅ 完成（待实机渲染验证） | `tests/client-settings.test.ts`（23 项：原子 resetAll/saveRoute 成对/base-aware reset/监听者容错/单订阅/注入席位契约）；`pack:check` 校验产物形态与 require 纯度 |
-| host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（config.hostBridge，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
+| host 桥接层（注册表/打标/refresh diff/snapshot/sink/evidence 源） | `src/plugin/bridge.ts` + 插件接线（恒开，`hostBridgeForRoot`） | ✅ 完成 | `tests/bridge.test.ts`（12 项）+ `tests/plugin-bridge.test.ts`（3 项，真实 ctx 集成） |
 | 客户端工作台 view-model（含 browse 跨 store、queue 单 job 折叠、增量 usage、证据窗、⭐ 书签） | `client/` | ✅ 完成（框架自由，S0 组装） | `tests/client-types.test.ts`（30 项） |
 | 传输通道（同源 snapshot + SSE + 带游标重放 + 轮询降级） | `src/plugin/ui-transport.ts` + `client/ui/transport.ts` | ✅ 已交付并**真机验证** | `tests/ui.test.ts` + `tests/ui-transport.test.ts`（6 项真实 HTTP：token/403/404/400/405、按根路由、`?after=` 重放、abort 回收、seq 语义、boot payload）+ [verification-s0-web.md](verification-s0-web.md) |
-| 记忆可见性 UI（注入指示器/注入与写入 Toast/6 个工具行） | `client/ui/*` + `client/entry.ts` | ✅ 已交付；`settings.section` **真机已验**，会话内 header 入口待真实会话人工确认 | `tests/ui-render.test.ts`（jsdom+真实 react-dom）+ `client-panel-render.test.ts`（注册面/纯度）+ [verification-s0-web.md](verification-s0-web.md) §2 #11–14 |
+| 记忆可见性 UI（记忆注入行/注入与写入 Toast/6 个工具行） | `client/ui/*` + `client/entry.ts` | ✅ 已交付；`settings.section` **真机已验**；注入行（`client/ui/context-row.ts`，v1.8：自有「记忆注入 / Memory injection」标题 + 其余 context 节点转发 shipped 行）待真实会话人工确认；会话头部不承载 memcurio 面（v1.7） | `tests/ui-render.test.ts`（jsdom+真实 react-dom）+ `client-panel-render.test.ts`（注册面/纯度）+ [verification-s0-web.md](verification-s0-web.md) §2 #11–14 |
 | 完整工作台（三面一轴/意图草稿/时间线回链/跨 store 浏览 UI） | view-model 侧就绪 | 🕒 M0/M1（S0 后） | design §11 |
 
 ## 3. 与设计基线 §11 路线图的对照

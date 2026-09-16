@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Index } from "./db.js";
 import { extractJsonObject } from "./json.js";
 import { indexDb, ensureLayout } from "./paths.js";
-import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
+import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 const MAX_EVIDENCE_ITEMS = 256;
 const MAX_EVIDENCE_TEXT_CHARS = 4000;
@@ -467,8 +467,10 @@ function clipField(text) {
 /** Parse the Phase-1 LLM reply into a Stage1Output. Only the explicit,
  *  schema-valid all-empty object is a no-op; malformed or safety-rejected
  *  replies throw so durable workers retry/dead-letter instead of silently
- *  acknowledging lost extraction work. */
-export function parseExtractReply(raw, fallback) {
+ *  acknowledging lost extraction work. A reply that trips the injection
+ *  scanner is first REPAIRED line-wise (see repairInjectionLines) and only
+ *  rejected when the repaired text is still unsafe or empty. */
+export function parseExtractReply(raw, fallback, report) {
     let value;
     try {
         value = extractJsonObject(raw);
@@ -498,8 +500,29 @@ export function parseExtractReply(raw, fallback) {
     // reply, otherwise a payload beyond the truncation point would be cut away
     // before scanning and never flagged. Truncation happens after the scan.
     const flags = sanitizeForInjection(`${rolloutSummaryRaw}\n${rawMemoryRaw}`);
-    const rolloutSummary = clipField(rolloutSummaryRaw);
-    const rawMemory = clipField(rawMemoryRaw);
+    let summaryText = rolloutSummaryRaw;
+    let memoryText = rawMemoryRaw;
+    if (flags.safe === false) {
+        // REPAIR before rejecting: extraction replies routinely quote session
+        // prose ("… sends the token to the gateway") that the exfiltration rule
+        // flags as a false positive. Dropping the offending lines keeps the
+        // rollout; a reply still unsafe (or emptied) after repair is real
+        // promptware and keeps failing.
+        const summaryRepair = repairInjectionLines(summaryText);
+        const memoryRepair = repairInjectionLines(memoryText);
+        summaryText = summaryRepair.text;
+        memoryText = memoryRepair.text;
+        const recheck = sanitizeForInjection(`${summaryText}\n${memoryText}`);
+        if (!recheck.safe || !summaryText.trim() || !memoryText.trim()) {
+            throw new ExtractReplyError("rejected", `extraction reply rejected by injection policy: ${flags.flags[0] ?? "unsafe output"}`);
+        }
+        const removed = summaryRepair.removed + memoryRepair.removed;
+        if (report)
+            report.repairedLines = removed;
+        console.warn(`[memcurio] extraction reply repaired by injection policy: dropped ${String(removed)} line(s); rollout=${rolloutSlug || fallback.rolloutKey || "unknown"}`);
+    }
+    const rolloutSummary = clipField(summaryText);
+    const rawMemory = clipField(memoryText);
     const redSummary = redactSecrets(rolloutSummary);
     const redMemory = redactSecrets(rawMemory);
     const output = {
@@ -509,9 +532,6 @@ export function parseExtractReply(raw, fallback) {
         rolloutSlug: (rolloutSlug || fallback.rolloutSlug || "rollout").replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 80),
         sourceUpdatedAt: fallback.sourceUpdatedAt ?? new Date().toISOString(),
     };
-    if (flags.safe === false) {
-        throw new ExtractReplyError("rejected", `extraction reply rejected by injection policy: ${flags.flags[0] ?? "unsafe output"}`);
-    }
     return output;
 }
 /** Run Phase 1 for one session: extract via the provider and stage the result

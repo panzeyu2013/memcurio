@@ -123,15 +123,20 @@ export class HostBridge {
   get referenceVersion(): string | undefined {
     return this.version;
   }
-  private enabled = false;
   private sink: BridgeSink | null = null;
   private readonly projector = createProjector();
   /** root -> workdir label, seeded by the plugin's ensureSession. */
   private readonly labels = new Map<string, string>();
   /** root -> raw workdir ("" = no-cwd store). */
   private readonly workdirs = new Map<string, string>();
-  /** root -> session id that resolved it (last registration wins per root). */
+  /** root -> session id that resolved it (the LATEST registration per root;
+   *  used as a fallback when a snapshot has no session id). */
   private readonly sessionsByRoot = new Map<string, string>();
+  /** session id -> root. Every session keeps its binding: a workspace can host
+   *  several sessions at once (subagents, extra tabs), and the browser must
+   *  still resolve its own session — a last-writer-wins map would 404 every
+   *  other session's snapshot. */
+  private readonly sessionRoots = new Map<string, string>();
   /** Root registered most recently (snapshot fallback without a session);
    *  tracked explicitly because re-registering a root keeps its Map order. */
   private lastRoot: string | undefined;
@@ -152,18 +157,6 @@ export class HostBridge {
     this.injectBudgetTokens = options.injectBudgetTokens;
   }
 
-  get isEnabled(): boolean {
-    return this.enabled;
-  }
-
-  enable(): void {
-    this.enabled = true;
-  }
-
-  disable(): void {
-    this.enabled = false;
-  }
-
   attachSink(sink: BridgeSink): void {
     this.sink = sink;
   }
@@ -180,7 +173,7 @@ export class HostBridge {
   /** Session evidence window, re-redacted for the browser. Empty when no
    *  source is wired or the session is unknown. */
   evidenceSnapshot(sessionId: string): BridgeEvidenceRow[] {
-    if (!this.enabled || !this.evidenceSource) return [];
+    if (!this.evidenceSource) return [];
     const rows = this.evidenceSource(sessionId);
     return rows.map((row) => {
       const text = row.text === undefined ? undefined : contentTextRedacted(row.text);
@@ -200,6 +193,7 @@ export class HostBridge {
     this.labels.set(info.root, info.workdir || "no-cwd");
     this.workdirs.set(info.root, info.workdir);
     this.sessionsByRoot.set(info.root, info.sessionId);
+    this.sessionRoots.set(info.sessionId, info.root);
     this.lastRoot = info.root;
   }
 
@@ -209,10 +203,7 @@ export class HostBridge {
 
   /** Store root that registered one session (browser transport binding). */
   rootForSession(sessionId: string): string | undefined {
-    for (const [root, id] of this.sessionsByRoot) {
-      if (id === sessionId) return root;
-    }
-    return undefined;
+    return this.sessionRoots.get(sessionId);
   }
 
   /** Most recently registered store root (snapshot fallback when the browser
@@ -224,7 +215,7 @@ export class HostBridge {
   private push(deltas: ProjectedDelta[], root: string | undefined): void {
     // An unattributable batch is dropped: a wrong-store delivery is worse
     // than a missed one (the store's snapshot reconciles it).
-    if (!this.enabled || !this.sink || deltas.length === 0 || root === undefined) return;
+    if (!this.sink || deltas.length === 0 || root === undefined) return;
     this.sink.deliver(deltas, root);
   }
 
@@ -235,7 +226,7 @@ export class HostBridge {
   /** Pre-step injection happened (plugin agent/pre-step handler). The
    *  per-session dynamic piece feeds the snapshot injection preview. */
   tagInjection(sessionId: string, workdir: string, staticText: string | undefined, dynamicText: string | undefined, budgetTokens: number | undefined): void {
-    if (!this.enabled) return;
+
     if (dynamicText !== undefined || staticText !== undefined) {
       this.lastInjection.set(sessionId, { ...(dynamicText !== undefined ? { dynamicText } : {}), at: Date.now() });
     }
@@ -252,26 +243,26 @@ export class HostBridge {
 
   /** Non-plugin user/assistant evidence seen (mirrors adapter.messageSeen). */
   tagEvidence(sessionId: string, partId: string, kind: EvidenceKind, text: string | undefined): void {
-    if (!this.enabled || (text === undefined && kind !== "user" && kind !== "assistant")) return;
+    if (text === undefined && kind !== "user" && kind !== "assistant") return;
     this.project({ kind: "evidence", sessionId, partId, itemKind: kind, text }, this.rootForSession(sessionId));
   }
 
   /** Compaction pruned surface messages (plugin compaction/prune handler). */
   tagPrune(sessionId: string, seqs: readonly number[]): void {
-    if (!this.enabled || seqs.length === 0) return;
+    if (seqs.length === 0) return;
     this.project({ kind: "compaction-prune", sessionId, seqs: [...seqs] }, this.rootForSession(sessionId));
   }
 
   /** Answer cited rollouts after citation harvest succeeded. */
   tagCitations(sessionId: string, rolloutKeys: readonly string[]): void {
-    if (!this.enabled || rolloutKeys.length === 0) return;
+    if (rolloutKeys.length === 0) return;
     this.project({ kind: "citation", sessionId, rolloutKeys: [...rolloutKeys] }, this.rootForSession(sessionId));
   }
 
   /** A DSH read/grep/glob tool touched a file inside the memory workspace.
    *  Returns true when tagged (path resolved inside <store>/memory). */
   tagToolReadHit(sessionId: string, tool: string, absolutePath: string, storeRoot: string): boolean {
-    if (!this.enabled) return false;
+
     const workspace = memoryWorkspace(storeRoot);
     if (absolutePath !== workspace && !absolutePath.startsWith(`${workspace}${sep}`)) {
       return false;
@@ -286,7 +277,7 @@ export class HostBridge {
    *  paths (memory_read/shell reads): one usage tick per hit. Rels are
    *  identifiers; blank/traversal entries are dropped, never trusted. */
   tagToolReadHits(sessionId: string, tool: string, rels: readonly string[]): void {
-    if (!this.enabled) return;
+
     const root = this.rootForSession(sessionId);
     if (root === undefined) return;
     for (const raw of rels) {
@@ -313,7 +304,7 @@ export class HostBridge {
   }
 
   private async refreshOnce(root: string): Promise<ProjectedDelta[]> {
-    if (!this.enabled) return [];
+
     const deltas: ProjectedDelta[] = [];
     // First refresh per root only SEEDS the baselines: pre-existing audit
     // rows and jobs are history, not deltas. Without this, enabling the

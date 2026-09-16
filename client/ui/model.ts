@@ -81,12 +81,14 @@ export function estimateTokens(text: string | undefined): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Count the engine's dynamic-context hit lines (`[memcurio] rel:line text`). */
+/** Count the engine's dynamic-context hit lines (`rel:line text`). The "Memory
+ *  hits:" header is not a hit, and neither is a plain sentence without a
+ *  locator. */
 export function countDynamicHits(text: string | undefined): number {
   if (text === undefined || text.length === 0) return 0;
   let hits = 0;
   for (const line of text.split("\n")) {
-    if (line.trimStart().startsWith("[memcurio] ")) hits += 1;
+    if (/^\S+:\d+\s/.test(line.trimStart())) hits += 1;
   }
   return hits;
 }

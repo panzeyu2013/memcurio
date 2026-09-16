@@ -15,7 +15,7 @@ import ToolRuntime from "@deepseek-ai/dsh-tools";
 import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 
 import { Index } from "../src/core/db.js";
-import { indexDb } from "../src/core/paths.js";
+import { indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
 import { dshHome, memcurioBaseRoot, workspaceStoreRoot } from "../src/plugin/scope.js";
@@ -308,10 +308,12 @@ describe("DSH plugin contract", () => {
     }
     const idx = await Index.create(indexDb(root));
     try {
-      // No LLM adapter is registered in this test runtime, so the automatic
-      // consolidation attempt fails and records consolidate.auto_failed —
-      // which proves maybeConsolidate actually ran at retire time.
-      expect(idx.metaGet("consolidation_auto_failed")).toBeDefined();
+      // No LLM adapter is registered in this test runtime, so the LLM
+      // consolidation attempt fails and the rule-provider fallback still lands
+      // the work — which proves maybeConsolidate actually ran at retire time.
+      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).not.toEqual([]);
+      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto'`)).not.toEqual([]);
+      expect(idx.metaGet("consolidation_auto_last")).toBeDefined();
     } finally {
       idx.close();
       await disposeFibers(fibers);
@@ -378,6 +380,30 @@ describe("DSH plugin contract", () => {
     }
   });
 
+test("registers the read-path guide as a system prompt section, path-free", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    // The plugin scope sees its own registration; the guide must carry no
+    // filesystem location at all.
+    const assembly = await ctx.systemPrompt.assemble({ scope: pluginFiber.ctx });
+    const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
+    expect(section).toBeDefined();
+    expect(section?.text).toContain("## memcurio memory");
+    expect(section?.text).toContain("memory_search");
+    expect(section?.text).not.toContain(memoryWorkspace(root));
+    expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeGreaterThan(2_900);
+    expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeLessThan(5_000);
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
   test("injects once per content change through the scoped pre-step dispatch", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
@@ -392,6 +418,10 @@ describe("DSH plugin contract", () => {
       model: "test",
     });
     await ctx.sessions.flush(session);
+
+    // v1.9: the injected message carries memory DATA only, so the store needs a
+    // summary for anything to be injected at all (the guide is prompt-side).
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- keep it short\n");
 
     // The real DSH loop dispatches agent/pre-step through a scope carrier.
     // A carrier whose filter rejects every tagged listener is the strictest
@@ -411,6 +441,11 @@ describe("DSH plugin contract", () => {
     const first = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
     if (first.kind !== "enter") throw new Error("expected enter");
     expect(first.messages).toHaveLength(2); // real message + memory context
+    const injected = first.messages[1];
+    const injectedText = injected?.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+    expect(injectedText).toContain("<<<MEMORY_SUMMARY");
+    // The guide is a system-prompt section now: never in an injected message.
+    expect(injectedText).not.toContain("## memcurio memory");
 
     // Unchanged content is not re-injected: the model already has it, and
     // every appended message grows the durable session log.
@@ -991,9 +1026,10 @@ describe("DSH plugin contract", () => {
     try {
       // The idle checkpoint was written (event lane) …
       expect(index.extractionList().some((job) => job.sessionId === session.id && job.sourceEvent === "idle")).toBe(true);
-      // … and the detached worker ran the drain + maybeConsolidate (the
-      // consolidation attempt fails without an LLM adapter and records it).
-      expect(index.metaGet("consolidation_auto_failed")).toBeDefined();
+      // … and the detached worker ran the drain + maybeConsolidate (the LLM
+      // attempt fails without an adapter; the rule fallback records the run).
+      expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).not.toEqual([]);
+      expect(index.metaGet("consolidation_auto_last")).toBeDefined();
     } finally {
       index.close();
       await disposeFibers(fibers);
@@ -1099,6 +1135,37 @@ describe("DSH plugin contract", () => {
 
   test("adopts sessions that exist before the plugin loads", async () => {
     const root = temporaryRoot();
+    // Seed a pre-repair policy dead letter: adopting the FIRST session of a
+    // store must bootstrap the recovery drain. (A startup loop over runtimes
+    // never sees it: the session list is empty while apply() runs.)
+    const seedIdx = await Index.create(indexDb(root));
+    try {
+      seedIdx.driver.run(
+        `INSERT INTO extraction_jobs(job_id, idempotency_key, host, provider, session_id,
+           source_event, workdir, evidence_ref, content_hash, snapshot_json, attempts,
+           next_attempt_at, status, last_error, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          "job-bootstrap",
+          "job-bootstrap",
+          "dsh",
+          "dsh",
+          "s1",
+          "session_end",
+          join(root, "workspace"),
+          "sha256:x",
+          "x",
+          "{}",
+          5,
+          "2026-09-16T00:00:00.000Z",
+          "dead",
+          "ExtractReplyError: extraction reply rejected by injection policy: (?:send|upload)",
+          "2026-09-16T00:00:00.000Z",
+        ],
+      );
+    } finally {
+      seedIdx.close();
+    }
     const { ctx, fibers } = await runtime();
     const session = ctx.sessions.prepare(SessionId("pre-existing"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
@@ -1111,6 +1178,18 @@ describe("DSH plugin contract", () => {
       model: "test",
     });
     await ctx.sessions.flush(session);
+
+    const bootIdx = await Index.create(indexDb(root));
+    try {
+      // The store bootstrap ran on adoption: the policy dead letter was
+      // requeued (and the drain already picked it up).
+      expect(
+        bootIdx.rawAll<{ action: string }>("SELECT action FROM audit WHERE action='extract.requeued'"),
+      ).not.toEqual([]);
+      expect(bootIdx.extractionList().find((job) => job.jobId === "job-bootstrap")?.status).not.toBe("dead");
+    } finally {
+      bootIdx.close();
+    }
 
     const msg = createUserMessage({ content: [{ type: "text", text: "pre-existing message" }], source: { kind: "user" } });
     ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });

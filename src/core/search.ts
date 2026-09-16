@@ -8,6 +8,10 @@ export interface MemoryHit {
   line: number;
   content: string;
   score: number;
+  /** True for an ad-hoc note that has not been folded into MEMORY.md yet:
+   *  the hit is real, but it is not part of the durable handbook until the
+   *  next consolidation. */
+  pending?: boolean;
 }
 
 /** Per-call scan budget: the workspace can hold up to 4096 files × 1 MiB, and
@@ -18,6 +22,10 @@ const MAX_SEARCH_SCAN_BYTES = 32 * 1024 * 1024;
 /** Bound the query-word count: a 10k-char query would otherwise score every
  *  line against thousands of words (query × corpus blow-up). */
 const MAX_SEARCH_QUERY_WORDS = 32;
+/** Phrase-match bonus: an exact multi-word match must beat scattered terms. */
+const PHRASE_SCORE_BONUS = 4;
+/** Per-entry hit cap after ranking (one verbose entry cannot fill the window). */
+const MAX_HITS_PER_FILE = 3;
 
 /** Codex-style usage telemetry: register that memory artifacts were actually
  *  reused (read by the model / cited / hit by search). Each referenced
@@ -96,10 +104,15 @@ export async function registerMemoryUsage(root: string, rels: readonly string[])
   return counted;
 }
 
-/** Line-oriented search over the memory workspace. Scoring counts query-word
- *  occurrences per line; hits are injection-filtered and re-redacted at read
- *  time. Matches against rollout summary files bump the corresponding
- *  stage-1 usage stats so the selection window tracks real reuse. */
+/** Line-oriented search over the memory workspace. Two passes make the
+ *  ranking skilled rather than merely literal: the first collects candidate
+ *  lines plus the document frequency of every query term, the second scores
+ *  with inverse document frequency (a rare, specific term outweighs a
+ *  ubiquitous one) and a phrase bonus for multi-word queries, de-duplicates
+ *  identical lines, then caps hits per entry so one verbose file cannot fill
+ *  the window. Hits are injection-filtered and re-redacted at read time.
+ *  Matches against rollout summary files bump the corresponding stage-1 usage
+ *  stats so the selection window tracks real reuse. */
 export async function searchMemory(
   root: string,
   query: string,
@@ -121,44 +134,101 @@ export async function searchMemory(
   if (!words.length) {
     return { hits, blocked };
   }
-  const lowerWords = words.map((w) => w.toLowerCase());
+  const lowerWords = [...new Set(words.map((w) => w.toLowerCase()))];
+  const phrase = words.length > 1 ? lowerWords.join(" ") : "";
 
+  type Candidate = { rel: string; line: number; text: string; pending: boolean; counts: Map<string, number> };
+  const candidates: Candidate[] = [];
+  const documentFrequency = new Map<string, number>();
   const usedRels: string[] = [];
+  let lineCount = 0;
   let scannedBytes = 0;
+  const scan = (rel: string, text: string, pending: boolean): void => {
+    // Usage tracking: a hit on a rollout summary (or a MEMORY.md line citing
+    // one) counts as reuse of that stage-1 output; pending notes are not
+    // stage-1 artifacts and never move the selection window.
+    const track = rel.startsWith("rollout_summaries/") ? rel : undefined;
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      lineCount += 1;
+      const lower = line.toLowerCase();
+      const counts = new Map<string, number>();
+      for (const w of lowerWords) {
+        const n = countOccurrences(lower, w);
+        if (n > 0) {
+          counts.set(w, n);
+          documentFrequency.set(w, (documentFrequency.get(w) ?? 0) + 1);
+        }
+      }
+      if (counts.size === 0) {
+        continue;
+      }
+      if (!sanitizeForInjection(line).safe) {
+        blocked += 1;
+        continue;
+      }
+      candidates.push({ rel, line: i + 1, text: line, pending, counts });
+      if (!pending) {
+        usedRels.push(track ?? line);
+      }
+    }
+  };
   for (const rel of searchableRels(listWorkspaceFiles(root))) {
     const text = readWorkspaceText(root, rel);
     scannedBytes += text.length;
     if (scannedBytes > MAX_SEARCH_SCAN_BYTES) {
       break;
     }
-    const lines = text.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? "";
-      const lower = line.toLowerCase();
-      let score = 0;
-      for (const w of lowerWords) {
-        let idx = lower.indexOf(w);
-        while (idx >= 0) {
-          score += 1;
-          idx = lower.indexOf(w, idx + Math.max(1, w.length));
-        }
-      }
-      if (score === 0) {
-        continue;
-      }
-      const verdict = sanitizeForInjection(line);
-      if (!verdict.safe) {
-        blocked += 1;
-        continue;
-      }
-      hits.push({ rel, line: i + 1, content: redactSecrets(line).text, score });
-      // Usage tracking: a hit on a rollout summary (or a MEMORY.md line
-      // citing one) counts as reuse of that stage-1 output.
-      if (rel.startsWith("rollout_summaries/")) {
-        usedRels.push(rel);
-      } else {
-        usedRels.push(line);
-      }
+    scan(rel, text, false);
+  }
+  // Unapplied ad-hoc notes are searchable too: a note the agent just wrote
+  // must be findable before the next consolidation folds it into MEMORY.md
+  // (the workspace scan cannot see it — notes live outside searchableRels).
+  // Applied notes are skipped: consolidation already put them in the handbook,
+  // and reporting both would double-count.
+  for (const note of await pendingNotes(root)) {
+    scan(`extensions/ad_hoc/notes/${note.filename}`, note.content, true);
+  }
+
+  const scored: MemoryHit[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let score = 0;
+    for (const [word, count] of candidate.counts) {
+      const df = documentFrequency.get(word) ?? 1;
+      score += count * (1 + Math.log(1 + lineCount / (1 + df)));
+    }
+    if (phrase !== "" && candidate.text.toLowerCase().includes(phrase)) {
+      score += PHRASE_SCORE_BONUS;
+    }
+    const dedupeKey = candidate.text.trim().toLowerCase();
+    if (dedupeKey !== "" && seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    scored.push({
+      rel: candidate.rel,
+      line: candidate.line,
+      content: redactSecrets(candidate.text).text,
+      score: Math.round(score * 1000) / 1000,
+      ...(candidate.pending ? { pending: true } : {}),
+    });
+  }
+  scored.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel) || a.line - b.line);
+
+  // One noisy entry must not fill the window: cap hits per entry AFTER the
+  // ranking, so the cap never changes which entry wins.
+  const perFile = new Map<string, number>();
+  for (const hit of scored) {
+    const count = perFile.get(hit.rel) ?? 0;
+    if (count >= MAX_HITS_PER_FILE) {
+      continue;
+    }
+    perFile.set(hit.rel, count + 1);
+    hits.push(hit);
+    if (hits.length >= Math.max(1, topK)) {
+      break;
     }
   }
 
@@ -168,9 +238,40 @@ export async function searchMemory(
   if (opts.trackUsage !== false) {
     await registerMemoryUsage(root, usedRels);
   }
+  return { hits, blocked };
+}
 
-  const sorted = hits.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel) || a.line - b.line);
-  return { hits: sorted.slice(0, Math.max(1, topK)), blocked };
+/** Occurrences of one term in an already lowercased line (non-overlapping
+ *  steps so a term cannot count itself). */
+function countOccurrences(lower: string, word: string): number {
+  if (word === "") {
+    return 0;
+  }
+  let count = 0;
+  let idx = lower.indexOf(word);
+  while (idx >= 0) {
+    count += 1;
+    idx = lower.indexOf(word, idx + Math.max(1, word.length));
+  }
+  return count;
+}
+
+/** Unapplied ad-hoc notes from the state DB. A bare or unreadable store simply
+ *  has none — search must keep working on a workspace with no index. */
+async function pendingNotes(root: string): Promise<{ filename: string; content: string }[]> {
+  try {
+    const idx = await Index.create(indexDb(root));
+    try {
+      return idx
+        .noteList()
+        .filter((note) => !note.applied)
+        .map((note) => ({ filename: note.filename, content: note.content }));
+    } finally {
+      idx.close();
+    }
+  } catch {
+    return [];
+  }
 }
 
 function searchableRels(rels: string[]): string[] {

@@ -4,9 +4,11 @@
  * Two surfaces ship from this entry:
  *
  * 1. the `memcurio` Settings section (configuration);
- * 2. the memory visibility UI (G5/G6): a session-header indicator with the
- *    injection preview, transient toasts for injections and memory writes,
- *    and custom transcript rows for the six native memory tools.
+ * 2. the memory visibility UI (G5/G6): the "记忆注入 / Memory injection"
+ *    transcript row for injected memory (ui/context-row.ts), transient toasts
+ *    for injections and memory writes, and custom transcript rows for the six
+ *    native memory tools. The session-header indicator is kept unregistered
+ *    (v1.7 product instruction).
  *
  * Loader contract: this module is bundled into `lib/client.js` and registered
  * through `window.__ModuleLoader__.load({ id, factory })`; every runtime
@@ -32,11 +34,12 @@ import {
   type MemcurioSettingsView,
   type SettingsField,
 } from "./settings/controller.js";
+import { SettingsNavProbe, startSettingsNavWatcher } from "./settings/nav-mark.js";
 import { MemcurioSettingsSection } from "./settings/section.js";
 import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.js";
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
-import { MemoryInjectionIndicator } from "./ui/injection-indicator.js";
+import { CONTEXT_ROW_PRIORITY, createContextRow } from "./ui/context-row.js";
 import { NS as UI_NS, en as uiEn, zh as uiZh, type UiKey } from "./ui/locales.js";
 import { actionCategory, createMemoryUiStore, type MemoryUiEvent } from "./ui/model.js";
 import { mountUiStyles } from "./ui/styles.js";
@@ -63,6 +66,23 @@ interface SessionsLike {
     getSnapshot(): { current?: unknown };
     subscribe(listener: () => void): () => void;
   };
+}
+
+/** Structural slice of the client locale service: the platform chat row's
+ *  dictionary namespace ("chat") belongs to ui-chat and is not merged into
+ *  this package's LocaleNamespaceMap, so the binding goes through the narrow
+ *  structural face here. A locale service that refuses the namespace degrades
+ *  to identity translation (the fallback row only ever uses it for the
+ *  platform's own generic title). */
+type TranslateLike = (key: string, params?: Record<string, unknown>) => string;
+
+function chatTranslate(ctx: Context): TranslateLike {
+  try {
+    const locale = (ctx as unknown as { locale?: { bind(ns: string): TranslateLike } }).locale;
+    return locale === undefined ? (key) => key : locale.bind("chat");
+  } catch {
+    return (key) => key;
+  }
 }
 
 function currentSessionId(ctx: Context): string | undefined {
@@ -160,6 +180,27 @@ export function apply(ctx: Context): void {
     ),
   );
 
+  // Interaction-level fallback for the mark: a capture-phase listener tags the
+  // row after the click/key that opened the dialog, so the mark does not depend
+  // on the seat below ever mounting.
+  ctx.effect(() => startSettingsNavWatcher(), "memcurio: settings nav mark watcher");
+
+  // The settings shell renders this seat whenever its panel is open (and the
+  // nav rows exist at the same commit). The probe renders nothing: it tags the
+  // memcurio nav row so our stylesheet can paint the book mark there — the
+  // shell owns row icons and the section contract carries no icon field.
+  ctx.slots.inject("settings.action", () =>
+    ctx.slots.register(
+      {
+        name: "settings.action",
+        id: "memcurio-nav-mark",
+        order: 90,
+        locale: SETTINGS_NS,
+      },
+      SettingsNavProbe,
+    ),
+  );
+
   /* ------------------------------------------------- memory UI (G5/G6) --- */
 
   ctx.effect(() => mountUiStyles(), "memcurio: ui styles");
@@ -229,22 +270,22 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => () => toasts.dispose(), "memcurio: toasts");
 
-  // Header indicator: injection glyph + hits + unread dot + preview popover.
-  ctx.slots.inject("conversation.session.header.utilities", () =>
+  // The session header carries NO memcurio surface (v1.7 product instruction,
+  // 2026-09-16): memory configuration and the ON/OFF control live in the
+  // Settings panel, and injection/write feedback stays transient (toasts).
+  // `client/ui/injection-indicator.ts` is kept — with its tests — as the
+  // status surface of the memory workbench (design §M0/M1). Re-registering it
+  // here is the six-line `conversation.session.header.utilities` entry that
+  // this comment replaced.
+
+  // The injected memory row reads "记忆注入 / Memory injection" instead of the
+  // platform's generic "上下文注入 / Context injection". The adapter shadows the
+  // shipped `context` cell (priority -1) and delegates every other context
+  // node back to it — see client/ui/context-row.ts.
+  ctx.slots.inject("conversation.chat.node", () =>
     ctx.slots.register(
-      {
-        name: "conversation.session.header.utilities",
-        id: "memcurio",
-        order: 40,
-        locale: UI_NS,
-        inject: () => ({
-          hooks: { memory: store },
-          markSeen: () => {
-            store.markSeen();
-          },
-        }),
-      },
-      MemoryInjectionIndicator,
+      { name: "conversation.chat.node", key: "context", priority: CONTEXT_ROW_PRIORITY, locale: UI_NS },
+      createContextRow({ slots: ctx.slots, chatT: chatTranslate(ctx) }),
     ),
   );
 
@@ -253,6 +294,9 @@ export function apply(ctx: Context): void {
     const disposers = MEMORY_TOOL_NAMES.map((name) =>
       ctx.slots.inject("tool.call.toolview", () =>
         ctx.slots.register(
+          // priority 1 is the coexistence fallback: a first-party row for the
+          // same wire key at rank 0 wins this cell, and two rank-1 registrations
+          // for one key would throw at load — ours is the only one.
           { name: "tool.call.toolview", key: name, locale: UI_NS, priority: 1 },
           memoryToolView(name),
         ),

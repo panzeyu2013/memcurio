@@ -3,12 +3,12 @@
  *
  * Every row is registered into the keyed `tool.call.toolview` slot by exact
  * wire name, so a memory call renders as a first-class memory row instead of
- * the generic sparkle row: the book mark as leading glyph, the tool name,
- * a one-line argument summary, and a disclosure body with the argument and
- * result payloads. Terminal states yield the leading slot to the shipped
- * status dot, and the row keeps the shipped geometry (24px row, 16px leading
- * box, 13px title, ellipsizing summary). All copy is localized; payload text
- * is rendered as text nodes, never markup.
+ * the generic sparkle row: the book mark as leading glyph in EVERY state
+ * (error/interrupted only colour the mark — the glyph is never swapped for a
+ * status dot), the tool name, a one-line argument summary, and a disclosure
+ * body with the argument and result payloads. The row keeps the shipped
+ * geometry (24px row, 16px leading box, 13px title, ellipsizing summary). All
+ * copy is localized; payload text is rendered as text nodes, never markup.
  *
  * @module
  */
@@ -16,7 +16,7 @@ import { createElement, useState } from "react";
 import type { KeyboardEvent, ReactElement } from "react";
 
 import type { MemoryToolBlockLike } from "./contracts.js";
-import { ChevronDownIcon, MemoryMarkIcon, MemoryStateDot } from "./icons.js";
+import { ChevronDownIcon, MemoryMarkIcon } from "./icons.js";
 import type { UiKey } from "./locales.js";
 
 /** The six native tools, in registration order. */
@@ -117,11 +117,17 @@ function stateLabel(state: MemoryToolRowState, t: MemoryToolRowProps["t"]): stri
   return "";
 }
 
-function leading(state: MemoryToolRowState, open: boolean): ReactElement {
-  if (state === "error") return h(MemoryStateDot, { state: "error" });
-  if (state === "stopped") return h(MemoryStateDot, { state: "warning" });
-  if (open) return h(ChevronDownIcon, {});
-  return h(MemoryMarkIcon, {});
+/** The leading slot: the book mark at rest in every state (the row's
+ *  `data-state` colours it — see the stylesheet), the disclosure chevron on
+ *  hover and while open — the shipped row's swap, so the slot never shows two
+ *  affordances at once. */
+function leading(open: boolean): ReactElement {
+  return h(
+    "span",
+    { className: "memcurio-tool-leading" },
+    h("span", { className: "memcurio-tool-leading-state" }, h(MemoryMarkIcon, {})),
+    h("span", { className: "memcurio-tool-leading-chevron", "data-open": open ? "true" : "false" }, h(ChevronDownIcon, {})),
+  );
 }
 
 /** One memory tool call row. */
@@ -152,10 +158,11 @@ export function MemoryToolRow(props: MemoryToolRowProps): ReactElement {
       {
         className: "memcurio-tool-head",
         "data-state": state,
+        ...(state === "running" ? { "aria-busy": true } : {}),
         ...(expandable ? { role: "button", tabIndex: 0, "aria-expanded": open } : {}),
         ...(expandable ? { onClick: toggle, onKeyDown } : {}),
       },
-      h("span", { className: "memcurio-tool-leading" }, leading(state, open)),
+      h("span", { className: "memcurio-tool-leading" }, leading(open)),
       h("span", { className: "memcurio-tool-title" }, props.toolName ?? "memory"),
       summary !== ""
         ? [

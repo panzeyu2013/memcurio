@@ -4,7 +4,7 @@
  * Mounts the real route against a real node:http server (the fake `webServer`
  * service just hands the handler over) and exercises the wire contract over
  * real HTTP: token authentication, loopback Host/Origin rules, strict session
- * resolution, HEAD rejection, bridge-disabled 403, SSE frame delivery with
+ * resolution, HEAD rejection, SSE frame delivery with
  * per-session filtering, slot reclamation on abort (the bun `res.close`
  * regression) and the sequence-as-state-version guarantee.
  */
@@ -25,7 +25,7 @@ interface BridgeSinkLike {
 interface Harness {
   base: string;
   transport: UiTransport;
-  bridge: { enabled: boolean; sink: BridgeSinkLike | undefined };
+  bridge: { sink: BridgeSinkLike | undefined };
   bootRows: () => unknown[];
   close(): Promise<void>;
 }
@@ -58,12 +58,9 @@ async function readSse(response: Response, until: (text: string) => boolean, tim
   return received;
 }
 
-async function startHarness(enabled = true): Promise<Harness> {
-  const bridge = { enabled, sink: undefined as BridgeSinkLike | undefined };
+async function startHarness(): Promise<Harness> {
+  const bridge = { sink: undefined as BridgeSinkLike | undefined };
   const fakeBridge = {
-    get isEnabled(): boolean {
-      return bridge.enabled;
-    },
     async snapshot(root: string, sessionId?: string) {
       return {
         at: "2026-09-14T00:00:00.000Z",
@@ -154,11 +151,9 @@ describe("memory transport route", () => {
     expect((await authorized("/memcurio/snapshot?session=")).status).toBe(400);
   });
 
-  test("rejects HEAD and reports bridge-disabled on both routes", async () => {
+  test("rejects HEAD on both routes", async () => {
     expect((await authorized("/memcurio/events", { method: "HEAD" })).status).toBe(405);
-    harness.bridge.enabled = false;
-    expect((await authorized("/memcurio/snapshot")).status).toBe(403);
-    expect((await authorized("/memcurio/events")).status).toBe(403);
+    expect((await authorized("/memcurio/snapshot", { method: "HEAD" })).status).toBe(405);
   });
 
   test("streams only the subscribed session's deltas and reclaims the slot on abort", async () => {

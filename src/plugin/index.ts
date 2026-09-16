@@ -26,7 +26,9 @@ import { memcurioBaseRoot, workspaceStoreRoot } from "./scope.js";
 
 export { workspaceStoreRoot } from "./scope.js";
 
+import { renderReadPathInstructions } from "../core/inject.js";
 import { memoryWorkspace } from "../core/paths.js";
+import { retrievalQuery } from "../core/query.js";
 import { HostBridge } from "./bridge.js";
 import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
 import { installUiTransport } from "./ui-transport.js";
@@ -43,8 +45,8 @@ const bridgesByRoot = new Map<string, HostBridge>();
  *  ones stay host-only rather than attempting a colliding registration). */
 let uiTransportMounted = false;
 
-/** Live host bridge for a base root (present once the plugin applied; its
- *  isEnabled mirrors config.hostBridge). */
+/** Live host bridge for a base root (present once the plugin applied; the
+ *  bridge is always on — it is not configurable). */
 export function hostBridgeForRoot(root: string): HostBridge | undefined {
   return bridgesByRoot.get(root);
 }
@@ -56,10 +58,6 @@ export interface Config {
   injectContext?: boolean;
   registerTools?: boolean;
   injectBudgetTokens?: number;
-  /** Browser-facing memory UI (design §5/§8): tags events, diffs store
-   *  changes, prepares snapshots and serves them over the same-origin
-   *  transport. Default on; a memory UI with the bridge off renders nothing. */
-  hostBridge?: boolean;
   provider?: string;
   model?: string;
 }
@@ -70,7 +68,6 @@ export const Config: Schema<Config> = Schema.object({
   injectContext: Schema.boolean().default(true),
   registerTools: Schema.boolean().default(true),
   injectBudgetTokens: Schema.number().step(1).min(128),
-  hostBridge: Schema.boolean().default(true),
   provider: Schema.string(),
   model: Schema.string(),
 });
@@ -160,6 +157,12 @@ export const DSH_TOOL_PRESET = {
  *  the extraction job lease so the job falls back to a normal retry. */
 const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
 
+/** Slice of the retire budget reserved for the automatic Phase-2 pass: the
+ *  extraction drain must stop early so consolidation still runs before the
+ *  runtime abort disposes the adapter (a drain that eats the whole budget
+ *  starves consolidation on every event). */
+const DSH_CONSOLIDATE_RESERVE_MS = 10_000;
+
 /** Wall-clock budget for the retire-time drain + automatic consolidation.
  *  On expiry the runtime abort cancels in-flight model calls so dispose (and
  *  DSH shutdown) stays bounded; the durable queue retries the leftovers. */
@@ -169,14 +172,23 @@ const DSH_RETIRE_WORK_BUDGET_MS = 30_000;
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
 const DSH_RETIRE_RETRY_MS = 5_000;
 
+/** System-prompt section order for the read-path guide: after the per-tool
+ *  sections (TOOL_* end at 2900) and before the PTC SDK text (TOOLS_SDK 5000),
+ *  so the memory rules read next to the tool schemas they talk about. */
+export const MEMCURIO_READ_PATH_ORDER = 2_950;
+
+/** The slice of the DSH system-prompt service the plugin uses (structural, so
+ *  the plugin stays loadable in test compositions without the service). */
+interface SystemPromptLike {
+  section(section: { name: string; order: number; text: string | ((context: unknown) => string) }): (() => void) | undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function resolveConfig(config: Config = {}): Required<Omit<Config, "root" | "injectBudgetTokens" | "provider" | "model">> &
   Pick<Config, "root" | "injectBudgetTokens" | "provider" | "model"> {
-  void config.hostBridge; // validated below with the other booleans
-
   if (config.root !== undefined && (typeof config.root !== "string" || config.root.trim() === "")) {
     throw new TypeError("memcurio: root must be a non-empty string");
   }
@@ -188,9 +200,6 @@ function resolveConfig(config: Config = {}): Required<Omit<Config, "root" | "inj
   }
   if (config.registerTools !== undefined && typeof config.registerTools !== "boolean") {
     throw new TypeError("memcurio: registerTools must be a boolean");
-  }
-  if (config.hostBridge !== undefined && typeof config.hostBridge !== "boolean") {
-    throw new TypeError("memcurio: hostBridge must be a boolean");
   }
   if (
     config.injectBudgetTokens !== undefined &&
@@ -213,7 +222,6 @@ function resolveConfig(config: Config = {}): Required<Omit<Config, "root" | "inj
     injectContext: config.injectContext ?? true,
     registerTools: config.registerTools ?? true,
     injectBudgetTokens: config.injectBudgetTokens,
-    hostBridge: config.hostBridge ?? true,
     provider: config.provider,
     model: config.model,
   };
@@ -444,7 +452,7 @@ const TEXT_OUTPUT = {
 function registerMemoryTools(
   ctx: Context,
   sessions: Map<string, SessionRuntime>,
-  bridge: HostBridge | undefined,
+  bridge: HostBridge,
 ): void {
   ctx.tools.register(defineTool({
     name: "memory_search",
@@ -501,7 +509,7 @@ function registerMemoryTools(
           maxLines: integerArg(args.maxLines, "maxLines", undefined, 10_000),
           maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 1_000_000),
         }));
-        if (bridge?.isEnabled && rel) {
+        if (rel) {
           bridge.tagToolReadHits(runtime.session.id, "memory_read", [rel]);
         }
         return text;
@@ -525,7 +533,7 @@ function registerMemoryTools(
         // The note is durable when integrationRemember returns; push the new
         // receipt immediately instead of waiting for the turn/end drain, so
         // the "memory was written" toast lands with the tool card.
-        if (bridge?.isEnabled) void bridge.refresh(runtime.root).catch(() => undefined);
+        void bridge.refresh(runtime.root).catch(() => undefined);
         return result;
       });
     },
@@ -565,8 +573,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   const baseRoot = resolved.root ?? process.env.MEMCURIO_ROOT ?? memcurioBaseRoot();
   const sessions = new Map<string, SessionRuntime>();
   // Host bridge for the memory workbench (design §5/§8): tags events and
-  // diffs store changes; disabled by default until a transport sink is
-  // attached (S0 outcome). Config hostBridge gates ALL of its work.
+  // diffs store changes. Always on (product decision 2026-09-16: no user case
+  // needs the data plane off, so it is not a setting); a profile without a web
+  // server simply never mounts the transport on top of it.
   const bridge = new HostBridge({
     baseRoot,
     scope: resolved.scope,
@@ -582,22 +591,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   // NOTE: installSection calls the hooks synchronously during install, so the
   // callback body may not touch bindings declared after it (live/fixedRoute).
   const lastWarned = { scope: resolved.scope, registerTools: resolved.registerTools };
-  let bridgeWasEnabled = false;
   const settings = installMemcurioSettings(ctx, {
     base: settingsBase(resolved),
     onChange: (next) => {
-      if (next.hostBridge && !bridgeWasEnabled) {
-        bridge.enable();
-        bridgeWasEnabled = true;
-        // Seed the refresh baselines for known roots so the first refresh
-        // after a live enable does not replay pre-existing audit rows.
-        for (const root of new Set([...sessions.values()].map((runtime) => runtime.root))) {
-          void bridge.refresh(root).catch((error) => ctx.logger.warn("memcurio: %s", String(error)));
-        }
-      } else if (!next.hostBridge && bridgeWasEnabled) {
-        bridge.disable();
-        bridgeWasEnabled = false;
-      }
       bridge.configure({ scope: next.scope, injectBudgetTokens: next.injectBudgetTokens });
       // Warn once per changed behaviour (the settings document commits on
       // every write, even for unrelated fields).
@@ -620,11 +616,12 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   /** Pinned worker route from the settings document, when one is set. */
   const fixedRoute = (): { provider: string; model: string } | undefined => pinnedRoute(live());
-  // The install-time onChange above already applied hostBridge; this only
-  // keeps the local latch in step with the bridge's real state.
-  bridgeWasEnabled = bridge.isEnabled;
   bridgesByRoot.set(baseRoot, bridge);
   const warn = (error: unknown): void => ctx.logger.warn("memcurio: %s", String(error));
+  // Last worker route observed anywhere in this process. A session whose own
+  // route never materializes (retire during shutdown, a headless session)
+  // still gets a usable route instead of parking its jobs as blocked.
+  let lastKnownRoute: { provider: string; model: string } | undefined;
   // Browser transport (G5/G6): the same-origin snapshot/SSE route plus the
   // bridge sink. Mounted once per process (the route table is per path).
   if (!uiTransportMounted) {
@@ -647,6 +644,31 @@ export function apply(ctx: Context, config: Config = {}): void {
       warn(error);
     }
   }
+
+  /** Per-store one-time bootstrap. Sessions are adopted lazily in this
+   *  composition (the session list is empty while apply() runs), so the
+   *  recovery drain is triggered by the FIRST session of a store rather than
+   *  by a loop over runtimes that may not exist yet. */
+  const bootstrappedRoots = new Set<string>();
+  const bootstrapRoot = (runtime: SessionRuntime): void => {
+    if (bootstrappedRoots.has(runtime.root)) return;
+    bootstrappedRoots.add(runtime.root);
+    // Recover jobs a pre-repair policy false positive dead-lettered (the
+    // parser now repairs those lines), then drain pending work.
+    void runtime.adapter
+      .requeuePolicyRejectedExtractions()
+      .then((revived) => {
+        if (revived > 0) {
+          ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
+        }
+        return runtime.adapter.processPendingExtractions();
+      })
+      .catch(warn);
+    // Baseline seeding: one audit-tail + queue read per store, so historic
+    // receipts can never replay once a browser attaches (the bridge is always
+    // on; this runs even in profiles with no web server).
+    void bridge.refresh(runtime.root).catch(warn);
+  };
 
   const ensureSession = (session: Session): SessionRuntime => {
     const existing = sessions.get(session.id);
@@ -676,7 +698,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
     // A pinned route is read LIVE at every consumption point (fixedRoute);
     // the seed only picks the session's initial fallback route.
-    const seededRoute = fixedRoute() ?? latestRoute(seedEvents);
+    const seededRoute = fixedRoute() ?? latestRoute(seedEvents) ?? lastKnownRoute;
+    if (seededRoute) lastKnownRoute = seededRoute;
     let runtime: SessionRuntime;
     const adapter = new MemcurioAdapter({
       root,
@@ -684,7 +707,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       durableQueue: true,
       injectBudgetTokens: () => live().injectBudgetTokens,
       toolPreset: DSH_TOOL_PRESET,
-      channel: dshChannel(ctx, () => fixedRoute() ?? runtime.route, () => runtime.abort.signal),
+      channel: dshChannel(
+        ctx,
+        () => fixedRoute() ?? runtime.route ?? lastKnownRoute,
+        () => runtime.abort.signal,
+      ),
       // Preserve warn/error levels: flattening them to debug would hide real
       // failures ("staging failed", "consolidation skipped", "retry failed")
       // under debug-filtered host logging. info stays at debug to keep the
@@ -712,6 +739,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     };
     sessions.set(session.id, runtime);
     bridge.registerSession({ sessionId: session.id, workdir, root });
+    bootstrapRoot(runtime);
     void enqueue(runtime, async () => {
       await adapter.sessionCreated(session.id, workdir, "dsh");
       // Seed summaries live in the SAME map the live handler consumes, so a
@@ -724,9 +752,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!isPluginMessage(message)) {
             const evidence = messageEvidence(message);
             await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
-            if (bridge.isEnabled) {
-              bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
-            }
+            bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
           }
         } else if (event.type === "tool/call") {
           let parsed: unknown;
@@ -756,7 +782,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (event.data.error === undefined) await settleCompaction(runtime, session.id, event.data.compactionId);
         } else if (event.type === "compaction/prune") {
           pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
-          if (bridge.isEnabled) bridge.tagPrune(session.id, event.data.shadowedSeqs);
+          bridge.tagPrune(session.id, event.data.shadowedSeqs);
         }
       }
     }, warn);
@@ -789,15 +815,17 @@ export function apply(ctx: Context, config: Config = {}): void {
         const work = (async () => {
           if (runtime.abort.signal.aborted) return;
           try {
-            if (bridge.isEnabled) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
-          else await harvestCitations(runtime);
+            bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
           } catch {
             // best effort: citation telemetry must never break retirement
           }
-          await runtime.adapter.processPendingExtractions();
+          await runtime.adapter.processPendingExtractions(
+            8,
+            Date.now() + DSH_RETIRE_WORK_BUDGET_MS - DSH_CONSOLIDATE_RESERVE_MS,
+          );
           await runtime.adapter.maybeConsolidate();
           // Deliver queue/audit diffs produced by the retire drain.
-          if (bridge.isEnabled) await bridge.refresh(runtime.root).catch(warn);
+          await bridge.refresh(runtime.root).catch(warn);
         })();
         // If the budget expires first, the raced work continues detached;
         // record any late failure instead of letting it become an
@@ -885,14 +913,17 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on("session/event", (session, event) => {
     const runtime = ensureSession(session);
     const route = routeFromEvent(event);
-    if (route) runtime.route = route;
+    if (route) {
+      runtime.route = route;
+      lastKnownRoute = route;
+    }
     const message = messageFromEvent(event);
     if (message) {
       if (!isPluginMessage(message)) {
         const partId = partIdFor(event.type, event.seq);
         const evidence = messageEvidence(message);
         void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partId, evidence), warn);
-        if (bridge.isEnabled) bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
+        bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
       }
     } else if (event.type === "turn/end") {
       // The idle checkpoint is a fast durable write (event lane, awaited by
@@ -903,15 +934,14 @@ export function apply(ctx: Context, config: Config = {}): void {
       void enqueueWorker(runtime, async () => {
         await idle.catch(() => undefined);
         try {
-          if (bridge.isEnabled) bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
-          else await harvestCitations(runtime);
+          bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
         } catch {
           // best effort: citation telemetry must never break the turn flow
         }
         await runtime.adapter.processPendingExtractions();
         await runtime.adapter.maybeConsolidate();
         // Deliver queue/audit diffs produced by this drain (turn/end lane).
-        if (bridge.isEnabled) await bridge.refresh(runtime.root).catch(warn);
+        await bridge.refresh(runtime.root).catch(warn);
       }, warn);
     } else if (event.type === "compaction/summary") {
       runtime.pendingCompactions.set(event.data.compactionId, {
@@ -931,7 +961,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // (no summary to preserve them), so their evidence parts go too.
       void enqueue(runtime, async () => {
         pruneShadowedEvidence(runtime.adapter, session.id, event.data.shadowedSeqs);
-        if (bridge.isEnabled) bridge.tagPrune(session.id, event.data.shadowedSeqs);
+        bridge.tagPrune(session.id, event.data.shadowedSeqs);
       }, warn);
     }
   }, { global: true });
@@ -954,16 +984,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     // engine's own telemetry counts — the snapshot usage face stays the
     // reconciliation truth). Path -> rollout resolution stays a host-side
     // concern documented in the projector.
-    if (bridge.isEnabled) {
-      if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
-        const readPath = details?.filePath ?? details?.path;
-        if (readPath && isAbsolute(readPath)) {
-          bridge.tagToolReadHit(session.id, exec.name, readPath, runtime.root);
-        }
-      } else if (DSH_TOOL_PRESET.shellTools.includes(exec.name) && details?.command) {
-        const rels = shellMemoryFileRels(details.command, runtime);
-        if (rels.length > 0) bridge.tagToolReadHits(session.id, exec.name, rels);
+    if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
+      const readPath = details?.filePath ?? details?.path;
+      if (readPath && isAbsolute(readPath)) {
+        bridge.tagToolReadHit(session.id, exec.name, readPath, runtime.root);
       }
+    } else if (DSH_TOOL_PRESET.shellTools.includes(exec.name) && details?.command) {
+      const rels = shellMemoryFileRels(details.command, runtime);
+      if (rels.length > 0) bridge.tagToolReadHits(session.id, exec.name, rels);
     }
     void enqueue(runtime, () => runtime.adapter.toolExecuted(session.id, exec.name, details), warn);
   }, { global: true });
@@ -987,6 +1015,24 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Registered unconditionally so the settings surface can toggle injection
   // live (the composition default only seeds the settings base).
   //
+  // v1.9: the read-path GUIDE is instructions, not memory data, so it rides the
+  // SYSTEM PROMPT next to the tool schemas — never an injected user message
+  // (the injected message carries memory content only). The text is
+  // store-independent and path-free; `systemPrompt` is absent in test
+  // compositions, so registration goes through a scoped inject and no-ops there.
+  ctx.inject(["systemPrompt"], (scoped) => {
+    const systemPrompt = (scoped as unknown as { systemPrompt?: SystemPromptLike }).systemPrompt;
+    if (systemPrompt === undefined) {
+      return undefined;
+    }
+    const dispose = systemPrompt.section({
+      name: "memcurio-read-path",
+      order: MEMCURIO_READ_PATH_ORDER,
+      text: () => renderReadPathInstructions(),
+    });
+    return dispose;
+  });
+
   // global: true — agent/pre-step is dispatched through a scope carrier;
   // every other listener in this plugin opts into global delivery, and
   // this one must too so a tagged topology can never silently starve it.
@@ -999,7 +1045,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       const agentRoute = payload.agent.options?.provider && payload.agent.options.model
         ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
         : undefined;
-      if (agentRoute && fixedRoute() === undefined) runtime.route = agentRoute;
+      if (agentRoute && fixedRoute() === undefined) {
+        runtime.route = agentRoute;
+        lastKnownRoute = agentRoute;
+      }
       await awaitRuntime(runtime);
       let context: string;
       // Injected pieces for the host bridge tag (declared outside the try so
@@ -1007,11 +1056,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       let staticPiece: string | undefined;
       let dynamicPiece: string | undefined;
       try {
-        const query = payload.messages.map(textFromMessage).filter(Boolean).join("\n").slice(0, 10_000);
+        // Retrieval query: the newest non-plugin user text, noise-stripped and
+        // stop-worded. The raw message dump (tool output, injected context,
+        // markdown) used to become the query, which buried the real hits.
+        const query = retrievalQuery(
+          payload.messages
+            .filter((message) => !isPluginMessage(message))
+            .map(textFromMessage)
+            .filter(Boolean)
+            .reverse(),
+        );
         const parts: string[] = [];
         if (!runtime.staticInjected) {
           staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, live().injectBudgetTokens);
-          parts.push(staticPiece);
+          if (staticPiece) parts.push(staticPiece);
         }
         if (query) {
           dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, live().injectBudgetTokens);
@@ -1033,10 +1091,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       // the marker because the log rewrite may have dropped the message.
       if (context === runtime.lastInjectedContext) return decision;
       runtime.lastInjectedContext = context;
-      runtime.staticInjected = true;
-      if (bridge.isEnabled) {
-        bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, live().injectBudgetTokens);
+      // Only a NON-EMPTY static piece latches the summary: with the guide now
+      // prompt-side, a store without a summary must keep retrying the static
+      // build — dynamic hits alone must not mark it injected.
+      if (staticPiece) {
+        runtime.staticInjected = true;
       }
+      bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, live().injectBudgetTokens);
     return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
   }, { global: true });
 
@@ -1044,18 +1105,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   // only the composition base), and a hard `settings` inject guarantees the
   // section resolved before apply.
   if (live().registerTools) registerMemoryTools(ctx, sessions, bridge);
+
+  // Adopting a session bootstraps its store exactly once (see bootstrapRoot):
+  // pending durable jobs from a previous process run would otherwise sit until
+  // the first turn/end in the same store. Claims are SQLite-fenced.
   for (const session of ctx.sessions.list()) ensureSession(session);
-  // Startup drain: pending durable jobs from a previous
-  // process run would otherwise sit until the first turn/end in the same
-  // store. One drain per distinct store root; claims are SQLite-fenced.
-  const drainedRoots = new Set<string>();
-  for (const runtime of sessions.values()) {
-    if (drainedRoots.has(runtime.root)) continue;
-    drainedRoots.add(runtime.root);
-    void runtime.adapter.processPendingExtractions().catch(warn);
-    // With hostBridge default-on this runs at startup even in profiles with
-    // no browser transport — one audit-tail + queue read per store, kept for
-    // baseline seeding so the live enable path cannot replay old receipts.
-    if (bridge.isEnabled) void bridge.refresh(runtime.root).catch(warn);
-  }
 }

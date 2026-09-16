@@ -23,7 +23,7 @@
 <DSH home>/memcurio/
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
-│   ├── memory_summary.md            # v1 头；恒注入；User Profile / User preferences / General Tips / What's in Memory
+│   ├── memory_summary.md            # v1 头；非空时每会话注入；User Profile / User preferences / General Tips / What's in Memory
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序；codex 式 "# Raw Memories" 头 + "## Rollout" 段）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID（sha256(rollout_key) 前 24 hex）；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
@@ -150,7 +150,7 @@ export interface AdapterOptions {
 }
 export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见 §7） */ }
 // 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions]；
-//   事件接线 + 上下文注入 + ctx.tools.register 6 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
+//   事件接线 + 记忆注入 + ctx.tools.register 6 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
 // 删除：HarnessAdapter 接口、capabilities/hostModel/createChannel 抽象——DSH 为唯一宿主，无需再抽象。
 ```
 
@@ -407,9 +407,12 @@ export function readMemory(root, opts: { path; lineOffset?; maxLines?; maxTokens
 ```ts
 export function renderMemoryContext(root: string, budgetTokens?: number): string
   // 读 memory_summary.md（sanitize 过滤：注入命中→整体跳过并 audit）→ redact → fitContext 裁剪（默认 1500）；
-  // 若无 summary：返回简短占位（"(memcurio memory not consolidated yet)"）。
-export function renderReadPathInstructions(root: string): string
-  // 完整 read_path（改编自 codex read_path.md）：
+  // 若无 summary：返回空串（不注入占位符）。
+export function renderStaticContext(root: string, budgetTokens?: number): string
+  // v1.9：静态注入 = 仅摘要区块（renderMemoryContext 的别名）；空库返回空串。
+  // read_path 指南不再进 user message，改由插件注册为 system prompt section。
+export function renderReadPathInstructions(): string
+  // 完整 read_path（改编自 codex read_path.md，v1.9 起路径无关、工具优先，作为 system prompt section 注册）：
   // 决策边界（何时跳过/何时用）→ 快速检索流程与预算（≤4-6 步）→ verify 防漂移指引
   // → 引用块输出要求（codex citations.rs 结构：<memcurio-citation> 包裹
   //   <citation_entries>（<file>:<start>-<end>|note=[...] 逐行）与 <rollout_ids>（裸 host|sessionId 逐行）两节；
@@ -505,9 +508,9 @@ export class MemcurioAdapter {
 
 ### src/plugin/index.ts + scope.ts（DSH Cordis 插件；原 opencode/plugin.ts 的收敛对应物）
 
-- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/hostBridge/provider/model/root。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base（第二十五/二十六轮）；
+- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 已删，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base（第二十五/二十六轮）；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 收割 `<memcurio-citation>` → memoryUsageFromCitations；
-- 注入：`agent/pre-step` 静态注入（摘要 + read path 指引，每会话一次）+ 相关命中动态注入 top-K；注入内容与 worker 消息不进证据（防回注 feed-back）；
+- 注入：`agent/pre-step` 静态注入（**仅摘要区块**，每会话一次；read path 指引在 system prompt section）+ 相关命中动态注入 top-K（IDF/短语/去重/单文件 cap）；注入内容与 worker 消息不进证据（防回注 feed-back）；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与会话退休时自动 drain + maybeConsolidate（退休入口起 30s wall-clock 预算，超时 abort 在飞 worker 调用后 dispose，queue 稍后重试）；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见 §2）。

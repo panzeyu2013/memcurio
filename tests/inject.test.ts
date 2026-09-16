@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { renderBaselineSection, renderMemoryContext, renderReadPathInstructions, updateAgentsMd } from "../src/core/inject.js";
-import { ensureLayout } from "../src/core/paths.js";
+import { renderBaselineSection, renderMemoryContext, renderReadPathInstructions, renderStaticContext, updateAgentsMd } from "../src/core/inject.js";
+import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,9 +27,8 @@ afterEach(() => {
 });
 
 describe("renderMemoryContext", () => {
-  test("returns a placeholder when no summary exists", () => {
-    const ctx = renderMemoryContext(dir);
-    expect(ctx).toContain("not consolidated");
+  test("returns an empty string when no summary exists (no placeholder in context)", () => {
+    expect(renderMemoryContext(dir)).toBe("");
   });
 
   test("embeds the sanitized summary", () => {
@@ -46,12 +45,37 @@ describe("renderMemoryContext", () => {
   });
 });
 
+describe("renderStaticContext", () => {
+  test("injects NOTHING while the store has no summary (the guide is prompt-side)", () => {
+    // v1.9: the read-path guide rides the system prompt, so a store without a
+    // summary contributes no user message at all.
+    expect(renderStaticContext(dir)).toBe("");
+  });
+
+  test("injects only the summary block once a summary exists", () => {
+    writeWorkspaceText(dir, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
+    const text = renderStaticContext(dir);
+    expect(text).toContain("<<<MEMORY_SUMMARY");
+    expect(text).toContain("项目用 bun");
+    // Data only — no guide, no paths, no placeholder.
+    expect(text).not.toContain("## memcurio memory");
+    expect(text).not.toContain(memoryWorkspace(dir));
+    expect(text).not.toContain("not consolidated yet");
+  });
+});
+
 describe("renderReadPathInstructions", () => {
-  test("points at the workspace files", () => {
-    const text = renderReadPathInstructions(dir);
-    expect(text).toContain("MEMORY.md");
-    expect(text).toContain("memory_summary.md");
-    expect(text).toContain("rollout_summaries");
+  test("is path-free and points at the memory tools instead", () => {
+    const text = renderReadPathInstructions();
+    expect(text).toContain("memory_search");
+    expect(text).toContain("memory_list");
+    expect(text).toContain("memory_read");
+    expect(text).toContain("memory_remember");
+    // No filesystem paths anywhere: the store lives outside the workspace and
+    // the model must reach it through the tools only.
+    expect(text).not.toMatch(/\/(?:root|home|Users|var|tmp)\//);
+    expect(text).not.toContain(memoryWorkspace(dir));
+    expect(text).not.toContain("grep MEMORY.md");
   });
 });
 

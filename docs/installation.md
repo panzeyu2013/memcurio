@@ -21,7 +21,7 @@ bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
-bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册六个原生记忆工具）；`hostBridge`（默认 true）控制记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由），关闭后头部指示器/Toast 不可用。
+bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册六个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
 
 ## 3. 配置
 
@@ -36,7 +36,6 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         scope: workspace          # workspace | global
         injectContext: true
         registerTools: true
-        # hostBridge: true          # 记忆 UI host 桥（事件打标/快照/同源传输，默认 true）
         # injectBudgetTokens: 1500  # 注入预算下限 128
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
         # 可选固定 worker 路由；省略两者则跟随会话 request/header 路由：
@@ -73,7 +72,6 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 | `injectContext` | pre-step 记忆注入开关 | 即时 |
 | `registerTools` | 是否注册六个原生记忆工具 | 重启生效 |
 | `injectBudgetTokens` | 注入预算（>=128） | 即时 |
-| `hostBridge` | 记忆 UI host 桥（事件打标/快照/同源传输） | 即时 |
 | `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由） | 即时 |
 
 `root`（数据位置）在面板只读说明，避免误改数据根。profile 的 `cordis.patch.yml` config 是默认层（composition base），settings 文档为覆盖层；清空用户层即回到 profile 默认。

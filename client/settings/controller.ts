@@ -27,7 +27,6 @@ export const SETTINGS_FIELDS = [
   "injectContext",
   "registerTools",
   "injectBudgetTokens",
-  "hostBridge",
   "provider",
   "model",
 ] as const;
@@ -40,7 +39,6 @@ export interface MemcurioSettingsView {
   injectContext: boolean;
   registerTools: boolean;
   injectBudgetTokens?: number;
-  hostBridge: boolean;
   provider?: string;
   model?: string;
 }
@@ -97,6 +95,7 @@ export const ERROR_KEYS = {
   routePair: "errRoutePair",
   budgetRange: "errBudgetRange",
   notLanded: "errNotLanded",
+  notReady: "errNotReady",
   resetNotLanded: "errResetNotLanded",
   partialReset: "errPartialReset",
   hostRejected: "errHostRejected",
@@ -111,7 +110,6 @@ const DEFAULT_VIEW: MemcurioSettingsView = {
   scope: "workspace",
   injectContext: true,
   registerTools: true,
-  hostBridge: false,
 };
 
 /** Structural narrowing of a wire section (never throws on odd shapes). */
@@ -126,7 +124,6 @@ export function decodeSettings(raw: unknown): MemcurioSettingsView {
     ...(typeof section.injectBudgetTokens === "number" && Number.isSafeInteger(section.injectBudgetTokens)
       ? { injectBudgetTokens: section.injectBudgetTokens }
       : {}),
-    hostBridge: section.hostBridge === true,
     ...(typeof section.provider === "string" && section.provider ? { provider: section.provider } : {}),
     ...(typeof section.model === "string" && section.model ? { model: section.model } : {}),
   };
@@ -232,21 +229,29 @@ export class MemcurioSettingsController {
   }
 
   async save(field: SettingsField, value: unknown): Promise<SaveOutcome> {
-    const view = this.face().value;
+    const face = this.face();
+    const view = face.value;
     const problem =
       routeProblem(field, value, view) ?? (field === "injectBudgetTokens" ? budgetProblem(value) : undefined);
     if (problem) return this.fail(problem);
+    // Writing the composition base value is a REVERT, not an override: clear
+    // the user-layer entry instead of pinning an identical value, so the
+    // "overridden" badge and its reset action disappear on their own when a
+    // user toggles a field back to its default.
+    const reverts = Object.is(value, face.base[field]);
     this.busy = field;
     this.notify();
     try {
-      await this.scope.set(field, value);
+      if (reverts) await this.scope.unset(field);
+      else await this.scope.set(field, value);
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (!this.verifyValue(field, value)) {
-      // Resolved but not landed (host refusal): surface it, never a silent
-      // success.
-      return this.fail(ERROR_KEYS.notLanded);
+    if (!this.verifyField(field, value, reverts)) {
+      // Resolved but not landed (host refusal) — or the transport left the
+      // ready state between the write and the read-back, which is a different
+      // fact and reports a different key.
+      return this.fail(this.refusalKey());
     }
     this.errorCode = undefined;
     this.busy = undefined;
@@ -304,24 +309,31 @@ export class MemcurioSettingsController {
     const nextProvider = provider.trim();
     const nextModel = model.trim();
     if ((nextProvider === "") !== (nextModel === "")) return this.fail(ERROR_KEYS.routePair);
+    // Both an empty pair (follow the session route) and a pair equal to the
+    // composition base are reverts: clear the user halves so a route typed
+    // back to the default stops counting as overridden.
+    const base = this.face().base;
+    const reverts =
+      nextProvider === "" || (nextProvider === (base.provider ?? "") && nextModel === (base.model ?? ""));
     this.busy = "all";
     this.notify();
-    const ops: SettingsPathOp[] =
-      nextProvider === ""
-        ? [
-            { op: "unset", path: ["provider"] },
-            { op: "unset", path: ["model"] },
-          ]
-        : [
-            { op: "set", path: ["provider"], value: nextProvider },
-            { op: "set", path: ["model"], value: nextModel },
-          ];
+    const ops: SettingsPathOp[] = reverts
+      ? [
+          { op: "unset", path: ["provider"] },
+          { op: "unset", path: ["model"] },
+        ]
+      : [
+          { op: "set", path: ["provider"], value: nextProvider },
+          { op: "set", path: ["model"], value: nextModel },
+        ];
     try {
       await this.scope.mutate(ops);
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (!this.verifyRoute(nextProvider, nextModel)) return this.fail(ERROR_KEYS.notLanded);
+    if (!this.verifyRoute(reverts ? "" : nextProvider, reverts ? "" : nextModel)) {
+      return this.fail(this.refusalKey());
+    }
     return this.settleCleared();
   }
 
@@ -338,6 +350,12 @@ export class MemcurioSettingsController {
     return { ok: true };
   }
 
+  /** A failed read-back means "host refused" only while the transport is
+   *  ready; a lost ready state is "could not verify", not a refusal. */
+  private refusalKey(): SettingsErrorCode {
+    return this.scope.getSnapshot().status === "ready" ? ERROR_KEYS.notLanded : ERROR_KEYS.notReady;
+  }
+
   private verifyRoute(provider: string, model: string): boolean {
     const snapshot = this.scope.getSnapshot();
     if (snapshot.status !== "ready") return false;
@@ -349,13 +367,17 @@ export class MemcurioSettingsController {
   }
 
   /** Post-write verification against the landed user layer. All fields are
-   *  scalars, so strict identity is exact (no JSON-ordering caveat). */
-  private verifyValue(field: SettingsField, value: unknown): boolean {
+   *  scalars, so strict identity is exact (no JSON-ordering caveat). A REVERT
+   *  must land as an ABSENT user entry — a pinned equal value is the exact
+   *  state this method exists to reject (the resolved mirror follows the
+   *  layer, and reset() verifies against the same fact). */
+  private verifyField(field: SettingsField, value: unknown, reverts: boolean): boolean {
     const snapshot = this.scope.getSnapshot();
     if (snapshot.status !== "ready") return false;
     const user = snapshot.user;
-    if (user === null || typeof user !== "object" || !Object.hasOwn(user, field)) return false;
-    return Object.is((user as Record<string, unknown>)[field], value);
+    const layer = user !== null && typeof user === "object" ? (user as Record<string, unknown>) : {};
+    if (reverts) return !Object.hasOwn(layer, field);
+    return Object.hasOwn(layer, field) && Object.is(layer[field], value);
   }
 
   private fail(code: SettingsErrorCode): { ok: false; code: SettingsErrorCode } {

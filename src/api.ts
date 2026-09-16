@@ -96,6 +96,6 @@ export async function integrationStatus(root: string) {
 export async function integrationContext(root: string, budgetTokens?: number) {
   return withIndex(root, () => ({
     summary: renderMemoryContext(root, budgetTokens),
-    instructions: renderReadPathInstructions(root),
+    instructions: renderReadPathInstructions(),
   }));
 }

@@ -2,22 +2,26 @@
  * Slot/locale declaration merge for the third-party memory UI surfaces.
  *
  * The official packages declare these SlotMap entries; the memcurio dev tree
- * does not install the conversation/tool client packages, so this module
- * declares the two entries the browser half registers into (the same lexical
+ * does not install the conversation/tool/chat client packages, so this module
+ * declares the three entries the browser half registers into (the same lexical
  * merge point the owners use), mirroring the shipped shapes: header utilities
  * = ordered list, session scope; tool view = keyed dispatch by exact wire
- * tool name, session scope. The tool owner share is the structural slice the
- * row reads (`block`, without the official openFile/loadImage members).
+ * tool name, session scope; chat node = keyed dispatch by node kind, session
+ * scope (the memory UI registers key `context`, see ui/context-row.ts). The
+ * owner shares are the structural slices the rows read, never the official
+ * openFile/loadImage/turn hooks.
  *
- * Latent drift: adding `@deepseek-ai/dsh-client-ui-tool` (or building inside
- * the harness monorepo) loads the official declaration too, and the two do
- * NOT merge — replace the entry below with the official owner type at that
- * point (the header-utilities entry already matches its official counterpart).
+ * Latent drift: adding `@deepseek-ai/dsh-client-ui-tool` / `…-ui-chat` (or
+ * building inside the harness monorepo) loads the official declarations too,
+ * and the two do NOT merge — replace the entries below with the official
+ * owner types at that point (the header-utilities entry already matches its
+ * official counterpart).
  *
  * @module
  */
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
 
+import type { ContextRowNodeLike } from "./context-row.js";
 import type { UiKey } from "./locales.js";
 
 /** Structural tool-call block (running and settled forms); no package import. */
@@ -33,6 +37,18 @@ export interface MemoryToolBlockLike {
   readonly time?: unknown;
   readonly callTime?: unknown;
 }
+
+/** Structural slice of the settings face the memory UI reads: the controller's
+ *  observable seat arrives as a renderer-made hook, never as a value. */
+export interface MemorySettingsFaceLike {
+  readonly status: "loading" | "ready" | "unavailable";
+  readonly writable: boolean;
+  readonly value: { readonly injectContext: boolean };
+  readonly busy?: unknown;
+}
+
+/** Selector hook the renderer binds from a `hooks.settings` seat. */
+export type MemorySettingsHook = <T>(selector: (face: MemorySettingsFaceLike) => T) => T;
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface SlotMap {
@@ -52,6 +68,17 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
         block: MemoryToolBlockLike;
         cwd?: string | undefined;
         home?: string | undefined;
+      };
+    };
+    /** Keyed Chat transcript row, dispatched by the materialized node kind.
+     *  The memory UI shadows the shipped `context` cell (priority -1); the
+     *  owner carries the full owner props at runtime, typed here to the slice
+     *  the adapter reads (see ui/context-row.ts). */
+    "conversation.chat.node": {
+      kind: "keyed";
+      scope: "session";
+      owner: {
+        node?: ContextRowNodeLike | undefined;
       };
     };
   }

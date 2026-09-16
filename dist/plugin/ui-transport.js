@@ -36,9 +36,12 @@
  * interval. When the server service is absent (a non-web profile) the plugin
  * stays inert.
  *
- * S0-pending: the token channel itself (boot-payload delivery through the
- * gateway/proxy chain) is still to be verified against the real Web
- * composition; the design's spike gate G3 covers it.
+ * Verified in the live Web composition (2026-09-16, gateway 0.3.1 / DSH
+ * 0.1.5-rc.2): the served index carries
+ * `globalThis["__MEMCURIO_UI__"] = { basePath, token }`, the snapshot route
+ * answers 200 with a valid token (403 with a wrong one), and the SSE route
+ * streams `retry:` plus frame batches. The former "S0-pending" note is
+ * resolved; the design's spike gate G3 stays as the record of the check.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 /** Route prefix the browser half calls; duplicated in `client/ui/wire.ts`. */
@@ -225,10 +228,6 @@ export function installUiTransport(ctx, options) {
         },
     };
     const handleSnapshot = async (res, url) => {
-        if (!options.bridge.isEnabled) {
-            sendJson(res, 403, { error: "bridge-disabled" });
-            return;
-        }
         const parsed = parseSessionParam(url);
         if (parsed.malformed === true) {
             sendJson(res, 400, { error: "malformed-session" });
@@ -248,10 +247,6 @@ export function installUiTransport(ctx, options) {
         sendJson(res, 200, { seq: at, snapshot });
     };
     const handleEvents = (req, res, url) => {
-        if (!options.bridge.isEnabled) {
-            sendJson(res, 403, { error: "bridge-disabled" });
-            return;
-        }
         if (streams.size >= MAX_STREAMS) {
             sendJson(res, 503, { error: "too-many-streams" });
             return;
@@ -348,20 +343,6 @@ export function installUiTransport(ctx, options) {
         let unmounted = false;
         const owned = [];
         const sweep = () => {
-            if (!options.bridge.isEnabled) {
-                // The user turned the bridge off: stop feeding every live stream so
-                // the browser degrades through its snapshot 403 path.
-                for (const stream of [...streams.keys()]) {
-                    try {
-                        stream.end();
-                    }
-                    catch {
-                        // already closed
-                    }
-                    dropStream(stream);
-                }
-                return;
-            }
             for (const [stream] of [...streams]) {
                 const socket = stream.socket;
                 if (stream.writableEnded || stream.destroyed || socket?.destroyed === true) {

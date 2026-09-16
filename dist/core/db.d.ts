@@ -194,6 +194,11 @@ export declare class Index {
      * budget. A later configured worker reactivates the provider queue. */
     extractionBlockProvider(provider: string, error: string, now?: string): number;
     extractionUnblockProvider(provider: string, now?: string): number;
+    /** Requeue dead jobs that a pre-repair injection-policy rejection killed.
+     *  The reply parser now drops the false-positive lines and stages the
+     *  rollout, so those rejections are recoverable; only the recorded error
+     *  class is revived — every other dead letter stays dead. */
+    extractionRequeuePolicyRejected(provider: string, now?: string): number;
     /** Handle configuration disappearing after a worker claimed a job. Undo
      * the claim's attempt increment while retaining normal lease fencing. */
     extractionBlockClaim(jobId: string, claimToken: string, error: string, now?: string): boolean;

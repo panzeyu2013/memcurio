@@ -257,3 +257,21 @@ export function sanitizeForInjection(text) {
     const flags = scanInjection(text);
     return { safe: flags.length === 0, flags };
 }
+/** Line-level REPAIR for extraction replies (never for injection): drop the
+ *  lines that trip the scanner and keep the rest, so one matched sentence —
+ *  e.g. a summary line containing "send … token", ordinary prose in a session
+ *  about an auth flow — cannot dead-letter a whole rollout. Callers must
+ *  re-scan the repaired text and reject it when it is still unsafe or empty:
+ *  whole-reply promptware must keep failing (and burning retries). */
+export function repairInjectionLines(text) {
+    const kept = [];
+    let removed = 0;
+    for (const line of text.split("\n")) {
+        if (line.trim() !== "" && scanInjection(line).length > 0) {
+            removed += 1;
+            continue;
+        }
+        kept.push(line);
+    }
+    return { text: kept.join("\n"), removed };
+}

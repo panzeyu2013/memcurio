@@ -5,7 +5,7 @@ import { pipelineConfig } from "./core/config.js";
 import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "./core/consolidate.js";
 import { Index } from "./core/db.js";
 import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, processExtractionQueue, stageSession } from "./core/extract.js";
-import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
+import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
 import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
@@ -42,6 +42,11 @@ const DEFAULT_INJECT_BUDGET = 1500;
  *  the workbench snapshot reports the deployed value, not a guess). */
 export const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
+/** Slow probe for a provider parked in the blocked state. Configuration
+ *  changes normally reactivate it, but a restart can leave a job blocked in a
+ *  process whose route never materializes; the probe (no LLM call, one DB
+ *  open) keeps the queue from parking forever. */
+const AUTO_BLOCKED_PROBE_MS = 5 * 60 * 1000;
 // Codex-style read-only shell whitelist (mirrors codex memories/read usage.rs
 // known-safe set: cat cd cut echo expr false grep head id ls nl paste pwd rev
 // seq stat tail tr true uname uniq wc which whoami, plus rg and the restricted
@@ -898,7 +903,27 @@ export class MemcurioAdapter {
     /** Drain durable jobs outside the host event request. Only one drain runs
      * per adapter; a failed job remains pending/dead in SQLite and schedules its
      * next retry without blocking future Hook responses. */
-    async processPendingExtractions(limit = 8) {
+    /** One-shot recovery for jobs dead-lettered by the pre-repair policy gate:
+     *  the reply parser now repairs false-positive lines, so those rejections
+     *  get exactly one more attempt each. Called once per store at startup; the
+     *  audit is written only when something actually moved. */
+    async requeuePolicyRejectedExtractions() {
+        if (!this.durableQueue || this.disposed) {
+            return 0;
+        }
+        const idx = await Index.create(indexDb(this.root));
+        try {
+            const revived = idx.extractionRequeuePolicyRejected(this.extract.name);
+            if (revived > 0) {
+                idx.audit("extract.requeued", "-", `provider=${this.extract.name}; policy-rejected jobs=${String(revived)}`);
+            }
+            return revived;
+        }
+        finally {
+            idx.close();
+        }
+    }
+    async processPendingExtractions(limit = 8, deadline) {
         if (!this.durableQueue || this.disposed) {
             return [];
         }
@@ -908,14 +933,22 @@ export class MemcurioAdapter {
         const work = (async () => {
             const results = [];
             for (let i = 0; i < limit; i += 1) {
+                // Retire-time callers pass a deadline reserving room for the automatic
+                // Phase-2 pass: without it a slow extraction stream eats the whole
+                // retire budget and consolidation is disposed before it ever runs.
+                if (deadline !== undefined && Date.now() >= deadline) {
+                    break;
+                }
                 const result = await processExtractionQueue(this.root, this.extract);
                 if (result.status === "empty") {
                     break;
                 }
                 results.push(result);
                 if (result.status === "blocked") {
-                    // Configuration changes, not wall-clock retries, reactivate this
-                    // provider. A future host event or explicit retry command probes it.
+                    // Configuration changes (a usable route appearing) reactivate this
+                    // provider; the slow probe is the safety net for the case where no
+                    // further host event ever arrives.
+                    this.scheduleRetry(AUTO_BLOCKED_PROBE_MS);
                     break;
                 }
                 if (result.status === "retry" && result.retryInMs !== undefined) {
@@ -1063,7 +1096,27 @@ export class MemcurioAdapter {
             }
             const channel = this.modelChannel();
             const provider = channel ? new LlmLoopConsolidateProvider(undefined, channel) : new RuleConsolidateProvider();
-            await runConsolidation(root, provider, { execute: true, config: cfg });
+            try {
+                await runConsolidation(root, provider, { execute: true, config: cfg });
+            }
+            catch (error) {
+                // An LLM reply without a tool call (or an edit citing an artifact that
+                // does not exist) must not strand unapplied notes and stage-1 rows for
+                // a whole backoff window: fall back to the deterministic rule provider
+                // — the next cycle tries the LLM again — and record why.
+                if (!channel) {
+                    throw error;
+                }
+                this.log("warn", "llm consolidation failed; falling back to the rule provider", { error: String(error) });
+                await runConsolidation(root, new RuleConsolidateProvider(), { execute: true, config: cfg });
+                const idxFallback = await Index.create(indexDb(root));
+                try {
+                    idxFallback.audit("consolidate.fallback", "-", `llm provider failed: ${String(error).slice(0, 200)}`);
+                }
+                finally {
+                    idxFallback.close();
+                }
+            }
             const idx3 = await Index.create(indexDb(root));
             try {
                 idx3.metaSet("consolidation_auto_last", new Date().toISOString());
@@ -1106,35 +1159,47 @@ export class MemcurioAdapter {
     async buildStaticContext(workdir, budgetTokens) {
         const root = this.root;
         const budget = budgetTokens ?? this.#injectionBudget();
-        const summary = await renderMemoryContext(root, budget);
-        const idx = await Index.create(indexDb(root));
-        try {
-            idx.audit("adapter.static_context", workdir, "injected");
+        // Guide always, summary only when the store has one (renderStaticContext).
+        const context = renderStaticContext(root, budget);
+        // Audit only a real injection: with the guide prompt-side (v1.9) an empty
+        // store legitimately injects nothing, and the pre-step keeps retrying until
+        // a summary exists — one "skipped" row per step would just be noise.
+        if (context !== "") {
+            const idx = await Index.create(indexDb(root));
+            try {
+                idx.audit("adapter.static_context", workdir, "injected");
+            }
+            finally {
+                idx.close();
+            }
         }
-        finally {
-            idx.close();
-        }
-        return `${summary}\n${renderReadPathInstructions(root)}`;
+        return context;
     }
     async buildDynamicContext(workdir, query, budgetTokens) {
         const root = this.root;
         const budget = budgetTokens ?? this.#injectionBudget();
         const { hits, blocked } = await searchMemory(root, query, 8);
-        const idx = await Index.create(indexDb(root));
-        try {
-            idx.audit("adapter.dynamic_context", workdir, `${hits.length} hit(s)`);
-            if (blocked > 0) {
-                idx.audit("warn.promptware", workdir, `${blocked} hit(s) blocked from dynamic injection`);
+        // Audits are for events, not for every quiet step: a miss stays silent so
+        // the audit tail (and the workbench feed) is not flooded by "0 hit(s)".
+        if (hits.length > 0 || blocked > 0) {
+            const idx = await Index.create(indexDb(root));
+            try {
+                idx.audit("adapter.dynamic_context", workdir, `${hits.length} hit(s)`);
+                if (blocked > 0) {
+                    idx.audit("warn.promptware", workdir, `${blocked} hit(s) blocked from dynamic injection`);
+                }
             }
-        }
-        finally {
-            idx.close();
+            finally {
+                idx.close();
+            }
         }
         if (!hits.length) {
             return "";
         }
-        const lines = hits.map((h) => `[memcurio] ${h.rel}:${h.line} ${h.content.replaceAll("\n", " ")}`);
-        return fitContext(lines, budget);
+        // Compact wire format (shared with the workbench simulator): one short
+        // header, then "rel:line content" lines capped per hit. No per-line prefix:
+        // 8 hits × "[memcurio] " was pure overhead and the header says it once.
+        return fitContext(renderHitBlock(hits).split("\n"), budget);
     }
     // Reserved engine API: DSH exposes no compaction-prompt seam, so the
     // plugin never calls this; kept for future host services.

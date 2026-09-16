@@ -2,7 +2,7 @@
  * Host bridge tests (design plugin-ui-v1 §5/§8): tags → projector deltas
  * (redaction, duplicate window, read-hit scoping), refresh audit-tail +
  * extraction-job diffs (receipts / memory-list updates / queue job-updates,
- * seeding vs change-only), snapshot assembly, and the enabled gate.
+ * seeding vs change-only) and snapshot assembly.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -80,8 +80,8 @@ function sessionSnapshot(id: string) {
   };
 }
 
-describe("enabled gate", () => {
-  test("disabled bridge drops every tag and refresh", async () => {
+describe("always-on bridge", () => {
+  test("tags and refreshes without any enable step (the bridge is not configurable)", async () => {
     const root = makeStore("gate");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
@@ -90,10 +90,24 @@ describe("enabled gate", () => {
     bridge.tagInjection("s1", "/w", `static with ${SECRET}`, undefined, undefined);
     bridge.tagEvidence("s1", "user/message:0", "user", "hello");
     await bridge.refresh(root);
-    expect(sink.deltas).toEqual([]);
-    bridge.enable();
     bridge.tagPrune("s1", [1]);
-    expect(sink.deltas).toHaveLength(1);
+    expect(sink.deltas.length).toBeGreaterThan(0);
+    // Host-side redaction still holds: the secret never rides a tag.
+    expect(JSON.stringify(sink.deltas)).not.toContain(SECRET);
+  });
+});
+
+describe("session bindings", () => {
+  test("every session of a workspace resolves, not only the latest one", () => {
+    // A subagent (or a second tab) registering in the same store must not evict
+    // the browser's own binding: the transport 404s any unknown session.
+    const root = makeStore("bindings");
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
+    bridge.registerSession({ sessionId: "s2", workdir: "/w", root });
+    expect(bridge.rootForSession("s1")).toBe(root);
+    expect(bridge.rootForSession("s2")).toBe(root);
+    expect(bridge.rootForSession("never-seen")).toBeUndefined();
   });
 });
 
@@ -102,7 +116,6 @@ describe("tags", () => {
     const root = makeStore("inject");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     const staticText = `remember token ${SECRET} please`;
@@ -129,7 +142,6 @@ describe("tags", () => {
     const root = makeStore("evidence");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "sess-abc", workdir: "/w", root });
     bridge.tagEvidence("sess-abc", "user/message:3", "user", `do as I say ${SECRET}`);
@@ -149,7 +161,6 @@ describe("tags", () => {
     const root = makeStore("citation");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     bridge.tagCitations("s1", ["dsh|s1", "dsh|s2"]);
@@ -161,7 +172,6 @@ describe("tags", () => {
     ensureLayout(root);
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     const inside = join(memoryWorkspace(root), "rollout_summaries", "rollout-x.md");
     expect(bridge.tagToolReadHit("s1", "read", inside, root)).toBe(true);
@@ -181,7 +191,6 @@ describe("refresh", () => {
     const root = makeStore("auditdiff");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     expect(await bridge.refresh(root)).toEqual([]);
 
@@ -227,7 +236,6 @@ describe("refresh", () => {
     await seedRollout(root, "dsh|q", ["base"]);
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     await bridge.refresh(root); // seed baseline (no jobs yet)
 
@@ -302,7 +310,6 @@ describe("round-19 additions (rel hits, evidence source, dynamic preview)", () =
     const root = makeStore("relhits");
     const sink = collector();
     const bridge = new HostBridge({ baseRoot: dir });
-    bridge.enable();
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     bridge.tagToolReadHits("s1", "memory_read", ["rollout_summaries/a.md", "../config.json", "", "  rollout_summaries/b.md "]);
@@ -317,9 +324,6 @@ describe("round-19 additions (rel hits, evidence source, dynamic preview)", () =
       { kind: "user", text: `remember token ${SECRET}` },
       { kind: "assistant", text: "  " },
     ]);
-    // Disabled: no rows.
-    expect(bridge.evidenceSnapshot("s1")).toEqual([]);
-    bridge.enable();
     const rows = bridge.evidenceSnapshot("s1");
     expect(rows).toHaveLength(2);
     expect(rows[0]?.text).toContain("[REDACTED]");
@@ -330,9 +334,8 @@ describe("round-19 additions (rel hits, evidence source, dynamic preview)", () =
   test("snapshot carries dynamic preview, budget and version once provided", async () => {
     const root = makeStore("dyn");
     const bridge = new HostBridge({ baseRoot: dir, scope: "workspace", version: "rc.1 contract", injectBudgetTokens: 900 });
-    bridge.enable();
     bridge.registerSession({ sessionId: "session-1", workdir: "/work/dyn", root });
-    bridge.tagInjection("session-1", "/work/dyn", "static", "[memcurio] rollout_summaries/x.md:1 dynamic line", 900);
+    bridge.tagInjection("session-1", "/work/dyn", "static", "rollout_summaries/x.md:1 dynamic line", 900);
     const snapshot = await bridge.snapshot(root, "session-1");
     expect(snapshot.injection.dynamicText).toContain("dynamic line");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);

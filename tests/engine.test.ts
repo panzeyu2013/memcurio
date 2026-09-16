@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/engine.js";
+import { LlmExtractProvider } from "../src/core/extract.js";
 import type { LlmChannel } from "../src/core/channel.js";
 import { addAdHocNote } from "../src/core/adhoc.js";
 import { Index } from "../src/core/db.js";
-import { indexDb } from "../src/core/paths.js";
+import { ensureLayout, indexDb } from "../src/core/paths.js";
+import { MAX_HIT_CHARS } from "../src/core/inject.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 
 let dir: string;
@@ -193,6 +195,174 @@ describe("MemcurioAdapter retention prune (entry-side)", () => {
       expect(idx.stageGet("dsh|retention-fresh")).toBeDefined();
     } finally {
       idx.close();
+    }
+  });
+});
+
+describe("automatic consolidation LLM fallback", () => {
+  test("an LLM reply without a tool call falls back to the rule provider", async () => {
+    // Reproduces the live failure "no tool call parsed; nothing applied":
+    // the deterministic rule provider must still land the pending note rather
+    // than leaving it stranded for a whole backoff window.
+    const channel: LlmChannel = {
+      name: "dsh",
+      chat: async () => "I could not find anything worth changing.",
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "fallback note content", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.fallback");
+      expect(actions).toContain("consolidate.auto");
+      expect(actions).not.toContain("consolidate.auto_failed");
+      expect(idx.noteList().every((note) => note.applied)).toBe(true);
+      expect(existsSync(join(dir, "memory", "MEMORY.md"))).toBe(true);
+    } finally {
+      idx.close();
+    }
+  });
+});
+
+describe("policy-rejected job recovery", () => {
+  test("requeues only the dead jobs a policy rejection killed", async () => {
+    const adapter = new MemcurioAdapter({
+      durableQueue: true,
+      extract: new LlmExtractProvider(undefined, "test-provider"),
+    });
+    const idx = await Index.create(indexDb(dir));
+    const insert = (jobId: string, status: string, lastError: string): void => {
+      idx.driver.run(
+        `INSERT INTO extraction_jobs(job_id, idempotency_key, host, provider, session_id,
+           source_event, workdir, evidence_ref, content_hash, snapshot_json, attempts,
+           next_attempt_at, status, last_error, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          jobId,
+          jobId,
+          "dsh",
+          "test-provider",
+          "s1",
+          "session_end",
+          PROJ,
+          "sha256:x",
+          "x",
+          "{}",
+          5,
+          "2026-09-16T00:00:00.000Z",
+          status,
+          lastError,
+          "2026-09-16T00:00:00.000Z",
+        ],
+      );
+    };
+    try {
+      insert("job-policy", "dead", "ExtractReplyError: extraction reply rejected by injection policy: (?:send|upload)");
+      insert("job-other", "dead", "ExtractReplyError: invalid extraction reply: no JSON object");
+      insert("job-active", "pending", "");
+    } finally {
+      idx.close();
+    }
+    expect(await adapter.requeuePolicyRejectedExtractions()).toBe(1);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      const rows = idx2.rawAll<{ job_id: string; status: string; attempts: number }>(
+        "SELECT job_id, status, attempts FROM extraction_jobs ORDER BY job_id",
+      );
+      expect(rows).toEqual([
+        { job_id: "job-active", status: "pending", attempts: 5 },
+        { job_id: "job-other", status: "dead", attempts: 5 },
+        { job_id: "job-policy", status: "pending", attempts: 0 },
+      ]);
+      expect(idx2.rawAll<{ action: string }>("SELECT action FROM audit WHERE action='extract.requeued'")).toHaveLength(1);
+    } finally {
+      idx2.close();
+    }
+    // Idempotent: nothing left to revive.
+    expect(await adapter.requeuePolicyRejectedExtractions()).toBe(0);
+  });
+});
+
+describe("dynamic context wire format", () => {
+  test("header + prefix-free rel:line hits, each capped at MAX_HIT_CHARS", async () => {
+    ensureLayout(dir);
+    const long = `- references ${"path/segment/".repeat(40)}`;
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: x\n\n- 双层注入 system prompt\n" + long + "\n");
+    const adapter = new MemcurioAdapter({
+      root: dir,
+      durableQueue: true,
+      extract: new LlmExtractProvider(undefined, "test-provider"),
+    });
+    const text = await adapter.buildDynamicContext("/w", "双层注入", 1500);
+    expect(text.split("\n")[0]).toBe("Memory hits:");
+    expect(text).not.toContain("[memcurio]");
+    expect(text).toMatch(/MEMORY\.md:\d+ /);
+
+    const capped = await adapter.buildDynamicContext("/w", "references path", 1500);
+    const hitLine = capped.split("\n").find((line) => line.startsWith("MEMORY.md:")) ?? "";
+    expect(hitLine.endsWith("…")).toBe(true);
+    // locator + one space + MAX_HIT_CHARS content chars + the ellipsis
+    const locator = hitLine.slice(0, hitLine.indexOf(" "));
+    expect(hitLine.length).toBeLessThanOrEqual(locator.length + 1 + MAX_HIT_CHARS + 1);
+  });
+
+  test("a query with no hits renders nothing at all", async () => {
+    ensureLayout(dir);
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: x\n\n- something else\n");
+    const adapter = new MemcurioAdapter({
+      root: dir,
+      durableQueue: true,
+      extract: new LlmExtractProvider(undefined, "test-provider"),
+    });
+    expect(await adapter.buildDynamicContext("/w", "zzz-nothing-matches", 1500)).toBe("");
+  });
+});
+
+describe("retire drain deadline", () => {
+  test("a past deadline stops the drain before claiming work", async () => {
+    const adapter = new MemcurioAdapter({
+      durableQueue: true,
+      extract: new LlmExtractProvider(undefined, "test-provider"),
+    });
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.driver.run(
+        `INSERT INTO extraction_jobs(job_id, idempotency_key, host, provider, session_id,
+           source_event, workdir, evidence_ref, content_hash, snapshot_json, attempts,
+           next_attempt_at, status, last_error, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          "job-deadline",
+          "job-deadline",
+          "dsh",
+          "test-provider",
+          "s1",
+          "idle",
+          PROJ,
+          "sha256:x",
+          "x",
+          "{}",
+          0,
+          "2026-09-16T00:00:00.000Z",
+          "pending",
+          null,
+          "2026-09-16T00:00:00.000Z",
+        ],
+      );
+    } finally {
+      idx.close();
+    }
+    // The retire budget reserved its consolidation slice: the drain must stop
+    // before claiming another job instead of running the whole batch.
+    expect(await adapter.processPendingExtractions(8, Date.now() - 1)).toEqual([]);
+    const idx2 = await Index.create(indexDb(dir));
+    try {
+      const job = idx2.extractionList().find((row) => row.jobId === "job-deadline");
+      expect(job?.status).toBe("pending");
+      expect(job?.attempts).toBe(0);
+    } finally {
+      idx2.close();
     }
   });
 });
