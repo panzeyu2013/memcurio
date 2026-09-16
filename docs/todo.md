@@ -130,14 +130,6 @@ bun run pack:check
 - `bun run pack:check`：83 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
 
-### 6.2 最新结果（当前；历史快照见各轮记录）
-
-- `bun test`：536 pass / 3216 expect / 33 files / 0 failed（第三十二轮新增 Settings 记忆开关/导航标记三层触发与自诊断/官方表单词汇回归网与 bundle 漂移门禁；第二十一轮新增客户端证据窗/书签 3；第二十轮新增桥插件集成 3 + 快照富化 3 + 桥扩展 3；第十九轮新增快照直测 8 项 + 客户端跨 store browse 5 项；第十八轮新增 host 桥 9 项 + 客户端队列对齐；第十七轮新增 host 服务 21 + 投影器 22 + 客户端 12→24 项；第十五轮后修复轮新增 16 项引擎回归：shell 使用遥测词法解析、入口保留清理、`MEMCURIO_LLM_PROVIDER=none` 门禁；第十五轮删除 183 项发行面测试）
-- `bun test --coverage`：lines 92.45%，functions 90.61%（第三十二轮实测；新增客户端 UI 面后随基线刷新）
-- `bun run typecheck` / `bun run lint`：无诊断
-- `bun run pack:check`：81 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
-- `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
-
 ## 7. 参考文档
 
 | 文档 | 用途 |
