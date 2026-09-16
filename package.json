@@ -70,6 +70,7 @@
     "eval:lexical": "bun run scripts/eval-lexical.ts",
     "pack:tgz": "bun run build && mkdir -p .smoke && bun pm pack --destination .smoke --ignore-scripts",
     "release:notes": "node scripts/release-notes.mjs",
+    "verify:workflows": "node scripts/verify-workflow-action-pins.mjs",
     "build:client": "bun scripts/build-client.ts"
   },
   "dependencies": {

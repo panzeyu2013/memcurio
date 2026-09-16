@@ -1,7 +1,7 @@
 name: Release
 
 # Tag-driven GitHub Release (tgz asset only) or manual dispatch (incl. a
-# dry-run mode). Modeled on the dsh-mcp-scope release conventions:
+# dry-run mode). Modeled on the dsh-chamber-mcp release conventions:
 # - the FULL validation chain runs inside this workflow BEFORE any Release
 #   mutation (tag-triggered workflows run in parallel with CI, so this gate
 #   must be self-contained);
@@ -11,7 +11,9 @@ name: Release
 # - release notes are composed from the CHANGELOG section of the released
 #   version (missing/empty/undated section fails the run);
 # - the packed tgz ships with a .sha256 sidecar; the asset is exactly the
-#   bytes the local gates produced.
+#   bytes the local gates produced;
+# - every action is pinned to a 40-hex commit SHA and the pin/structure
+#   verifier runs inside the gate (chamber supply-chain norm).
 #
 # ⚠ npm publishing is TEMPORARILY DISABLED — releases ship the packed
 # `memcurio-dsh-plugin-<version>.tgz` as the GitHub Release asset; users
@@ -21,6 +23,10 @@ name: Release
 # To re-enable npm publishing later: uncomment the "Publish to npm" step,
 # add the repository secret NPM_TOKEN, and restore `id-token: write` in
 # `permissions` when using `--provenance`.
+#
+# Release prep (enforced by the notes gate): move the CHANGELOG [Unreleased]
+# content into `## [<version>] - <date>`, bump package.json, then tag v<version>
+# (or dispatch this workflow with `version: <version>` and dry_run first).
 
 on:
   push:
@@ -53,15 +59,18 @@ jobs:
     permissions:
       contents: write # create the GitHub Release + attach assets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Verify workflow action pins & release structure
+        run: node scripts/verify-workflow-action-pins.mjs
+
+      - uses: oven-sh/setup-bun@b7a1c7ccf290d58743029c4f6903da283811b979 # v2.1.0
         with:
           bun-version: 1.3.14
           cache: true
 
       # The package verifies the plugin entry under node (node:sqlite).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
@@ -109,7 +118,7 @@ jobs:
       # A published release for this version is a hard stop; only stale
       # drafts from an aborted run are deleted first.
       - name: Refuse re-publishing an existing release
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -135,18 +144,18 @@ jobs:
       # ------------------------------------------------------------------
 
       - name: Create GitHub Release with tgz asset
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
-        uses: softprops/action-gh-release@v2
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: memcurio v${{ env.PKG_VERSION }}
           body_path: .smoke/release-notes.md
           files: |
             .smoke/release/*.tgz
-            .smoke/release/*.tgz.sha256
+            .smoke/release/*.sha256
           fail_on_unmatched_files: true
 
       - name: Attach packed tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: memcurio-dsh-plugin-tgz
           path: .smoke/release/*.tgz*

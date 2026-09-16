@@ -1,18 +1,31 @@
 name: CI
 
+# Chamber norm (ported from dsh-chamber-mcp): push main + tags v* + PRs run the
+# SAME chain — a tag can never publish an untested commit — and the workflow is
+# dispatchable for manual reruns. release.yml keeps its own release-local gate
+# because tag-triggered workflows run in parallel with this one.
 on:
   push:
     branches: [main]
-    tags: ['v*']  # a tag can never publish an untested commit; same chain
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Every action is pinned to a 40-hex commit SHA (chamber supply-chain
+      # norm); bump the pins by hand and re-run the verifier below.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Verify workflow action pins & release structure
+        run: node scripts/verify-workflow-action-pins.mjs
+
+      - uses: oven-sh/setup-bun@b7a1c7ccf290d58743029c4f6903da283811b979 # v2.1.0
         # Pin the toolchain so CI results are reproducible; keep in sync with
         # the version used by maintainers locally.
         with:
@@ -37,20 +50,14 @@ jobs:
       # pack:check (which rebuilds dist): a fresh build must not change the
       # committed artifacts — including the rebuild pack:check itself produced.
       - run: git diff --exit-code -- dist/ lib/
-      # Validate the published tarball contents (files list / prepare) so a
-      # broken `files` field is caught in CI, not at publish time. Note: the
-      # command is `bun pm pack` — plain `bun pack` is not a bun subcommand.
-      # Node before the pack dry-runs: `prepare` is a node script (bun pm
-      # pack runs it unless --ignore-scripts). The plugin entry also runs
-      # under node (node:sqlite); verify the committed dist imports under
-      # node, not just under bun.
-      - uses: actions/setup-node@v4
+
+      # The published tarball is validated so a broken `files` field is caught
+      # here, not at publish time. Note: the command is `bun pm pack` — plain
+      # `bun pack` is not a bun subcommand. The plugin entry also runs under
+      # node (node:sqlite), so the committed dist is smoke-imported under node.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
       - run: bun pm pack --dry-run
       - run: npm pack --dry-run --ignore-scripts --cache /tmp/memcurio-npm-cache
-      # Node before the pack dry-runs: `prepare` is a node script (bun pm
-      # pack runs it unless --ignore-scripts). The plugin entry also runs
-      # under node (node:sqlite); verify the committed dist imports under
-      # node, not just under bun.
       - run: node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok:', m.name); })"

@@ -173,12 +173,35 @@ The repository validates strict TypeScript compilation against the published DSH
   with a comment block explaining the re-enable path (add the `NPM_TOKEN`
   repository secret, restore `id-token: write` for `--provenance`).
 
+### CI
+
+```
+ci.yml       push main + tags v* + pull_request + workflow_dispatch
+             → bun install --frozen-lockfile → build → typecheck → lint → test
+             → artifact existence → pack:check → eval:lexical → dist/lib drift
+             → bun pm pack --dry-run → npm pack --dry-run → node import smoke
+release.yml  tag v* or workflow_dispatch(version, dry_run)
+             → same gate → tag/version sanity → notes → pack + sha256
+             → refuse-published → GitHub Release (+ tgz/sha256 assets)
+```
+
+Both workflows run `scripts/verify-workflow-action-pins.mjs` first: every
+action must be a 40-hex commit SHA with a `# vX.Y.Z` comment (no moving
+majors), the same action must not be pinned twice, and the release invariants
+(serialized publication, gate before mutation, fail-closed refuse step,
+dry-run guards) are asserted. Bump pins by hand (`git ls-remote <repo>
+refs/tags/<tag>^{}`), update both workflows in one commit, re-run
+`bun run verify:workflows`. A hosted runner cannot execute the live
+`scripts/probe-dsh-profile.sh` probe (it needs a real DSH install), so that
+lane stays manual.
+
 ### Local pre-flight (run before tagging)
 
 ```sh
 bun install --frozen-lockfile
 bun run build && bun run typecheck && bun run lint && bun test
 bun run pack:check          # rebuild + allowlist + dist reverse check
+bun run verify:workflows    # action pins + release structure
 bun pm pack --dry-run       # tarball content dry-run
 bun run pack:tgz            # → .smoke/memcurio-dsh-plugin-<version>.tgz (dist + lib/client.js)
 node scripts/release-notes.mjs <version> --out /tmp/release-notes.md   # section must exist
@@ -197,9 +220,14 @@ All must be green and `git status --short` empty except the release commit.
 
 ### Steps
 
-1. On `main`, bump `package.json#version` and add the CHANGELOG section;
-   update any tarball-name examples in `README.md` / `docs/*` that embed the
-   version. Commit (`docs(release): prepare vX.Y.Z` style).
+1. **Release prep**: move the `CHANGELOG.md` `[Unreleased]` content into a new
+   dated `## [X.Y.Z] - YYYY-MM-DD` section (leaving `[Unreleased]` empty),
+   bump `package.json#version` to the same X.Y.Z, and update any tarball-name
+   examples in `README.md` / `docs/*` that embed the version. Commit
+   (`docs(release): prepare vX.Y.Z` style).
+   ⚠ v0.0.1's section is dated 2026-09-11 and everything since sits under
+   `[Unreleased]` — re-tagging v0.0.1 would ship the stale 2026-09-11 notes,
+   so the next release must be a NEW version (e.g. 0.0.2).
 2. Run the local pre-flight above.
 3. Push `main` (CI runs the full chain), then tag:
    `git tag vX.Y.Z && git push origin vX.Y.Z`.
