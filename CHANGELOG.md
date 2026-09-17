@@ -15,8 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<memcurio-citation>` text block. The tool validates and bounds its arguments
   (≤100 refs each), registers usage through the same selection window, audits as
   `integration.cite`, and feeds the UI citation node; the client registers the
-  seventh keyed `tool.call.toolview` row. Legacy text blocks from sessions
-  started under the old guide are still parsed at `turn/end`.
+  seventh keyed `tool.call.toolview` row. There is no text-block fallback: the
+  old parser and its `turn/end` harvest are removed, and assistant text is
+  never parsed for telemetry.
+- **Phase-1 extraction is a native tool turn.** The extraction provider no
+  longer asks the model for a JSON object in prose: it sends two tool schemas
+  (`save_extraction` with the payload, `skip_extraction` for the no-op gate)
+  through the same `agent()` channel and reads the single call. Field formats
+  live in the tool schemas, so the system prompt carries only how to make the
+  call. The tolerant JSON extractor (`src/core/json.ts`), the `LlmChannel.chat`
+  text turn and the plugin's text transport are removed; malformed or missing
+  calls fail the durable job instead of being repaired from prose.
+- **System-prompt guide trimmed to tool-call rules.** The read-path guide no
+  longer restates tool bodies (their schemas already describe them) and carries
+  only the decision boundary, quick-pass budget, staleness rules, the
+  `memory_cite` call and the write gate. The client's "memory tools" count is
+  now the registered set instead of a scan of the section text.
 
 ### Fixed
 
@@ -36,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assistant message. `AgentToolReply`/`AgentTurnMessage` now carry reasoning
   and the DSH channel maps it to a reasoning block that the adapter replays as
   `reasoning_content`.
+- **Dead AGENTS.md injection removed.** `renderBaselineSection` /
+  `updateAgentsMd` / `injectBaseline` had no callers, wrote absolute store
+  paths into a project `AGENTS.md` (contradicting the path-free guide) and
+  could follow a symlinked `AGENTS.md` outside the workspace. The whole
+  marker-managed baseline surface is gone.
 - **Blocked extractions no longer hot-loop.** A route-less provider parked jobs
   as blocked, and `scheduleNextWake()` then replaced the 5-minute probe with a
   ~100 ms retry (live-observed: 7.5 wakeups/s for 17 minutes, 15,052 audit rows

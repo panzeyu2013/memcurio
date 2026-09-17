@@ -46,7 +46,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 ## 记忆模型
 
 - **写入：`memory_remember` / ad-hoc notes** —— `extensions/ad_hoc/notes/` 只追加（文件 + SQLite 同事务，≤20,000 字符）。写入即脱敏；注入 payload 在入口被拒并审计。会话内模型从不直接改记忆文件；错误/过期内容直接编辑 `MEMORY.md` 或由整合 agent 的 diff 清理。
-- **读取：检索 + 渐进式注入** —— 跨 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`、`skills/` 的行级词法检索（未应用的 ad-hoc note 也即时可搜，命中标注 `pending`，避免"刚写下就查不到"），读时再脱敏 + 注入过滤。摘要始终预算封顶注入并附 grep 指引；按提示词动态注入 top-8。读路径指引教会模型在用到记忆时输出 codex 风格 `<memcurio-citation>` 块（与原生记忆文件读取一起计入用量）。
+- **读取：检索 + 渐进式注入** —— 跨 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`、`skills/` 的行级词法检索（未应用的 ad-hoc note 也即时可搜，命中标注 `pending`，避免"刚写下就查不到"），读时再脱敏 + 注入过滤。摘要始终预算封顶注入并附 grep 指引；按提示词动态注入 top-8。读路径指引只讲何时调用记忆工具、以及用过后调用原生 `memory_cite` 工具（与记忆文件读取一起计入用量）；绝不解析 assistant 文本。
 - **整合** —— Phase 2 把 `MEMORY.md` 重写为带 `rollout_summary_files` 引用的 Task Groups，应用 pending notes，重建 `memory_summary.md`（首行必须恰为 `v1`）。无模型路由时跑确定性 rule provider（绝不杜撰、绝无机删）；有路由时跑有界 agent loop，但 LLM 通道失败（无 tool call、引用不存在的 artifact、被 abort）会自动降级 rule provider 把 note/stage-1 落地（审计 `consolidate.fallback`，下一轮再试 LLM），写入仅限 `MEMORY.md` / `memory_summary.md` / `skills/*/SKILL.md`，逐条校验工作区围栏、大小上限、密钥/注入扫描与出处。
 - **遗忘** —— 选择窗口（默认 60 天未用）淘汰 stage-1 输出：删摘要文件 + 基线 diff 摘除仅引用它们的 `MEMORY.md` 区块。检索当前为词法；语义/向量后端保持可选未来项。
 - **膨胀控制** —— Phase 1 no-op 门、使用窗口、每轮整合批限（`maxInputs` 默认 50）、有界证据快照与注入预算（默认 1500 token）、保留清理与整合模型自身的策展指令，让 `MEMORY.md` 保持手册而非流水账。

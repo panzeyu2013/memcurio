@@ -6,20 +6,13 @@
 export interface LlmChannel {
   /** Stable identifier used in audits/reports (e.g. dsh). */
   readonly name: string;
-  /** One stateless chat turn: system prompt + user payload -> model text.
-   *  This is the Phase-1 extraction call, whose reply IS the data payload
-   *  (a JSON extraction document), not a tool interaction. `signal`
-   *  optionally cancels the call (hosts may abort their model call); core
-   *  callers leave it undefined. */
-  chat(system: string, user: string, signal?: AbortSignal): Promise<string>;
   /** One native tool-calling turn: the host sends provider tool schemas and
-   *  returns the tool calls with provider-issued ids. Hosts whose provider
-   *  API exposes tool schemas implement this; the Phase-2 agent loop
-   *  REQUIRES it and reports an incomplete run (so the deterministic rule
-   *  provider takes over) when it is absent. There is deliberately no
-   *  text-protocol fallback: a JSON-in-prose imitation of tool calling is
-   *  neither a real call nor reliably parseable. */
-  agent?(
+   *  returns the tool calls with provider-issued ids. Both worker paths use
+   *  it — Phase-1 extraction (exactly one save_extraction/skip_extraction
+   *  call) and the Phase-2 agent loop. There is deliberately no text-protocol
+   *  fallback: a JSON-in-prose imitation of a call is neither a real call nor
+   *  reliably parseable. `signal` optionally cancels the call. */
+  agent(
     system: string,
     messages: readonly AgentTurnMessage[],
     tools: readonly ToolSpec[],

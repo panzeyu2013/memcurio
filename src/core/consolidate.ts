@@ -1067,11 +1067,8 @@ function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources
     "- Keep the memory_summary.md index current: drop topics that were only supported by removed content.",
     "- Write memory content in the LANGUAGE OF THE SOURCE conversation (user wording verbatim where useful); never translate or normalize user phrasing \u2014 only the prompts/instructions themselves are English.",
     "- Keep memory_summary.md starting with exactly 'v1'.",
-    "- write_file may target only MEMORY.md, memory_summary.md, or an approved skills/<name>/SKILL.md; never write raw_memories.md, rollout summaries, notes, config, or state.",
+    "- Never write raw_memories.md, rollout summaries, notes, config, or state.",
     "- Use the provided tools to inspect and edit memory files; never reply with raw JSON or prose-only answers.",
-    "  list_files{} / read_file{rel} inspect, write_file{rel,content} stages a write, finish{report,applied_notes} ends the run.",
-    "  applied_notes is the exact array of pending note filenames actually incorporated; omit ignored notes.",
-    "  A write is applied only after the run; call finish exactly once when done.",
     "",
     ...sections,
   ].join("\n");

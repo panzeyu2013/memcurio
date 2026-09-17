@@ -38,7 +38,7 @@ export const GUIDE_NODE_KIND = "memcurio-guide-injected";
 /** Marker that opens the generated prompt section (`renderReadPathInstructions`). */
 export const GUIDE_HEADING = "## memcurio memory";
 
-/** Memory tools the guide names (the collapsed line counts them). */
+/** Memory tools the plugin registers (the guide detail line counts them). */
 export const GUIDE_TOOL_NAMES = [
   "memory_search",
   "memory_list",
@@ -95,10 +95,11 @@ export function guideSignature(section: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
-/** Collapsed-line facts of one section: characters and named memory tools. */
+/** Collapsed-line facts of one section: characters and the memory tool count.
+ *  The guide no longer restates every tool (their schemas describe them), so
+ *  the fact is the registered tool count, not a scan of the section text. */
 export function guideDetailOf(section: string): { chars: number; tools: number } {
-  const tools = GUIDE_TOOL_NAMES.filter((name) => section.includes(name)).length;
-  return { chars: section.length, tools };
+  return { chars: section.length, tools: GUIDE_TOOL_NAMES.length };
 }
 
 /* ------------------------------------------------------------ definition --- */

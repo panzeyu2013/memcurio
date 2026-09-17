@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { Index } from "./db.js";
-import { extractJsonObject } from "./json.js";
 import { indexDb, ensureLayout } from "./paths.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
@@ -104,18 +103,18 @@ export class LlmExtractProvider {
         return this.claimName ?? this.channel?.name ?? "unconfigured";
     }
     availability() {
-        return this.channel
+        return this.channel && typeof this.channel.agent === "function"
             ? { configured: true }
-            : { configured: false, reason: "no host model channel configured" };
+            : { configured: false, reason: "no host model channel with native tool calling configured" };
     }
     async extract(snapshot) {
         const channel = this.channel;
-        if (!channel) {
-            throw new ProviderNotConfiguredError("no host model channel configured");
+        if (!channel || typeof channel.agent !== "function") {
+            throw new ProviderNotConfiguredError("no host model channel with native tool calling configured");
         }
         try {
-            const raw = await channel.chat(EXTRACT_SYSTEM_PROMPT, buildExtractPrompt(snapshot));
-            return parseExtractReply(raw, snapshotToFallback(snapshot));
+            const reply = await channel.agent(EXTRACT_SYSTEM_PROMPT, [{ role: "user", text: buildExtractPrompt(snapshot) }], EXTRACT_TOOLS);
+            return parseExtractToolReply(reply, snapshotToFallback(snapshot));
         }
         catch (err) {
             console.warn(`[memcurio] llm extraction failed: ${String(err)}`);
@@ -137,6 +136,42 @@ export function rolloutKeyFor(snapshot) {
         ? `${snapshot.host}|${snapshot.sessionId}`
         : `${snapshot.host}|${snapshot.workdir || "default"}|${snapshot.endedAt.slice(0, 10)}`;
 }
+const SAVE_EXTRACTION = "save_extraction";
+const SKIP_EXTRACTION = "skip_extraction";
+/** Native tool schemas for the Phase-1 extraction turn. The model reports the
+ *  rollout through a real tool call; there is no JSON-in-prose protocol to
+ *  parse and no text fallback. The field formats live here, not in the system
+ *  prompt, so the prompt only carries how to make the call. */
+export const EXTRACT_TOOLS = [
+    {
+        name: SAVE_EXTRACTION,
+        description: "Save the durable memory extracted from this rollout. Call only when a future agent would plausibly act better because of it.",
+        parameters: {
+            type: "object",
+            properties: {
+                rollout_summary: {
+                    type: "string",
+                    description: "Task-structured recap with Outcome: success|partial|fail|uncertain per task, Preference signals, Key steps, Failures and how to do differently, Reusable knowledge, References.",
+                },
+                rollout_slug: {
+                    type: "string",
+                    description: "Filesystem-safe slug: lowercase, hyphens, <=80 chars.",
+                },
+                raw_memory: {
+                    type: "string",
+                    description: "Raw memory with frontmatter (description/task/task_group/task_outcome/cwd/keywords) then '### Task N' blocks containing Preference signals / Reusable knowledge / Failures and how to do differently / References.",
+                },
+            },
+            required: ["rollout_summary", "rollout_slug", "raw_memory"],
+            additionalProperties: false,
+        },
+    },
+    {
+        name: SKIP_EXTRACTION,
+        description: "Skip this rollout: nothing a future agent would act better on (one-off queries, generic status updates, temporary facts, common knowledge, no reusable steps or preferences).",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+];
 const EXTRACT_SYSTEM_PROMPT = [
     "You are a Memory Writing Agent (Phase 1: single rollout extraction).",
     "Your job: convert ONE agent session (rollout) into useful raw memory for future agents.",
@@ -148,7 +183,7 @@ const EXTRACT_SYSTEM_PROMPT = [
     "",
     "NO-OP GATE: before writing, ask: \"Will a future agent plausibly act better because of this?\"",
     "If NO (one-off queries, generic status updates, temporary facts, common knowledge,",
-    "no reusable steps, no preferences), return EXACTLY: {\"rollout_summary\":\"\",\"rollout_slug\":\"\",\"raw_memory\":\"\"}",
+    "no reusable steps, no preferences), call skip_extraction instead of save_extraction.",
     "",
     "What counts as high-signal memory:",
     "1. Stable user operating preferences (repeated requests, corrections, interruptions)",
@@ -157,13 +192,7 @@ const EXTRACT_SYSTEM_PROMPT = [
     "4. Durable environment/workflow facts",
     "Read user messages first (strongest preference evidence), then tool outputs, then assistant text.",
     "",
-    "Return EXACTLY ONE JSON object with keys: rollout_summary (string, task-structured recap with",
-    "Outcome: success|partial|fail|uncertain per task, Preference signals, Key steps, Failures and how to do",
-    "differently, Reusable knowledge, References), rollout_slug (string, filesystem-safe slug, lowercase,",
-    "hyphens, <=80 chars), raw_memory (string, with frontmatter description/task/task_group/task_outcome/",
-    "cwd/keywords then '### Task N' blocks containing Preference signals / Reusable knowledge / Failures and",
-    "how to do differently / References). No prose outside the JSON.",
-    "Reply in the same language as the session content.",
+    "Call exactly one of the provided tools. Reply in the same language as the session content.",
 ].join("\n");
 /** User prompt carrying the session data as JSON (quarantined from
  *  instructions: everything inside the JSON is data, never directives). */
@@ -464,22 +493,42 @@ function clipField(text) {
     }
     return clipped;
 }
-/** Parse the Phase-1 LLM reply into a Stage1Output. Only the explicit,
- *  schema-valid all-empty object is a no-op; malformed or safety-rejected
- *  replies throw so durable workers retry/dead-letter instead of silently
- *  acknowledging lost extraction work. A reply that trips the injection
+/** Parse the Phase-1 native tool reply into a Stage1Output. Exactly one tool
+ *  call is accepted: save_extraction carries the payload and skip_extraction
+ *  is the explicit no-op gate. Missing/unknown/extra calls and failed turns
+ *  throw so durable workers retry/dead-letter instead of silently
+ *  acknowledging lost extraction work. A payload that trips the injection
  *  scanner is first REPAIRED line-wise (see repairInjectionLines) and only
  *  rejected when the repaired text is still unsafe or empty. */
-export function parseExtractReply(raw, fallback, report) {
+export function parseExtractToolReply(reply, fallback, report) {
+    if (reply.finish === "error" || reply.finish === "aborted") {
+        throw new ExtractReplyError("invalid", `extraction tool turn failed: ${reply.failure ?? reply.finish}`);
+    }
+    if (reply.toolCalls.length === 0) {
+        throw new ExtractReplyError("invalid", "invalid extraction reply: no tool call returned");
+    }
+    if (reply.toolCalls.length > 1) {
+        throw new ExtractReplyError("invalid", "invalid extraction reply: expected exactly one tool call");
+    }
+    const call = reply.toolCalls[0];
+    if (!call) {
+        throw new ExtractReplyError("invalid", "invalid extraction reply: no tool call returned");
+    }
+    if (call.name === SKIP_EXTRACTION) {
+        return null;
+    }
+    if (call.name !== SAVE_EXTRACTION) {
+        throw new ExtractReplyError("invalid", `invalid extraction reply: unknown tool ${call.name}`);
+    }
     let value;
     try {
-        value = extractJsonObject(raw);
+        value = JSON.parse(call.arguments);
     }
     catch (err) {
         throw new ExtractReplyError("invalid", `invalid extraction reply: ${String(err)}`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new ExtractReplyError("invalid", "invalid extraction reply: expected a JSON object");
+        throw new ExtractReplyError("invalid", "invalid extraction reply: expected an object argument");
     }
     const parsed = value;
     if (typeof parsed.rollout_summary !== "string" ||

@@ -202,36 +202,6 @@ const BACKFILL_ID_CHUNK = 500;
 // single walk without letting the index drift stale for long.
 const WORKSPACE_LIST_TTL_MS = 5_000;
 
-/** Extract a `<tag>...</tag>` block body from citation text (codex
- *  citations.rs extract_block). Returns undefined when the block is absent. */
-function extractTagBlock(text: string, tag: string): string | undefined {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  const start = text.indexOf(open);
-  if (start < 0) {
-    return undefined;
-  }
-  const bodyStart = start + open.length;
-  const end = text.indexOf(close, bodyStart);
-  if (end < 0) {
-    return undefined;
-  }
-  return text.slice(bodyStart, end);
-}
-
-/** Parse one citation entry line (`<file>:<start>-<end>|note=[...]`) into its
- *  file reference. codex citations.rs strips the trailing note; entry lines
- *  without a note are accepted too (lenient telemetry). */
-function citationEntryRef(line: string): string | undefined {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const noteAt = trimmed.lastIndexOf("|note=[");
-  const location = (noteAt >= 0 ? trimmed.slice(0, noteAt) : trimmed).trim();
-  return location || undefined;
-}
-
 export interface AdapterOptions {
   log?: AdapterLog;
   /** Fixed store root for this adapter instance. Capturing it once prevents
@@ -785,79 +755,6 @@ export class MemcurioAdapter {
     return paths;
   }
 
-  /** Codex-style citation telemetry: parse <memcurio-citation> blocks from
-   *  assistant text and count the referenced memory files (and rollout keys)
-   *  as used. The block mirrors codex citations.rs: a <citation_entries>
-   *  section of `<file>:<start>-<end>|note=[...]` lines and a <rollout_ids>
-   *  section of bare rollout keys. The legacy line-style sections
-   *  (`citation_entries:` / `rollout_ids:`) are still accepted for
-   *  backward compatibility with sessions in flight.
-   */
-  /** Returns the rollout keys that were actually counted (validated against
-   *  stage rows by registerMemoryUsage semantics — unknown keys are dropped). */
-  async memoryUsageFromCitations(text: string): Promise<string[]> {
-    const entries: string[] = [];
-    for (const block of text.matchAll(/<memcurio-citation>([\s\S]*?)<\/memcurio-citation>/g)) {
-      const body = block[1] ?? "";
-      const entriesBlock = extractTagBlock(body, "citation_entries");
-      const idsBlock = extractTagBlock(body, "rollout_ids");
-      if (entriesBlock !== undefined) {
-        for (const line of entriesBlock.split("\n")) {
-          const ref = citationEntryRef(line);
-          if (ref) {
-            entries.push(ref);
-          }
-        }
-      }
-      if (idsBlock !== undefined) {
-        for (const line of idsBlock.split("\n")) {
-          const id = line.trim();
-          if (id && !id.startsWith("<")) {
-            entries.push(id);
-          }
-        }
-      }
-      if (entriesBlock === undefined && idsBlock === undefined) {
-        // Legacy line-style sections.
-        let inEntries = false;
-        let inIds = false;
-        for (const line of body.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            continue;
-          }
-          if (/^citation_entries:/.test(trimmed)) {
-            inEntries = true;
-            inIds = false;
-            continue;
-          }
-          if (/^rollout_ids:/.test(trimmed)) {
-            inEntries = false;
-            inIds = true;
-            continue;
-          }
-          if (inIds) {
-            entries.push(trimmed);
-            continue;
-          }
-          if (inEntries) {
-            const ref = trimmed.split("|")[0]?.trim() ?? "";
-            if (ref) {
-              entries.push(ref);
-            }
-          }
-        }
-      }
-    }
-    if (entries.length) {
-      // Only propagate keys the engine actually counted: unknown keys and
-      // MEMORY.md citation lines never bump a stage row, so the UI citation
-      // stream must not see phantom ticks for them.
-      return registerMemoryUsage(this.root, entries);
-    }
-    return [];
-  }
-
   async sessionIdle(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s) {
@@ -1326,7 +1223,8 @@ export class MemcurioAdapter {
   async buildStaticContext(workdir: string, budgetTokens?: number): Promise<string> {
     const root = this.root;
     const budget = budgetTokens ?? this.#injectionBudget();
-    // Guide always, summary only when the store has one (renderStaticContext).
+    // The guide is a system-prompt section since v1.9; this message carries the
+    // summary only, and an empty store injects nothing at all.
     const context = renderStaticContext(root, budget);
     // Audit only a real injection: with the guide prompt-side (v1.9) an empty
     // store legitimately injects nothing, and the pre-step keeps retrying until

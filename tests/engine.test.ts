@@ -206,7 +206,7 @@ describe("automatic consolidation LLM fallback", () => {
     // than leaving it stranded for a whole backoff window.
     const channel: LlmChannel = {
       name: "dsh",
-      chat: async () => "I could not find anything worth changing.",
+      agent: async () => ({ text: "I could not find anything worth changing.", toolCalls: [], finish: "stop" as const }),
     };
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
     await addAdHocNote(dir, "fallback note content", "remember");
@@ -229,7 +229,7 @@ describe("blocked extraction wake scheduling", () => {
   test("a route-less provider arms the slow probe, never an immediate retry loop", async () => {
     const channel: LlmChannel = {
       name: "dsh",
-      async chat() {
+      async agent() {
         throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
       },
     };
@@ -552,7 +552,7 @@ describe("MemcurioAdapter automatic consolidation channel gate", () => {
     let channelCalls = 0;
     const spyChannel: LlmChannel = {
       name: "spy",
-      async chat(): Promise<string> {
+      async agent() {
         channelCalls += 1;
         throw new Error("spy channel must not be called under PROVIDER=none");
       },

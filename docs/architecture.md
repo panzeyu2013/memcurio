@@ -60,10 +60,9 @@ src/
 │   ├── channel.ts      LlmChannel 契约（宿主 ctx.llm 注入的模型通道；引擎不直连任何 provider）
 │   ├── db.ts           stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 │   ├── events.ts       事件模型（host/event 校验，不变）
-│   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；Noop/Llm provider + 提示词 + 解析）
+│   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；save_extraction/skip_extraction 原生工具回合 + 校验/脱敏）
 │   ├── ids.ts          UUIDv4 id（含 newNoteId）
-│   ├── inject.ts       读路径注入（renderMemoryContext / 指引 / baseline 区块 / updateAgentsMd）
-│   ├── json.ts         JSON 提取 + 工具调用解析（extract/consolidate 复用）
+│   ├── inject.ts       读路径注入（renderMemoryContext 摘要区块 / renderReadPathInstructions 系统提示指南 / renderHitBlock 动态命中）
 │   ├── paths.ts        布局（0700）+ memory workspace 路径（ns 逻辑移除）
 │   ├── purge.ts        本地 rollout hard purge（只删引用目标的 skills/块）与显式 JSONL export scrub
 │   ├── read.ts         读路径 list/read 表面（listMemory / readMemory）
@@ -129,7 +128,7 @@ SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使�
 模型自检索：按需 memory_search / memory_list / memory_read / memory_status（指南描述的自助路径，不经文件系统）
 动态注入（每次用户输入）：检索 query 由"最近一条用户文本"经去噪/停用词处理后生成 → searchMemory 两遍打分（IDF + 短语奖励 + 去重 + 单文件 cap）取 top-K
 注入线格式（v1.9.1，引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块 = 一行 "Memory hits:" + 每行 "rel:line content"（空白折叠、220 字符截断），无逐行前缀
-使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用（兼容旧会话的 <memcurio-citation> 文本块）+ search/read 命中
+使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用 + search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）
 ```
 

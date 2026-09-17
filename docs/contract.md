@@ -113,9 +113,10 @@ consolidationRelease(key, owner): boolean
 ### src/core/channel.ts（LLM 通道契约；随收敛精简）
 
 ```ts
-export interface LlmChannel { readonly name: string; chat(system: string, user: string): Promise<string> }
+export interface LlmChannel { readonly name: string; agent(system, messages, tools, signal?): Promise<AgentToolReply> }
 // 宿主注入的模型通道：DSH 把 ctx.llm 路由封装成 LlmChannel 注入插件（src/plugin/index.ts → engine 的
 // channel 选项）；引擎从不自行连接任何 provider。
+// 无 chat/文本协议：Phase-1 抽取与 Phase-2 整合都只走 agent() 原生工具调用。
 // 无通道时：LlmExtractProvider.availability() → unconfigured（durable job 进 blocked，不计 attempts）；
 //           整合自动回退 RuleConsolidateProvider（engine.maybeConsolidate 内判定）。
 // 删除：HttpChannel / llmProviderMode / resolveChannel / MEMCURIO_LLM_*（随 HTTP 通道整体移除）
@@ -135,7 +136,7 @@ export interface AdapterOptions {
 }
 export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见「宿主集成契约」） */ }
 // 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions]；
-//   事件接线 + 记忆注入 + ctx.tools.register 6 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
+//   事件接线 + 记忆注入 + ctx.tools.register 7 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
 // 删除：HarnessAdapter 接口、capabilities/hostModel/createChannel 抽象——DSH 为唯一宿主，无需再抽象。
 ```
 
@@ -254,13 +255,14 @@ export interface ExtractProvider {
   extract(snapshot: RolloutSnapshot): Promise<Stage1Output | null>;  // null = 不记（no-op 门/失败）
 }
 export class NoopExtractProvider implements ExtractProvider {}            // 恒 null
-export class LlmExtractProvider implements ExtractProvider            // 通道化抽取：channel.chat + JSON 提取；rawMemory 为空 → null
+export class LlmExtractProvider implements ExtractProvider            // 通道化抽取：channel.agent 一次原生工具回合（save_extraction / skip_extraction）
   // constructor(channel?: LlmChannel, claimName?)：宿主注入通道为唯一模型源（name 随通道/claimName，如 "dsh"）；
-  //   availability() 无通道 → unconfigured（durable queue 进 blocked，不计 attempts）
+  //   availability() 无通道或通道无 agent → unconfigured（durable queue 进 blocked，不计 attempts）
+export const EXTRACT_TOOLS: readonly ToolSpec[]                        // save_extraction{rollout_summary,rollout_slug,raw_memory} / skip_extraction{}：字段格式在工具 schema，不在 prompt
 export function buildExtractPrompt(snapshot: RolloutSnapshot): string     // 供 harness 通道复用（返回模板文本）
-export function parseExtractReply(raw: string, fallback: Partial<Stage1Output>): Stage1Output | null
-  // 解析 {rollout_summary, rollout_slug, raw_memory}；三字段均空 → null（no-op 门）
-  // 输出字段 redactSecrets + sanitizeForInjection 扫描（命中注入 → 记 audit warn.promptware，仍入库 raw 原文？不：注入命中则整体拒绝 → null）
+export function parseExtractToolReply(reply: AgentToolReply, fallback: Partial<Stage1Output>): Stage1Output | null
+  // 恰好一个工具调用：skip_extraction / 三字段均空 → null（no-op 门）；未知/多调用/失败回合 → throw（durable 重试/dead-letter）
+  // 输出字段 redactSecrets + sanitizeForInjection 扫描与按行修复（修复后仍不安全或为空 → 整体拒绝）
 export function stageSession(root: string, snapshot: RolloutSnapshot, provider: ExtractProvider): Promise<Stage1Output | null>
   // extract → stageUpsert + audit("extract.staged", host, `${rolloutKey} ${slug}`)；null → audit("extract.noop", host, sessionId)
 export function createEvidenceSnapshot(inputs: EvidenceInput[]): EvidenceSnapshot
@@ -401,9 +403,6 @@ export function renderReadPathInstructions(): string
   // → 引用遥测要求（v2.0：调用 memory_cite 原生工具一次，而非输出文本引用块：
   //   entries=<file>:<start>-<end> 定位符数组 + rolloutIds=裸 host|sessionId 数组）
   // → 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
-export function renderBaselineSection(root: string, maxTokens?: number): string
-  // AGENTS.md 注入块（复用现有 START/END marker 机制）：untrusted 声明 + memory_summary 内容 + MEMORY.md 路径 + memory_* 工具列表。
-export function updateAgentsMd(workdir: string, section: string): void     // 保留现有实现（从 baseline.ts 迁移）
 ```
 
 
@@ -417,10 +416,10 @@ export interface Config {
 // namespace/prune 配置项删除；兼容读取：旧配置含未知键不影响。
 ```
 
-### src/core/sanitize.ts / budget.ts / transaction.ts / events.ts / json.ts / sqlite.ts / ids.ts
-保留现状；`json.ts` 承载 JSON 提取与工具调用解析（原 `llm.ts` HTTP 客户端已随收敛移除，JSON 逻辑未变）；`ids.ts` 新增 `newNoteId()`（UUIDv4 32hex，与旧 newEntryId 同）。
+### src/core/sanitize.ts / budget.ts / transaction.ts / events.ts / sqlite.ts / ids.ts
+保留现状；`ids.ts` 新增 `newNoteId()`（UUIDv4 32hex，与旧 newEntryId 同）；`json.ts`（JSON-in-prose 提取器）已随原生工具调用删除。
 
-## 原生工具契约（6 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
+## 原生工具契约（7 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
 
 ```
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
@@ -429,6 +428,7 @@ memory_read { path, lineOffset?, maxLines?, maxTokens? } → readMemory（codex 
 memory_remember { content }           → ad-hoc remember note（返回 filename）；description 声明阈值"仅在用户明确要求记住、忘记或更新某件事时使用；不要自主写入"（软门槛，handler 不强制校验，与 codex ad_hoc_note 一致）
 memory_status {}                      → pipeline 状态
 memory_context {}                     → renderMemoryContext + read path 指引（模型自行检索入口）
+memory_cite { entries[], rolloutIds? } → registerMemoryUsage（文件定位符 + 裸 rollout key）；返回实际计入条数，审计 integration.cite
 ```
 
 ## 宿主集成契约（src/engine.ts + DSH 插件）
@@ -454,9 +454,8 @@ export class MemcurioAdapter {
                                                              // shell 工具命令串词法解析（白名单只读命令路径操作数、分隔符终止、绝不执行、单次调用去重）；
                                                              // 仅命中记忆 workspace 才记使用遥测（工具名集合由 toolPreset 声明）
   memoryUsageFromPath(filePath): Promise<void>              // 只读工具读取记忆文件（绝对路径）→ registerMemoryUsage
-  memoryUsageFromCitations(text): Promise<string[]>       // 兼容旧会话的 <memcurio-citation> 文本块 → registerMemoryUsage；返回实际计入的 rollout keys
-  // 原生 citation 路径（v2.0）：api.integrationCite(root, refs) = registerMemoryUsage + integration.cite 审计；
-  // 同一 rollout 的“文件条目 + 裸 key”两种写法在同一次调用内只计一次 usage。
+  // citation 遥测（v2.0，无文本解析）：memory_cite 工具 → api.integrationCite(root, refs)
+  //   = registerMemoryUsage + integration.cite 审计；同一 rollout 的“文件条目 + 裸 key”两种写法在同一次调用内只计一次 usage。
   sessionIdle(id): Promise<void>                            // durable checkpoint
   sessionCompacted(id, summary?): Promise<void>             // 压缩摘要入 snapshot.summary + 证据
   sessionEnded(id): Promise<{staged; queued}>               // durable 模式原子入队 + 结束 sessions
@@ -479,7 +478,7 @@ export class MemcurioAdapter {
 ### src/plugin/index.ts + scope.ts（DSH Cordis 插件；原 opencode/plugin.ts 的收敛对应物）
 
 - Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 已删，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base（第二十五/二十六轮）；
-- 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 收割 `<memcurio-citation>` → memoryUsageFromCitations；
+- 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
 - 注入：`agent/pre-step` 静态注入（**仅摘要区块**，每会话一次；read path 指引在 system prompt section）+ 相关命中动态注入 top-K（IDF/短语/去重/单文件 cap）；注入内容与 worker 消息不进证据（防回注 feed-back）；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与会话退休时自动 drain + maybeConsolidate（退休入口起 30s wall-clock 预算，超时 abort 在飞 worker 调用后 dispose，queue 稍后重试）；

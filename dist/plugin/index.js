@@ -37,21 +37,6 @@ export const Config = Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
 });
-/** Harvest codex-style `<memcurio-citation>` blocks from the assistant
- *  messages seen so far and feed them to the usage window (codex-style citation telemetry:
- *  the injected read-path instructions tell the model to emit these). */
-async function harvestCitations(runtime) {
-    const citations = runtime.adapter
-        .memoryEvidenceSnapshot(runtime.session.id)
-        .filter((item) => item.kind === "assistant")
-        .map((item) => item.text ?? "")
-        .filter(Boolean)
-        .join("\n");
-    if (citations) {
-        return runtime.adapter.memoryUsageFromCitations(citations);
-    }
-    return [];
-}
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
  *  dsh-tool-pwsh; verified against DSH 0.1.2-rc.1). Only these names may
@@ -266,50 +251,10 @@ export function dshWorkerMessage(message, route) {
 function dshChannel(ctx, route, abortSignal) {
     return {
         name: "dsh",
-        async chat(system, user, signal) {
-            const selected = route();
-            // A missing route is a durable configuration gap, not a transient model
-            // failure: blocking keeps the job’s attempts intact until a route exists.
-            if (!selected)
-                throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
-            const messages = [memoryMessage(user)];
-            // Bound every worker call: the runtime abort (session retired) plus a
-            // wall-clock cap so a hung host model falls back to the durable
-            // retry path instead of squatting a bounded slot forever.
-            const signals = [AbortSignal.timeout(DSH_WORKER_CHAT_TIMEOUT_MS)];
-            const runtimeSignal = abortSignal();
-            if (runtimeSignal)
-                signals.push(runtimeSignal);
-            if (signal)
-                signals.push(signal);
-            const combined = AbortSignal.any(signals);
-            let output = "";
-            for await (const chunk of ctx.llm.stream({ ...selected, system, messages, signal: combined })) {
-                if (chunk.type === "text-delta" && typeof chunk.text === "string")
-                    output += chunk.text;
-                if (chunk.type === "finish") {
-                    if (chunk.reason.kind === "error") {
-                        throw new Error(chunk.reason.failure.message || "DSH model call failed");
-                    }
-                    if (chunk.reason.kind === "aborted") {
-                        throw new Error(chunk.reason.failure.message || "DSH model call aborted");
-                    }
-                    if (chunk.reason.kind === "max-tokens") {
-                        throw new Error("DSH model call hit the max-tokens limit");
-                    }
-                    if (chunk.reason.kind === "tool-calls") {
-                        throw new Error("DSH model call returned tool calls instead of text");
-                    }
-                }
-            }
-            if (!output.trim())
-                throw new Error("DSH model returned no text for the Memcurio worker");
-            return output;
-        },
         // Native tool-calling turn: provider tool schemas go out, real tool-call
-        // blocks come back, and the results travel as DSH tool-result messages.
-        // This is the Phase-2 agent loop's only transport — there is no
-        // JSON-in-prose protocol.
+        // blocks come back, and results travel as DSH tool-result messages. Both
+        // worker paths (Phase-1 extraction, Phase-2 consolidation) ride this — the
+        // plugin has no text-protocol transport.
         async agent(system, messages, tools, signal) {
             const selected = route();
             if (!selected)
@@ -947,12 +892,6 @@ export function apply(ctx, config = {}) {
                 const work = (async () => {
                     if (runtime.abort.signal.aborted)
                         return;
-                    try {
-                        bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
-                    }
-                    catch {
-                        // best effort: citation telemetry must never break retirement
-                    }
                     await runtime.adapter.processPendingExtractions(8, Date.now() + DSH_RETIRE_WORK_BUDGET_MS - DSH_CONSOLIDATE_RESERVE_MS);
                     await runtime.adapter.maybeConsolidate();
                     // Deliver queue/audit diffs produced by the retire drain.
@@ -1058,18 +997,12 @@ export function apply(ctx, config = {}) {
         }
         else if (event.type === "turn/end") {
             // The idle checkpoint is a fast durable write (event lane, awaited by
-            // flush); citation telemetry, the model drain and the codex-style
-            // automatic Phase-2 consolidation run detached on the worker lane so a
-            // slow extraction never stalls the next pre-step or a flush boundary.
+            // flush); the model drain and the codex-style automatic Phase-2
+            // consolidation run detached on the worker lane so a slow extraction
+            // never stalls the next pre-step or a flush boundary.
             const idle = enqueue(runtime, () => runtime.adapter.sessionIdle(session.id), warn);
             void enqueueWorker(runtime, async () => {
                 await idle.catch(() => undefined);
-                try {
-                    bridge.tagCitations(runtime.session.id, await harvestCitations(runtime));
-                }
-                catch {
-                    // best effort: citation telemetry must never break the turn flow
-                }
                 await runtime.adapter.processPendingExtractions();
                 await runtime.adapter.maybeConsolidate();
                 // Deliver queue/audit diffs produced by this drain (turn/end lane).

@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   GUIDE_NODE_KIND,
+  GUIDE_TOOL_NAMES,
   createGuideNodeDefinition,
   extractGuideSection,
   guideDetailOf,
@@ -80,7 +81,7 @@ describe("guide section extraction", () => {
     expect(guideSignature(GUIDE)).not.toBe(guideSignature(`${GUIDE}more`));
     const detail = guideDetailOf(GUIDE);
     expect(detail.chars).toBe(GUIDE.length);
-    expect(detail.tools).toBe(6);
+    expect(detail.tools).toBe(GUIDE_TOOL_NAMES.length);
   });
 });
 
@@ -97,7 +98,7 @@ describe("guide row definition", () => {
     const state = definition.start(undefined, { event: systemEvent(9, PROMPT) });
     expect(state.signature).toBe(guideSignature(GUIDE));
     expect(state.chars).toBe(GUIDE.length);
-    expect(state.tools).toBe(6);
+    expect(state.tools).toBe(GUIDE_TOOL_NAMES.length);
     expect(state.text).toBe(GUIDE);
     expect(state.unchanged).toBe(false);
     expect(state.anchorSeq).toBeCloseTo(8.9, 5);

@@ -181,17 +181,6 @@ export declare class MemcurioAdapter {
      *  whitespace splitting as one token and embedded metacharacters (e.g.
      *  "a; b") never act as delimiters. */
     private pathsFromShellCommand;
-    /** Codex-style citation telemetry: parse <memcurio-citation> blocks from
-     *  assistant text and count the referenced memory files (and rollout keys)
-     *  as used. The block mirrors codex citations.rs: a <citation_entries>
-     *  section of `<file>:<start>-<end>|note=[...]` lines and a <rollout_ids>
-     *  section of bare rollout keys. The legacy line-style sections
-     *  (`citation_entries:` / `rollout_ids:`) are still accepted for
-     *  backward compatibility with sessions in flight.
-     */
-    /** Returns the rollout keys that were actually counted (validated against
-     *  stage rows by registerMemoryUsage semantics — unknown keys are dropped). */
-    memoryUsageFromCitations(text: string): Promise<string[]>;
     sessionIdle(sessionId: string): Promise<void>;
     sessionCompacted(sessionId: string, summary?: string): Promise<void>;
     sessionEnded(sessionId: string): Promise<{

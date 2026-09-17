@@ -837,7 +837,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     await disposeFibers(fibers);
   });
 
-  test("harvests citation telemetry from assistant messages at turn/end", async () => {
+  test("assistant text is never parsed for citation telemetry", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
     const session = ctx.sessions.prepare(SessionId("citation-telemetry"), { meta: { cwd: join(root, "workspace") } });
@@ -866,8 +866,8 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       idx.close();
     }
 
-    // The injected read-path instructions tell the model to emit citation
-    // blocks; the turn/end worker must feed them to the usage window.
+    // The text block the old protocol used must no longer move the usage
+    // window: citations only arrive through the memory_cite tool call.
     const citationText = `<memcurio-citation>\n<rollout_ids>\n${rolloutKey}\n</rollout_ids>\n</memcurio-citation>`;
     ctx.emit("session/event", session, {
       type: "assistant/message",
@@ -902,7 +902,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     }
     const check = await Index.create(indexDb(root));
     try {
-      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+      expect(check.stageGet(rolloutKey)?.usageCount ?? 0).toBe(0);
     } finally {
       check.close();
       await disposeFibers(fibers);

@@ -1107,12 +1107,14 @@ describe("LlmLoopConsolidateProvider", () => {
   });
 
   test("a channel without a native tool turn never falls back to a text protocol", async () => {
-    const channel: LlmChannel = {
+    // Runtime-only shape: a host that predates the native tool turn simply
+    // lacks `agent`; there is no text protocol to fall back to.
+    const channel = {
       name: "text-only",
-      async chat() {
+      async text() {
         return JSON.stringify({ tool: "finish", args: { report: "would have parsed under the old protocol" } });
       },
-    };
+    } as unknown as LlmChannel;
     const provider = new LlmLoopConsolidateProvider(3, channel);
     const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
     expect(result.completed).toBe(false);
@@ -1173,9 +1175,6 @@ describe("LlmLoopConsolidateProvider", () => {
   test("a max-tokens finish ends the run as incomplete so the rule provider takes over", async () => {
     const channel: LlmChannel = {
       name: "capped",
-      async chat() {
-        throw new Error("unused");
-      },
       async agent() {
         return { text: "", toolCalls: [], finish: "max-tokens" as const };
       },
@@ -1221,7 +1220,7 @@ interface ScriptedTurn {
  *  A scripted entry may be a {@link ScriptedTurn} or the JSON-prose string the
  *  old text protocol used; the string form is decoded into the tool call it
  *  named so existing scripts still describe the same run through the native
- *  channel. The channel has NO working chat(): the loop must reach the model
+ *  channel. The channel has no text transport: the loop must reach the model
  *  through a real tool-calling turn. */
 function scriptedChannel(
   script: Array<string | ScriptedTurn>,
@@ -1235,9 +1234,6 @@ function scriptedChannel(
   let i = 0;
   return {
     name: "scripted",
-    async chat() {
-      throw new Error("scripted channel received a text chat; the native tool loop must not fall back to a text protocol");
-    },
     async agent(system, messages) {
       prompts?.push({ system, user: messages.map(renderScriptedTurn).join("\n") });
       const turn = turns[Math.min(i, turns.length - 1)] ?? { calls: [{ name: "finish", args: { report: "fallback" } }] };

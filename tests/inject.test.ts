@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { renderBaselineSection, renderMemoryContext, renderReadPathInstructions, renderStaticContext, updateAgentsMd } from "../src/core/inject.js";
+import { renderMemoryContext, renderReadPathInstructions, renderStaticContext } from "../src/core/inject.js";
 import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,45 +65,20 @@ describe("renderStaticContext", () => {
 });
 
 describe("renderReadPathInstructions", () => {
-  test("is path-free and points at the memory tools instead", () => {
+  test("carries only tool-call rules: no paths and no tool-body descriptions", () => {
     const text = renderReadPathInstructions();
     expect(text).toContain("memory_search");
-    expect(text).toContain("memory_list");
-    expect(text).toContain("memory_read");
+    expect(text).toContain("memory_cite");
     expect(text).toContain("memory_remember");
+    // Tool bodies are described by their own schemas, not repeated here.
+    expect(text).not.toContain("memory_list");
+    expect(text).not.toContain("memory_read");
+    expect(text).not.toContain("memory_status");
+    expect(text).not.toContain("memory_context");
     // No filesystem paths anywhere: the store lives outside the workspace and
     // the model must reach it through the tools only.
     expect(text).not.toMatch(/\/(?:root|home|Users|var|tmp)\//);
     expect(text).not.toContain(memoryWorkspace(dir));
     expect(text).not.toContain("grep MEMORY.md");
-  });
-});
-
-describe("renderBaselineSection + updateAgentsMd", () => {
-  test("injects a marker-managed section into AGENTS.md", () => {
-    writeWorkspaceText(dir, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
-    const section = renderBaselineSection(dir);
-    expect(section.startsWith("<!-- memcurio:start -->")).toBe(true);
-    expect(section.endsWith("<!-- memcurio:end -->\n")).toBe(true);
-    expect(section).toContain("项目用 bun");
-
-    const project = join(dir, "proj");
-    mkdirSync(project, { recursive: true });
-    updateAgentsMd(project, section);
-
-    const path = join(project, "AGENTS.md");
-    const content = readFileSync(path, "utf-8");
-    expect(content).toContain("<!-- memcurio:start -->");
-    expect(content).toContain("项目用 bun");
-    expect(content).toContain("<!-- memcurio:end -->");
-
-    // Re-injection replaces the old section instead of appending a second one.
-    writeWorkspaceText(dir, "memory_summary.md", "v1\n\n## User preferences\n\n- 更新后的内容\n");
-    const section2 = renderBaselineSection(dir);
-    updateAgentsMd(project, section2);
-    const content2 = readFileSync(path, "utf-8");
-    expect(content2.match(/memcurio:start/g)?.length).toBe(1);
-    expect(content2).toContain("更新后的内容");
-    expect(content2).not.toContain("项目用 bun");
   });
 });

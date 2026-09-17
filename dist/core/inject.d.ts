@@ -24,21 +24,14 @@ export declare function renderHitBlock(hits: readonly {
  *  instructions never ride an injected message, so a brand-new store injects
  *  nothing at all and a store with a summary injects only the summary. */
 export declare function renderMemoryContext(root: string, budgetTokens?: number): string;
-/** The read-path INSTRUCTIONS — how to use memory, not memory itself. They are
- *  registered as a SYSTEM PROMPT section (v1.9), next to the tool schemas, so
- *  the injected user message carries only memory content. Deliberately
- *  PATH-FREE: memory is reached through the memory tools, never through the
- *  filesystem (the store lives outside the session workspace by design, and the
- *  model must not be pointed at it). */
+/** The read-path INSTRUCTIONS — when and how to call the memory tools, not
+ *  what each tool does (their schemas describe their own bodies). Registered
+ *  as a SYSTEM PROMPT section (v1.9), next to the tool schemas, so the injected
+ *  user message carries only memory content. Deliberately PATH-FREE: memory is
+ *  reached through the memory tools, never through the filesystem (the store
+ *  lives outside the session workspace by design). */
 export declare function renderReadPathInstructions(): string;
 /** What the plugin injects STATICALLY into the conversation: the summary block
  *  only (v1.9 — the how-to guide is a system-prompt section now). Empty when
  *  the store has no summary yet, so a fresh session injects nothing at all. */
 export declare function renderStaticContext(root: string, budgetTokens?: number): string;
-/** AGENTS.md baseline section: summary + pointers, marker-managed like the old
- *  baseline. */
-export declare function renderBaselineSection(root: string, maxTokens?: number): string;
-export declare function updateAgentsMd(workdir: string, section: string): void;
-/** Inject the memory context into a project's AGENTS.md; returns the byte
- *  count of the injected section. */
-export declare function injectBaseline(workdir: string, maxTokens?: number): Promise<number>;
