@@ -3,11 +3,10 @@
  * is the model thinking with right now".
  *
  * Registered into `conversation.session.header.utilities`; the glyph is the
- * platform context-injection mark, the count is the latest pre-step dynamic
- * hit count, and the badge is the unread write-receipt count. The popover
- * carries the injection switch (the same injectContext setting the Settings
- * panel owns), the injection preview (static text, read guide, dynamic hits,
- * budget) plus the recent memory-write receipts (G6).
+ * platform context-injection mark and the badge is the unread write-receipt
+ * count. The popover carries the injection switch (the same injectContext
+ * setting the Settings panel owns), the injection preview (static text, read
+ * guide, budget) plus the recent memory-write receipts (G6).
  *
  * All values come from the injected seats, never from a value snapshot. An
  * instance with injection switched off renders as off — never as a healthy
@@ -103,9 +102,6 @@ function panel(props: {
     }
     if (injection.staticText !== undefined) sections.push(preview(t("panelStatic"), injection.staticText));
     if (injection.readGuide !== undefined) sections.push(preview(t("panelReadGuide"), injection.readGuide));
-    if (injection.dynamicText !== undefined) {
-      sections.push(preview(`${t("panelDynamic")} · ${String(injection.hits)}`, injection.dynamicText));
-    }
     const budget = budgetBar(injection, t);
     if (budget !== null) sections.push(budget);
   } else {
@@ -166,7 +162,6 @@ export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElem
     };
   }, [open]);
   const injection = state.injection;
-  const count = injection?.hits ?? 0;
   const active = injection !== null;
   const enabled = settings.value.injectContext;
   // The transport mode stays visible even with no injection, and a disabled
@@ -183,9 +178,7 @@ export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElem
   const label = !enabled
     ? t("statusDisabled")
     : active
-      ? count > 0
-        ? t("statusActive", { count, tokens: injection.tokens })
-        : t("statusStatic", { tokens: injection.tokens })
+      ? t("statusStatic", { tokens: injection.tokens })
       : t("statusIdle");
   const modeNote = state.realtime === "polling" ? t("statusDegraded") : state.realtime === "off" ? t("statusOffline") : "";
   const toggle = useCallback(() => {
@@ -210,7 +203,7 @@ export function MemoryInjectionIndicator(props: MemoryIndicatorProps): ReactElem
         onClick: toggle,
       },
       h(ContextInjectionIcon, {}),
-      enabled && active ? h("span", { className: "memcurio-indicator-count" }, count > 0 ? String(count) : "•") : null,
+      enabled && active ? h("span", { className: "memcurio-indicator-count" }, "•") : null,
       enabled && state.unread > 0 ? h("span", { className: "memcurio-indicator-unread" }) : null,
     ),
     open

@@ -98,10 +98,8 @@ export function createProjector() {
                     return [{
                             kind: "inject-updated",
                             sessionId: record.sessionId,
-                            workdir: record.workdir,
                             duplicate,
                             ...optional("staticText", contentText(record.staticText, MAX_CONTENT_CHARS)),
-                            ...optional("dynamicText", contentText(record.dynamicText, MAX_CONTENT_CHARS)),
                             ...optional("budgetTokens", record.budgetTokens),
                         }];
                 }

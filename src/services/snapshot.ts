@@ -5,12 +5,12 @@
  * current store + browsable store list, injection preview (static summary +
  * read guide), persistence entries (rollout layer + manual markdown layer)
  * joined with usage telemetry, queue counts/jobs, consolidation radar,
- * recent write-path receipts, settings summary, realtime info.
+ * recent write-path receipts and settings summary.
  *
  * Pure node-side module: consumes the read services only, never writes, and
- * never imports browser code. Field names mirror the client SnapshotPayload
- * vocabulary (client/types.ts) as a structural superset/subset — the S0
- * bridge adapter performs the final wire mapping.
+ * never imports browser code. Field names mirror the browser wire vocabulary
+ * (client/ui/wire.ts, UiSnapshot) and are a structural superset of it: the
+ * transport may send more than the shipped client reads.
  */
 import { basename } from "node:path";
 
@@ -23,6 +23,7 @@ import { listStores } from "./context.js";
 import { list as usageList } from "./usage.js";
 import { list as queueList, consolidation as consolidationMeta } from "./queue.js";
 import { list as auditList } from "./audit.js";
+import { isWritePathAction } from "./write-path.js";
 
 /** Store marker shape shared by snapshot + deltas. */
 export interface SnapshotStore {
@@ -80,9 +81,6 @@ export interface SnapshotSettings {
 export interface SnapshotInjection {
   staticSummary?: string;
   readGuide?: string;
-  /** Last pre-step dynamic context text for the session, when the bridge
-   *  captured one (raw preview; client renders/handles it). */
-  dynamicText?: string;
 }
 
 export interface SnapshotUsage {
@@ -101,38 +99,6 @@ export interface WorkbenchSnapshot {
   usage: SnapshotUsage;
   receipts: SnapshotReceipt[];
   settings: SnapshotSettings;
-  realtime: { mode: "push" | "polling"; degraded: boolean };
-}
-
-/** Actions that mutate the durable memory (receipt candidates). */
-const WRITE_PATH_ACTIONS = [
-  "extract.",
-  "adhoc.",
-  "consolidate.",
-  "prune.",
-  "purge.",
-] as const;
-
-/** extract.* rows that are bookkeeping/notices, never durable writes (mirror
- *  of the bridge filter: no false "memory updated" marker). */
-const NON_WRITE_EXTRACT_ACTIONS = new Set([
-  "extract.noop",
-  "extract.stale",
-  "extract.repaired",
-  "extract.requeued",
-  "extract.queued",
-  "extract.queue_complete",
-  "extract.queue_retry",
-  "extract.queue_dead",
-  "extract.queue_blocked",
-  "extract.queue_unblocked",
-]);
-
-function isWritePath(action: string): boolean {
-  if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
-    return false;
-  }
-  return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
 }
 
 /** Session id from an audit ns like "dsh|<session>" (mirror of bridge).
@@ -205,14 +171,12 @@ export interface BuildSnapshotOptions {
   injectBudgetTokens?: number;
   /** Reference version label (settings preview). */
   version?: string;
-  /** Latest dynamic context text captured for the session (preview). */
-  dynamicText?: string;
 }
 
 /** Assemble the full-state read for one store. Never throws: individual face
  *  failures degrade to empty fields so the workbench always has a frame. */
 export async function buildSnapshot(options: BuildSnapshotOptions): Promise<WorkbenchSnapshot> {
-  const { root, baseRoot, label, sessionId, scope = "workspace", injectBudgetTokens, version, dynamicText } = options;
+  const { root, baseRoot, label, sessionId, scope = "workspace", injectBudgetTokens, version } = options;
   const at = new Date().toISOString();
   const isolated = options.isolated ?? label === undefined; // no-cwd degradation
   const workspaceKey = label ?? basename(root);
@@ -329,7 +293,6 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
     injection: {
       staticSummary: parts?.summary,
       readGuide: parts?.instructions,
-      ...(dynamicText ? { dynamicText } : {}),
     },
     entries,
     queue,
@@ -345,7 +308,7 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
         action: row.action,
         object: row.object,
         detail: row.detail,
-        writePath: isWritePath(row.action),
+        writePath: isWritePathAction(row.action),
         id: `audit-${index + 1}`,
         ok: !failedAction,
         ...(failedAction ? { error: row.detail.slice(0, 300) } : {}),
@@ -363,7 +326,6 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
       consolidationCooldownMs: AUTO_CONSOLIDATE_COOLDOWN_MS,
       ...(version ? { version } : {}),
     },
-    realtime: { mode: "polling", degraded: false },
   };
 }
 

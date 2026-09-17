@@ -65,13 +65,11 @@ const SNAPSHOT: UiSnapshot = {
   store: { id: "w1", root: "/tmp/store", isolated: false },
   injection: {
     staticSummary: "[memcurio] summary",
-    dynamicText: "Memory hits:\na.md:3 hit one\nb.md:9 hit two",
   },
   receipts: [
     { seq: 1, time: "2026-09-14T00:00:01.000Z", action: "adhoc.note", object: "dsh|s1", detail: "note saved", writePath: true, id: "r1" },
   ],
   settings: { injectBudgetTokens: 1500 },
-  realtime: { mode: "push", degraded: false },
 };
 
 function mount(): { container: HTMLElement; root: ReturnType<typeof createRoot> } {
@@ -138,7 +136,7 @@ describe("system-prompt guide row", () => {
 // header carries no memcurio surface. These tests prove the COMPONENT (the
 // future M0/M1 workbench seat); they do not imply a shipped header entry.
 describe("memory indicator (reserved, deliberately unregistered)", () => {
-  test("renders the hit count and opens the injection preview on click", async () => {
+  test("opens the injection preview on click", async () => {
     const store = createMemoryUiStore();
     store.applySnapshot(SNAPSHOT);
     // The transport owns realtime; model a healthy stream so the entry shows
@@ -157,7 +155,8 @@ describe("memory indicator (reserved, deliberately unregistered)", () => {
       );
     });
     expect(container.querySelector("button")?.getAttribute("data-state")).toBe("active");
-    expect(container.textContent).toContain("2");
+    // A preview exists; the marker is a dot, never a hit count.
+    expect(container.querySelector(".memcurio-indicator-count")?.textContent).toBe("•");
 
     const button = container.querySelector("button");
     if (!button) throw new Error("no indicator button");
@@ -165,7 +164,7 @@ describe("memory indicator (reserved, deliberately unregistered)", () => {
       button.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
     });
     expect(container.textContent).toContain("panelInjection");
-    expect(container.textContent).toContain("hit one");
+    expect(container.textContent).toContain("[memcurio] summary");
 
     await act(async () => {
       root.unmount();
@@ -468,7 +467,6 @@ describe("entry transport rebind on session switch", () => {
               store: { id: "w1", root: "/root/w1", isolated: false },
               injection: {},
               receipts: [],
-              realtime: { mode: "push", degraded: false },
             },
           }),
           { status: 200, headers: { "content-type": "application/json" } },

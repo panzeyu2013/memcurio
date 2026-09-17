@@ -26,32 +26,7 @@ import { list as queueList } from "../services/queue.js";
 import { redactSecrets } from "../core/sanitize.js";
 import { createProjector } from "../services/projector.js";
 import { buildSnapshot } from "../services/snapshot.js";
-/** Write-path action prefixes: only these produce browser receipts (the
- *  projector maps every audit record to a receipt, so the bridge filters
- *  lifecycle/injection noise — adapter.*, integration.*, baseline writes —
- *  before projection). */
-const WRITE_PATH_PREFIXES = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."];
-/** extract.* rows that are bookkeeping/notices, never durable writes: an
- *  unread badge and a "memory updated" toast for a queue hop or a policy
- *  repair would be a false write notification. */
-const NON_WRITE_EXTRACT_ACTIONS = new Set([
-    "extract.noop",
-    "extract.stale",
-    "extract.repaired",
-    "extract.requeued",
-    "extract.queued",
-    "extract.queue_complete",
-    "extract.queue_retry",
-    "extract.queue_dead",
-    "extract.queue_blocked",
-    "extract.queue_unblocked",
-]);
-function isWritePathAction(action) {
-    if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
-        return false;
-    }
-    return WRITE_PATH_PREFIXES.some((prefix) => action.startsWith(prefix));
-}
+import { isWritePathAction } from "../services/write-path.js";
 /** Audit actions that mutate durable memory and therefore surface as
  *  memory-list updates (all others only produce receipts or nothing). */
 function memoryKindForAction(action) {
@@ -123,8 +98,6 @@ export class HostBridge {
     jobsByRoot = new Map();
     /** Evidence provider (plugin wires the live adapter snapshot). */
     evidenceSource = null;
-    /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
-    lastInjection = new Map();
     constructor(options) {
         this.baseRoot = options.baseRoot;
         this.scope = options.scope ?? "workspace";
@@ -189,18 +162,13 @@ export class HostBridge {
     project(record, root) {
         this.push(this.projector.project(record), root);
     }
-    /** Pre-step injection happened (plugin agent/pre-step handler). The
-     *  per-session dynamic piece feeds the snapshot injection preview. */
-    tagInjection(sessionId, workdir, staticText, dynamicText, budgetTokens) {
-        if (dynamicText !== undefined || staticText !== undefined) {
-            this.lastInjection.set(sessionId, { ...(dynamicText !== undefined ? { dynamicText } : {}), at: Date.now() });
-        }
+    /** A memory injection happened for a new context window (plugin
+     *  agent/pre-step handler). */
+    tagInjection(sessionId, staticText, budgetTokens) {
         const record = {
             kind: "pre-step-inject",
             sessionId,
-            workdir,
             ...(staticText !== undefined ? { staticText } : {}),
-            ...(dynamicText !== undefined ? { dynamicText } : {}),
             ...(budgetTokens !== undefined ? { budgetTokens } : {}),
         };
         this.project(record, this.rootForSession(sessionId));
@@ -380,13 +348,11 @@ export class HostBridge {
         this.push(deltas, root);
         return deltas;
     }
-    /** Full-state read for one store (connect/refresh/polling). Carries the
-     *  latest dynamic-context preview captured for the session/root. */
+    /** Full-state read for one store (connect/refresh/polling). */
     snapshot(root, sessionId) {
         const label = this.labelFor(root);
         const workdir = this.workdirs.get(root);
         const target = sessionId ?? this.sessionsByRoot.get(root);
-        const dynamicText = this.latestDynamicText(root, target);
         return buildSnapshot({
             root,
             baseRoot: this.baseRoot,
@@ -396,25 +362,7 @@ export class HostBridge {
             isolated: workdir === "" || workdir === undefined,
             injectBudgetTokens: this.injectBudgetTokens,
             version: this.version,
-            ...(dynamicText ? { dynamicText } : {}),
         });
-    }
-    latestDynamicText(root, sessionId) {
-        if (sessionId) {
-            return this.lastInjection.get(sessionId)?.dynamicText;
-        }
-        let best;
-        let bestAt = 0;
-        for (const [entryRoot, entrySession] of this.sessionsByRoot) {
-            if (entryRoot !== root)
-                continue;
-            const entry = this.lastInjection.get(entrySession);
-            if (entry?.dynamicText && entry.at >= bestAt) {
-                best = entry.dynamicText;
-                bestAt = entry.at;
-            }
-        }
-        return best;
     }
 }
 const MAX_EVIDENCE_CHARS = 2000;

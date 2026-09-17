@@ -1307,7 +1307,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // window opens), so a summary written later waits for the next window.
       runtime.staticInjected = true;
       if (!staticPiece) return decision;
-      bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, undefined, live().injectBudgetTokens);
+      bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
     return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
   }, { global: true });
 

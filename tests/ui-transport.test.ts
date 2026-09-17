@@ -68,7 +68,6 @@ async function startHarness(): Promise<Harness> {
         injection: {},
         receipts: [],
         settings: {},
-        realtime: { mode: "polling", degraded: false },
         sessionId,
       };
     },

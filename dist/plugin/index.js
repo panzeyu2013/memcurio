@@ -1206,7 +1206,7 @@ export function apply(ctx, config = {}) {
         runtime.staticInjected = true;
         if (!staticPiece)
             return decision;
-        bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, undefined, live().injectBudgetTokens);
+        bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
         return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
     }, { global: true });
     // The resolved settings document is authoritative (the profile config is

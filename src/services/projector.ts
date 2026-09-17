@@ -52,16 +52,12 @@ export const MAX_ERROR_CHARS = 300;
 /** Kind of memory-pipeline change surfaced by `memory-updated`. */
 export type MemoryUpdateKind = "rollout" | "consolidation" | "note";
 
-/** A pre-step memory injection happened (design §8.2 row 1). */
+/** A memory injection happened for a new context window (design §8.2 row 1). */
 export interface PreStepInjectRecord {
   kind: "pre-step-inject";
   sessionId: string;
-  /** Session working directory (store key scope), identifier. */
-  workdir: string;
-  /** Static recall context built for this step, if any. */
+  /** Static recall context built for this window, if any. */
   staticText?: string;
-  /** Dynamic (query-driven) context built for this step, if any. */
-  dynamicText?: string;
   /** Injection budget the static context was fitted to, if known. */
   budgetTokens?: number;
 }
@@ -151,15 +147,12 @@ export type InputRecord =
   | MemoryUpdatedRecord
   | AuditRecord;
 
-/** The latest pre-step injection preview for a session (§8.2 row 1). */
+/** The latest injection preview for a session (§8.2 row 1). */
 export interface InjectUpdatedDelta {
   kind: "inject-updated";
   sessionId: string;
-  workdir: string;
   /** Redacted, ≤ MAX_CONTENT_CHARS. */
   staticText?: string;
-  /** Redacted, ≤ MAX_CONTENT_CHARS. */
-  dynamicText?: string;
   budgetTokens?: number;
   /** True when this staticText repeats the previous pre-step-inject's
    *  staticText for the same session (stateful, see module doc). */
@@ -320,10 +313,8 @@ export function createProjector(): Projector {
           return [{
             kind: "inject-updated",
             sessionId: record.sessionId,
-            workdir: record.workdir,
             duplicate,
             ...optional("staticText", contentText(record.staticText, MAX_CONTENT_CHARS)),
-            ...optional("dynamicText", contentText(record.dynamicText, MAX_CONTENT_CHARS)),
             ...optional("budgetTokens", record.budgetTokens),
           }];
         }

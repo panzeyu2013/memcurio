@@ -87,7 +87,7 @@ describe("always-on bridge", () => {
     const bridge = new HostBridge({ baseRoot: dir });
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
-    bridge.tagInjection("s1", "/w", `static with ${SECRET}`, undefined, undefined);
+    bridge.tagInjection("s1", `static with ${SECRET}`, undefined);
     bridge.tagEvidence("s1", "user/message:0", "user", "hello");
     await bridge.refresh(root);
     bridge.tagPrune("s1", [1]);
@@ -119,8 +119,8 @@ describe("tags", () => {
     bridge.attachSink(sink);
     bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
     const staticText = `remember token ${SECRET} please`;
-    bridge.tagInjection("s1", "/w", staticText, "dynamic", 1500);
-    bridge.tagInjection("s1", "/w", staticText, "dynamic2", 1500);
+    bridge.tagInjection("s1", staticText, 1500);
+    bridge.tagInjection("s1", staticText, 1500);
     expect(sink.deltas.map((d) => d.kind)).toEqual(["inject-updated", "inject-updated"]);
     // Store attribution rides every delivery (transport routing contract).
     expect(sink.roots).toEqual([root, root]);
@@ -130,7 +130,6 @@ describe("tags", () => {
       expect(first.duplicate).toBe(false);
       expect(first.staticText).toContain("[REDACTED]");
       expect(first.staticText).not.toContain(SECRET);
-      expect(first.dynamicText).toBe("dynamic");
     }
     const second = sink.deltas[1];
     if (second?.kind === "inject-updated") {
@@ -332,7 +331,6 @@ describe("snapshot", () => {
       expect(rollout?.usage.count).toBe(1);
       expect(rollout?.summary.length).toBeGreaterThan(0);
       expect(snapshot.queue.counts).toMatchObject({ pending: 0, processing: 0, blocked: 0, dead: 0 });
-      expect(snapshot.realtime).toEqual({ mode: "polling", degraded: false });
     }
   });
 
@@ -346,7 +344,7 @@ describe("snapshot", () => {
   });
 });
 
-describe("round-19 additions (rel hits, evidence source, dynamic preview)", () => {
+describe("round-19 additions (rel hits, evidence source, snapshot enrichment)", () => {
   test("tagToolReadHits emits one tick per safe rel and drops traversal entries", () => {
     const root = makeStore("relhits");
     const sink = collector();
@@ -372,13 +370,11 @@ describe("round-19 additions (rel hits, evidence source, dynamic preview)", () =
     expect(rows[1]?.text).toBe("");
   });
 
-  test("snapshot carries dynamic preview, budget and version once provided", async () => {
+  test("snapshot reports the injection budget and version once provided", async () => {
     const root = makeStore("dyn");
     const bridge = new HostBridge({ baseRoot: dir, scope: "workspace", version: "rc.1 contract", injectBudgetTokens: 900 });
     bridge.registerSession({ sessionId: "session-1", workdir: "/work/dyn", root });
-    bridge.tagInjection("session-1", "/work/dyn", "static", "rollout_summaries/x.md:1 dynamic line", 900);
     const snapshot = await bridge.snapshot(root, "session-1");
-    expect(snapshot.injection.dynamicText).toContain("dynamic line");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);
     expect(snapshot.settings.version).toBe("rc.1 contract");
     expect(snapshot.settings.dataRoot).toBe(dir);

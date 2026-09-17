@@ -40,7 +40,6 @@ export interface UiInjectDelta {
   kind: "inject-updated";
   sessionId: string;
   staticText?: string;
-  dynamicText?: string;
   budgetTokens?: number;
   duplicate: boolean;
 }
@@ -145,7 +144,6 @@ export function isUiDelta(value: unknown): value is UiDelta {
 export interface UiInjectionSnapshot {
   staticSummary?: string;
   readGuide?: string;
-  dynamicText?: string;
 }
 
 export interface UiReceiptRow {
@@ -168,7 +166,6 @@ export interface UiSnapshot {
   injection: UiInjectionSnapshot;
   receipts: UiReceiptRow[];
   settings?: { injectBudgetTokens?: number; maxInjectTokens?: number; dataRoot?: string; version?: string };
-  realtime: { mode: "push" | "polling"; degraded: boolean };
 }
 
 export interface UiSnapshotResponse {

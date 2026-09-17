@@ -108,25 +108,15 @@ const NOTIFICATION_KEY: Record<ReturnType<typeof actionCategory>, UiKey> = {
 /** One applied change → one visible banner (the toast host dedupes by key). */
 function notify(toasts: ToastHost, t: (key: UiKey, params?: Record<string, unknown>) => string, event: MemoryUiEvent): void {
   if (event.type === "injection") {
-    // The host tags an injection only when its context changed, so `duplicate`
-    // means "static part unchanged, dynamic hits changed" — still news. Only a
-    // duplicate with no new dynamic hits is suppressed.
-    if (event.duplicate && event.hits === 0) return;
-    if (event.hits > 0) {
-      toasts.push({
-        key: `inject:${String(event.hits)}:${String(event.tokens)}`,
-        icon: "injection",
-        text: t("toastInjected", { count: event.hits, tokens: event.tokens }),
-      });
-      return;
-    }
-    if (event.tokens > 0) {
-      toasts.push({
-        key: `inject-static:${String(event.tokens)}`,
-        icon: "injection",
-        text: t("toastInjectedStatic", { tokens: event.tokens }),
-      });
-    }
+    // The host tags an injection only when its context changed; a duplicate is
+    // the same summary re-injected into a new window (after a compaction),
+    // which is not news. An injection with nothing measurable is silent too.
+    if (event.duplicate || event.tokens === 0) return;
+    toasts.push({
+      key: `inject-static:${String(event.tokens)}`,
+      icon: "injection",
+      text: t("toastInjectedStatic", { tokens: event.tokens }),
+    });
     return;
   }
   if (event.type === "write") {

@@ -252,7 +252,6 @@ describe("buildSnapshot", () => {
     // An empty store has no summary block to preview (the guide is separate).
     expect(snapshot.injection.staticSummary).toBe("");
     expect(snapshot.injection.readGuide).toContain("## memcurio memory");
-    expect(snapshot.realtime).toEqual({ mode: "polling", degraded: false });
     expect(snapshot.settings).toEqual({
       dataRoot: root,
       scopeBadge: "workspace",
@@ -330,7 +329,7 @@ describe("buildSnapshot", () => {
   });
 });
 
-describe("round-19 enrichment (receipt synthesis, radar candidates, settings/dynamic preview)", () => {
+describe("round-19 enrichment (receipt synthesis, radar candidates, settings preview)", () => {
   test("receipts carry synthesized id/ok/target/sessionId for write-path rows", async () => {
     const root = makeStore("synth");
     const idx = await Index.create(indexDb(root));
@@ -368,16 +367,14 @@ describe("round-19 enrichment (receipt synthesis, radar candidates, settings/dyn
     expect(snapshot.consolidation?.candidateRolloutIds).toEqual(["dsh|high", "dsh|low"]);
   });
 
-  test("settings and dynamic preview pass through when provided", async () => {
+  test("settings and injection preview pass through when provided", async () => {
     const root = makeStore("sett");
     const snapshot = await buildSnapshot({
       root,
       baseRoot: dir,
       injectBudgetTokens: 900,
       version: "rc.1 contract",
-      dynamicText: "Memory hits:\nrollout_summaries/x.md:1 some dynamic line",
     });
-    expect(snapshot.injection.dynamicText).toContain("dynamic line");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);
     expect(snapshot.settings.version).toBe("rc.1 contract");
   });

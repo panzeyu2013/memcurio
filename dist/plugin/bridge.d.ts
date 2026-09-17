@@ -65,8 +65,6 @@ export declare class HostBridge {
     private readonly jobsByRoot;
     /** Evidence provider (plugin wires the live adapter snapshot). */
     private evidenceSource;
-    /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
-    private readonly lastInjection;
     constructor(options: HostBridgeOptions);
     attachSink(sink: BridgeSink): void;
     detachSink(): void;
@@ -91,9 +89,9 @@ export declare class HostBridge {
     defaultRoot(): string | undefined;
     private push;
     private project;
-    /** Pre-step injection happened (plugin agent/pre-step handler). The
-     *  per-session dynamic piece feeds the snapshot injection preview. */
-    tagInjection(sessionId: string, workdir: string, staticText: string | undefined, dynamicText: string | undefined, budgetTokens: number | undefined): void;
+    /** A memory injection happened for a new context window (plugin
+     *  agent/pre-step handler). */
+    tagInjection(sessionId: string, staticText: string | undefined, budgetTokens: number | undefined): void;
     /** Non-plugin user/assistant evidence seen (mirrors adapter.messageSeen). */
     tagEvidence(sessionId: string, partId: string, kind: EvidenceKind, text: string | undefined): void;
     /** Compaction pruned surface messages (plugin compaction/prune handler). */
@@ -115,8 +113,6 @@ export declare class HostBridge {
      *  one projection pass instead of delivering duplicate deltas. */
     refresh(root: string): Promise<ProjectedDelta[]>;
     private refreshOnce;
-    /** Full-state read for one store (connect/refresh/polling). Carries the
-     *  latest dynamic-context preview captured for the session/root. */
+    /** Full-state read for one store (connect/refresh/polling). */
     snapshot(root: string, sessionId?: string): Promise<WorkbenchSnapshot>;
-    private latestDynamicText;
 }

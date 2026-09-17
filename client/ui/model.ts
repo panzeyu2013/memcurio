@@ -21,10 +21,7 @@ import type { UiDelta, UiReceiptRow, UiSnapshot } from "./wire.js";
 export interface InjectionView {
   staticText?: string;
   readGuide?: string;
-  dynamicText?: string;
   budgetTokens?: number;
-  /** `[memcurio] …` dynamic hit lines (the engine's wire format). */
-  hits: number;
   /** Rough size (chars / 4); a preview, never a billing figure. */
   tokens: number;
   at: number;
@@ -52,7 +49,7 @@ export interface MemoryUiState {
 
 /** One notification the toast host should show for an applied change. */
 export type MemoryUiEvent =
-  | { type: "injection"; hits: number; tokens: number; duplicate: boolean }
+  | { type: "injection"; tokens: number; duplicate: boolean }
   | { type: "write"; action: string };
 
 export interface MemoryUiStore {
@@ -81,49 +78,36 @@ export function estimateTokens(text: string | undefined): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Count the engine's dynamic-context hit lines (`rel:line text`). The "Memory
- *  hits:" header is not a hit, and neither is a plain sentence without a
- *  locator. */
-export function countDynamicHits(text: string | undefined): number {
-  if (text === undefined || text.length === 0) return 0;
-  let hits = 0;
-  for (const line of text.split("\n")) {
-    if (/^\S+:\d+\s/.test(line.trimStart())) hits += 1;
-  }
-  return hits;
-}
-
 export function injectionView(input: {
   staticText?: string | undefined;
   readGuide?: string | undefined;
-  dynamicText?: string | undefined;
   budgetTokens?: number | undefined;
   duplicate?: boolean | undefined;
 }): InjectionView {
   const staticText = input.staticText?.trim() ?? "";
   const readGuide = input.readGuide?.trim() ?? "";
-  const dynamicText = input.dynamicText?.trim() ?? "";
   return {
     ...(staticText ? { staticText } : {}),
     ...(readGuide ? { readGuide } : {}),
-    ...(dynamicText ? { dynamicText } : {}),
     ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
-    hits: countDynamicHits(dynamicText),
-    tokens: estimateTokens(`${staticText}\n${dynamicText}`),
+    tokens: estimateTokens(staticText),
     at: Date.now(),
     duplicate: input.duplicate === true,
   };
 }
 
-/** Audit actions that mutate durable memory (mirrors the host's write-path
- *  prefixes). Only these may raise a write event; `warn.*` and unrecognized
- *  labels are audit noise and must never surface as "memory updated". */
-const WRITE_PATH_ACTIONS = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
+/** Audit actions that mutate durable memory (mirrors the host's shared
+ *  write-path filter in src/services/write-path.ts). Only these may raise a
+ *  write event; `warn.*` and unrecognized labels are audit noise and must
+ *  never surface as "memory updated". The copy is deliberate — the built
+ *  client may require nothing but react — and tests/write-path.test.ts pins
+ *  it to the host module. */
+export const WRITE_PATH_ACTIONS = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
 
 /** extract.* bookkeeping/notices that are not durable writes (mirror of the
- *  host filter in src/plugin/bridge.ts; kept in sync manually because the
- *  client bundle cannot import server modules). */
-const NON_WRITE_EXTRACT_ACTIONS = new Set([
+ *  host filter; kept in sync manually because the client bundle cannot import
+ *  server modules). */
+export const NON_WRITE_EXTRACT_ACTIONS: ReadonlySet<string> = new Set([
   "extract.noop",
   "extract.stale",
   "extract.repaired",
@@ -193,9 +177,7 @@ function sameInjection(left: InjectionView | null, right: InjectionView | null):
   return (
     left.staticText === right.staticText &&
     left.readGuide === right.readGuide &&
-    left.dynamicText === right.dynamicText &&
     left.budgetTokens === right.budgetTokens &&
-    left.hits === right.hits &&
     left.tokens === right.tokens &&
     // `duplicate` is state too: without it a repeat fold of the same content
     // would keep the previous flag and a repeated static part would never
@@ -243,19 +225,17 @@ export function createMemoryUiStore(): MemoryUiStore {
       const events: MemoryUiEvent[] = [];
       const source = snapshot.injection;
       const staticText = source.staticSummary?.trim() ?? "";
-      const dynamicText = source.dynamicText?.trim() ?? "";
-      const hasContent = Boolean(staticText || source.readGuide?.trim() || dynamicText);
+      const hasContent = Boolean(staticText || source.readGuide?.trim());
       const previous = state.injection;
       const injection = hasContent
         ? injectionView({
             staticText: source.staticSummary,
             readGuide: source.readGuide,
-            dynamicText: source.dynamicText,
             budgetTokens: snapshot.settings?.injectBudgetTokens,
             // Compare the TRIMMED text the view stores (injectionView trims):
             // a static summary with trailing whitespace is still the same
             // static part.
-            duplicate: (previous?.staticText ?? "") === staticText && (previous?.dynamicText ?? "") === dynamicText,
+            duplicate: (previous?.staticText ?? "") === staticText,
           })
         : null;
       // Host order is newest-first; window from the head and keep it. The
@@ -292,17 +272,15 @@ export function createMemoryUiStore(): MemoryUiStore {
         if (delta.kind === "inject-updated") {
           const previous = injection;
           injection = injectionView({
-            // Static is sticky (injected once per session, re-sent after
-            // compaction); dynamic is per-step: an omitted piece means this
-            // step had no dynamic hits, not "keep the previous ones".
+            // Static is sticky: the same summary is re-sent after a
+            // compaction, and an omitted piece keeps the previous preview.
             staticText: delta.staticText ?? previous?.staticText,
             readGuide: previous?.readGuide,
-            dynamicText: delta.dynamicText,
             budgetTokens: delta.budgetTokens ?? previous?.budgetTokens,
             duplicate: delta.duplicate,
           });
           changed = true;
-          events.push({ type: "injection", hits: injection.hits, tokens: injection.tokens, duplicate: delta.duplicate });
+          events.push({ type: "injection", tokens: injection.tokens, duplicate: delta.duplicate });
         } else if (delta.kind === "receipt") {
           // Defensive write-path guard (the host filters too): audit noise
           // such as warn.promptware must not inflate unread or toast as a

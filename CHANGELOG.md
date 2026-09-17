@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline defaults move to `maxUnusedDays` 30 (the unused window) and
   `maxInputs` 256 (new inputs per consolidation batch; the selected backlog
   stays in the batch because memcurio consolidates incrementally).
+- **Browser/delta field surface trimmed to what is produced and read.** The
+  injection preview's `dynamicText` is gone end to end: per-turn dynamic
+  recall was already removed in v2.1, so that field could only ever be empty —
+  the client toast now announces the static summary only. The
+  `inject-updated` delta no longer carries the unread `workdir`, and the
+  snapshot no longer reports the constant
+  `realtime: { mode: "polling", degraded: false }` placeholder (connection
+  mode is transport state, set by `onMode`). The host write-path filter
+  (bridge + snapshot) moved into `src/services/write-path.ts` and is pinned
+  to the browser copy by `tests/write-path.test.ts`.
 
 ### Fixed
 
@@ -146,6 +156,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
   not implement it lose the LLM consolidation path (rule fallback) rather than
   receiving a text protocol.
+
+### Removed
+
+- **Pre-S0 workbench scaffold.** `client/types.ts`, `client/index.ts` and
+  `tests/client-types.test.ts` are gone: they were never part of the built
+  bundle (`client/entry.ts` is the only entry) and their client-side delta
+  vocabulary had drifted from the shipped `client/ui/wire.ts`. The memory
+  workbench (M0) will be built on the shipped store/transport;
+  `client/README.md` now documents the shipped half only.
 
 
 ## [0.0.1] - 2026-09-16

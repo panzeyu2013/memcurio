@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { memoryMarkSvg } from "../client/ui/icons.js";
-import { actionCategory, countDynamicHits, createMemoryUiStore, estimateTokens, isWritePathAction } from "../client/ui/model.js";
+import { actionCategory, createMemoryUiStore, estimateTokens, isWritePathAction } from "../client/ui/model.js";
 import { rowStateOf, summarizeArgs, resultTextOf } from "../client/ui/tool-rows.js";
 import { createUiTransportClient } from "../client/ui/transport.js";
 import { isUiDelta, isUiEventFrame, isUiSnapshotResponse, type UiSnapshot } from "../client/ui/wire.js";
@@ -29,19 +29,16 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void
 const SNAPSHOT: UiSnapshot = {
   at: "2026-09-14T00:00:00.000Z",
   store: { id: "w1", root: "/tmp/store", isolated: false },
-  injection: { staticSummary: "[memcurio] summary", dynamicText: "Memory hits:\na.md:3 hit one\nb.md:9 hit two" },
+  injection: { staticSummary: "[memcurio] summary" },
   receipts: [
     { seq: 1, time: "2026-09-14T00:00:00.000Z", action: "adapter.created", object: "-", detail: "noise", writePath: false },
     { seq: 2, time: "2026-09-14T00:00:01.000Z", action: "adhoc.note", object: "dsh|s1", detail: "note saved", writePath: true, id: "r2" },
   ],
   settings: { injectBudgetTokens: 1500 },
-  realtime: { mode: "push", degraded: false },
 };
 
 describe("injection derivations", () => {
-  test("counts engine dynamic hit lines and estimates tokens", () => {
-    expect(countDynamicHits("a:1 x\nnot a hit\nMemory hits:\nb:2 y")).toBe(2);
-    expect(countDynamicHits(undefined)).toBe(0);
+  test("estimates preview tokens", () => {
     expect(estimateTokens("abcd")).toBe(1);
     expect(estimateTokens("")).toBe(0);
   });
@@ -57,14 +54,13 @@ describe("injection derivations", () => {
 });
 
 describe("memory UI store", () => {
-  test("folds a snapshot: write-path receipts only + injection hits; realtime stays transport-owned", () => {
+  test("folds a snapshot: write-path receipts only; realtime stays transport-owned", () => {
     const store = createMemoryUiStore();
     store.applySnapshot(SNAPSHOT);
     const state = store.getSnapshot();
     expect(state.receipts).toHaveLength(1);
     expect(state.receipts[0]?.action).toBe("adhoc.note");
-    expect(state.injection?.hits).toBe(2);
-    // The host snapshot's mode field is a placeholder; only onMode sets this.
+    // Realtime is connection state: only the transport's onMode sets it.
     expect(state.realtime).toBe("off");
     store.setRealtime("push");
     expect(store.getSnapshot().realtime).toBe("push");
@@ -75,17 +71,16 @@ describe("memory UI store", () => {
     store.applySnapshot(SNAPSHOT);
     const events = store.applyDeltas(
       [
-        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "a:1 z", budgetTokens: 900, duplicate: false },
+        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", budgetTokens: 900, duplicate: false },
         { kind: "receipt", time: Date.parse("2026-09-14T00:00:05.000Z"), action: "adhoc.note", detail: "second note" },
       ],
       "s1",
     );
     expect(events).toEqual([
-      { type: "injection", hits: 1, tokens: expect.any(Number), duplicate: false },
+      { type: "injection", tokens: expect.any(Number), duplicate: false },
       { type: "write", action: "adhoc.note" },
     ]);
     const state = store.getSnapshot();
-    expect(state.injection?.hits).toBe(1);
     expect(state.receipts[0]?.detail).toBe("second note");
     expect(state.unread).toBe(1);
     store.markSeen();
@@ -147,7 +142,7 @@ describe("memory UI store session binding", () => {
     const events = store.applyDeltas(
       [
         { kind: "inject-updated", sessionId: "other", staticText: "[memcurio] wrong", duplicate: false },
-        { kind: "inject-updated", sessionId: "mine", staticText: "[memcurio] right", dynamicText: "a:1 x", duplicate: false },
+        { kind: "inject-updated", sessionId: "mine", staticText: "[memcurio] right", duplicate: false },
         { kind: "receipt", time: Date.parse("2026-09-14T00:00:09.000Z"), action: "adhoc.note", detail: "store-level" },
       ],
       "mine",
@@ -155,7 +150,6 @@ describe("memory UI store session binding", () => {
     expect(events.map((event) => event.type)).toEqual(["injection", "write"]);
     const state = store.getSnapshot();
     expect(state.injection?.staticText).toBe("[memcurio] right");
-    expect(state.injection?.hits).toBe(1);
     expect(state.receipts[0]?.detail).toBe("store-level");
   });
 
@@ -210,19 +204,18 @@ describe("snapshot receipt folding (review regressions)", () => {
     expect(store.getSnapshot().injection).toBeNull();
   });
 
-  test("clears dynamic hits when the step had no dynamic piece (static stays sticky)", () => {
+  test("keeps the static text sticky when a later delta omits it", () => {
     const store = createMemoryUiStore();
     store.applySnapshot({ ...SNAPSHOT, injection: {} });
     store.applyDeltas(
-      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", dynamicText: "a:1 x", duplicate: false }],
+      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", duplicate: false }],
       "s1",
     );
-    expect(store.getSnapshot().injection?.hits).toBe(1);
-    store.applyDeltas([{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", duplicate: true }], "s1");
+    expect(store.getSnapshot().injection?.staticText).toBe("[memcurio] summary");
+    store.applyDeltas([{ kind: "inject-updated", sessionId: "s1", duplicate: true }], "s1");
     const injection = store.getSnapshot().injection;
-    expect(injection?.hits).toBe(0);
-    expect(injection?.dynamicText).toBeUndefined();
     expect(injection?.staticText).toBe("[memcurio] summary");
+    expect(injection?.duplicate).toBe(true);
   });
 
   test("resetStoreView clears injection, receipts and unread on a session switch", () => {
@@ -288,16 +281,15 @@ describe("write-path guard + injection duplicate comparison (review regressions)
     expect(store.getSnapshot().unread).toBe(0);
   });
 
-  test("compares the trimmed static/dynamic text when flagging a duplicate injection", () => {
+  test("compares the trimmed static text when flagging a duplicate injection", () => {
     const store = createMemoryUiStore();
-    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary ", dynamicText: "a:1 hit " } });
-    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary", dynamicText: "a:1 hit" } });
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary " } });
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary" } });
     const injection = store.getSnapshot().injection;
     expect(injection?.staticText).toBe("[memcurio] summary");
-    expect(injection?.dynamicText).toBe("a:1 hit");
     expect(injection?.duplicate).toBe(true);
     // A real text change is still not a duplicate.
-    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary", dynamicText: "a:1 changed" } });
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] other" } });
     expect(store.getSnapshot().injection?.duplicate).toBe(false);
   });
 });
@@ -347,7 +339,7 @@ describe("transport ordering", () => {
     const snapshotBody = (): string =>
       JSON.stringify({
         seq: snapshotSeq,
-        snapshot: { at: "x", store: { id: "w1", root: "/tmp", isolated: false }, injection: {}, receipts: [], realtime: { mode: "push", degraded: false } },
+        snapshot: { at: "x", store: { id: "w1", root: "/tmp", isolated: false }, injection: {}, receipts: [] },
       });
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const target = String(input);
@@ -421,7 +413,6 @@ describe("transport session rebind + stream lifecycle (review regressions)", () 
             store: { id: session(), root: `/root/${session()}`, isolated: false },
             injection: {},
             receipts: [],
-            realtime: { mode: "push", degraded: false },
           },
         });
         return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
@@ -578,7 +569,7 @@ describe("transport session rebind + stream lifecycle (review regressions)", () 
       calls.push(target);
       if (target.includes("/snapshot")) {
         return new Response(
-          JSON.stringify({ seq: 1, snapshot: { at: "x", injection: {}, receipts: [], realtime: { mode: "push", degraded: false } } }),
+          JSON.stringify({ seq: 1, snapshot: { at: "x", injection: {}, receipts: [] } }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }

@@ -25,18 +25,14 @@ describe("pre-step-inject → inject-updated", () => {
     const deltas = createProjector().project({
       kind: "pre-step-inject",
       sessionId: "session-a",
-      workdir: "/workspace/proj",
       staticText: "Summary with token=sk-proj-deadbeefdeadbeefdeadbeef",
-      dynamicText: "top hit: 跨会话记忆",
       budgetTokens: 4096,
     });
     expect(deltas).toHaveLength(1);
     expect(deltas[0]).toEqual({
       kind: "inject-updated",
       sessionId: "session-a",
-      workdir: "/workspace/proj",
       staticText: "Summary with [REDACTED]",
-      dynamicText: "top hit: 跨会话记忆",
       budgetTokens: 4096,
       duplicate: false,
     });
@@ -46,19 +42,17 @@ describe("pre-step-inject → inject-updated", () => {
     const deltas = createProjector().project({
       kind: "pre-step-inject",
       sessionId: "s1",
-      workdir: "/w",
       staticText: "   ",
-      dynamicText: "",
     });
     expect(deltas).toEqual([
-      { kind: "inject-updated", sessionId: "s1", workdir: "/w", staticText: "", dynamicText: "", duplicate: false },
+      { kind: "inject-updated", sessionId: "s1", staticText: "", duplicate: false },
     ]);
   });
 
   test("flags consecutive identical static injects per session", () => {
     const projector = createProjector();
     const staticInject = (sessionId: string, staticText?: string) =>
-      projector.project({ kind: "pre-step-inject", sessionId, workdir: "/w", staticText });
+      projector.project({ kind: "pre-step-inject", sessionId, staticText });
 
     expect(singleOf(staticInject("s1", "same"), "inject-updated").duplicate).toBe(false);
     expect(singleOf(staticInject("s1", "same"), "inject-updated").duplicate).toBe(true);
@@ -73,8 +67,8 @@ describe("pre-step-inject → inject-updated", () => {
 
   test("tracks the last static text per session in the exposed map", () => {
     const projector = createProjector();
-    projector.project({ kind: "pre-step-inject", sessionId: "s1", workdir: "/w", staticText: "alpha" });
-    projector.project({ kind: "pre-step-inject", sessionId: "s2", workdir: "/w", staticText: "beta" });
+    projector.project({ kind: "pre-step-inject", sessionId: "s1", staticText: "alpha" });
+    projector.project({ kind: "pre-step-inject", sessionId: "s2", staticText: "beta" });
     expect(projector.lastStaticBySession).toEqual(new Map([["s1", "alpha"], ["s2", "beta"]]));
   });
 });
@@ -86,7 +80,6 @@ describe("redaction and truncation", () => {
       projector.project({
         kind: "pre-step-inject",
         sessionId: "s1",
-        workdir: "/w",
         staticText: `sk-${"a".repeat(40)} plus ${"x".repeat(MAX_CONTENT_CHARS + 500)}`,
       }),
       "inject-updated",
@@ -320,11 +313,11 @@ describe("review regressions (tool path trim, citation shape filter, audit ns, s
   test("duplicate-window state is bounded to MAX_TRACKED_SESSIONS sessions", () => {
     const projector = createProjector();
     for (let index = 0; index < 300; index += 1) {
-      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, workdir: "/w", staticText: "same" });
+      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, staticText: "same" });
     }
     expect(projector.lastStaticBySession.size).toBe(256);
     // The oldest session was evicted: an identical re-inject is no longer a duplicate.
-    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", staticText: "same" });
     const node = replay.find((delta) => delta.kind === "inject-updated");
     expect(node?.duplicate).toBe(false);
   });
@@ -335,12 +328,12 @@ describe("review regressions (tool path trim, citation shape filter, audit ns, s
       // sess-0 is touched again midway: it is the oldest insert but NOT the
       // least recently seen, so its duplicate state must survive the cap.
       if (index === 150) {
-        projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+        projector.project({ kind: "pre-step-inject", sessionId: "sess-0", staticText: "same" });
       }
-      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, workdir: "/w", staticText: "same" });
+      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, staticText: "same" });
     }
     expect(projector.lastStaticBySession.has("sess-0")).toBe(true);
-    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", staticText: "same" });
     const node = replay.find((delta) => delta.kind === "inject-updated");
     expect(node?.duplicate).toBe(true);
   });

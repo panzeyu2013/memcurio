@@ -55,9 +55,6 @@ export interface SnapshotSettings {
 export interface SnapshotInjection {
     staticSummary?: string;
     readGuide?: string;
-    /** Last pre-step dynamic context text for the session, when the bridge
-     *  captured one (raw preview; client renders/handles it). */
-    dynamicText?: string;
 }
 export interface SnapshotUsage {
     byKey: Record<string, {
@@ -79,10 +76,6 @@ export interface WorkbenchSnapshot {
     usage: SnapshotUsage;
     receipts: SnapshotReceipt[];
     settings: SnapshotSettings;
-    realtime: {
-        mode: "push" | "polling";
-        degraded: boolean;
-    };
 }
 export interface BuildSnapshotOptions {
     /** Store root (required). */
@@ -100,8 +93,6 @@ export interface BuildSnapshotOptions {
     injectBudgetTokens?: number;
     /** Reference version label (settings preview). */
     version?: string;
-    /** Latest dynamic context text captured for the session (preview). */
-    dynamicText?: string;
 }
 /** Assemble the full-state read for one store. Never throws: individual face
  *  failures degrade to empty fields so the workbench always has a frame. */

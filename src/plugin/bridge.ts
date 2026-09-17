@@ -29,6 +29,7 @@ import { redactSecrets } from "../core/sanitize.js";
 import type { AuditRecord, InputRecord, MemoryUpdateKind, PreStepInjectRecord, ProjectedDelta } from "../services/projector.js";
 import { createProjector } from "../services/projector.js";
 import { buildSnapshot, type WorkbenchSnapshot } from "../services/snapshot.js";
+import { isWritePathAction } from "../services/write-path.js";
 
 /** Where the bridge delivers browser-bound deltas. */
 export interface BridgeSink {
@@ -65,35 +66,6 @@ export interface BridgeSessionInfo {
   sessionId: string;
   workdir: string;
   root: string;
-}
-
-/** Write-path action prefixes: only these produce browser receipts (the
- *  projector maps every audit record to a receipt, so the bridge filters
- *  lifecycle/injection noise — adapter.*, integration.*, baseline writes —
- *  before projection). */
-const WRITE_PATH_PREFIXES = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
-
-/** extract.* rows that are bookkeeping/notices, never durable writes: an
- *  unread badge and a "memory updated" toast for a queue hop or a policy
- *  repair would be a false write notification. */
-const NON_WRITE_EXTRACT_ACTIONS = new Set([
-  "extract.noop",
-  "extract.stale",
-  "extract.repaired",
-  "extract.requeued",
-  "extract.queued",
-  "extract.queue_complete",
-  "extract.queue_retry",
-  "extract.queue_dead",
-  "extract.queue_blocked",
-  "extract.queue_unblocked",
-]);
-
-function isWritePathAction(action: string): boolean {
-  if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
-    return false;
-  }
-  return WRITE_PATH_PREFIXES.some((prefix) => action.startsWith(prefix));
 }
 
 /** Audit actions that mutate durable memory and therefore surface as
@@ -168,8 +140,6 @@ export class HostBridge {
   private readonly jobsByRoot = new Map<string, Map<string, QueueJobRow>>();
   /** Evidence provider (plugin wires the live adapter snapshot). */
   private evidenceSource: EvidenceSource | null = null;
-  /** Session -> last pre-step inject pieces (dynamic preview in snapshots). */
-  private readonly lastInjection = new Map<string, { dynamicText?: string; at: number }>();
 
   constructor(options: HostBridgeOptions) {
     this.baseRoot = options.baseRoot;
@@ -244,19 +214,13 @@ export class HostBridge {
     this.push(this.projector.project(record), root);
   }
 
-  /** Pre-step injection happened (plugin agent/pre-step handler). The
-   *  per-session dynamic piece feeds the snapshot injection preview. */
-  tagInjection(sessionId: string, workdir: string, staticText: string | undefined, dynamicText: string | undefined, budgetTokens: number | undefined): void {
-
-    if (dynamicText !== undefined || staticText !== undefined) {
-      this.lastInjection.set(sessionId, { ...(dynamicText !== undefined ? { dynamicText } : {}), at: Date.now() });
-    }
+  /** A memory injection happened for a new context window (plugin
+   *  agent/pre-step handler). */
+  tagInjection(sessionId: string, staticText: string | undefined, budgetTokens: number | undefined): void {
     const record: PreStepInjectRecord = {
       kind: "pre-step-inject",
       sessionId,
-      workdir,
       ...(staticText !== undefined ? { staticText } : {}),
-      ...(dynamicText !== undefined ? { dynamicText } : {}),
       ...(budgetTokens !== undefined ? { budgetTokens } : {}),
     };
     this.project(record, this.rootForSession(sessionId));
@@ -444,13 +408,11 @@ export class HostBridge {
     return deltas;
   }
 
-  /** Full-state read for one store (connect/refresh/polling). Carries the
-   *  latest dynamic-context preview captured for the session/root. */
+  /** Full-state read for one store (connect/refresh/polling). */
   snapshot(root: string, sessionId?: string): Promise<WorkbenchSnapshot> {
     const label = this.labelFor(root);
     const workdir = this.workdirs.get(root);
     const target = sessionId ?? this.sessionsByRoot.get(root);
-    const dynamicText = this.latestDynamicText(root, target);
     return buildSnapshot({
       root,
       baseRoot: this.baseRoot,
@@ -460,25 +422,7 @@ export class HostBridge {
       isolated: workdir === "" || workdir === undefined,
       injectBudgetTokens: this.injectBudgetTokens,
       version: this.version,
-      ...(dynamicText ? { dynamicText } : {}),
     });
-  }
-
-  private latestDynamicText(root: string, sessionId: string | undefined): string | undefined {
-    if (sessionId) {
-      return this.lastInjection.get(sessionId)?.dynamicText;
-    }
-    let best: string | undefined;
-    let bestAt = 0;
-    for (const [entryRoot, entrySession] of this.sessionsByRoot) {
-      if (entryRoot !== root) continue;
-      const entry = this.lastInjection.get(entrySession);
-      if (entry?.dynamicText && entry.at >= bestAt) {
-        best = entry.dynamicText;
-        bestAt = entry.at;
-      }
-    }
-    return best;
   }
 }
 
