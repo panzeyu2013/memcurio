@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministic rule provider takes over — the JSON-in-prose protocol and its
   parser are removed. The live instance had never succeeded at the old protocol
   ("no tool call parsed": four failures plus a rule fallback).
+- **Thinking-mode tool replay.** With the tool loop live, every follow-up
+  request failed with `400 invalid_request_error: The reasoning_content in the
+  thinking mode must be passed back to the API` (reproduced against the live
+  route): the loop dropped the provider's reasoning when echoing the tool-call
+  assistant message. `AgentToolReply`/`AgentTurnMessage` now carry reasoning
+  and the DSH channel maps it to a reasoning block that the adapter replays as
+  `reasoning_content`.
 - **Blocked extractions no longer hot-loop.** A route-less provider parked jobs
   as blocked, and `scheduleNextWake()` then replaced the 5-minute probe with a
   ~100 ms retry (live-observed: 7.5 wakeups/s for 17 minutes, 15,052 audit rows

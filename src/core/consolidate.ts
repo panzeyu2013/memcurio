@@ -824,7 +824,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         // corrective nudge; a prose reply is NEVER parsed as an imitation tool
         // call (that was the old JSON-in-text protocol this loop replaced).
         if (reply.text.trim() && !messages.some((m) => m.role === "user" && m.text === AGENT_NUDGE)) {
-          messages.push({ role: "assistant", text: reply.text, toolCalls: [] });
+          messages.push({ role: "assistant", text: reply.text, reasoning: reply.reasoning, toolCalls: [] });
           messages.push({ role: "user", text: AGENT_NUDGE });
           continue;
         }
@@ -836,7 +836,14 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
           completed: false,
         };
       }
-      messages.push({ role: "assistant", text: reply.text || undefined, toolCalls: reply.toolCalls });
+      messages.push({
+        role: "assistant",
+        text: reply.text || undefined,
+        // Thinking-mode providers reject a replayed tool-call assistant message
+        // that lost its reasoning; the reply must echo it forward verbatim.
+        reasoning: reply.reasoning,
+        toolCalls: reply.toolCalls,
+      });
       let finished = false;
       for (const call of reply.toolCalls) {
         if (call.name === "finish") {

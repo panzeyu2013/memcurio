@@ -2,13 +2,13 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口（合并自 2026-08-11 的三份 review/verification 记录）；完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-16（第 46 轮：Phase-2 改为宿主原生 tool calling、阻塞队列热循环/遥测通胀/休眠 store 排空/CJK 检索修复；597 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
+> 最近更新：2026-09-16（第 46 轮：Phase-2 改为宿主原生 tool calling、阻塞队列热循环/遥测通胀/休眠 store 排空/CJK 检索修复/thinking 模式 reasoning 回传；598 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
 
 ## 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 597 tests / 3435 assertions / 36 files（第 46 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 598 tests / 3438 assertions / 36 files（第 46 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
@@ -125,7 +125,7 @@ bun run pack:check
 
 ### 最新结果（当前）
 
-- `bun test`：**597 pass / 3435 expect / 36 files / 0 failed**
+- `bun test`：**598 pass / 3438 expect / 36 files / 0 failed**
 - `bun run typecheck` / `bun run lint`：无诊断
 - `bun run pack:check`：83 文件（单 tarball allowlist + dist/lib 反向校验 + `lib/client.js` loader/纯度校验），干净
 - `bun run eval:lexical`：Recall@5=1.00（4/4），injection blocking=1/1，secret leakage=5/5
@@ -136,14 +136,14 @@ bun run pack:check
 
 **可验收 = 三个独立闸门全过**：
 
-1. **质量闸门**（每次提交可复跑，见「验收运行卡」）：597 tests / 36 files / 3435 expects / 0 fail（coverage 90.85% funcs / 92.88% lines，第 46 轮实测）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（83 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
+1. **质量闸门**（每次提交可复跑，见「验收运行卡」）：598 tests / 36 files / 3438 expects / 0 fail（coverage 90.85% funcs / 92.88% lines，第 46 轮实测）；`tsc --noEmit -p tsconfig.typecheck.json`（含 `client/`）；`biome lint src tests scripts client`；`bun run build` + `pack:check`（83 文件，dist/lib 反向校验 + `lib/client.js` loader 形态与 require 纯度校验）——全部在 CI 语义下可复现（仓库 CI 钉 bun 1.3.14、node >= 22.13 静态契约）。
 2. **契约闸门**：仓库内所有命名/形状与代码一致（第十九轮三路关切审计 + 放行前三角度验收修复后：配置键、工具名、存储路径、投影器/客户端词汇、引擎签名、统计行均已核对；残留差异为零）。
 3. **设计闸门**：设计基线 v1.5 的"本仓库可落地部分"全部实现；不可在本沙箱落地部分（真实 DSH Web 浏览器）明确列入「外部依赖与遗留」并挂接 S0 计划。**2026-09-15 更新**：token 下发、路由守卫、SSE 槽位与 settings 槽位已在隔离真机验证通过，仅"会话内 header 入口"仍需真实会话人工确认。
 
 ### 验收运行卡（每次验收照此执行）
 
 ```bash
-PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：597 pass / 36 files / 3435 expect / 0 fail
+PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun test                  # 期望：598 pass / 36 files / 3438 expect / 0 fail
 /root/.bun/bin/bun x tsc --noEmit -p tsconfig.typecheck.json       # 期望：exit 0（含 client/）
 /root/.bun/bin/bun run lint                                        # 期望：Checked 92 files, no diagnostics
 PATH=/root/.bun/bin:$PATH /root/.bun/bin/bun run build             # 期望：dist 重建成功

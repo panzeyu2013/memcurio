@@ -244,6 +244,12 @@ export function dshWorkerMessage(message, route) {
     }
     if (message.role === "assistant") {
         const content = [];
+        // Reasoning precedes visible text. The provider adapter replays it as
+        // reasoning_content, which thinking-mode APIs require on any assistant
+        // message that carries tool calls — dropping it makes the next request a
+        // 400 invalid_request_error ("reasoning_content must be passed back").
+        if (message.reasoning)
+            content.push({ type: "reasoning", text: message.reasoning });
         if (message.text)
             content.push({ type: "text", text: message.text });
         for (const call of message.toolCalls) {
@@ -317,6 +323,7 @@ function dshChannel(ctx, route, abortSignal) {
             const combined = AbortSignal.any(signals);
             const wire = messages.map((message) => dshWorkerMessage(message, selected));
             let text = "";
+            let reasoning = "";
             let finish = "stop";
             let failure;
             const calls = new Map();
@@ -329,6 +336,14 @@ function dshChannel(ctx, route, abortSignal) {
             })) {
                 if (chunk.type === "text-delta" && typeof chunk.text === "string") {
                     text += chunk.text;
+                }
+                else if (chunk.type === "reasoning-delta") {
+                    if (typeof chunk.text === "string")
+                        reasoning += chunk.text;
+                }
+                else if (chunk.type === "block-end" && chunk.block.type === "reasoning") {
+                    // The completed block is authoritative over its streamed deltas.
+                    reasoning = chunk.block.text;
                 }
                 else if (chunk.type === "tool-call-delta") {
                     const current = calls.get(chunk.index) ?? { id: String(chunk.id), name: "", args: "" };
@@ -366,7 +381,13 @@ function dshChannel(ctx, route, abortSignal) {
             // authoritative signal for the loop.
             if (finish === "stop" && toolCalls.length > 0)
                 finish = "tool-calls";
-            return { text: text.trim(), toolCalls, finish, ...(failure === undefined ? {} : { failure }) };
+            return {
+                text: text.trim(),
+                toolCalls,
+                finish,
+                ...(reasoning.trim() ? { reasoning: reasoning.trim() } : {}),
+                ...(failure === undefined ? {} : { failure }),
+            };
         },
     };
 }

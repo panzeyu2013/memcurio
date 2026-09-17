@@ -18,3 +18,6 @@ coverage/
 *.log
 *.tgz
 .smoke/
+
+# Scratch verification dir (live store copies, cookies, probe payloads).
+.dsh-tmp/

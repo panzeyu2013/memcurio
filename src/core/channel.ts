@@ -53,6 +53,11 @@ export type AgentTurnMessage =
   | {
       readonly role: "assistant";
       readonly text?: string;
+      /** Provider thinking content for this assistant turn. Thinking-mode
+       *  providers (DeepSeek among them) REQUIRE it to be replayed verbatim
+       *  when the assistant message returns in history; dropping it turns
+       *  every follow-up request into a 400 invalid_request_error. */
+      readonly reasoning?: string;
       readonly toolCalls: readonly ToolCallRequest[];
     }
   | {
@@ -70,6 +75,9 @@ export type AgentFinish = "stop" | "tool-calls" | "max-tokens" | "error" | "abor
 export interface AgentToolReply {
   /** Assistant text produced alongside (or instead of) tool calls. */
   readonly text: string;
+  /** Provider thinking content for this turn: the host echoes it back on the
+   *  next request's assistant message (see {@link AgentTurnMessage}). */
+  readonly reasoning?: string;
   /** Tool calls in provider order; empty for a text-only reply. */
   readonly toolCalls: readonly ToolCallRequest[];
   readonly finish: AgentFinish;

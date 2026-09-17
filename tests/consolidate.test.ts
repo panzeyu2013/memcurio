@@ -1185,11 +1185,33 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(result.completed).toBe(false);
     expect(result.report).toContain("max-tokens");
   });
+
+  test("assistant reasoning is replayed on the next tool turn", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      4,
+      scriptedChannel(
+        [
+          { reasoning: "inspect first", calls: [{ name: "list_files", args: {} }] },
+          { calls: [{ name: "finish", args: { report: "replayed" } }] },
+        ],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({ workspace: { "MEMORY.md": "x" }, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    // Thinking-mode providers reject a replayed tool-call assistant message
+    // that lost its reasoning_content (live 400 invalid_request_error), so the
+    // transcript sent on turn two must carry it.
+    expect(prompts[1]?.user ?? "").toContain("REASONING: inspect first");
+  });
 });
 
 /** One scripted native tool-calling turn. */
 interface ScriptedTurn {
   text?: string;
+  /** Thinking content the provider would return; the loop must replay it. */
+  reasoning?: string;
   calls?: Array<{ name: string; args?: unknown; raw?: string }>;
 }
 
@@ -1225,7 +1247,12 @@ function scriptedChannel(
         name: call.name,
         arguments: call.raw ?? JSON.stringify(call.args ?? {}),
       }));
-      return { text: turn.text ?? "", toolCalls: calls, finish: calls.length > 0 ? "tool-calls" : "stop" };
+      return {
+        text: turn.text ?? "",
+        toolCalls: calls,
+        finish: calls.length > 0 ? "tool-calls" : "stop",
+        ...(turn.reasoning === undefined ? {} : { reasoning: turn.reasoning }),
+      };
     },
   };
 }
@@ -1234,7 +1261,8 @@ function renderScriptedTurn(message: AgentTurnMessage): string {
   if (message.role === "user") return `USER: ${message.text}`;
   if (message.role === "assistant") {
     const calls = message.toolCalls.map((call) => `${call.name}(${call.arguments})`).join(" ");
-    return `ASSISTANT: ${message.text ?? ""} ${calls}`.trim();
+    const reasoning = message.reasoning === undefined ? "" : `REASONING: ${message.reasoning} `;
+    return `ASSISTANT: ${reasoning}${message.text ?? ""} ${calls}`.trim();
   }
   return `TOOL ${message.name}${message.isError === true ? " ERROR" : ""}: ${message.content}`;
 }

@@ -344,6 +344,11 @@ export function dshWorkerMessage(message: AgentTurnMessage, route: { provider: s
   }
   if (message.role === "assistant") {
     const content: ContentBlock[] = [];
+    // Reasoning precedes visible text. The provider adapter replays it as
+    // reasoning_content, which thinking-mode APIs require on any assistant
+    // message that carries tool calls — dropping it makes the next request a
+    // 400 invalid_request_error ("reasoning_content must be passed back").
+    if (message.reasoning) content.push({ type: "reasoning", text: message.reasoning });
     if (message.text) content.push({ type: "text", text: message.text });
     for (const call of message.toolCalls) {
       content.push({ type: "tool-call", id: ToolCallId(call.id), name: call.name, arguments: call.arguments });
@@ -413,6 +418,7 @@ function dshChannel(
       const combined = AbortSignal.any(signals);
       const wire = messages.map((message) => dshWorkerMessage(message, selected));
       let text = "";
+      let reasoning = "";
       let finish: AgentFinish = "stop";
       let failure: string | undefined;
       const calls = new Map<number, { id: string; name: string; args: string }>();
@@ -425,6 +431,11 @@ function dshChannel(
       })) {
         if (chunk.type === "text-delta" && typeof chunk.text === "string") {
           text += chunk.text;
+        } else if (chunk.type === "reasoning-delta") {
+          if (typeof chunk.text === "string") reasoning += chunk.text;
+        } else if (chunk.type === "block-end" && chunk.block.type === "reasoning") {
+          // The completed block is authoritative over its streamed deltas.
+          reasoning = chunk.block.text;
         } else if (chunk.type === "tool-call-delta") {
           const current = calls.get(chunk.index) ?? { id: String(chunk.id), name: "", args: "" };
           if (typeof chunk.name === "string" && chunk.name) current.name = chunk.name;
@@ -453,7 +464,13 @@ function dshChannel(
       // Some adapters end a tool turn as "stop"; the presence of calls is the
       // authoritative signal for the loop.
       if (finish === "stop" && toolCalls.length > 0) finish = "tool-calls";
-      return { text: text.trim(), toolCalls, finish, ...(failure === undefined ? {} : { failure }) };
+      return {
+        text: text.trim(),
+        toolCalls,
+        finish,
+        ...(reasoning.trim() ? { reasoning: reasoning.trim() } : {}),
+        ...(failure === undefined ? {} : { failure }),
+      };
     },
   };
 }

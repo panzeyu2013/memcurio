@@ -101,6 +101,7 @@ describe("dshWorkerMessage", () => {
     const assistant = plugin.dshWorkerMessage(
       {
         role: "assistant",
+        reasoning: "need the handbook",
         text: "checking",
         toolCalls: [{ id: "call-1", name: "read_file", arguments: '{"rel":"MEMORY.md"}' }],
       },
@@ -108,8 +109,12 @@ describe("dshWorkerMessage", () => {
     );
     expect(assistant.role).toBe("assistant");
     expect(assistant.source).toEqual({ kind: "model", provider: route.provider, model: route.model });
-    expect(assistant.content[0]).toEqual({ type: "text", text: "checking" });
-    expect(assistant.content[1]).toMatchObject({ type: "tool-call", name: "read_file", arguments: '{"rel":"MEMORY.md"}' });
+    // Reasoning rides the assistant message as a DSH reasoning block: the
+    // provider adapter turns it back into reasoning_content, which thinking
+    // mode requires on replayed tool-call messages.
+    expect(assistant.content[0]).toEqual({ type: "reasoning", text: "need the handbook" });
+    expect(assistant.content[1]).toEqual({ type: "text", text: "checking" });
+    expect(assistant.content[2]).toMatchObject({ type: "tool-call", name: "read_file", arguments: '{"rel":"MEMORY.md"}' });
 
     const tool = plugin.dshWorkerMessage(
       { role: "tool", toolCallId: "call-1", name: "read_file", content: "body", isError: false },
