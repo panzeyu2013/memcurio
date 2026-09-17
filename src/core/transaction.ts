@@ -88,6 +88,50 @@ export interface LockOptions {
   timeoutMs?: number;
 }
 
+/** Create the lock file with its full content already visible: write a private
+ *  temp file (sweeper-compatible `.tmp-<ts>-<hex>.<name>`), fsync it, then
+ *  hard-link it into place — link(2) is atomic and refuses to overwrite. A
+ *  contender therefore never observes a zero-length mid-creation lock, which
+ *  matters because an empty lock is reclaimed after STALE_EMPTY_LOCK_MS: a
+ *  creator suspended between create and write for longer than that could
+ *  otherwise be dispossessed and run concurrently. Filesystems without hard
+ *  links fall back to the direct exclusive create. Exported for tests. */
+export function tryCreateLock(lockPath: string, holder: string): boolean {
+  const tmp = join(dirname(lockPath), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}.${basename(lockPath)}`);
+  try {
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeFileSync(fd, holder);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      linkSync(tmp, lockPath);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        return false;
+      }
+      try {
+        writeFileSync(lockPath, holder, { flag: "wx", mode: 0o600 });
+        return true;
+      } catch (fallbackErr) {
+        if ((fallbackErr as NodeJS.ErrnoException).code === "EEXIST") {
+          return false;
+        }
+        throw fallbackErr;
+      }
+    }
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      void 0;
+    }
+  }
+}
+
 export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
   // 0700: the locks directory is created on demand and would otherwise inherit
   // the umask; the lock files themselves are 0600.
@@ -96,12 +140,10 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions
   const start = Date.now();
   const holder = `${process.pid}|${Date.now()}`;
   for (;;) {
-    try {
-      writeFileSync(lockPath, holder, { flag: "wx", mode: 0o600 });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw err;
-      }
+    if (!tryCreateLock(lockPath, holder)) {
+      // Contention only: EEXIST from the atomic create. Keep callback errors
+      // outside this path so an EEXIST raised by the protected operation can
+      // never be mistaken for lock contention and run the callback twice.
       if (Date.now() - start > timeoutMs) {
         throw new Error(`file lock timeout: ${lockPath}`);
       }
@@ -128,9 +170,6 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOptions
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       continue;
     }
-    // Keep callback errors outside the acquisition catch. In particular, an
-    // EEXIST raised by the protected operation must not be mistaken for lock
-    // contention and cause the callback to run a second time.
     try {
       return fn();
     } finally {

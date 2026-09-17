@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, STALE_EMPTY_LOCK_MS, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
+import { Transaction, STALE_EMPTY_LOCK_MS, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, tryCreateLock, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
 import { processStartedAt } from "../src/core/transaction.js";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -204,6 +204,21 @@ describe("stale lock reclaim", () => {
     expect(existsSync(lock)).toBe(false);
     // The rename-then-verify reclaim leaves no temp file behind.
     expect(readdirSync(dir).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
+
+  test("lock creation publishes the full holder token atomically", () => {
+    // The creator writes a temp file and hard-links it into place, so no
+    // contender can ever observe an empty lock (the empty-lock grace reclaims
+    // one after 5s, which would otherwise dispossess a suspended creator).
+    const lock = join(dir, "atomic.lock");
+    expect(tryCreateLock(lock, "111|222")).toBe(true);
+    expect(readFileSync(lock, "utf-8")).toBe("111|222");
+    // Second creator sees contention and never touches the holder's content.
+    expect(tryCreateLock(lock, "333|444")).toBe(false);
+    expect(readFileSync(lock, "utf-8")).toBe("111|222");
+    // No temp leftovers from either attempt.
+    expect(readdirSync(dir).filter((name) => name.startsWith(".tmp-"))).toEqual([]);
+    rmSync(lock);
   });
 
   test("does not delete a fresh lock that replaced the sampled stale lock (A/B interleaving)", () => {

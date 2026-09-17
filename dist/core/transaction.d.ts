@@ -12,6 +12,15 @@ export interface LockOptions {
     /** Override LOCK_TIMEOUT_MS (used by tests to exercise the timeout path). */
     timeoutMs?: number;
 }
+/** Create the lock file with its full content already visible: write a private
+ *  temp file (sweeper-compatible `.tmp-<ts>-<hex>.<name>`), fsync it, then
+ *  hard-link it into place — link(2) is atomic and refuses to overwrite. A
+ *  contender therefore never observes a zero-length mid-creation lock, which
+ *  matters because an empty lock is reclaimed after STALE_EMPTY_LOCK_MS: a
+ *  creator suspended between create and write for longer than that could
+ *  otherwise be dispossessed and run concurrently. Filesystems without hard
+ *  links fall back to the direct exclusive create. Exported for tests. */
+export declare function tryCreateLock(lockPath: string, holder: string): boolean;
 export declare function withFileLock<T>(lockPath: string, fn: () => T, opts?: LockOptions): T;
 export interface LockSnapshot {
     /** Lock content exactly as read (untrimmed); the reclaim compares it
