@@ -91,9 +91,9 @@ describe("renderReadPathInstructions", () => {
     expect(text).toContain("memory_search");
     expect(text).toContain("memory_cite");
     expect(text).toContain("memory_remember");
-    // Tool bodies are described by their own schemas, not repeated here.
+    expect(text).toContain("memory_read");
+    // Tools the guide never names stay out: their schemas describe themselves.
     expect(text).not.toContain("memory_list");
-    expect(text).not.toContain("memory_read");
     expect(text).not.toContain("memory_status");
     expect(text).not.toContain("memory_context");
     // No filesystem paths anywhere: the store lives outside the workspace and

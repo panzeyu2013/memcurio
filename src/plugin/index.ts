@@ -659,7 +659,7 @@ function registerMemoryTools(
   ctx.tools.register(defineTool({
     name: "memory_remember",
     description:
-      "Persist a durable memory note for future sessions. Call it when the user asks you to remember, forget or update something, or when you confirm a durable preference, decision, correction or reusable lesson that a future session should inherit. Notes are append-only input for consolidation; never edit memory files directly.",
+      "Create one append-only ad-hoc memory note after the user explicitly asks you to remember, forget or update something. The note is applied by consolidation; never edit memory files directly.",
     parameters: {
       content: { type: "string", required: true },
       kind: { type: "string", enum: ["remember", "forget", "update"] as const, default: "remember" },

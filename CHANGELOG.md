@@ -56,19 +56,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode is transport state, set by `onMode`). The host write-path filter
   (bridge + snapshot) moved into `src/services/write-path.ts` and is pinned
   to the browser copy by `tests/write-path.test.ts`.
-- **Memory writing is no longer restricted to explicit user requests.** The
-  read-path guide's Writing line and the `memory_remember` tool description
-  now authorize a note whenever the user asks to remember/forget/update
-  something **or** the model confirms a durable preference, decision,
-  correction or reusable lesson a future session should inherit. The tool
-  gains an optional `kind` (remember|forget|update, default remember);
-  forget/update notes are applied by the LLM consolidation agent, while the
-  deterministic rule provider keeps merging remember notes only. Codex
-  0.153.4 still gates its `ad_hoc_note` on an explicit user request in all
-  three prompt surfaces (read-path fragment, tool description, phase
-  prompts); the README's known-deviations list records the split. Safety is
-  unchanged: redaction + injection scan at the entry point, append-only
-  notes, audit, and consolidation as the only writer of `MEMORY.md`.
+- **Prompts follow Codex's composition; note writing stays explicit-ask.**
+  The read-path guide is composed like Codex's `memories/read_path.md`
+  (decision boundary, memory layout, quick pass + budget, verification and
+  disclosure, citation requirements, updating memories), and the Phase 1/2
+  prompts gained Codex's sectioning (safety/hygiene/no-filler rules, no-op
+  gate, high-signal buckets, rollout reading order, outcome triage). Two
+  adaptations stay deliberate: the layout is path-free (memory is reached
+  through the tools) and citations are the native `memory_cite` call rather
+  than a text block. `memory_remember` keeps the explicit-user-request gate
+  — matching Codex's `ad_hoc_note` — while gaining an optional `kind`
+  (remember|forget|update, default remember); forget/update notes are applied
+  by the LLM consolidation agent, and the deterministic rule provider keeps
+  merging remember notes only. Safety is unchanged: redaction + injection
+  scan at the entry point, append-only notes, audit, and consolidation as the
+  only writer of `MEMORY.md`.
 - The browser store's delta fold compares trimmed static text when the delta
   carries it, so a whitespace-only difference no longer reads as a fresh
   injection (matching the snapshot fold).

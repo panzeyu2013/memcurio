@@ -16,7 +16,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
                         Phase 2 整合（模型直接改写 MEMORY.md）
                         读路径（memory_summary 注入 + 自检索指引）
                         选择窗口遗忘（窗口外 stage1 剪除 + diff 外科删除）
-                        ad-hoc notes（remember/forget/update）
+                        ad-hoc notes（用户显式 remember/forget/update）
                         安全层（脱敏 / 注入扫描 / 原子写 / 权限）
                         审计/事务基础设施（audit + 事务日志 + 单文件原子写 + workspace lease/revision + generation manifest recovery）
 ```
@@ -24,7 +24,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 - **写记忆的决策交给模型**：Phase 1 抽取（session 结束 → 模型产出 rollout_summary/raw_memory），Phase 2 整合（模型基于 diff 直接改写 MEMORY.md 文档）；
 - **遗忘 = 选择窗口 + diff 驱动的外科删除**：不再有 active/stale/archived 状态机；窗口外 stage1 标记 deleted，其 rollout_summary 与 MEMORY.md 引用块被剪除；
 - **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
-- **记忆写入走 ad-hoc note**：用户明确要求，或模型确认值得跨会话保留（偏好/决策/纠正/可复用经验）时调用 memory_remember；kind=remember|forget|update，forget/update 由 LLM 整合 agent 语义执行，下次整合时生效。
+- **用户显式操作走 ad-hoc note**：仅在用户明确要求 remember/forget/update 时调用 memory_remember（与 codex ad_hoc_note 一致）；kind 默认 remember，forget/update 由 LLM 整合 agent 语义执行，下次整合时生效。
 
 ## 存储布局
 
@@ -38,7 +38,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
-│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # memory_remember 的 note（append-only；用户要求或模型确认的持久价值；forget/update 仅 LLM agent 应用）
+│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # memory_remember 的 note（append-only；仅用户显式 remember/forget/update；forget/update 由 LLM agent 应用）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11；位于 store 根）
 ├── config.json
@@ -124,7 +124,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 ### 读路径
 
 ```
-SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入授权：用户要求或模型确认的持久价值，只写 note）——指令进提示词，且全文无文件系统路径
+SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入门槛：仅用户显式要求，只写 note）——构成对齐 codex read_path.md 的分节，并做两处刻意适配（无路径、原生 cite）；指令进提示词，且全文无文件系统路径
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南）
 模型自检索：按需调用 memory_* 工具（各自 schema 自带说明，不经文件系统）
 注入（v2.1，对齐 codex）：上下文窗口打开时注入一次整份 memory_summary.md（2500 token 预算；超预算按 codex 式中间截断保头尾），会话首轮与 compaction/end 之后各一次，稳态轮次不注入；检索由模型经 memory_search 主动发起（引擎仍保留 buildDynamicContext 与模拟器 API）

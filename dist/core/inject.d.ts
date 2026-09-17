@@ -24,12 +24,17 @@ export declare function renderHitBlock(hits: readonly {
  *  instructions never ride an injected message, so a brand-new store injects
  *  nothing at all and a store with a summary injects only the summary. */
 export declare function renderMemoryContext(root: string, budgetTokens?: number): string;
-/** The read-path INSTRUCTIONS — when and how to call the memory tools, not
- *  what each tool does (their schemas describe their own bodies). Registered
- *  as a SYSTEM PROMPT section (v1.9), next to the tool schemas, so the injected
- *  user message carries only memory content. Deliberately PATH-FREE: memory is
- *  reached through the memory tools, never through the filesystem (the store
- *  lives outside the session workspace by design). */
+/** The read-path INSTRUCTIONS — when and how to use memory, never what each
+ *  tool body does (their schemas describe themselves). Registered as a SYSTEM
+ *  PROMPT section (v1.9), next to the tool schemas, so the injected user
+ *  message carries only memory content.
+ *
+ *  Composition follows Codex's `memories/read_path.md` section order: decision
+ *  boundary, memory layout, quick pass + budget, verification/disclosure,
+ *  citations, updating memories. Two adaptations are deliberate: the layout is
+ *  PATH-FREE (memory is reached through the memory tools, never the
+ *  filesystem) and citations are the native `memory_cite` call instead of a
+ *  text block. */
 export declare function renderReadPathInstructions(): string;
 /** What the plugin injects STATICALLY into the conversation: the summary block
  *  only (v1.9 — the how-to guide is a system-prompt section now). Empty when
