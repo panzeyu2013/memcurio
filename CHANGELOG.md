@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Citations are a native tool call (v2.0).** The read-path guide now tells the
+  model to call `memory_cite` once before the final answer with the memory
+  entries and rollout ids the reply used, instead of appending a
+  `<memcurio-citation>` text block. The tool validates and bounds its arguments
+  (≤100 refs each), registers usage through the same selection window, audits as
+  `integration.cite`, and feeds the UI citation node; the client registers the
+  seventh keyed `tool.call.toolview` row. Legacy text blocks from sessions
+  started under the old guide are still parsed at `turn/end`.
+
 ### Fixed
 
 - **Phase 2 is a real tool-calling agent loop.** The consolidation provider no
@@ -55,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still carry it keep loading; the key is ignored.
 - Dynamic memory hits are derived from the injection budget (≈1 hit per 176
   tokens, clamped to 4–8) instead of a second hard-coded limit.
+- Citation usage counts one unique rollout key once per call: naming the same
+  memory both as a `rollout_summaries/<file>.md` entry and as its bare
+  `host|sessionId` key no longer bumps `usage_count` twice.
 
 ### Changed
 

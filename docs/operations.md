@@ -24,7 +24,7 @@ bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
-bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册六个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
+bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
 
 ### 配置
 
@@ -73,7 +73,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 |---|---|---|
 | `scope` | `workspace`（按工作区隔离）/ `global`（共享 store） | 新会话生效 |
 | `injectContext` | pre-step 记忆注入开关 | 即时 |
-| `registerTools` | 是否注册六个原生记忆工具 | 重启生效 |
+| `registerTools` | 是否注册七个原生记忆工具 | 重启生效 |
 | `injectBudgetTokens` | 注入预算（>=128） | 即时 |
 | `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由） | 即时 |
 
@@ -113,8 +113,8 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 - `session/created`, `session/event`, `session/flush`, and `session/disposed` map to the durable Memcurio session lifecycle.
 - `agent/pre-step` injects a static memory summary once per session and query-relevant hits on each accepted model step. Compaction re-arms static injection. Because DSH's agent loop persists every pre-step decision message into the durable session log, unchanged content is not re-injected (the model already has it) and plugin-source messages are excluded from extraction evidence — injected memory can never feed back into itself.
 - Successful compactions (and model-free `compaction/prune` events) prune the evidence parts their `shadowedSeqs` cover, keeping the bounded evidence window focused on the live surface.
-- `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); `<memcurio-citation>` blocks in assistant messages are harvested at `turn/end` into the usage window, so rollouts the model cites without searching still count.
-- Six native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`.
+- `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); the native `memory_cite` call registers the memory entries and rollout ids a reply relied on (audited as `integration.cite`), so rollouts the model cites without searching still count. Legacy `<memcurio-citation>` text blocks from sessions started under the old guide are still harvested at `turn/end`.
+- Seven native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`.
 - Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. Phase 2 is a **native tool-calling** agent loop: `list_files` / `read_file` / `write_file` / `finish` schemas are forwarded through the provider's tools field, tool results travel back as correlated tool-result messages, and the provider's reasoning content is replayed on each assistant turn (thinking-mode APIs reject a tool-call message that lost its reasoning_content). A host channel without a native tool-calling turn reports the run as incomplete and the deterministic rule provider takes over — there is no JSON-in-prose fallback. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
 - Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget that starts at retirement entry so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.
 - Per-store recovery drains run for the first live session of a store and, independently, a bounded periodic sweep drains dormant stores once a worker route is known — so crash recovery covers every workspace, not only the one that happens to open a session. Sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.

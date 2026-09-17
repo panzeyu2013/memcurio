@@ -84,7 +84,7 @@ src/
 │   ├── projector.ts     8 类 InputRecord → 9 类脱敏 delta（inject/usage/citation/evidence/prune/queue 单 job/memory-list/receipt/snapshot-ready）
 │   └── snapshot.ts      buildSnapshot 全量装配（store 列表/注入预览/条目+usage/队列/雷达/近 60 收据/设置/realtime）
 ├── plugin/
-│   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、6 个原生工具、ctx.llm 通道封装、settings live 读取）
+│   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、7 个原生工具（含 memory_cite）、ctx.llm 通道封装、settings live 读取）
 │   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；恒开（v1.7 起无开关）+ live configure）
 │   ├── settings.ts     `memcurio` settings 命名空间（schema、composition base、live 句柄、跨字段校验）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
@@ -124,12 +124,12 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 ### 读路径
 
 ```
-SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 输出要求 / 写入纪律）——指令进提示词，且全文无文件系统路径
+SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入纪律）——指令进提示词，且全文无文件系统路径
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南）
 模型自检索：按需 memory_search / memory_list / memory_read / memory_status（指南描述的自助路径，不经文件系统）
 动态注入（每次用户输入）：检索 query 由"最近一条用户文本"经去噪/停用词处理后生成 → searchMemory 两遍打分（IDF + 短语奖励 + 去重 + 单文件 cap）取 top-K
 注入线格式（v1.9.1，引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块 = 一行 "Memory hits:" + 每行 "rel:line content"（空白折叠、220 字符截断），无逐行前缀
-使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ 解析 <memcurio-citation> 引用块（<citation_entries>/<rollout_ids>）+ search/read 命中
+使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用（兼容旧会话的 <memcurio-citation> 文本块）+ search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）
 ```
 

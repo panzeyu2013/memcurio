@@ -15,7 +15,7 @@
 - **基于 diff 的遗忘** —— 没有状态机：`prune` 选出使用窗口之外（`maxUnusedDays`）的 stage-1 输出，经基线 diff 外科手术式删除其摘要与仅被它引用的 `MEMORY.md` 区块；混合区块保留。
 - **临时 notes** —— 显式 `remember` 写入 `extensions/ad_hoc/notes/` 只追加 note，下次整合时应用。
 - **读取路径渐进式披露（v1.9）** —— read-path 使用指南（何时该用记忆、怎么用 `memory_search`、citation 与写入纪律）作为 **system prompt 段落**注册，与工具 schema 同区、**不含任何文件系统路径**；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时以摘要区块注入（脱敏、注入扫描、预算封顶），空库不注入任何东西。每个 pre-step 由"最近一条用户文本"生成检索 query，经 IDF 打分 + 短语奖励 + 去重 + 单文件 cap 后动态注入 top 命中。
-- **用量遥测闭环** —— 原生 `read`/`grep`/`glob`/`bash`/`pwsh` 命中记忆文件与 codex 风格 `<memcurio-citation>` 块计入每条 rollout 的 `usage_count`/`last_usage`，驱动选择窗口：真被复用的记忆留下，闲置的过期淘汰。
+- **用量遥测闭环** —— 原生 `read`/`grep`/`glob`/`bash`/`pwsh` 命中记忆文件与原生 `memory_cite` 调用计入每条 rollout 的 `usage_count`/`last_usage`，驱动选择窗口：真被复用的记忆留下，闲置的过期淘汰。
 - **Markdown 作为事实来源** —— `memory/*.md` 可读可直接编辑；SQLite（schema v11）保存 stage-1 输出、稳定 artifact ID、notes、会话、审计、持久抽取任务与整合租约；`.baseline/` 与 generation manifest 驱动可恢复的整合 diff。
 - **默认安全** —— 提示词注入净化、密钥脱敏、私有权限（数据目录 `0700`、数据文件 `0600`）、模型写入由引擎沙箱校验，所有写入留审计。
 
@@ -26,7 +26,7 @@
 - **注入（pre-step）** —— 静态记忆摘要每会话注入一次、查询相关命中在每次被接受的模型步注入。DSH 的 loop 会把每条 pre-step 决策消息持久进 durable session log，因此内容未变时不重复注入；plugin 来源消息被排除出抽取证据——注入的记忆永远不会反馈进自身。
 - **抽取（Phase 1）** —— 消息、工具调用与 compaction 摘要成为有界证据快照；检查点进入 durable SQLite 队列，由分离的 worker 经会话模型路由排空（绝不阻塞模型步或 flush 边界）。
 - **整合（Phase 2）** —— `turn/end` 与退役时在墙钟预算内自动运行；worker 调用携带会话 abort 与单次超时。
-- **六个原生工具** —— `memory_search` / `memory_list` / `memory_read` / `memory_remember` / `memory_status` / `memory_context`，与注入共用同一读写门禁。
+- **七个原生工具** —— `memory_search` / `memory_list` / `memory_read` / `memory_remember` / `memory_status` / `memory_context` / `memory_cite`，与注入共用同一读写门禁。
 
 细节见 [operations.md](operations.md)。
 

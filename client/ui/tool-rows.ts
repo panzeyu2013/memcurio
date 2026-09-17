@@ -1,5 +1,5 @@
 /**
- * Custom transcript rows for the six native memory tools (G6/G10).
+ * Custom transcript rows for the seven native memory tools (G6/G10).
  *
  * Every row is registered into the keyed `tool.call.toolview` slot by exact
  * wire name, so a memory call renders as a first-class memory row instead of
@@ -19,7 +19,7 @@ import type { MemoryToolBlockLike } from "./contracts.js";
 import { ChevronDownIcon, MemoryMarkIcon } from "./icons.js";
 import type { UiKey } from "./locales.js";
 
-/** The six native tools, in registration order. */
+/** The seven native tools, in registration order. */
 export const MEMORY_TOOL_NAMES = [
   "memory_search",
   "memory_list",
@@ -27,6 +27,7 @@ export const MEMORY_TOOL_NAMES = [
   "memory_remember",
   "memory_status",
   "memory_context",
+  "memory_cite",
 ] as const;
 
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];

@@ -5,7 +5,7 @@ import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.j
 import { ensureLayout, indexDb } from "./core/paths.js";
 import { listMemory, readMemory } from "./core/read.js";
 import { redactSecrets } from "./core/sanitize.js";
-import { searchMemory } from "./core/search.js";
+import { registerMemoryUsage, searchMemory } from "./core/search.js";
 export { MemcurioAdapter } from "./engine.js";
 async function withIndex(root, run) {
     ensureLayout(root);
@@ -76,4 +76,15 @@ export async function integrationContext(root, budgetTokens) {
         summary: renderMemoryContext(root, budgetTokens),
         instructions: renderReadPathInstructions(),
     }));
+}
+/** Native citation telemetry: register the structured refs a `memory_cite`
+ *  tool call carries (memory-file locators and/or bare rollout ids) and audit
+ *  the outcome. Returns the rollout keys actually counted — the same contract
+ *  the legacy text-block harvest has. */
+export async function integrationCite(root, refs) {
+    return withIndex(root, async (index) => {
+        const counted = await registerMemoryUsage(root, refs);
+        index.audit("integration.cite", "-", `${refs.length} ref(s) -> ${counted.length} counted`);
+        return { counted };
+    });
 }

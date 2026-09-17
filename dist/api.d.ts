@@ -51,3 +51,10 @@ export declare function integrationContext(root: string, budgetTokens?: number):
     summary: string;
     instructions: string;
 }>;
+/** Native citation telemetry: register the structured refs a `memory_cite`
+ *  tool call carries (memory-file locators and/or bare rollout ids) and audit
+ *  the outcome. Returns the rollout keys actually counted — the same contract
+ *  the legacy text-block harvest has. */
+export declare function integrationCite(root: string, refs: readonly string[]): Promise<{
+    counted: string[];
+}>;

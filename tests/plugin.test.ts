@@ -453,9 +453,104 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     expect(section).toBeDefined();
     expect(section?.text).toContain("## memcurio memory");
     expect(section?.text).toContain("memory_search");
+    // v2.0: citations are a native tool call, not a text block.
+    expect(section?.text).toContain("memory_cite");
+    expect(section?.text).not.toContain("<memcurio-citation>");
     expect(section?.text).not.toContain(memoryWorkspace(root));
     expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeGreaterThan(2_900);
     expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeLessThan(5_000);
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("memory_cite registers structured citation usage through the native tool", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("memory-cite"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const rolloutKey = "dsh|memory-cite";
+    const idx = await Index.create(indexDb(root));
+    let filename = "";
+    try {
+      idx.stageUpsert({
+        rolloutKey,
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "memory-cite",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+      filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
+    } finally {
+      idx.close();
+    }
+    expect(filename).not.toBe("");
+
+    const result = await ctx.tools.execute({
+      callId: ToolCallId("cite-1"),
+      name: "memory_cite",
+      arguments: {
+        entries: [`rollout_summaries/${filename}:2-5`, "MEMORY.md:10-14"],
+        rolloutIds: [rolloutKey],
+      },
+      agent: { session } as never,
+      signal: new AbortController().signal,
+    });
+    expect(result.isError).toBe(false);
+
+    const check = await Index.create(indexDb(root));
+    try {
+      // The artifact filename and the bare rollout key resolve to the same
+      // stage row, so one unique key counts once; the audit row proves the
+      // native path (not the legacy text harvest) did the counting.
+      expect(check.stageGet(rolloutKey)?.usageCount).toBe(1);
+      expect(check.rawAll("SELECT action FROM audit WHERE action='integration.cite'")).toHaveLength(1);
+    } finally {
+      check.close();
+    }
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("memory_cite rejects an empty citation", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("memory-cite-empty"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const empty = await ctx.tools.execute({
+      callId: ToolCallId("cite-empty"),
+      name: "memory_cite",
+      arguments: { entries: [], rolloutIds: [] },
+      agent: { session } as never,
+      signal: new AbortController().signal,
+    });
+    expect(empty.isError).toBe(true);
+    if (empty.isError) {
+      expect(empty.error.message).toContain("at least one entry");
+    }
+
+    detach();
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });

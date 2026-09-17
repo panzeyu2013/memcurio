@@ -64,26 +64,26 @@ export async function registerMemoryUsage(root, rels) {
         return [];
     }
     const counted = [];
+    // One unique rollout key counts once per call even when the SAME memory is
+    // named in both forms (a `rollout_summaries/<file>.md` entry and its bare
+    // `host|sessionId` key): otherwise one citation would bump the row twice and
+    // inflate the selection window.
     const seen = new Set();
     const idx = await Index.create(indexDb(root));
     try {
         for (const filename of usedKeys) {
             const row = idx.stageByArtifactFilename(filename.replace(/:\d+(?:-\d+)?$/, ""));
-            if (row) {
+            if (row && !seen.has(row.rolloutKey)) {
+                seen.add(row.rolloutKey);
                 idx.stageSetUsage(row.rolloutKey);
-                if (!seen.has(row.rolloutKey)) {
-                    seen.add(row.rolloutKey);
-                    counted.push(row.rolloutKey);
-                }
+                counted.push(row.rolloutKey);
             }
         }
         for (const key of pathKeys) {
-            if (idx.stageGet(key)) {
+            if (!seen.has(key) && idx.stageGet(key)) {
+                seen.add(key);
                 idx.stageSetUsage(key);
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    counted.push(key);
-                }
+                counted.push(key);
             }
         }
     }

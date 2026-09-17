@@ -14,8 +14,8 @@ The engine is DSH-native: model access runs exclusively over the harness's own `
 - **Two-phase pipeline** — session events flow through extraction into a stage-1 store, then a selection window picks inputs for consolidation into the Markdown source of truth; workspace files and SQLite changes use a generation manifest with deterministic recovery.
 - **Diff-driven forgetting** — no active/stale/archived state machine: `prune` selects stage-1 outputs outside the usage window and surgically deletes their summaries and referenced blocks via baseline diffing.
 - **Ad-hoc notes** — explicit `remember` notes become append-only notes under `extensions/ad_hoc/notes/`, applied at the next consolidation.
-- **Progressive disclosure on the read path** — a new session is always injected with the read-path guide (how to grep `MEMORY.md`, when to use memory, citation and write rules); the `memory_summary.md` block joins it only when the store actually has a summary (redacted, injection-scanned, budget-capped). Dynamic search hits are injected per pre-step.
-- **Usage telemetry closes the loop** — native `read`/`grep`/`glob`/`bash`/`pwsh` hits on memory files and codex-style `<memcurio-citation>` blocks feed per-rollout `usage_count`/`last_usage`, which drives the selection window: memories the agent actually reuses stay, unused ones age out.
+- **Progressive disclosure on the read path** — a new session is always injected with the read-path guide (how to grep `MEMORY.md`, when to use memory, citation and write rules; citations are a native `memory_cite` tool call); the `memory_summary.md` block joins it only when the store actually has a summary (redacted, injection-scanned, budget-capped). Dynamic search hits are injected per pre-step.
+- **Usage telemetry closes the loop** — native `read`/`grep`/`glob`/`bash`/`pwsh` hits on memory files and the native `memory_cite` call feed per-rollout `usage_count`/`last_usage`, which drives the selection window: memories the agent actually reuses stay, unused ones age out.
 - **Markdown as source of truth** — `memory/*.md` is human-readable and directly editable; SQLite (schema v11) holds stage-1 outputs, stable artifact IDs, ad-hoc notes, sessions, audit, provider-scoped durable extraction jobs and the consolidation lease; the `.baseline/` snapshot and generation manifest drive recoverable consolidation diffs.
 - **Safe by default** — promptware-injection sanitization, secret redaction, private file/dir permissions (data dirs `0700`, data files `0600`), model writes sandboxed by the engine, and a full audit trail on every write.
 
@@ -26,7 +26,7 @@ The plugin registers `session/created`, `session/event`, `session/flush` and `se
 - **Injection (pre-step)** — the static memory summary is injected once per session and query-relevant hits on each accepted model step. DSH's loop persists every pre-step decision message into the durable session log, so unchanged content is not re-injected; plugin-source messages are excluded from extraction evidence, so injected memory never feeds back into itself.
 - **Extraction (Phase 1)** — messages, tool calls and compaction summaries become a bounded evidence snapshot; the checkpoint is queued into a durable SQLite job and drained by a detached worker over the session's model route (never blocking a model step or a flush boundary).
 - **Consolidation (Phase 2)** — runs automatically after `turn/end` and at session retirement under a wall-clock budget; worker calls carry the session abort plus a per-call timeout.
-- **Six native tools** — `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, and `memory_context`, sharing the same read/write gates as injection.
+- **Seven native tools** — `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`, sharing the same read/write gates as injection.
 
 Full detail: [docs/operations.md](docs/operations.md).
 

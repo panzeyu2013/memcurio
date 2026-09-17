@@ -4,7 +4,7 @@ import { ToolCallId, createAssistantMessage, createToolResultMessage, createUser
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import Schema from "@deepseek-ai/schemastery";
 import { ProviderNotConfiguredError } from "../core/extract.js";
-import { MemcurioAdapter, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
+import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
 import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
@@ -454,6 +454,25 @@ function integerArg(value, key, fallback, maximum = Number.MAX_SAFE_INTEGER) {
     }
     return value;
 }
+/** Bounded array-of-non-empty-strings argument (citation locators / rollout ids). */
+function stringArrayArg(value, key, maxItems, maxLength) {
+    if (value === undefined)
+        return [];
+    if (!Array.isArray(value))
+        throw new TypeError(`${key} must be an array of strings`);
+    if (value.length > maxItems)
+        throw new TypeError(`${key} must contain at most ${maxItems} items`);
+    return value.map((item, index) => {
+        if (typeof item !== "string")
+            throw new TypeError(`${key}[${index}] must be a string`);
+        const trimmed = item.trim();
+        if (!trimmed)
+            throw new TypeError(`${key}[${index}] must be a non-empty string`);
+        if (trimmed.length > maxLength)
+            throw new TypeError(`${key}[${index}] must contain at most ${maxLength} characters`);
+        return trimmed;
+    });
+}
 function toolDetails(args) {
     if (!isRecord(args))
         return undefined;
@@ -569,6 +588,33 @@ function registerMemoryTools(ctx, sessions, bridge) {
         async execute(_args, exec) {
             const runtime = requireSession(exec, sessions);
             return runTool(runtime, exec, async () => JSON.stringify(await integrationContext(runtime.root)));
+        },
+    }));
+    ctx.tools.register(defineTool({
+        name: "memory_cite",
+        description: "Record the memory entries this reply used. Call once before the final answer; locators look like MEMORY.md:10-14 or rollout_summaries/<file>.md:2-5.",
+        parameters: {
+            entries: { type: "array", items: { type: "string" }, required: true },
+            rolloutIds: { type: "array", items: { type: "string" } },
+        },
+        output: TEXT_OUTPUT,
+        isConcurrencySafe: () => true,
+        async execute(args, exec) {
+            const runtime = requireSession(exec, sessions);
+            const entries = stringArrayArg(args.entries, "entries", 100, 500);
+            const rolloutIds = stringArrayArg(args.rolloutIds, "rolloutIds", 100, 200);
+            if (!entries.length && !rolloutIds.length) {
+                throw new TypeError("memory_cite requires at least one entry or rolloutId");
+            }
+            return runTool(runtime, exec, async () => {
+                const { counted } = await integrationCite(runtime.root, [...entries, ...rolloutIds]);
+                if (counted.length) {
+                    // Only the refs the engine actually counted reach the UI timeline
+                    // (unknown keys are dropped), exactly like the text-block harvest.
+                    bridge.tagCitations(runtime.session.id, counted);
+                }
+                return JSON.stringify({ counted: counted.length });
+            });
         },
     }));
 }

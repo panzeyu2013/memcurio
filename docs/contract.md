@@ -398,9 +398,9 @@ export function renderStaticContext(root: string, budgetTokens?: number): string
 export function renderReadPathInstructions(): string
   // 完整 read_path（改编自 codex read_path.md，v1.9 起路径无关、工具优先，作为 system prompt section 注册）：
   // 决策边界（何时跳过/何时用）→ 快速检索流程与预算（≤4-6 步）→ verify 防漂移指引
-  // → 引用块输出要求（codex citations.rs 结构：<memcurio-citation> 包裹
-  //   <citation_entries>（<file>:<start>-<end>|note=[...] 逐行）与 <rollout_ids>（裸 host|sessionId 逐行）两节；
-  //   遥测输入）→ 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
+  // → 引用遥测要求（v2.0：调用 memory_cite 原生工具一次，而非输出文本引用块：
+  //   entries=<file>:<start>-<end> 定位符数组 + rolloutIds=裸 host|sessionId 数组）
+  // → 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
 export function renderBaselineSection(root: string, maxTokens?: number): string
   // AGENTS.md 注入块（复用现有 START/END marker 机制）：untrusted 声明 + memory_summary 内容 + MEMORY.md 路径 + memory_* 工具列表。
 export function updateAgentsMd(workdir: string, section: string): void     // 保留现有实现（从 baseline.ts 迁移）
@@ -454,7 +454,9 @@ export class MemcurioAdapter {
                                                              // shell 工具命令串词法解析（白名单只读命令路径操作数、分隔符终止、绝不执行、单次调用去重）；
                                                              // 仅命中记忆 workspace 才记使用遥测（工具名集合由 toolPreset 声明）
   memoryUsageFromPath(filePath): Promise<void>              // 只读工具读取记忆文件（绝对路径）→ registerMemoryUsage
-  memoryUsageFromCitations(text): Promise<string[]>       // 解析 <memcurio-citation> → registerMemoryUsage；返回实际计入的 rollout keys（供桥 citation 打标）
+  memoryUsageFromCitations(text): Promise<string[]>       // 兼容旧会话的 <memcurio-citation> 文本块 → registerMemoryUsage；返回实际计入的 rollout keys
+  // 原生 citation 路径（v2.0）：api.integrationCite(root, refs) = registerMemoryUsage + integration.cite 审计；
+  // 同一 rollout 的“文件条目 + 裸 key”两种写法在同一次调用内只计一次 usage。
   sessionIdle(id): Promise<void>                            // durable checkpoint
   sessionCompacted(id, summary?): Promise<void>             // 压缩摘要入 snapshot.summary + 证据
   sessionEnded(id): Promise<{staged; queued}>               // durable 模式原子入队 + 结束 sessions

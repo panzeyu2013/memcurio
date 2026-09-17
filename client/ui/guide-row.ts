@@ -46,6 +46,7 @@ export const GUIDE_TOOL_NAMES = [
   "memory_status",
   "memory_context",
   "memory_remember",
+  "memory_cite",
 ] as const;
 
 /** A hair before the system-prompt card the row heads (the placement
