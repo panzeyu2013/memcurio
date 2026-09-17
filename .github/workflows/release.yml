@@ -144,10 +144,11 @@ jobs:
             # A failed `gh release view` is NOT proof the release is absent:
             # network errors, rate limits and 5xx responses must fail closed,
             # or softprops/action-gh-release would silently overwrite the
-            # published release. Only gh's explicit not-found signal means
-            # "no release for this tag yet".
+            # published release. Only gh's own explicit "release not found"
+            # message counts: a bare HTTP 404 can come from a proxy and is
+            # treated as unproven.
             status=$?
-            if [ "$status" -eq 1 ] && grep -qiE '(release not found|HTTP 404: Not Found)' "$view_err"; then
+            if [ "$status" -eq 1 ] && grep -qiE 'release not found' "$view_err"; then
               echo "no release v${{ env.PKG_VERSION }} yet — proceeding"
             else
               echo "::error::cannot prove release v${{ env.PKG_VERSION }} does not exist (gh exit $status); failing closed"

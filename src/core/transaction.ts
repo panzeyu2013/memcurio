@@ -18,6 +18,12 @@ export const LOCK_TIMEOUT_MS = 20_000;
 // loses mutual exclusion to a contender.
 export const STALE_LOCK_MS = 300_000;
 
+/** A lock file with no parseable holder token is either mid-creation (the
+ *  holder writes pid|timestamp in one call) or crash debris. Reclaim it after
+ *  a short grace instead of the full STALE_LOCK_MS: the caller's lock timeout
+ *  is 20s, so a 5-minute wait would guarantee a timeout on crash debris. */
+export const STALE_EMPTY_LOCK_MS = 5_000;
+
 // Rotate the transaction log once it exceeds this many bytes (two rotated
 // segments are kept: <log>.1 and <log>.2).
 export const LOG_ROTATE_BYTES = 1_048_576;
@@ -179,11 +185,11 @@ function isStaleSnapshot(snapshot: LockSnapshot): boolean {
   const parts = snapshot.raw.trim().split("|");
   const pidStr = parts[0] ?? "";
   if (!pidStr) {
-    return Date.now() - snapshot.mtimeMs > STALE_LOCK_MS;
+    return Date.now() - snapshot.mtimeMs > STALE_EMPTY_LOCK_MS;
   }
   const pid = Number(pidStr);
   if (!Number.isFinite(pid) || pid <= 0) {
-    return Date.now() - snapshot.mtimeMs > STALE_LOCK_MS;
+    return Date.now() - snapshot.mtimeMs > STALE_EMPTY_LOCK_MS;
   }
   if (pid === process.pid) {
     // A lock this process genuinely holds records an acquisition timestamp no

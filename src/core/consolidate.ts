@@ -73,6 +73,19 @@ export interface ConsolidatePlan {
   changed: boolean;
 }
 
+/** Byte-bounded UTF-8 prefix that never splits a code point. */
+function clipUtf8(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf-8");
+  if (buf.byteLength <= maxBytes) {
+    return text;
+  }
+  let end = Math.max(0, maxBytes);
+  while (end > 0 && ((buf[end] ?? 0) & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return buf.subarray(0, end).toString("utf-8");
+}
+
 export interface RawProjection {
   text: string;
   /** rollout keys this render accounted for: rendered rows plus rows with an
@@ -139,11 +152,19 @@ export function projectRawMemories(
         throw new Error(`raw_memories.md projection exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit`);
       }
       if (parts.length === 0) {
-        // The head row does not fit on its own (its raw memory alone is larger
-        // than the cap). Skip it instead of breaking: breaking here would
-        // render the placeholder, wipe the previously published projection and
-        // freeze the rotation on that row forever.
-        continue;
+        // The head row alone exceeds the cap. Skipping it forever would keep
+        // the row pending while every run republishes the placeholder, so emit
+        // a bounded prefix with an explicit marker instead: the stage DB keeps
+        // the full raw memory and the provider sees a labelled truncation
+        // rather than nothing (rotation then advances past the row).
+        const marker = `\n…[raw memory truncated to fit the ${MAX_WORKSPACE_FILE_BYTES} byte workspace cap]`;
+        // Reserve the render's trailing newline (and the separator when this
+        // is not the first block) so the published file stays at or below the
+        // workspace cap the read path enforces.
+        const room = Math.max(0, MAX_WORKSPACE_FILE_BYTES - bytes - Buffer.byteLength(marker, "utf-8") - 1 - (parts.length ? 2 : 0));
+        parts.push(`${clipUtf8(block, room)}${marker}`);
+        included.push(s.rolloutKey);
+        break;
       }
       break;
     }

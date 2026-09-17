@@ -19,7 +19,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
-const versionArg = args.find((arg) => !arg.startsWith("--"));
+// Positional version, skipping flag values: a flag placed before the version
+// (for example --changelog <path> 0.0.1) must not make the flag value the
+// version.
+const versionArg = args.find((arg, index) => {
+  if (arg.startsWith("--")) return false;
+  const previous = args[index - 1];
+  return previous !== "--out" && previous !== "--changelog";
+});
 const flagValue = (name) => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;

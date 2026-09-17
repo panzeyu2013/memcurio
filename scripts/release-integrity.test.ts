@@ -109,6 +109,19 @@ describe("release notes", () => {
     expect(stderr).toContain("prepare the release section first");
   });
 
+  test("parses the version when a flag precedes it", () => {
+    const changelogPath = writeChangelog(MIXED_CHANGELOG);
+    const out = join(tempDir("memcurio-notes-"), "notes.md");
+    // The old positional scan took the flag VALUE as the version.
+    const result = spawnSync(
+      process.execPath,
+      [releaseNotesScript, "--changelog", changelogPath, "1.2.3", "--out", out],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    expect(readFileSync(out, "utf8")).toContain("dated fix");
+  });
+
   test("does not warn when [Unreleased] is empty", () => {
     const dated = "# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2026-01-02\n\n### Fixed\n\n- dated fix\n";
     const { status, stderr } = runReleaseNotes("1.2.3", writeChangelog(dated));
@@ -208,8 +221,13 @@ describe("release refuse guard", () => {
     expect(calls).not.toContain("release delete");
   });
 
-  test.skipIf(!hasBash || !hasJq)("treats an HTTP 404 as absent", () => {
-    expect(runRefuseGuard("notfound-http").status).toBe(0);
+  test.skipIf(!hasBash || !hasJq)("fails closed on a bare HTTP 404 (proxy / non-gh error)", () => {
+    // Only gh's explicit "release not found" proves absence; a bare 404 can
+    // come from a proxy and must not authorize a re-release.
+    const { status, stdout, stderr, calls } = runRefuseGuard("notfound-http");
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("failing closed");
+    expect(calls).not.toContain("release delete");
   });
 
   for (const mode of ["rate-limit", "network", "server-error"]) {

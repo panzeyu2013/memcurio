@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 
 import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
-import { LlmLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import { LlmLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
 import type { AgentTurnMessage, LlmChannel } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
@@ -83,6 +83,24 @@ describe("planConsolidation", () => {
     expect(order(renderRawMemories(rows, { afterKey: "a" }))).toEqual(["b", "c", "a"]);
     expect(order(renderRawMemories(rows, { afterKey: "c" }))).toEqual(["a", "b", "c"]);
     expect(order(renderRawMemories(rows, { afterKey: "missing" }))).toEqual(["a", "b", "c"]);
+  });
+
+  test("a single row larger than the cap is projected truncated, never starved forever", () => {
+    const row = {
+      rolloutKey: "huge|1",
+      rawMemory: "x".repeat(1024 * 1024),
+      artifactFilename: "rollout-aaaaaaaaaaaaaaaaaaaaaaaa.md",
+      sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+    };
+    const projection = projectRawMemories([row], { truncate: true });
+    // The row is accounted for (no infinite pending) and the published file
+    // stays inside the workspace cap.
+    expect(projection.included).toEqual(["huge|1"]);
+    expect(projection.text).toContain("## Rollout `huge|1`");
+    expect(projection.text).toContain("raw memory truncated to fit");
+    expect(Buffer.byteLength(projection.text, "utf-8")).toBeLessThanOrEqual(1024 * 1024);
+    // Without truncate mode the caller still gets the loud failure.
+    expect(() => projectRawMemories([row])).toThrow(/exceeds/);
   });
 
   test("rows beyond the 1MB cap are projected in rotating pages until each row appears", async () => {

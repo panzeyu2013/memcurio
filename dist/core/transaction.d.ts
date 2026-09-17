@@ -1,6 +1,11 @@
 export declare const processStartedAt: number;
 export declare const LOCK_TIMEOUT_MS = 20000;
 export declare const STALE_LOCK_MS = 300000;
+/** A lock file with no parseable holder token is either mid-creation (the
+ *  holder writes pid|timestamp in one call) or crash debris. Reclaim it after
+ *  a short grace instead of the full STALE_LOCK_MS: the caller's lock timeout
+ *  is 20s, so a 5-minute wait would guarantee a timeout on crash debris. */
+export declare const STALE_EMPTY_LOCK_MS = 5000;
 export declare const LOG_ROTATE_BYTES = 1048576;
 export declare function atomicWrite(path: string, content: string): void;
 export interface LockOptions {

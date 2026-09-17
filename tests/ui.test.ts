@@ -248,6 +248,11 @@ describe("write-path guard + injection duplicate comparison (review regressions)
     expect(isWritePathAction("purge.hard")).toBe(true);
     expect(isWritePathAction("warn.promptware")).toBe(false);
     expect(isWritePathAction("adapter.dynamic_context")).toBe(false);
+    // extract bookkeeping/notices mirror the host filter: no write event.
+    expect(isWritePathAction("extract.repaired")).toBe(false);
+    expect(isWritePathAction("extract.noop")).toBe(false);
+    expect(isWritePathAction("extract.queued")).toBe(false);
+    expect(isWritePathAction("extract.queue_dead")).toBe(false);
   });
 
   test("warn/unknown receipt deltas never inflate unread or toast as writes", () => {

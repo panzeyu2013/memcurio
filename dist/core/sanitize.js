@@ -98,12 +98,16 @@ const GREEK_LATIN = {
     ψ: "y", ω: "w",
 };
 const GREEK_MATH_PATTERN = /[\u{1D6A4}-\u{1D7CD}]/gu;
-// Greek math styles: bold, italic, bold-italic, sans, sans-bold, sans-italic.
-// Each style holds 26 uppercase code points then 26 lowercase; the letter
-// order is NOT the pure 24-letter alphabet — ϴ (theta symbol) sits between
-// Ρ and Σ, and ς (final sigma) between ρ and σ — so indexing uses the
-// 25-letter math layout and skips non-letter code points.
-const GREEK_MATH_STYLES = [0x1d6a8, 0x1d6dc, 0x1d710, 0x1d744, 0x1d778, 0x1d7ac];
+// Greek math styles: bold, italic, bold-italic, sans-serif bold, sans-serif
+// bold-italic. The blocks are 58 code points apart (52 letters plus six
+// symbol slots), not 52: a stride of 52 mapped only the bold block correctly
+// and let 𝜄𝛾𝜈𝜊𝜌𝜀 (italic) and the sans-serif blocks spell "ignore" past the
+// scanner. Within one block offsets 0–24 are the uppercase letters, 25/51 are
+// symbols (nabla/partial) and 26–50 the lowercase letters; the letter order
+// is NOT the pure 24-letter alphabet — ϴ (theta symbol) sits between Ρ and Σ,
+// and ς (final sigma) between ρ and σ — so indexing uses the 25-letter math
+// layout and skips non-letter code points.
+const GREEK_MATH_STYLES = [0x1d6a8, 0x1d6e2, 0x1d71c, 0x1d756, 0x1d790];
 const GREEK_MATH_ALPHABET = "αβγδεζηθικλμνξοπρςστυφχψω";
 function foldGreekMath(ch) {
     const code = ch.codePointAt(0) ?? 0;
@@ -125,16 +129,16 @@ function foldGreekPlain(ch) {
 /** The folding pipeline in application order. It is defined once so the
  *  offset-preserving `normalizeWithMap` and the plain `normalizeText` can
  *  never drift apart. */
+/** Zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/
+ *  PDI), the Arabic letter mark, soft hyphen, Mongolian vowel separator,
+ *  combining grapheme joiner and C0 controls. Stripped from the detection
+ *  input AND from the persisted output: a bidi override or zero-width run
+ *  surviving in a note/DB row/rollout summary spoofs how the memory renders. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the C0 range and bidi controls are stripped on purpose
+// biome-ignore lint/suspicious/noMisleadingCharacterClass: mixed ranges of zero-width/control chars are intentional
+const CONTROL_STRIP_PATTERN = /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const NORMALIZE_STEPS = [
-    {
-        // zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/PDI),
-        // Arabic letter mark, soft hyphen, Mongolian vowel separator, combining
-        // grapheme joiner, and C0 control characters
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: the C0 range and bidi controls are stripped on purpose
-        // biome-ignore lint/suspicious/noMisleadingCharacterClass: mixed ranges of zero-width/control chars are intentional
-        pattern: /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g,
-        fold: () => "",
-    },
+    { pattern: CONTROL_STRIP_PATTERN, fold: () => "" },
     {
         pattern: /[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g,
         fold: (c) => HOMOGLYPH_MAP[c] ?? c,
@@ -221,6 +225,10 @@ export function redactSecrets(text) {
     // outside the matched spans is never touched.
     const mapped = normalizeWithMap(text);
     const normalized = mapped.text;
+    // Detection strips controls for look-through; the output must strip them too
+    // (a zero-width/bidi run left in a note or DB row spoofs how it renders),
+    // while every VISIBLE character stays byte-identical.
+    const stripControls = (value) => value.replace(CONTROL_STRIP_PATTERN, "");
     const hits = [];
     const record = (start, end, privateKey) => {
         if (end > start) {
@@ -256,7 +264,7 @@ export function redactSecrets(text) {
         }
     }
     if (!hits.length) {
-        return { text, redacted: false };
+        return { text: stripControls(text), redacted: false };
     }
     // Translate normalized offsets back to raw offsets, merge overlaps (a later
     // pattern may match inside an earlier one), then splice the raw text.
@@ -287,7 +295,7 @@ export function redactSecrets(text) {
         cursor = range.end;
     }
     out += text.slice(cursor);
-    return { text: out, redacted: true };
+    return { text: stripControls(out), redacted: true };
 }
 const INJECTION_PATTERNS = [
     /ignore\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|directives|prompts)/i,

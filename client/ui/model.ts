@@ -120,9 +120,28 @@ export function injectionView(input: {
  *  labels are audit noise and must never surface as "memory updated". */
 const WRITE_PATH_ACTIONS = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
 
+/** extract.* bookkeeping/notices that are not durable writes (mirror of the
+ *  host filter in src/plugin/bridge.ts; kept in sync manually because the
+ *  client bundle cannot import server modules). */
+const NON_WRITE_EXTRACT_ACTIONS = new Set([
+  "extract.noop",
+  "extract.stale",
+  "extract.repaired",
+  "extract.requeued",
+  "extract.queued",
+  "extract.queue_complete",
+  "extract.queue_retry",
+  "extract.queue_dead",
+  "extract.queue_blocked",
+  "extract.queue_unblocked",
+]);
+
 /** True for an action that actually changed stored memory (defensive client
  *  guard; the host's write-path filter is the primary one). */
 export function isWritePathAction(action: string): boolean {
+  if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
+    return false;
+  }
   return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
 }
 

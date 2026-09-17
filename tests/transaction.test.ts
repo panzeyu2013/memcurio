@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
+import { Transaction, STALE_EMPTY_LOCK_MS, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
 import { processStartedAt } from "../src/core/transaction.js";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -252,6 +252,16 @@ describe("isStaleLock", () => {
     const lock = join(dir, "x.lock");
     writeFileSync(lock, "");
     const old = new Date(Date.now() - 2 * STALE_LOCK_MS);
+    utimesSync(lock, old, old);
+    expect(isStaleLock(lock)).toBe(true);
+  });
+
+  test("empty lock file is reclaimed after the short grace, before the lock timeout", () => {
+    const lock = join(dir, "x.lock");
+    writeFileSync(lock, "");
+    // Older than STALE_EMPTY_LOCK_MS but far younger than STALE_LOCK_MS: crash
+    // debris must not outlive the 20s acquisition timeout.
+    const old = new Date(Date.now() - 2 * STALE_EMPTY_LOCK_MS);
     utimesSync(lock, old, old);
     expect(isStaleLock(lock)).toBe(true);
   });
