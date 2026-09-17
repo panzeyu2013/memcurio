@@ -13,7 +13,7 @@
 - **模型驱动的记忆组织** —— 记什么由模型决定：Phase 1 抽取检查点由 DSH 生命周期事件持久排队，worker 通过会话 `ctx.llm` 路由产出 rollout 摘要 + 原始记忆；Phase 2 整合直接重写 `MEMORY.md`，成为可 grep 的 Task Groups 手册。
 - **两阶段管线** —— 会话事件经抽取流入 stage-1 存储，选择窗口挑选输入做整合，写入 Markdown 事实来源；workspace 文件与 SQLite 变更由 generation manifest 驱动，确定性可恢复。
 - **基于 diff 的遗忘** —— 没有状态机：`prune` 选出使用窗口之外（`maxUnusedDays`）的 stage-1 输出，经基线 diff 外科手术式删除其摘要与仅被它引用的 `MEMORY.md` 区块；混合区块保留。
-- **临时 notes** —— 显式 `remember` 写入 `extensions/ad_hoc/notes/` 只追加 note，下次整合时应用。
+- **临时 notes** —— `memory_remember`（用户要求或模型确认的持久价值；kind 可 remember/forget/update）写入 `extensions/ad_hoc/notes/`，只追加，下次整合时应用。
 - **读取路径渐进式披露（v1.9）** —— read-path 使用指南（何时该用记忆、怎么用 `memory_search`、citation 与写入纪律）作为 **system prompt 段落**注册，与工具 schema 同区、**不含任何文件系统路径**；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时在每个上下文窗口打开时注入一次（脱敏、注入扫描、2500 token 预算 + 中间截断），空库不注入任何东西；不做每轮自动检索，模型经 `memory_search` 主动检索（IDF 打分 + 短语奖励 + 去重 + 单文件 cap）。
 - **用量遥测闭环** —— 原生 `read`/`grep`/`glob`/`bash`/`pwsh` 命中记忆文件与原生 `memory_cite` 调用计入每条 rollout 的 `usage_count`/`last_usage`，驱动选择窗口：真被复用的记忆留下，闲置的过期淘汰。
 - **Markdown 作为事实来源** —— `memory/*.md` 可读可直接编辑；SQLite（schema v11）保存 stage-1 输出、稳定 artifact ID、notes、会话、审计、持久抽取任务与整合租约；`.baseline/` 与 generation manifest 驱动可恢复的整合 diff。
@@ -45,7 +45,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 
 ## 记忆模型
 
-- **写入：`memory_remember` / ad-hoc notes** —— `extensions/ad_hoc/notes/` 只追加（文件 + SQLite 同事务，≤20,000 字符）。写入即脱敏；注入 payload 在入口被拒并审计。会话内模型从不直接改记忆文件；错误/过期内容直接编辑 `MEMORY.md` 或由整合 agent 的 diff 清理。
+- **写入：`memory_remember` / ad-hoc notes** —— `extensions/ad_hoc/notes/` 只追加（文件 + SQLite 同事务，≤20,000 字符）；触发条件为用户明确要求，或模型确认值得跨会话保留的偏好/决策/纠正/可复用经验（kind 可选 remember/forget/update）。写入即脱敏；注入 payload 在入口被拒并审计。会话内模型从不直接改记忆文件；错误/过期内容直接编辑 `MEMORY.md` 或由整合 agent 的 diff 清理。
 - **读取：检索 + 渐进式注入** —— 跨 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`、`skills/` 的行级词法检索（未应用的 ad-hoc note 也即时可搜，命中标注 `pending`，避免"刚写下就查不到"），读时再脱敏 + 注入过滤。摘要只在上下文窗口打开时注入一次（会话首轮 / compaction 后；2500 token 预算、超预算中间截断保头尾）；不做每轮自动检索注入，模型经 `memory_search` 主动检索。读路径指引只讲何时调用记忆工具、以及用过后调用原生 `memory_cite` 工具（与记忆文件读取一起计入用量）；绝不解析 assistant 文本。
 - **整合** —— Phase 2 把 `MEMORY.md` 重写为带 `rollout_summary_files` 引用的 Task Groups，应用 pending notes，重建 `memory_summary.md`（首行必须恰为 `v1`）。无模型路由时跑确定性 rule provider（绝不杜撰、绝无机删）；有路由时跑有界 agent loop，但 LLM 通道失败（无 tool call、引用不存在的 artifact、被 abort）会自动降级 rule provider 把 note/stage-1 落地（审计 `consolidate.fallback`，下一轮再试 LLM），写入仅限 `MEMORY.md` / `memory_summary.md` / `skills/*/SKILL.md`，逐条校验工作区围栏、大小上限、密钥/注入扫描与出处。
 - **遗忘** —— 选择窗口（默认 30 天未用）淘汰 stage-1 输出：删摘要文件 + 基线 diff 摘除仅引用它们的 `MEMORY.md` 区块。检索当前为词法；语义/向量后端保持可选未来项。
@@ -60,6 +60,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 - **工具参数越界** —— 直接报错，不 clamp 到上限。
 - **整合输入** —— `maxInputs` 限每批新增；codex 的 `max_raw_memories_for_consolidation` 限整批重选窗口。
 - **默认开启** —— 插件默认注入；codex 的 `memories` feature 默认关闭。
+- **note 写入** —— memcurio 在「用户要求」或「模型确认持久价值」两种触发下都允许 `memory_remember`，并暴露 `kind`（remember/forget/update）；codex 的 read_path 片段、`ad_hoc_note` 工具描述与 phase prompt 都要求用户明确请求（"only when explicitly asked"/"do not write on your own"），且 note 文件名由模型提供，memcurio 由服务端生成。
 
 ## 环境变量
 

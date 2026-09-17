@@ -45,8 +45,8 @@ export async function integrationRead(root, options) {
         return result;
     });
 }
-export async function integrationRemember(root, content) {
-    return withIndex(root, async () => addAdHocNote(root, content, "remember"));
+export async function integrationRemember(root, content, kind = "remember") {
+    return withIndex(root, async () => addAdHocNote(root, content, kind));
 }
 export async function integrationStatus(root) {
     return withIndex(root, (index) => {

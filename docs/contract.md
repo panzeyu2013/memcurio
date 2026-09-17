@@ -12,7 +12,7 @@
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序；codex 式 "# Raw Memories" 头 + "## Rollout" 段）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID（sha256(rollout_key) 前 24 hex）；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
-│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # 用户显式 remember 的 note（append-only；forget/update 遗留，仅 agent 执行）
+│   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # memory_remember 的 note（append-only；用户要求或模型确认的持久价值；forget/update 仅 LLM agent 应用）
 │   └── .baseline/                   # 上次成功整合后的快照（MEMORY.md / memory_summary.md / raw_memories.md / rollout_summaries/ / skills/），用于 diff
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 ├── config.json
@@ -404,7 +404,7 @@ export function renderReadPathInstructions(): string
   // 决策边界（何时跳过/何时用）→ 快速检索流程与预算（≤4-6 步）→ verify 防漂移指引
   // → 引用遥测要求（v2.0：调用 memory_cite 原生工具一次，而非输出文本引用块：
   //   entries=<file>:<start>-<end> 定位符数组 + rolloutIds=裸 host|sessionId 数组）
-  // → 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
+  // → 写入门槛（用户显式要求，或模型确认的持久价值；note 写到 ad_hoc_notes 目录）
 ```
 
 
@@ -427,7 +427,7 @@ export interface Config {
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
 memory_list { path?, maxResults?, cursor? }   → listMemory（codex memories/list 语义：隐藏条目/符号链接跳过、整数 cursor 分页、目录/文件条目）
 memory_read { path, lineOffset?, maxLines?, maxTokens? } → readMemory（codex memories/read 语义：1-based 行偏移、行数/token 截断、读取时重新脱敏、rollout 摘要读计入使用遥测）
-memory_remember { content }           → ad-hoc remember note（返回 filename）；description 声明阈值"仅在用户明确要求记住、忘记或更新某件事时使用；不要自主写入"（软门槛，handler 不强制校验，与 codex ad_hoc_note 一致）
+memory_remember { content, kind? }    → ad-hoc note（返回 filename；kind 默认 remember，forget/update 由 LLM 整合 agent 应用）；description 授权两种触发：用户明确要求 remember/forget/update，或模型确认值得跨会话保留的偏好/决策/纠正/可复用经验（相对 codex ad_hoc_note 的"仅用户明确要求"放宽；软门槛，handler 只校验 kind 枚举）
 memory_status {}                      → pipeline 状态
 memory_context {}                     → renderMemoryContext + read path 指引（模型自行检索入口）
 memory_cite { entries[], rolloutIds? } → registerMemoryUsage（文件定位符 + 裸 rollout key）；返回实际计入条数，审计 integration.cite

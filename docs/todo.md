@@ -21,7 +21,6 @@
 - [ ] **`/memory` 客户端唤起、消息级跳转、审计收据客户端映射**：依赖上游能力/适配器。
 - [ ] **web profile 读命中遥测面**：在真实 web profile 会话确认命中只来自插件 `memory_read`/`memory_search`（`tool-fs`/`tool-fs-search` 在该 profile 被 disable）。
 - [ ] **node:sqlite 驱动实跑**：桥/快照测试需要 node >= 22.13 环境；全量测试仍以 bun 为准。
-- [ ] **推送远端实跑**：需要具备 git 凭据的环境（当前沙箱不可用）。
 
 ## 开放决策（需人工/正式审核，不由实现者单方面决定）
 

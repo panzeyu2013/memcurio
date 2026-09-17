@@ -87,7 +87,9 @@ describe("memory UI store", () => {
     store.applySnapshot(SNAPSHOT);
     const events = store.applyDeltas(
       [
-        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", budgetTokens: 900, duplicate: false },
+        // A genuinely different summary: identical text would now fold to
+        // duplicate=true even when the host flag says otherwise.
+        { kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary v2", budgetTokens: 900, duplicate: false },
         { kind: "receipt", time: Date.parse("2026-09-14T00:00:05.000Z"), action: "adhoc.note", detail: "second note" },
       ],
       "s1",
@@ -232,6 +234,25 @@ describe("snapshot receipt folding (review regressions)", () => {
     const injection = store.getSnapshot().injection;
     expect(injection?.staticText).toBe("[memcurio] summary");
     expect(injection?.duplicate).toBe(true);
+  });
+
+  test("treats a whitespace-only static difference as the same injection on the delta path", () => {
+    const store = createMemoryUiStore();
+    store.applyDeltas(
+      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary", duplicate: false }],
+      "s1",
+    );
+    const events = store.applyDeltas(
+      [{ kind: "inject-updated", sessionId: "s1", staticText: "[memcurio] summary ", duplicate: false }],
+      "s1",
+    );
+    // The host flag is computed on raw text; the client compares trimmed text
+    // when the delta carries it, matching the snapshot fold.
+    expect(store.getSnapshot().injection?.duplicate).toBe(true);
+    expect(events).toEqual([{ type: "injection", tokens: expect.any(Number), duplicate: true }]);
+    // With no text in the delta the host flag stays authoritative.
+    store.applyDeltas([{ kind: "inject-updated", sessionId: "s1", duplicate: false }], "s1");
+    expect(store.getSnapshot().injection?.duplicate).toBe(false);
   });
 
   test("resetStoreView clears injection, receipts and unread on a session switch", () => {

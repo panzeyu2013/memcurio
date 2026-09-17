@@ -278,16 +278,25 @@ export function createMemoryUiStore(): MemoryUiStore {
         if (typeof deltaSessionId === "string" && deltaSessionId !== sessionId) continue;
         if (delta.kind === "inject-updated") {
           const previous = injection;
+          // Static is sticky: the same summary is re-sent after a compaction,
+          // and an omitted piece keeps the previous preview. The host flag is
+          // computed on the RAW text; when this delta carries the text, the
+          // trimmed comparison of the snapshot path applies instead, so both
+          // folds agree that a whitespace-only difference is not a new
+          // injection.
           injection = injectionView({
-            // Static is sticky: the same summary is re-sent after a
-            // compaction, and an omitted piece keeps the previous preview.
             staticText: delta.staticText ?? previous?.staticText,
             readGuide: previous?.readGuide,
             budgetTokens: delta.budgetTokens ?? previous?.budgetTokens,
-            duplicate: delta.duplicate,
+            duplicate:
+              delta.staticText === undefined
+                ? delta.duplicate
+                : (previous?.staticText ?? "") === delta.staticText.trim(),
           });
           changed = true;
-          events.push({ type: "injection", tokens: injection.tokens, duplicate: delta.duplicate });
+          // Carry the FOLDED flag (trimmed comparison), not the raw host one:
+          // the toast decision must see the same duplicate-ness the view does.
+          events.push({ type: "injection", tokens: injection.tokens, duplicate: injection.duplicate });
         } else if (delta.kind === "receipt") {
           // Defensive write-path guard (the host filters too): audit noise
           // such as warn.promptware must not inflate unread or toast as a

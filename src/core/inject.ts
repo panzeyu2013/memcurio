@@ -88,7 +88,9 @@ export function renderReadPathInstructions(): string {
     "Citations: after using memory and before your final answer, call memory_cite once with the",
     "entries and rollout ids you relied on.",
     "",
-    "Writing: call memory_remember when the user asks; never edit memory files directly.",
+    "Writing: call memory_remember when the user asks you to remember, forget or update something, or",
+    "when you confirm a durable preference, decision, correction or reusable lesson a future session",
+    "should inherit; never edit memory files directly.",
   ].join("\n");
 }
 

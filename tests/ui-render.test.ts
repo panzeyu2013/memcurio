@@ -110,7 +110,7 @@ describe("system-prompt guide row", () => {
     // The guide now carries the tool-CALL rules only; the tool bodies belong
     // to their schemas, and the old inventory sentence is gone.
     expect(body?.textContent).toContain("call memory_cite once");
-    expect(body?.textContent).toContain("call memory_remember when the user asks");
+    expect(body?.textContent).toContain("call memory_remember when the user asks you to remember");
     expect(body?.textContent).not.toContain("Reach it only through the memcurio tools");
 
     await act(async () => {

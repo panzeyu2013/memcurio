@@ -886,6 +886,23 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     const read = await exec("memory_read", { path: "MEMORY.md", maxTokens: 20_001 });
     expect(read.isError).toBe(true);
     if (read.isError) expect(read.error.message).toContain("[1, 20000]");
+    // memory_remember takes an optional kind; anything else is rejected.
+    const badKind = await exec("memory_remember", { content: "x", kind: "bogus" });
+    expect(badKind.isError).toBe(true);
+    // The tool schema enum rejects it before the handler's own guard runs.
+    if (badKind.isError) expect(badKind.error.message).toContain("must be one of");
+    expect(badKind.isError).toBe(true);
+    // A forget note is durable and keeps its kind: the LLM consolidation
+    // agent applies it (the deterministic rule provider merges remember
+    // notes only).
+    const forget = await exec("memory_remember", { content: "the old default is gone", kind: "forget" });
+    expect(forget.isError).toBe(false);
+    const noteCheck = await Index.create(indexDb(root));
+    try {
+      expect(noteCheck.noteList().map((note) => note.kind)).toEqual(["forget"]);
+    } finally {
+      noteCheck.close();
+    }
 
     detach();
     await pluginFiber.dispose();

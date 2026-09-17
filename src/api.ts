@@ -1,6 +1,6 @@
 /** Stable host-integration surface. Harness packages should import only here. */
 
-import { addAdHocNote } from "./core/adhoc.js";
+import { addAdHocNote, type AdHocNote } from "./core/adhoc.js";
 import { Index } from "./core/db.js";
 import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
 import { ensureLayout, indexDb } from "./core/paths.js";
@@ -72,8 +72,8 @@ export async function integrationRead(
   });
 }
 
-export async function integrationRemember(root: string, content: string) {
-  return withIndex(root, async () => addAdHocNote(root, content, "remember"));
+export async function integrationRemember(root: string, content: string, kind: AdHocNote["kind"] = "remember") {
+  return withIndex(root, async () => addAdHocNote(root, content, kind));
 }
 
 export async function integrationStatus(root: string) {

@@ -1,4 +1,5 @@
 /** Stable host-integration surface. Harness packages should import only here. */
+import { type AdHocNote } from "./core/adhoc.js";
 export { MemcurioAdapter } from "./engine.js";
 export type { AdapterOptions } from "./engine.js";
 export type { HarnessToolPreset } from "./engine.js";
@@ -27,7 +28,7 @@ export declare function integrationRead(root: string, options: {
     maxTokens?: number;
     trackUsage?: boolean;
 }): Promise<import("./core/read.js").MemoryReadResult>;
-export declare function integrationRemember(root: string, content: string): Promise<import("./core/adhoc.js").AdHocNote>;
+export declare function integrationRemember(root: string, content: string, kind?: AdHocNote["kind"]): Promise<AdHocNote>;
 export declare function integrationStatus(root: string): Promise<{
     root: string;
     stage1: {

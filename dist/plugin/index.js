@@ -433,6 +433,16 @@ function stringArg(value, key, required = false, maxLength = Number.MAX_SAFE_INT
         throw new TypeError(`${key} must contain at most ${maxLength} characters`);
     return value;
 }
+/** Note kind of one memory_remember call. The three kinds are the ad-hoc
+ *  extension's; forget/update notes are applied by the LLM consolidation
+ *  agent (the deterministic rule provider only merges remember notes). */
+function noteKindArg(value) {
+    if (value === undefined)
+        return "remember";
+    if (value === "remember" || value === "forget" || value === "update")
+        return value;
+    throw new TypeError("kind must be one of remember|forget|update");
+}
 function integerArg(value, key, fallback, maximum = Number.MAX_SAFE_INTEGER) {
     if (value === undefined)
         return fallback;
@@ -542,14 +552,17 @@ injectBudget) {
     }));
     ctx.tools.register(defineTool({
         name: "memory_remember",
-        description: "Persist a memory only when the user explicitly asks to remember it.",
-        parameters: { content: { type: "string", required: true } },
+        description: "Persist a durable memory note for future sessions. Call it when the user asks you to remember, forget or update something, or when you confirm a durable preference, decision, correction or reusable lesson that a future session should inherit. Notes are append-only input for consolidation; never edit memory files directly.",
+        parameters: {
+            content: { type: "string", required: true },
+            kind: { type: "string", enum: ["remember", "forget", "update"], default: "remember" },
+        },
         output: TEXT_OUTPUT,
         isConcurrencySafe: () => false,
         async execute(args, exec) {
             const runtime = requireSession(exec, sessions);
             return runTool(runtime, exec, async () => {
-                const result = JSON.stringify(await integrationRemember(runtime.root, stringArg(args.content, "content", true, 20_000) ?? ""));
+                const result = JSON.stringify(await integrationRemember(runtime.root, stringArg(args.content, "content", true, 20_000) ?? "", noteKindArg(args.kind)));
                 // The note is durable when integrationRemember returns; push the new
                 // receipt immediately instead of waiting for the turn/end drain, so
                 // the "memory was written" toast lands with the tool card.
