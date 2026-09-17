@@ -88,6 +88,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
   not implement it lose the LLM consolidation path (rule fallback) rather than
   receiving a text protocol.
+- **The read-path guide now tracks what the process can actually do.** It is
+  gated on the apply-time `registerTools` decision (the setting still takes
+  effect on restart) and on the session's store having an *injectable* summary:
+  a summary the injection scan blocks counts as absent, and an empty or
+  schema-invalid summary is repaired by the Phase-2 INIT guard instead of
+  silently disabling memory instructions.
+- **A forget/update note no longer hot-loops the rule provider.** Without a
+  model channel those kinds are unfulfillable, so they stay pending without
+  counting as urgent work; every turn/end previously ran a full Phase 2 pass
+  that could not consume them and bypassed the 6 h success cooldown.
+- **Phase-2 note settlement is evidence-based.** `finish.applied_notes` is
+  honored only when the run actually rewrote `MEMORY.md` (otherwise the note
+  stays pending and the report says so), and the prompt now documents
+  `kind: update` alongside remember/forget. The synthesized INIT summary is
+  recorded as `init=memory_summary.md` on the `consolidate.done` audit row
+  and in the run message (the provider's own report stays untouched).
 
 ### Fixed
 

@@ -124,7 +124,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 ### 读路径
 
 ```
-SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入门槛：仅用户显式要求，只写 note）——构成对齐 codex read_path.md 的分节，并做两处刻意适配（无路径、原生 cite）；指令进提示词，且全文无文件系统路径；**仅当该会话 store 的 memory_summary.md 非空且 registerTools 时才注册**（codex 同款：空摘要 → None → 什么都不发）
+SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入门槛：仅用户显式要求，只写 note）——构成对齐 codex read_path.md 的分节，并做两处刻意适配（无路径、原生 cite）；指令进提示词，且全文无文件系统路径；**仅当该会话 store 的 memory_summary.md 非空且通过注入扫描（可注入）、且本进程确实注册了记忆工具（registerTools 的 apply 期快照，改设置需重启）时才注册**（codex 同款：空摘要 → None → 什么都不发）
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南、无 system prompt 段）
 模型自检索：按需调用 memory_* 工具（各自 schema 自带说明，不经文件系统）
 注入（v2.1，对齐 codex）：上下文窗口打开时注入一次整份 memory_summary.md（2500 token 预算；超预算按 codex 式中间截断保头尾），会话首轮与 compaction/end 之后各一次，稳态轮次不注入；检索由模型经 memory_search 主动发起（引擎仍保留 buildDynamicContext 与模拟器 API）

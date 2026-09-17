@@ -1054,6 +1054,13 @@ export class MemcurioAdapter {
     if (this.disposed) {
       return;
     }
+    // A pending forget/update note is only consumable with a model channel (the
+    // rule provider merges remember notes only). Counting it as urgent work
+    // without one would make every turn/end run a zero-output Phase 2 and bypass
+    // the success cooldown forever; it stays pending until a channel exists.
+    const modelChannel = this.modelChannel();
+    const actionableNote = (note: { kind: string; applied: boolean }): boolean =>
+      !note.applied && (modelChannel !== undefined || note.kind === "remember");
     try {
       // The pipeline config is loaded before the entry prune: the retention
       // recycle needs maxUnusedDays to also drop never-selected rows whose
@@ -1125,7 +1132,7 @@ export class MemcurioAdapter {
         const urgent =
           pendingRows.length >= AUTO_CONSOLIDATE_PENDING_TRIGGER ||
           (oldestPending !== undefined && now - Date.parse(oldestPending) >= AUTO_CONSOLIDATE_MAX_WAIT_MS) ||
-          idx.noteList().some((n) => !n.applied);
+          idx.noteList().some(actionableNote);
         if (last !== undefined && !urgent) {
           const elapsed = now - Date.parse(last);
           if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
@@ -1149,7 +1156,7 @@ export class MemcurioAdapter {
       const idx2 = await Index.create(indexDb(root));
       let work = false;
       try {
-        work = idx2.noteList().some((n) => !n.applied);
+        work = idx2.noteList().some(actionableNote);
         if (!work) {
           const rows = idx2.stageList();
           work = rows.some((r) => r.status === "pending" && !r.selectedForPhase2);
@@ -1170,8 +1177,7 @@ export class MemcurioAdapter {
       if (!work) {
         return;
       }
-      const channel = this.modelChannel();
-      const provider = channel ? new LlmLoopConsolidateProvider(undefined, channel) : new RuleConsolidateProvider();
+      const provider = modelChannel ? new LlmLoopConsolidateProvider(undefined, modelChannel) : new RuleConsolidateProvider();
       try {
         await runConsolidation(root, provider, { execute: true, config: cfg });
       } catch (error) {
@@ -1179,7 +1185,7 @@ export class MemcurioAdapter {
         // does not exist) must not strand unapplied notes and stage-1 rows for
         // a whole backoff window: fall back to the deterministic rule provider
         // — the next cycle tries the LLM again — and record why.
-        if (!channel) {
+        if (modelChannel === undefined) {
           throw error;
         }
         this.log("warn", "llm consolidation failed; falling back to the rule provider", { error: String(error) });
@@ -1197,7 +1203,7 @@ export class MemcurioAdapter {
         // A past failure must not keep shortening the next window after a
         // successful run; the failure branch above ignores the empty marker.
         idx3.metaDelete("consolidation_auto_failed");
-        idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${channel?.name ?? "rule"})`);
+        idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${modelChannel?.name ?? "rule"})`);
       } finally {
         idx3.close();
       }

@@ -8,6 +8,7 @@ import { MemcurioAdapter, integrationCite, integrationContext, integrationList, 
 import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
+import { sanitizeForInjection } from "../core/sanitize.js";
 import { memoryWorkspace } from "../core/paths.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
@@ -1174,17 +1175,27 @@ export function apply(ctx, config = {}) {
     // and gated on the session's store actually having a summary (Codex parity);
     // `systemPrompt` is absent in test compositions, so registration goes
     // through a scoped inject and no-ops there.
-    /** Codex parity: a store with no `memory_summary.md` emits NO memory
-     *  instructions at all — codex's build_memory_tool_developer_instructions
-     *  returns None when the summary is missing or blank. */
-    const storeHasSummary = (sessionId) => {
+    /** Whether the memory tools exist IN THIS PROCESS. `registerTools` takes
+     *  effect on restart (docs/ui.md), so the guide must key off the apply-time
+     *  decision instead of the live setting: flipping it on in Settings would
+     *  otherwise announce tools the model cannot call. */
+    let memoryToolsRegistered = false;
+    /** Codex parity: a store with no injectable `memory_summary.md` emits NO
+     *  memory instructions at all — codex's build_memory_tool_developer_
+     *  instructions returns None when the summary is missing or blank. A summary
+     *  the injection scan blocks never reaches the model either, so it counts as
+     *  absent rather than guiding the model toward memory it cannot see. */
+    const storeHasInjectableSummary = (sessionId) => {
         if (sessionId === undefined)
             return false;
         const runtime = sessions.get(sessionId);
         if (runtime === undefined)
             return false;
         try {
-            return readWorkspaceText(runtime.root, "memory_summary.md").trim() !== "";
+            const summary = readWorkspaceText(runtime.root, "memory_summary.md");
+            if (summary.trim() === "")
+                return false;
+            return sanitizeForInjection(summary).safe;
         }
         catch {
             return false;
@@ -1199,10 +1210,11 @@ export function apply(ctx, config = {}) {
             name: "memcurio-read-path",
             order: MEMCURIO_READ_PATH_ORDER,
             // Two gates, both Codex parity: the guide is tool-call instructions, so
-            // it stays empty when native tools are disabled; and it rides WITH the
-            // summary, so a store with nothing to inject gets no memory instructions
-            // either (the assembly scope is the agent, whose session names the store).
-            text: (context) => !live().registerTools || !storeHasSummary(sessionIdOfAssembly(context))
+            // it stays empty when native tools are not registered in this process;
+            // and it rides WITH an injectable summary, so a store with nothing to
+            // inject gets no memory instructions either (the assembly scope is the
+            // agent, whose session names the store).
+            text: (context) => !memoryToolsRegistered || !storeHasInjectableSummary(sessionIdOfAssembly(context))
                 ? ""
                 : renderReadPathInstructions(),
         });
@@ -1260,8 +1272,10 @@ export function apply(ctx, config = {}) {
     // The resolved settings document is authoritative (the profile config is
     // only the composition base), and a hard `settings` inject guarantees the
     // section resolved before apply.
-    if (live().registerTools)
+    if (live().registerTools) {
         registerMemoryTools(ctx, sessions, bridge, () => live().injectBudgetTokens);
+        memoryToolsRegistered = true;
+    }
     // Adopting a session bootstraps its store exactly once (see bootstrapRoot):
     // pending durable jobs from a previous process run would otherwise sit until
     // the first turn/end in the same store. Claims are SQLite-fenced.

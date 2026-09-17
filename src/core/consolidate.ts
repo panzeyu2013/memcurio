@@ -962,9 +962,18 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
           }
           report = typeof parsed.args.report === "string" ? parsed.args.report : "consolidation finished";
           const appliedNotes = Array.isArray(parsed.args.applied_notes) ? parsed.args.applied_notes : [];
-          consumedNoteFilenames = [...new Set(
-            appliedNotes.filter((value): value is string => typeof value === "string" && pendingNoteNames.has(value)),
-          )];
+          // A note can only be settled by an actual MEMORY.md rewrite: claiming
+          // it while writing nothing would silently swallow a forget or update
+          // request (it would otherwise stay pending forever).
+          const touchesMemory = edits.some((edit) => edit.rel === "MEMORY.md");
+          consumedNoteFilenames = touchesMemory
+            ? [...new Set(
+              appliedNotes.filter((value): value is string => typeof value === "string" && pendingNoteNames.has(value)),
+            )]
+            : [];
+          if (appliedNotes.length > 0 && !touchesMemory) {
+            report = `${report} (applied_notes ignored: no MEMORY.md edit in this run)`;
+          }
           completed = true;
           finished = true;
           messages.push(toolResultMessage(call, "ok: consolidation finished", false));
@@ -1186,7 +1195,8 @@ function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources
     "- Forgetting: files deleted in the diff mean their memory support is gone; surgically remove",
     "  only the MEMORY.md blocks/sections uniquely supported by deleted inputs. Keep mixed blocks,",
     "  removing only stale references.",
-    "- Apply pending notes: remember notes add knowledge; forget notes remove the targeted content.",
+    "- Apply pending notes: remember notes add knowledge; forget notes remove the targeted content;",
+    "  update notes rewrite the targeted content in place.",
     "- Facts derived from ad-hoc notes must carry the tag [ad-hoc note] in MEMORY.md.",
     "- Reduce noise: remove stale, duplicated, or low-signal blocks and bullets; let signal decide",
     "  granularity (do not target fixed counts).",
@@ -1648,11 +1658,22 @@ export async function runConsolidation(
     // passes the same secret / injection / size / v1-header checks as any
     // model-authored edit.
     const providerEdits: ConsolidateEdit[] = [...result.edits];
-    if (!(input.workspace["memory_summary.md"] ?? "").trim().startsWith("v1")) {
+    const lastSummaryEdit = [...providerEdits].reverse().find((edit) => edit.rel === "memory_summary.md");
+    const summaryAfter = lastSummaryEdit?.content ?? input.workspace["memory_summary.md"] ?? "";
+    let summaryInitialized = false;
+    if (!summaryAfter.trim().startsWith("v1")) {
       const memoryAfter = providerEdits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
-      if (!providerEdits.some((edit) => edit.rel === "memory_summary.md")) {
-        providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) });
+      // Drop any summary edit that would leave the file empty or schema-invalid
+      // (an empty write would otherwise satisfy a presence check while wiping
+      // the very file the guide and the window injection key off), then
+      // synthesize the minimal v1 summary.
+      for (let index = providerEdits.length - 1; index >= 0; index -= 1) {
+        if (providerEdits[index]?.rel === "memory_summary.md") {
+          providerEdits.splice(index, 1);
+        }
       }
+      providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) });
+      summaryInitialized = true;
     }
     const edits = validateEdits(providerEdits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
     const applied = edits.length > 0;
@@ -1715,7 +1736,7 @@ export async function runConsolidation(
         idx.audit(
           "consolidate.done",
           "-",
-          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}`,
+          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}${summaryInitialized ? ", init=memory_summary.md" : ""}`,
         );
         for (const r of result.rejected) {
           idx.audit("consolidate.rejected", r.rel, r.reason);
@@ -1735,7 +1756,7 @@ export async function runConsolidation(
       plan: freshPlan,
       result,
       applied,
-      message: `consolidated: ${edits.length} file(s) updated by ${provider.name}`,
+      message: `consolidated: ${edits.length} file(s) updated by ${provider.name}${summaryInitialized ? " (memory_summary.md initialized)" : ""}`,
     };
   } catch (err) {
     if (!committed && generation) {

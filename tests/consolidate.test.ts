@@ -582,6 +582,39 @@ describe("runConsolidation", () => {
     expect(summary).toContain("## User preferences");
   });
 
+  test("INIT: an empty summary edit is replaced by the minimal v1 summary", async () => {
+    // A model that writes memory_summary.md as an empty string would otherwise
+    // wipe the very file the guide and the window injection key off.
+    await addAdHocNote(dir, "seed", "remember");
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel([
+        JSON.stringify({ tool: "write_file", args: { rel: "memory_summary.md", content: "" } }),
+        JSON.stringify({ tool: "finish", args: { report: "wrote an empty summary" } }),
+      ]),
+    );
+    const run = await runConsolidation(dir, provider, { execute: true });
+    const summary = readWorkspaceText(dir, "memory_summary.md");
+    expect(summary.startsWith("v1")).toBe(true);
+    expect(summary).toContain("## User preferences");
+    expect(run.message).toContain("memory_summary.md initialized");
+  });
+
+  test("a note claimed applied without a MEMORY.md edit stays pending", async () => {
+    // finish.applied_notes is a claim, not evidence: with no MEMORY.md rewrite
+    // in the run, swallowing the note would silently drop a forget/update.
+    const note = await addAdHocNote(dir, "forget the old default", "forget");
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel([
+        JSON.stringify({ tool: "finish", args: { report: "nothing to do", applied_notes: [note.filename] } }),
+      ]),
+    );
+    const run = await runConsolidation(dir, provider, { execute: true });
+    expect(run.result?.report).toContain("applied_notes ignored");
+    expect((await pendingAdHocNotes(dir)).map((candidate) => candidate.filename)).toContain(note.filename);
+  });
+
   test("dry run writes nothing", async () => {
     await addAdHocNote(dir, "dry note", "remember");
     const run = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: false });

@@ -575,4 +575,22 @@ describe("MemcurioAdapter automatic consolidation channel gate", () => {
     }
     expect(channelCalls).toBe(0);
   });
+
+  test("a forget note without a channel stays pending instead of forcing every turn", async () => {
+    const adapter = new MemcurioAdapter({ durableQueue: true });
+    await adapter.sessionCreated("s1", PROJ, "dsh");
+    await addAdHocNote(dir, "please forget the old default", "forget");
+    process.env.MEMCURIO_LLM_PROVIDER = "none";
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      // The rule provider cannot apply a forget note, so it must not count as
+      // urgent work: otherwise every turn/end runs a zero-output Phase 2 and
+      // bypasses the success cooldown forever. It waits for a model channel.
+      expect(idx.metaGet("consolidation_auto_last")).toBeUndefined();
+      expect(idx.noteList().filter((note) => !note.applied)).toHaveLength(1);
+    } finally {
+      idx.close();
+    }
+  });
 });
