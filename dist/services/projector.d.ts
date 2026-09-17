@@ -15,7 +15,7 @@
  *   lastError ≤ MAX_ERROR_CHARS. A content field that redacts to empty is
  *   still emitted (structure survives; see drop rule below).
  * - Identifiers are NEVER redacted or truncated: sessionId, jobId,
- *   rolloutKey, workdir, partId, tool and the enum labels (status/kinds).
+ *   rolloutKey, partId, tool and the enum labels (status/kinds).
  *   They are correlation keys the client joins against snapshots and
  *   queue/rollout rows; redacting or folding them would break the exact
  *   matching the deltas exist to drive. The memory file `path` of a
@@ -40,8 +40,8 @@
  */
 import type { ExtractionJobStatus } from "../core/db.js";
 import type { EvidenceKind } from "../core/extract.js";
-/** Cap for browser-bound content text (static/dynamic inject text,
- *  evidence text, audit detail, audit action). */
+/** Cap for browser-bound content text (inject text, evidence text, audit
+ *  detail, audit action). */
 export declare const MAX_CONTENT_CHARS = 2000;
 /** Cap for job error text: denser and diagnostic, keep it terse. */
 export declare const MAX_ERROR_CHARS = 300;

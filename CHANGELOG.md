@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode is transport state, set by `onMode`). The host write-path filter
   (bridge + snapshot) moved into `src/services/write-path.ts` and is pinned
   to the browser copy by `tests/write-path.test.ts`.
+- `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
+  not implement it lose the LLM consolidation path (rule fallback) rather than
+  receiving a text protocol.
 
 ### Fixed
 
@@ -151,12 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory both as a `rollout_summaries/<file>.md` entry and as its bare
   `host|sessionId` key no longer bumps `usage_count` twice.
 
-### Changed
-
-- `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
-  not implement it lose the LLM consolidation path (rule fallback) rather than
-  receiving a text protocol.
-
 ### Removed
 
 - **Pre-S0 workbench scaffold.** `client/types.ts`, `client/index.ts` and
@@ -165,7 +162,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vocabulary had drifted from the shipped `client/ui/wire.ts`. The memory
   workbench (M0) will be built on the shipped store/transport;
   `client/README.md` now documents the shipped half only.
-
 
 ## [0.0.1] - 2026-09-16
 
