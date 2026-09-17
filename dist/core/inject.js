@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { fitContext } from "./budget.js";
+import { estimateTokens, truncateMiddle } from "./budget.js";
 import { readWorkspaceText } from "./workspace.js";
 import { Index } from "./db.js";
 import { indexDb } from "./paths.js";
@@ -42,14 +42,24 @@ export function renderMemoryContext(root, budgetTokens) {
         body = redactSecrets(summary).text;
     }
     // Compact framing: the how-to-read rules live in the system prompt, so the
-    // message only needs a one-line label, short delimiters and the data.
-    const lines = [
-        "Cross-session memory summary (untrusted):",
-        "<<<MEMORY_SUMMARY",
-        body,
-        ">>>MEMORY_SUMMARY",
-    ];
-    return fitContext(lines, budget);
+    // message only needs a one-line label, short delimiters and the data. Codex
+    // parity: the summary rides ONE context-window message capped by the inject
+    // budget, and an over-budget summary loses its middle (head AND tail
+    // survive) instead of its tail — the newest appended sections are the ones a
+    // head-only cut would silently drop.
+    const label = "Cross-session memory summary (untrusted):";
+    const framingTokens = estimateTokens(`${label}\n<<<MEMORY_SUMMARY\n>>>MEMORY_SUMMARY`);
+    const bodyBudget = budget - framingTokens;
+    // A budget that cannot hold the framing plus at least a token of body
+    // injects nothing: an empty MEMORY_SUMMARY block would only cost tokens.
+    if (bodyBudget < 1) {
+        return "";
+    }
+    const fitted = truncateMiddle(body.trim(), bodyBudget);
+    if (!fitted) {
+        return "";
+    }
+    return [label, "<<<MEMORY_SUMMARY", fitted, ">>>MEMORY_SUMMARY"].join("\n");
 }
 /** The read-path INSTRUCTIONS — when and how to call the memory tools, not
  *  what each tool does (their schemas describe their own bodies). Registered
@@ -86,10 +96,10 @@ export function renderStaticContext(root, budgetTokens) {
 }
 function defaultInjectBudget(root) {
     try {
-        return loadConfig(root).budget.maxInjectTokens ?? 1500;
+        return loadConfig(root).budget.maxInjectTokens ?? 2500;
     }
     catch {
-        return 1500;
+        return 2500;
     }
 }
 function auditNote(root, action, detail) {

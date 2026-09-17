@@ -376,7 +376,7 @@ describe("DSH plugin contract", () => {
     }
   });
 
-  test("does not collect plugin-injected messages as extraction evidence", async () => {
+  test("collects only user-authored messages as extraction evidence", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
     const session = ctx.sessions.prepare(SessionId("evidence-filter"), { meta: { cwd: join(root, "workspace") } });
@@ -392,27 +392,35 @@ describe("DSH plugin contract", () => {
     await ctx.sessions.flush(session);
 
     // DSH's agent loop persists every pre-step decision message to the
-    // durable log as user/message — including memcurio's own injected
-    // recall context. Such messages must never become extraction evidence.
+    // durable log as user/message — including memcurio's own injected recall
+    // context, subagent settlements and reports, and goal rounds. Only the
+    // user's own text may become extraction evidence.
     const injected = createUserMessage({
       content: [{ type: "text", text: "INJECTED MEMORY CONTENT that must not be remembered" }],
       source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
     });
+    const settlement = createUserMessage({
+      content: [{ type: "text", text: "SUBAGENT SETTLEMENT that must not be remembered" }],
+      source: { kind: "subagent-settled", form: "notice", summary: "child finished", senderSessionId: "agent-1" },
+    } as never);
+    const childReport = createUserMessage({
+      content: [{ type: "text", text: "SUBAGENT REPORT that must not be remembered" }],
+      source: { kind: "agent-message", senderSessionId: "agent-1" },
+    } as never);
+    const goalRound = createUserMessage({
+      content: [{ type: "text", text: "GOAL ROUND that must not be remembered" }],
+      source: { kind: "goal", goalId: "goal-1", revision: 1, round: 1 },
+    } as never);
     const real = createUserMessage({ content: [{ type: "text", text: "real user text" }], source: { kind: "user" } });
-    ctx.emit("session/event", session, {
-      type: "user/message",
-      seq: SessionSeq(0),
-      time: Date.now(),
-      data: injected,
-      surfaceOp: "append",
-    });
-    ctx.emit("session/event", session, {
-      type: "user/message",
-      seq: SessionSeq(1),
-      time: Date.now(),
-      data: real,
-      surfaceOp: "append",
-    });
+    for (const [seq, message] of [...[injected, settlement, childReport, goalRound], real].entries()) {
+      ctx.emit("session/event", session, {
+        type: "user/message",
+        seq: SessionSeq(seq),
+        time: Date.now(),
+        data: message,
+        surfaceOp: "append",
+      });
+    }
 
     const originalConsoleWarn = console.warn;
     console.warn = () => undefined;
@@ -430,6 +438,9 @@ describe("DSH plugin contract", () => {
       const texts = (snapshot.evidence?.items ?? []).map((item) => item.text ?? "");
       expect(texts).toContain("real user text");
       expect(texts.some((text) => text.includes("INJECTED MEMORY CONTENT"))).toBe(false);
+      expect(texts.some((text) => text.includes("SUBAGENT SETTLEMENT"))).toBe(false);
+      expect(texts.some((text) => text.includes("SUBAGENT REPORT"))).toBe(false);
+      expect(texts.some((text) => text.includes("GOAL ROUND"))).toBe(false);
     } finally {
       index.close();
       await disposeFibers(fibers);
@@ -575,7 +586,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     await disposeFibers(fibers);
   });
 
-  test("injects once per content change through the scoped pre-step dispatch", async () => {
+  test("injects the summary on the window's first step through the scoped pre-step dispatch", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
     const session = ctx.sessions.prepare(SessionId("prestep-dedupe"), { meta: { cwd: join(root, "workspace") } });
@@ -618,11 +629,263 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     // The guide is a system-prompt section now: never in an injected message.
     expect(injectedText).not.toContain("## memcurio memory");
 
-    // Unchanged content is not re-injected: the model already has it, and
-    // every appended message grows the durable session log.
+    // The window is latched: a second step injects nothing (the model already
+    // has the snapshot, and every appended message grows the durable log).
     const second = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
     if (second.kind !== "enter") throw new Error("expected enter");
     expect(second.messages).toHaveLength(1);
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("injects the summary once per context window, never per turn", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prestep-window"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- codex parity\n");
+    // A searchable MEMORY.md proves that no retrieval runs per turn: the old
+    // dynamic path would have matched this token and injected a hit block.
+    writeWorkspaceText(root, "MEMORY.md", "# Task Group: x\n\n- unique-recall-token 只读评审约定\n");
+
+    const agent = { session, options: {} } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const step = async (message: ReturnType<typeof createUserMessage>) => {
+      const payload = { agent, messages: [message], turn: 1, step: 1, signal: new AbortController().signal } as never;
+      const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, async (): Promise<PreStepDecision> => ({
+        kind: "enter",
+        messages: [message],
+      }));
+      if (decision.kind !== "enter") throw new Error("expected enter");
+      return decision.messages;
+    };
+    const textOf = (message: { content: readonly { type: string; text?: string }[] }): string =>
+      message.content.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
+
+    // The context window opens: the summary is injected once.
+    const first = await step(createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } }));
+    expect(first).toHaveLength(2);
+    expect(textOf(first[1] as never)).toContain("<<<MEMORY_SUMMARY");
+    expect(textOf(first[1] as never)).toContain("codex parity");
+
+    // Codex parity: steady-state turns inject nothing — not even for a new
+    // user message; the model reaches the store through the memory tools.
+    const second = await step(createUserMessage({ content: [{ type: "text", text: "unique-recall-token" }], source: { kind: "user" } }));
+    expect(second).toHaveLength(1);
+
+    // A subagent settlement is machine context and injects nothing either.
+    const settlement = createUserMessage({
+      content: [{ type: "text", text: "Background subagent finished. Its closing message: unique-recall-token" }],
+      source: { kind: "subagent-settled", form: "notice", summary: "child finished", senderSessionId: "agent-1" },
+    } as never);
+    expect(await step(settlement)).toHaveLength(1);
+
+    // A compaction opens a new context window: the next step injects once more.
+    ctx.emit("session/event", session, {
+      type: "compaction/end",
+      seq: SessionSeq(9),
+      time: Date.now(),
+      data: { compactionId: CompactionId("window-2"), turn: null },
+    } as never);
+    await ctx.sessions.flush(session);
+    const third = await step(createUserMessage({ content: [{ type: "text", text: "window 2" }], source: { kind: "user" } }));
+    expect(third).toHaveLength(2);
+    expect(textOf(third[1] as never)).toContain("<<<MEMORY_SUMMARY");
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("latches an empty store for the context window", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prestep-empty-latch"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const agent = { session, options: {} } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const step = async (text: string) => {
+      const userMsg = createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } });
+      const payload = { agent, messages: [userMsg], turn: 1, step: 1, signal: new AbortController().signal } as never;
+      const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, async (): Promise<PreStepDecision> => ({
+        kind: "enter",
+        messages: [userMsg],
+      }));
+      if (decision.kind !== "enter") throw new Error("expected enter");
+      return decision.messages;
+    };
+    const textOf = (message: { content: readonly { type: string; text?: string }[] }): string =>
+      message.content.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
+
+    // The window opens while the store has no summary: nothing is injected and
+    // the window latches, so a summary written later waits for the next window.
+    expect(await step("hello")).toHaveLength(1);
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- late summary\n");
+    expect(await step("again")).toHaveLength(1);
+
+    // A compaction opens a new window: the now-present summary is injected.
+    ctx.emit("session/event", session, {
+      type: "compaction/end",
+      seq: SessionSeq(5),
+      time: Date.now(),
+      data: { compactionId: CompactionId("next-window"), turn: null },
+    } as never);
+    await ctx.sessions.flush(session);
+    const next = await step("window 2");
+    expect(next).toHaveLength(2);
+    expect(textOf(next[1] as never)).toContain("late summary");
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("does not latch a failed static read", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("prestep-retry"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const agent = { session, options: {} } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const step = async (text: string) => {
+      const userMsg = createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } });
+      const payload = { agent, messages: [userMsg], turn: 1, step: 1, signal: new AbortController().signal } as never;
+      const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, async (): Promise<PreStepDecision> => ({
+        kind: "enter",
+        messages: [userMsg],
+      }));
+      if (decision.kind !== "enter") throw new Error("expected enter");
+      return decision.messages;
+    };
+    const textOf = (message: { content: readonly { type: string; text?: string }[] }): string =>
+      message.content.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
+
+    // A summary path that cannot be read (a directory, not a file) fails the
+    // step open: the failure is swallowed and the window is NOT latched.
+    mkdirSync(join(root, "memory", "memory_summary.md"), { recursive: true });
+    expect(await step("hello")).toHaveLength(1);
+
+    // The next step retries because the failure did not latch the window.
+    rmSync(join(root, "memory", "memory_summary.md"), { recursive: true, force: true });
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- recovered\n");
+    const after = await step("again");
+    expect(after).toHaveLength(2);
+    expect(textOf(after[1] as never)).toContain("recovered");
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("a replayed window snapshot is not injected twice (resume)", async () => {
+    const root = temporaryRoot();
+    const workdir = join(root, "workspace");
+    const { ctx, fibers } = await runtime();
+    // The durable log from a previous run already carries this window's
+    // snapshot; a resumed session must not append a second copy.
+    const seed: SessionEvent[] = [
+      {
+        type: "user/message",
+        seq: SessionSeq(0),
+        time: Date.now(),
+        data: createUserMessage({
+          content: [{ type: "text", text: "Cross-session memory summary (untrusted):\n<<<MEMORY_SUMMARY\nv1\n\n## Prefs\n\n- old\n>>>MEMORY_SUMMARY" }],
+          source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+        }),
+        surfaceOp: "append",
+      },
+    ];
+    const session = ctx.sessions.prepare(SessionId("prestep-resume"), { meta: { cwd: workdir }, seed });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: true,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- fresh\n");
+
+    const agent = { session, options: {} } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const userMsg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    const payload = { agent, messages: [userMsg], turn: 1, step: 1, signal: new AbortController().signal } as never;
+    const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, async (): Promise<PreStepDecision> => ({
+      kind: "enter",
+      messages: [userMsg],
+    }));
+    if (decision.kind !== "enter") throw new Error("expected enter");
+    expect(decision.messages).toHaveLength(1);
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("caps memory tool arguments at the codex limits", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("tool-bounds"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    const exec = async (name: string, args: Record<string, unknown>) => ctx.tools.execute({
+      callId: ToolCallId(`bounds-${name}`),
+      name,
+      arguments: args,
+      agent: { session } as never,
+      signal: new AbortController().signal,
+    });
+    const search = await exec("memory_search", { query: "x", topK: 201 });
+    expect(search.isError).toBe(true);
+    if (search.isError) expect(search.error.message).toContain("[1, 200]");
+    const list = await exec("memory_list", { maxResults: 2_001 });
+    expect(list.isError).toBe(true);
+    if (list.isError) expect(list.error.message).toContain("[1, 2000]");
+    const read = await exec("memory_read", { path: "MEMORY.md", maxTokens: 20_001 });
+    expect(read.isError).toBe(true);
+    if (read.isError) expect(read.error.message).toContain("[1, 20000]");
 
     detach();
     await pluginFiber.dispose();

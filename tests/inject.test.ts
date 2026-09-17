@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { estimateTokens } from "../src/core/budget.js";
 import { renderMemoryContext, renderReadPathInstructions, renderStaticContext } from "../src/core/inject.js";
 import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -36,6 +37,26 @@ describe("renderMemoryContext", () => {
     const ctx = renderMemoryContext(dir);
     expect(ctx).toContain("用户偏好 A");
     expect(ctx).toContain("untrusted");
+  });
+
+  test("an over-budget summary keeps its head and tail (codex-style middle truncation)", () => {
+    writeWorkspaceText(
+      dir,
+      "memory_summary.md",
+      `v1\n\nHEAD-${"h".repeat(200)}\n${"m".repeat(4000)}\nTAIL-${"t".repeat(200)}\n`,
+    );
+    const ctx = renderMemoryContext(dir, 300);
+    expect(estimateTokens(ctx)).toBeLessThanOrEqual(300);
+    expect(ctx).toContain("HEAD-");
+    expect(ctx).toContain("TAIL-");
+    expect(ctx).toContain("tokens truncated");
+  });
+
+  test("a budget too small for the framing injects nothing", () => {
+    writeWorkspaceText(dir, "memory_summary.md", `v1\n\n- ${"x".repeat(400)}\n`);
+    for (const budget of [1, 20, 26]) {
+      expect(renderMemoryContext(dir, budget), `budget=${budget}`).toBe("");
+    }
   });
 
   test("blocks injection-laden summaries", () => {

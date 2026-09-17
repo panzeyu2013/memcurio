@@ -102,3 +102,51 @@ export function fitContext(lines, budgetTokens) {
     const safeNotice = estimateTokens(notice) <= budgetTokens ? notice : "";
     return [...body.lines, safeNotice].filter((l) => l !== "").join("\n");
 }
+/** Codex-style middle truncation: keep the head and the tail of one over-budget
+ *  block and drop the middle behind an explicit marker. Memory summaries put
+ *  the stable profile first and the newest task groups last, so the middle is
+ *  the least lossy thing to drop; a head-only cut would silently discard every
+ *  later update while still spending the full budget. Returns the original text
+ *  when it already fits. */
+export function truncateMiddle(text, budgetTokens) {
+    if (budgetTokens <= 0) {
+        return "";
+    }
+    if (estimateTokens(text) <= budgetTokens) {
+        return text;
+    }
+    // Codex parity (utils/string truncate.rs): reserve room for the marker
+    // first, then split the remaining budget in half with the head taking the
+    // floor — `split_budget`/`split_string` keep both halves on character
+    // boundaries and the marker names the removed token count.
+    const total = estimateTokens(text);
+    const markerWorst = `…${total} tokens truncated…`;
+    const available = budgetTokens - estimateTokens(markerWorst);
+    if (available < 2) {
+        return "";
+    }
+    const headBudget = Math.floor(available / 2);
+    const tailBudget = available - headBudget;
+    const head = takeTokens(text, headBudget, false).replace(/\s+$/, "");
+    const tail = takeTokens(text, tailBudget, true).replace(/^\s+/, "");
+    const removed = Math.max(0, total - estimateTokens(head) - estimateTokens(tail));
+    return `${head}…${removed} tokens truncated…${tail}`;
+}
+/** Take at most budgetTokens worth of text from the start (or the end when
+ *  fromEnd is set), iterating code points so a surrogate pair is never split
+ *  and the per-character cost stays exact for mixed CJK/ASCII text. */
+function takeTokens(text, budgetTokens, fromEnd) {
+    const chars = [...text];
+    const order = fromEnd ? chars.reverse() : chars;
+    const picked = [];
+    let used = 0;
+    for (const ch of order) {
+        const cost = CJK.test(ch) ? 1 : 0.25;
+        if (used + cost > budgetTokens) {
+            break;
+        }
+        picked.push(ch);
+        used += cost;
+    }
+    return (fromEnd ? picked.reverse() : picked).join("");
+}

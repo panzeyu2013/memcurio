@@ -34,7 +34,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 <DSH home>/memcurio/dsh/<workspace-key>/     （scope: global 则为 <DSH home>/memcurio/）
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
-│   ├── memory_summary.md            # v1 头；非空时每会话注入；User Profile / User preferences / General Tips / What's in Memory
+│   ├── memory_summary.md            # v1 头；非空时每个上下文窗口注入一次；User Profile / User preferences / General Tips / What's in Memory
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
@@ -62,7 +62,7 @@ src/
 │   ├── events.ts       事件模型（host/event 校验，不变）
 │   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；save_extraction/skip_extraction 原生工具回合 + 校验/脱敏）
 │   ├── ids.ts          UUIDv4 id（含 newNoteId）
-│   ├── inject.ts       读路径注入（renderMemoryContext 摘要区块 / renderReadPathInstructions 系统提示指南 / renderHitBlock 动态命中）
+│   ├── inject.ts       读路径注入（renderMemoryContext 摘要区块 / renderReadPathInstructions 系统提示指南；renderHitBlock 动态块自 v2.1 起只服务模拟器）
 │   ├── paths.ts        布局（0700）+ memory workspace 路径（ns 逻辑移除）
 │   ├── purge.ts        本地 rollout hard purge（只删引用目标的 skills/块）与显式 JSONL export scrub
 │   ├── read.ts         读路径 list/read 表面（listMemory / readMemory）
@@ -126,7 +126,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入纪律）——指令进提示词，且全文无文件系统路径
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南）
 模型自检索：按需调用 memory_* 工具（各自 schema 自带说明，不经文件系统）
-动态注入（每次用户输入）：检索 query 由"最近一条用户文本"经去噪/停用词处理后生成 → searchMemory 两遍打分（IDF + 短语奖励 + 去重 + 单文件 cap）取 top-K
+注入（v2.1，对齐 codex）：上下文窗口打开时注入一次整份 memory_summary.md（2500 token 预算；超预算按 codex 式中间截断保头尾），会话首轮与 compaction/end 之后各一次，稳态轮次不注入；检索由模型经 memory_search 主动发起（引擎仍保留 buildDynamicContext 与模拟器 API）
 注入线格式（v1.9.1，引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块 = 一行 "Memory hits:" + 每行 "rel:line content"（空白折叠、220 字符截断），无逐行前缀
 使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用 + search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）

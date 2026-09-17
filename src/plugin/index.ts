@@ -29,7 +29,6 @@ export { workspaceStoreRoot } from "./scope.js";
 
 import { renderReadPathInstructions } from "../core/inject.js";
 import { memoryWorkspace } from "../core/paths.js";
-import { retrievalQuery } from "../core/query.js";
 import { HostBridge } from "./bridge.js";
 import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
 import { installUiTransport } from "./ui-transport.js";
@@ -130,17 +129,10 @@ interface SessionRuntime {
   failure?: unknown;
   /** Last worker-lane failure; surfaced at the dispose drain. */
   workerFailure?: unknown;
+  /** Whether this context window already received the summary snapshot.
+   *  Codex parity: one injection per window — the session's first step, and
+   *  then only after compaction/end opens a new window. */
   staticInjected: boolean;
-  /** One-shot diagnostics gate: the first dynamic query that yields no
-   *  injectable hit is audited, so a silent retrieval miss (e.g. a query the
-   *  lexical scanner cannot tokenize) leaves a trace instead of looking like
-   *  "no memory matches". */
-  dynamicMissAudited: boolean;
-  /** Text of the last memory-context message injected via agent/pre-step.
-   *  DSH's loop appends every decision message to the durable session log,
-   *  so unchanged content is NOT re-injected (the model already has it);
-   *  compaction/end clears it because the log rewrite may drop the message. */
-  lastInjectedContext?: string;
   route?: { provider: string; model: string };
   /** Paired compaction state: the summary text plus the seqs of the messages
    *  the replacement shadows, pruned from evidence once the compaction
@@ -278,14 +270,23 @@ function messageFromEvent(event: SessionEvent): Message | undefined {
   return undefined;
 }
 
-/** Plugin-injected messages — memcurio's own recall context, DSH's runtime
- *  context projection, any other plugin's injection — are machine context,
- *  not user conversation. The agent loop persists them as user/message
- *  events in the durable log, so without this filter the plugin would
- *  collect its own injected memories and instructions as extraction
- *  evidence (self-referential feedback). */
-function isPluginMessage(message: Message): boolean {
-  return message.source.kind === "plugin";
+/** Whether the message is conversation evidence: the user's own text or an
+ *  assistant turn. Every other user-role source kind is machine context —
+ *  plugin injections, runtime snapshots, subagent settlements and reports,
+ *  goal rounds and instruction projections are persisted as user/message
+ *  events in the durable log, so without this filter the plugin would collect
+ *  its own injected memories, a child agent's report and a goal round's
+ *  objective as the user's own evidence (self-referential feedback and
+ *  misattributed preferences). */
+function isConversationMessage(message: Message): boolean {
+  return message.source.kind === "user" || message.role === "assistant";
+}
+
+/** A memcurio recall snapshot already present in the durable log. Seeded
+ *  sessions (resume/fork, process restart) replay it, so the window must count
+ *  as injected — otherwise the first pre-step appends a second copy. */
+function isMemcurioInjectionMessage(message: Message): boolean {
+  return message.source.kind === "plugin" && message.source.plugin === "@memcurio/dsh-plugin";
 }
 
 /** The evidence partId the plugin assigns to one session event. */
@@ -594,7 +595,7 @@ function registerMemoryTools(
       return runTool(runtime, exec, async () => JSON.stringify(await integrationSearch(
         runtime.root,
         stringArg(args.query, "query", true, 10_000) ?? "",
-        integerArg(args.topK, "topK", 10, 50),
+        integerArg(args.topK, "topK", 200, 200),
       )));
     },
   }));
@@ -609,7 +610,7 @@ function registerMemoryTools(
       const runtime = requireSession(exec, sessions);
       return runTool(runtime, exec, async () => JSON.stringify(await integrationList(runtime.root, {
         path: stringArg(args.path, "path", false, 1_000) ?? "",
-        maxResults: integerArg(args.maxResults, "maxResults", 200, 2_000),
+        maxResults: integerArg(args.maxResults, "maxResults", 2_000, 2_000),
         cursor: stringArg(args.cursor, "cursor", false, 100),
       })));
     },
@@ -636,7 +637,7 @@ function registerMemoryTools(
           path: rel,
           lineOffset: integerArg(args.lineOffset, "lineOffset", 1),
           maxLines: integerArg(args.maxLines, "maxLines", undefined, 10_000),
-          maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 1_000_000),
+          maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 20_000),
         }));
         if (rel) {
           bridge.tagToolReadHits(runtime.session.id, "memory_read", [rel]);
@@ -961,7 +962,6 @@ export function apply(ctx: Context, config: Config = {}): void {
       queue: Promise.resolve(),
       workerQueue: Promise.resolve(),
       staticInjected: false,
-      dynamicMissAudited: false,
       route: seededRoute,
       pendingCompactions: new Map(),
       abort: new AbortController(),
@@ -982,10 +982,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       for (const event of seedEvents) {
         const message = messageFromEvent(event);
         if (message) {
-          if (!isPluginMessage(message)) {
+          if (isConversationMessage(message)) {
             const evidence = messageEvidence(message);
             await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
             bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
+          } else if (isMemcurioInjectionMessage(message)) {
+            // The replayed prefix already carries this window's snapshot.
+            runtime.staticInjected = true;
           }
         } else if (event.type === "tool/call") {
           let parsed: unknown;
@@ -1012,7 +1015,12 @@ export function apply(ctx: Context, config: Config = {}): void {
             shadowedSeqs: event.data.shadowedSeqs,
           });
         } else if (event.type === "compaction/end") {
-          if (event.data.error === undefined) await settleCompaction(runtime, session.id, event.data.compactionId);
+          if (event.data.error === undefined) {
+            await settleCompaction(runtime, session.id, event.data.compactionId);
+            // A completed compaction opens a new window: snapshots replayed
+            // after it re-latch, earlier ones no longer count.
+            runtime.staticInjected = false;
+          }
         } else if (event.type === "compaction/prune") {
           pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
           bridge.tagPrune(session.id, event.data.shadowedSeqs);
@@ -1147,7 +1155,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     const message = messageFromEvent(event);
     if (message) {
-      if (!isPluginMessage(message)) {
+      if (isConversationMessage(message)) {
         const partId = partIdFor(event.type, event.seq);
         const evidence = messageEvidence(message);
         void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partId, evidence), warn);
@@ -1174,9 +1182,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     } else if (event.type === "compaction/end") {
       if (event.data.error === undefined) {
         runtime.staticInjected = false;
-        // The log rewrite may have compacted the injected memory message
-        // away, so the next pre-step must re-inject even unchanged content.
-        runtime.lastInjectedContext = undefined;
+        // The compaction opens a new context window; the log rewrite may have
+        // dropped the injected memory message, so the next pre-step injects
+        // the (possibly newer) summary once more.
         void enqueue(runtime, () => settleCompaction(runtime, session.id, event.data.compactionId), warn);
       }
     } else if (event.type === "compaction/prune") {
@@ -1277,37 +1285,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         sweepDormantStores("pre-step route");
       }
       await awaitRuntime(runtime);
-      let context: string;
-      // Injected pieces for the host bridge tag (declared outside the try so
-      // the tag site after the dedupe check can read them).
-      let staticPiece: string | undefined;
-      let dynamicPiece: string | undefined;
+      // Codex parity: memory is a CONTEXT-WINDOW snapshot, not a per-turn
+      // recall step. The summary is injected once when a window opens (a
+      // session's first step, and again after a compaction rewrites the log);
+      // steady-state turns inject nothing and the model reaches the store
+      // through the memory tools only. The per-turn dynamic retrieval of
+      // v1.9–v2.0 is removed.
+      if (runtime.staticInjected) return decision;
+      let staticPiece: string;
       try {
-        // Retrieval query: the newest non-plugin user text, noise-stripped and
-        // stop-worded. The raw message dump (tool output, injected context,
-        // markdown) used to become the query, which buried the real hits.
-        const query = retrievalQuery(
-          payload.messages
-            .filter((message) => !isPluginMessage(message))
-            .map(textFromMessage)
-            .filter(Boolean)
-            .reverse(),
-        );
-        const parts: string[] = [];
-        if (!runtime.staticInjected) {
-          staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, live().injectBudgetTokens);
-          if (staticPiece) parts.push(staticPiece);
-        }
-        if (query) {
-          dynamicPiece = await runtime.adapter.buildDynamicContext(runtime.workdir, query, live().injectBudgetTokens);
-          if (dynamicPiece) {
-            parts.push(dynamicPiece);
-          } else if (!runtime.dynamicMissAudited) {
-            runtime.dynamicMissAudited = true;
-            void runtime.adapter.recordDynamicMiss(runtime.workdir, query).catch(warn);
-          }
-        }
-        context = parts.filter(Boolean).join("\n\n");
+        staticPiece = await runtime.adapter.buildStaticContext(runtime.workdir, live().injectBudgetTokens);
       } catch (err) {
         // Injection is read-only augmentation: a memory-store hiccup must
         // never fail the model step. staticInjected stays false, so the
@@ -1315,22 +1302,13 @@ export function apply(ctx: Context, config: Config = {}): void {
         ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
         return decision;
       }
-      if (!context) return decision;
-      // The loop persists every decision message to the durable session log.
-      // Unchanged content is not re-injected (the model already has it from
-      // the previous step); only content changes append a new message, which
-      // bounds log growth and compaction pollution. compaction/end clears
-      // the marker because the log rewrite may have dropped the message.
-      if (context === runtime.lastInjectedContext) return decision;
-      runtime.lastInjectedContext = context;
-      // Only a NON-EMPTY static piece latches the summary: with the guide now
-      // prompt-side, a store without a summary must keep retrying the static
-      // build — dynamic hits alone must not mark it injected.
-      if (staticPiece) {
-        runtime.staticInjected = true;
-      }
-      bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, dynamicPiece, live().injectBudgetTokens);
-    return { ...decision, messages: [...decision.messages, memoryMessage(context)] };
+      // Latch after a successful read, empty or not: an empty store injects
+      // nothing in THIS window (codex reads memory_summary.md once, when the
+      // window opens), so a summary written later waits for the next window.
+      runtime.staticInjected = true;
+      if (!staticPiece) return decision;
+      bridge.tagInjection(runtime.session.id, runtime.workdir, staticPiece, undefined, live().injectBudgetTokens);
+    return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
   }, { global: true });
 
   // The resolved settings document is authoritative (the profile config is

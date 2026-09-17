@@ -252,7 +252,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         inputMode: "numeric",
         autoComplete: "off",
         spellCheck: false,
-        placeholder: "1500",
+        placeholder: "2500",
         value: draftBudget,
         readOnly: busy,
         disabled: !face.writable,

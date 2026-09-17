@@ -1,4 +1,9 @@
-/** Retrieval-query shaping for the dynamic memory injection.
+/** Retrieval-query shaping for a dynamic memory search.
+ *
+ * Reserved API (v2.1): the plugin no longer performs per-turn recall
+ * injection, so only host integrations and tests call this shaper; the
+ * workbench simulator searches with the raw user query. Kept because the
+ * ranking it feeds (search.ts) is still the read path the model drives.
  *
  * The plugin used to hand the raw step text (user turns, tool output, injected
  * context, markdown) to the lexical search: every word in that dump became a

@@ -13,7 +13,7 @@ export function staticParts(root, budgetTokens) {
 /** Full static injection preview: the budget-capped summary DATA the engine
  *  injects (v1.9 keeps the guide prompt-side, so the injected message carries
  *  no instructions). Two preview caveats: the budget resolves to config
- *  budget.maxInjectTokens ?? 1500 unless the caller passes the live override,
+ *  budget.maxInjectTokens ?? 2500 unless the caller passes the live override,
  *  and no audit row is written (real injections audit adapter.static_context /
  *  adapter.dynamic_context). */
 export function staticContext(root, budgetTokens) {

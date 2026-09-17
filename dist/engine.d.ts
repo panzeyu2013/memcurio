@@ -229,11 +229,13 @@ export declare class MemcurioAdapter {
     private modelChannel;
     maybeConsolidate(): Promise<void>;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
+    /** Reserved engine API (v2.1): the plugin no longer injects per-turn hits;
+     *  kept for host integrations and the workbench's manual simulator. */
     buildDynamicContext(workdir: string, query: string, budgetTokens?: number): Promise<string>;
     /** Record that a dynamic retrieval query produced no injectable hit.
      *  Diagnostics only — a silent miss is indistinguishable from "no memory
-     *  matches" in the audit tail. The caller (plugin pre-step) enforces
-     *  once-per-session to keep the audit quiet. */
+     *  matches" in the audit tail. Reserved engine API (v2.1): the plugin no
+     *  longer runs a per-turn retrieval, so only host integrations call this. */
     recordDynamicMiss(workdir: string, query: string): Promise<void>;
     buildCompactionContext(sessionId: string, workdir: string): Promise<string>;
     buildReplacePrompt(sessionId: string, context: string): string;

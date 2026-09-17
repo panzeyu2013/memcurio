@@ -80,7 +80,7 @@ DSH Web（浏览器）
 | 读 | `memory.tree/list/read` | 目录树/分页/内容（行/Token 截断、再脱敏、符号链接拒绝） | `api.ts` integrationList/Read → `core/read.ts` |
 | 读 | `memory.status` | stage1 计数/notes/队列/审计数 | `api.ts` integrationStatus |
 | 注入 | `inject.static()` | → 静态上下文全文 + 预算内裁剪后形态（预览） | `engine.buildStaticContext` |
-| 注入 | `inject.simulate(query)` | **注入模拟器**：query → 预算派生 4–8 命中+来源+blocked+脱敏预览+预算占用 | `engine.buildDynamicContext` / `searchMemory` 内部组装 |
+| 注入 | `inject.simulate(query)` | **注入模拟器**（手动预览，非自动注入）：query → 预算派生 4–8 命中+来源+blocked+脱敏预览+预算占用 | `engine.buildDynamicContext` / `searchMemory` 内部组装 |
 | 用量 | `usage.list/byKey` | usage_count/last_usage（db stage 行；预览路径不计数） | `src/services/usage.ts`（最近命中时间线为客户端对 usage-tick 增量的折叠，宿主无内存态） |
 | 状态 | `queue.list()` | 抽取 job：pending/processing/blocked/completed（终态，不入列表）/dead + attempts + lastError（脱敏） | db `extractionList` |
 | 状态 | `consolidation.state()` | 自动整合 last/failed/冷却剩余（meta 键） | `metaGet("consolidation_auto_last"/"_failed")` |
@@ -172,7 +172,7 @@ DSH Web（浏览器）
 
 ### 注入面
 
-- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列）+ 最近一次动态命中（来源/命中行）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。
+- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。动态命中段自 v2.1 起不再产生（每轮自动注入已移除），组件在缺失时整段不渲染。
 - **注入模拟器（M0 核心）**：输入框（默认取当前会话最新用户消息作 query 种子）→ `inject.simulate` → 命中列表（内容**已脱敏预览**）、来源 rollout/行号、blocked 计数（注入扫描拦截）、预算占用。空态引导："还没有记忆——去会话里让模型记住第一条"。
 - 每次真实注入经推送通道即时刷新（实时性设计一节）。
 
@@ -220,7 +220,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 | 事件（源） | delta | 触发面 |
 |---|---|---|
-| `agent/pre-step` 注入成功 | inject.static/dynamic 内容+预算 | 注入面 |
+| `agent/pre-step` 注入成功（窗口快照，每窗口一次） | inject.static 内容+预算 | 注入面 |
 | `tools/result` 命中记忆文件 | usage-tick（**+1 增量**；读命中键=相对路径，引用键=rollout key） | 持久面/时间线 |
 | `memory_cite` 原生调用（turn/end 不再解析文本） | citation 节点 | 时间线 |
 | `session/event`（消息） | 证据窗口增量 | 状态面/时间线 |
@@ -241,7 +241,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——v1.6 起默认开，v1.7 起连配置项一并删除）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
-- **事件打标点**：pre-step 注入（static/dynamic/budget；投影器仅置 duplicate 标记，重复注入仍出流——实际去重在插件 pre-step 的 lastInjectedContext）、非插件 user/assistant 证据（沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
+- **事件打标点**：pre-step 注入（static/budget；窗口快照每窗口至多一次，投影器仅置 duplicate 标记——实际去重在插件 pre-step 的 staticInjected 闩）、user/assistant 证据（机器来源消息排除，沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出 delta；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置/realtime）；字段名与客户端词汇对齐；delta 过滤与快照标记映射留给传输适配器（S0）；
 - 客户端模型：queue-updated 改**单 job 语义**（jobId/status/attempts），由 jobs 列表重算 counts；completed 从列表移除。
@@ -254,7 +254,7 @@ node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——
 
 - **host 传输**（`src/plugin/ui-transport.ts`）：在 `ctx.webServer` 上用 prefix 路由 `/memcurio` 注册 `GET /snapshot?session=<id>`（WorkbenchSnapshot JSON）与 `GET /events?session=<id>`（SSE：`id:` = 状态版本、`data: { seq, deltas }`、`: ping` 心跳；按订阅的 session 过滤带 sessionId 的 delta）。路由/sink/心跳由 inject 回调的 fiber 持有（webServer 更换会重注册）。**自带守卫**（`dsh-host-webserver` 明确不提供鉴权/来源策略）：仅 GET；对端必须 loopback；`Host` 必须是 loopback 主机名（防 DNS rebinding，仅比对 Origin 不成立）；`Origin` 存在时必须等于 `Host`；`Sec-Fetch-Site` 非 same-origin/none 拒绝；**每进程随机 token 必填**，经 `webserver/index-inject` 的 `globalThis.__MEMCURIO_UI__` 下发，常数时间比较，无 token 的页面不请求、UI 置 offline（宁可不显示也不泄露）；不写任何 CORS 头、`Cache-Control: no-store`；SSE 并发上限 8、每流 4MB 背压上限、socket/req close 与心跳存活检查回收槽位。端点恒挂载（无 hostBridge 开关，也没有 403 分支）；无 web server 的 profile 保持 host-only。
 - **client 传输**（`client/ui/transport.ts`）：同源 fetch snapshot + SSE 流读取（`text/event-stream` 分帧、`data:` JSON、坏帧丢弃），流断开自动降级为 1–3s 轮询并周期性重试 SSE；模式上报驱动“实时性降级”角标。
-- **G5 注入可见**：每次内容变化的注入经 Toast 提示（`duplicate=true` 且无新动态命中不提示）；注入预览（静态上下文 / read 指引 / 最近动态命中 / 预算条）与未读写入圆点由 `client/ui/injection-indicator.ts` 承载但**不在会话头部注册**（v1.7 产品指令：顶部栏无 memcurio 图标），待工作台（M0/M1）提供状态面。注入 ON/OFF 由 Settings 面板承载（v1.7，同一 `injectContext` 字段）。注入消息本身在会话转录里的行由 `client/ui/context-row.ts` 承载（v1.8）：插件自有标题「记忆注入 / Memory injection」+ 生产者标签 + 可展开的模型可见正文，其余 context 节点转发给被影子的 shipped 行。
+- **G5 注入可见**：每次内容变化的注入经 Toast 提示（重复注入不提示）；注入预览（静态上下文 / read 指引 / 预算条；动态命中段自 v2.1 起恒空）与未读写入圆点由 `client/ui/injection-indicator.ts` 承载但**不在会话头部注册**（v1.7 产品指令：顶部栏无 memcurio 图标），待工作台（M0/M1）提供状态面。注入 ON/OFF 由 Settings 面板承载（v1.7，同一 `injectContext` 字段）。注入消息本身在会话转录里的行由 `client/ui/context-row.ts` 承载（v1.8）：插件自有标题「记忆注入 / Memory injection」+ 生产者标签 + 可展开的模型可见正文，其余 context 节点转发给被影子的 shipped 行。
 - **G6 写入可见**：写路径 receipt delta → 状态面最近写入列表 + 未读计数 + Toast（note/extract/consolidate/prune/purge 各自措辞）；`memory_remember` 等 7 个原生工具注册 keyed `tool.call.toolview` 行：book 主标记 leading（所有状态统一；终态只改变标记颜色 error/warning，不再替换成状态点 —— v1.8.3）、参数摘要、可展开参数/结果。
 - **图标**：主标记 = 第一版候选的 book（书＋书签丝带）内联 SVG（24 单位、stroke 2、round、`currentColor`、14px，沿用 dsh-chamber-mcp 约定）；注入事件 = 平台 `IconContextInjectionOutline16` 路径内联（零图标包依赖，bundle 运行期仍只 require `react`）：注入 Toast 继续用它，注入行（v1.8）改用书页主标记——memcurio 自有行用自有 mark，适配器兜底的通用行保留平台几何。
 - **待确认与残留**：跨 store delta 归属（帧带 root，SSE 按根过滤）与 snapshot↔stream 窗口（`?after=` 重放）的实现见 `src/plugin/ui-transport.ts` / `src/services/snapshot.ts`；仍需真实会话人工确认：会话内头部入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及完整工作台（三面一轴 / 意图草稿 / 时间线回链，M0/M1）。v1.7 新增面目前只到 jsdom 回归网，待真实 Web 人工确认：Settings 的记忆 ON/OFF 首行（只读/不可用态禁用、写入被拒时的面板内报错）、Settings 布尔开关行与输入控件样式、`settings.action` 探针驱动的导航行书页标记（外壳 navIcon 的实证版本为 rc.2；rc.1 行为未复核）。

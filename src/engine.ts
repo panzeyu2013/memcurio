@@ -83,7 +83,7 @@ const MAX_MESSAGE_TEXT_CHARS = 4_000;
 const MAX_TRACKED_TOOLS = 256;
 const MAX_TRACKED_FILES = 256;
 const MAX_SUMMARY_CHARS = 4000;
-const DEFAULT_INJECT_BUDGET = 1500;
+const DEFAULT_INJECT_BUDGET = 2500;
 /** Dynamic-hit bounds for one injection: roughly one hit per this many tokens
  *  (path plus capped text), clamped so a tiny budget still injects context and
  *  a large one cannot flood the window. Derived — not a second independent
@@ -1237,8 +1237,8 @@ export class MemcurioAdapter {
     // summary only, and an empty store injects nothing at all.
     const context = renderStaticContext(root, budget);
     // Audit only a real injection: with the guide prompt-side (v1.9) an empty
-    // store legitimately injects nothing, and the pre-step keeps retrying until
-    // a summary exists — one "skipped" row per step would just be noise.
+    // store legitimately injects nothing, and the pre-step reads the store once
+    // per context window — a "skipped" audit row per step would just be noise.
     if (context !== "") {
       const idx = await Index.create(indexDb(root));
       try {
@@ -1250,6 +1250,8 @@ export class MemcurioAdapter {
     return context;
   }
 
+  /** Reserved engine API (v2.1): the plugin no longer injects per-turn hits;
+   *  kept for host integrations and the workbench's manual simulator. */
   async buildDynamicContext(workdir: string, query: string, budgetTokens?: number): Promise<string> {
     const root = this.root;
     const budget = budgetTokens ?? this.#injectionBudget();
@@ -1279,8 +1281,8 @@ export class MemcurioAdapter {
 
   /** Record that a dynamic retrieval query produced no injectable hit.
    *  Diagnostics only — a silent miss is indistinguishable from "no memory
-   *  matches" in the audit tail. The caller (plugin pre-step) enforces
-   *  once-per-session to keep the audit quiet. */
+   *  matches" in the audit tail. Reserved engine API (v2.1): the plugin no
+   *  longer runs a per-turn retrieval, so only host integrations call this. */
   async recordDynamicMiss(workdir: string, query: string): Promise<void> {
     const idx = await Index.create(indexDb(this.root));
     try {

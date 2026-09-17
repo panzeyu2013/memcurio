@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { estimateTokens, fitContext, fitLines, renderBudgetNotice } from "../src/core/budget.js";
+import { estimateTokens, fitContext, fitLines, renderBudgetNotice, truncateMiddle } from "../src/core/budget.js";
 
 describe("estimateTokens", () => {
   test("CJK counts 1 token per char, others 0.25", () => {
@@ -44,6 +44,27 @@ describe("fitLines", () => {
       expect(r.truncated).toBe(1);
       expect(r.usedTokens).toBe(0);
     }
+  });
+});
+
+describe("truncateMiddle", () => {
+  test("returns the text unchanged when it fits", () => {
+    expect(truncateMiddle("abcd", 10)).toBe("abcd");
+  });
+
+  test("keeps the head AND the tail inside the budget", () => {
+    const text = `HEAD-${"h".repeat(40)}\n${"m".repeat(400)}\nTAIL-${"t".repeat(40)}`;
+    const rendered = truncateMiddle(text, 40);
+    expect(estimateTokens(rendered)).toBeLessThanOrEqual(40);
+    expect(rendered).toContain("HEAD-");
+    expect(rendered).toContain("TAIL-");
+    expect(rendered).toContain("tokens truncated");
+    expect(rendered).not.toContain("m".repeat(200));
+  });
+
+  test("zero or negative budget injects nothing", () => {
+    expect(truncateMiddle("abc", 0)).toBe("");
+    expect(truncateMiddle("abc", -1)).toBe("");
   });
 });
 

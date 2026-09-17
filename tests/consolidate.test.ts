@@ -48,7 +48,7 @@ function stage1(body: Partial<Stage1Output>): Stage1Output {
     rawMemory: "description: proj facts\ntask: setup\ntask_group: proj\ncwd: /tmp/proj\nkeywords: fts, sqlite\n\n### Task 1: setup\n\ntask_outcome: success\n\nReusable knowledge:\n- SQLite FTS5 trigram works",
     rolloutSummary: "# recap\n\n## Task 1\nOutcome: success\n\nReusable knowledge:\n- fts trigram",
     rolloutSlug: "proj-setup",
-    sourceUpdatedAt: "2026-08-10T01:00:00.000Z",
+    sourceUpdatedAt: daysAgo(10),
     ...body,
   };
 }
@@ -400,7 +400,7 @@ describe("RuleConsolidateProvider", () => {
         rawMemory: "x",
         rolloutSummary: "y",
         rolloutSlug: "gone",
-        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(9),
       });
     } finally {
       idx.close();
@@ -486,14 +486,14 @@ describe("RuleConsolidateProvider", () => {
         rawMemory: "task_group: a\n\n### Task 1\n\nReusable knowledge:\n- A_FACT",
         rolloutSummary: "a recap",
         rolloutSlug: "a",
-        sourceUpdatedAt: "2026-08-11T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(8),
       });
       idx.stageUpsert({
         rolloutKey: "test|b",
         rawMemory: "task_group: b\n\n### Task 1\n\nReusable knowledge:\n- B_FACT",
         rolloutSummary: "b recap",
         rolloutSlug: "b",
-        sourceUpdatedAt: "2026-08-11T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(8),
       });
     } finally {
       idx.close();
@@ -515,7 +515,7 @@ describe("RuleConsolidateProvider", () => {
         rawMemory: "task_group: b\n\n### Task 1\n\nReusable knowledge:\n- B_FACT_UPDATED",
         rolloutSummary: "b recap updated",
         rolloutSlug: "b",
-        sourceUpdatedAt: "2026-08-11T01:00:00.000Z",
+        sourceUpdatedAt: daysAgo(7),
       });
       await new Promise((resolve) => setTimeout(resolve, 5));
       idx2.stageUpsert({
@@ -523,7 +523,7 @@ describe("RuleConsolidateProvider", () => {
         rawMemory: "task_group: c\n\n### Task 1\n\nReusable knowledge:\n- C_FACT",
         rolloutSummary: "c recap",
         rolloutSlug: "c",
-        sourceUpdatedAt: "2026-08-11T02:00:00.000Z",
+        sourceUpdatedAt: daysAgo(6),
       });
       await new Promise((resolve) => setTimeout(resolve, 5));
       idx2.stageUpsert({
@@ -531,7 +531,7 @@ describe("RuleConsolidateProvider", () => {
         rawMemory: "task_group: d\n\n### Task 1\n\nReusable knowledge:\n- D_FACT",
         rolloutSummary: "d recap",
         rolloutSlug: "d",
-        sourceUpdatedAt: "2026-08-11T02:00:00.000Z",
+        sourceUpdatedAt: daysAgo(6),
       });
       // The artifact filename is derived from the rollout key only, so a
       // checkpoint advance keeps the same file (no rename churn).

@@ -17,6 +17,10 @@ let prevRoot: string | undefined;
 let prevProvider: string | undefined;
 const PROJ = "/tmp/MyProject";
 
+/** Selection windows are measured against the wall clock, so fixtures use
+ *  relative timestamps — a hard-coded date silently ages out of the window. */
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "engine-"));
   prevRoot = process.env.MEMCURIO_ROOT;
@@ -49,7 +53,7 @@ async function seedRollout(rolloutKey: string): Promise<string> {
       rawMemory: "raw",
       rolloutSummary: "summary",
       rolloutSlug: `slug-${rolloutKey.replace(/[^a-zA-Z0-9-]/g, "-")}`,
-      sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      sourceUpdatedAt: daysAgo(5),
     });
     const filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
     expect(filename).not.toBe("");
@@ -78,7 +82,7 @@ async function seedRolloutWithFilename(rolloutKey: string, filename: string): Pr
         "slug",
         `artid-${rolloutKey}`,
         filename,
-        "2026-08-10T00:00:00.000Z",
+        daysAgo(5),
         0,
         "",
         new Date().toISOString(),
@@ -165,7 +169,7 @@ describe("MemcurioAdapter retention prune (entry-side)", () => {
         rawMemory: "raw",
         rolloutSummary: "summary",
         rolloutSlug: "retention",
-        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+        sourceUpdatedAt: daysAgo(5),
       });
       idx.stageMarkDeleted(["dsh|retention"]);
     } finally {

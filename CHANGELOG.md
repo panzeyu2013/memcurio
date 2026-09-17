@@ -32,8 +32,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `memory_cite` call and the write gate. The client's "memory tools" count is
   now the registered set instead of a scan of the section text.
 
+### Changed
+
+- **Context injection is a context-window snapshot (codex parity).** The
+  per-turn dynamic recall injection is removed: `agent/pre-step` injects the
+  summary once when a window opens — the session's first step, and again after
+  `compaction/end` — and steady-state turns inject nothing, so the model
+  reaches the store through the memory tools. The summary cap rises to 2,500
+  tokens and an over-budget summary is middle-truncated (head and tail
+  survive; a head-only cut silently dropped the newest sections). Tool budgets
+  follow codex: `memory_search` defaults to and caps at 200 results,
+  `memory_list` at 2,000 entries, `memory_read` at 20,000 tokens; the
+  pipeline defaults move to `maxUnusedDays` 30 (the unused window) and
+  `maxInputs` 256 (new inputs per consolidation batch; the selected backlog
+  stays in the batch because memcurio consolidates incrementally).
+
 ### Fixed
 
+- **Only user-authored messages become evidence.** Extraction evidence now
+  admits DSH's `source.kind === "user"` and assistant turns. A subagent
+  settlement, a child's `send_message` report, a goal round, an instruction
+  projection and a plugin injection no longer enter evidence as the user's own
+  statements — the previous filter excluded only plugin-sourced messages, so a
+  child agent's report was extracted as the strongest preference evidence.
 - **Audit round: data-integrity and concurrency hardening.** `redactSecrets`
   now returns the raw text with only the matched spans replaced — Cyrillic,
   Greek and fullwidth text is no longer rewritten by the detection fold —

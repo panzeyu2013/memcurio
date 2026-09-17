@@ -23,7 +23,7 @@ The engine is DSH-native: model access runs exclusively over the harness's own `
 
 The plugin registers `session/created`, `session/event`, `session/flush` and `session/disposed` listeners, a scoped `agent/pre-step` injection hook, and a `tools/result` telemetry listener; compactions and retirement drive the durable worker:
 
-- **Injection (pre-step)** — the static memory summary is injected once per session and query-relevant hits on each accepted model step. DSH's loop persists every pre-step decision message into the durable session log, so unchanged content is not re-injected; plugin-source messages are excluded from extraction evidence, so injected memory never feeds back into itself.
+- **Injection (pre-step)** — the memory summary is injected once per context window (the session's first step, and again after a compaction) and nothing on steady-state turns; the model reaches the store through the memory tools. Extraction evidence admits only user-authored messages and assistant turns, so injected memory and machine messages never feed back into themselves.
 - **Extraction (Phase 1)** — messages, tool calls and compaction summaries become a bounded evidence snapshot; the checkpoint is queued into a durable SQLite job and drained by a detached worker over the session's model route (never blocking a model step or a flush boundary).
 - **Consolidation (Phase 2)** — runs automatically after `turn/end` and at session retirement under a wall-clock budget; worker calls carry the session abort plus a per-call timeout.
 - **Seven native tools** — `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`, sharing the same read/write gates as injection.
@@ -52,10 +52,20 @@ The bundle manifest inserts the plugin with `inject: [tools, llm, sessions, sett
 ## Memory model
 
 - **Write: `memory_remember` / ad-hoc notes** — append-only notes under `extensions/ad_hoc/notes/` (file + SQLite row in one transaction, max 20,000 chars). Secrets are redacted at write; promptware-injection payloads are rejected at the entry point with an audit record. Notes merge into `MEMORY.md` at the next consolidation. The model never edits memory files during a session; wrong or stale content is corrected by editing `MEMORY.md` directly or by the consolidation agent's own diff-driven cleanup.
-- **Read: search + progressive injection** — line-oriented lexical retrieval over `MEMORY.md`, `memory_summary.md`, `rollout_summaries/` and `skills/`, with read-time re-redaction and injection filtering. The summary is injected when present, budget-capped; dynamic hits (budget-derived, 4–8) are injected per prompt, with CJK queries expanded into adjacent bigrams so Chinese prompts retrieve too. The read-path instructions tell the model when to call the memory tools and to cite what it used through the native `memory_cite` tool; assistant text is never parsed.
+- **Read: search + progressive injection** — line-oriented lexical retrieval over `MEMORY.md`, `memory_summary.md`, `rollout_summaries/` and `skills/`, with read-time re-redaction and injection filtering. The summary is injected once per context window (session start, and again after a compaction), budget-capped at 2,500 tokens with codex-style middle truncation; per-turn recall injection is gone, so the model reaches the store through the memory tools, with CJK queries expanded into adjacent bigrams so Chinese prompts retrieve too. The read-path instructions tell the model when to call the memory tools and to cite what it used through the native `memory_cite` tool; assistant text is never parsed.
 - **Consolidate** — Phase 2 rewrites `MEMORY.md` as Task Groups with `rollout_summary_files` citations, applies pending notes, and rebuilds `memory_summary.md` (must start with exactly `v1`). Without a model route the deterministic rule provider runs: it never invents facts and never deletes memory mechanically; with a route, a bounded **native tool-calling** agent loop performs validated writes only (`MEMORY.md`, `memory_summary.md`, `skills/*/SKILL.md`), every one checked for workspace confinement, size caps, secrets, injection patterns, and provenance.
-- **Forget** — stage-1 outputs outside the usage window (`maxUnusedDays`, default 60) are pruned: rollout summaries are deleted and `MEMORY.md` blocks citing only them are surgically removed via baseline diffing. Mixed blocks survive. Retrieval is lexical today; a semantic/vector backend stays an optional future backend.
-- **Growth control** — Phase 1's no-op gate, the usage window, the per-consolidation batch limit (`maxInputs`, default 50), bounded evidence snapshots and injection budgets (default 1500 tokens), retention cleanup, and the consolidator's own curation instructions keep `MEMORY.md` a handbook rather than an append log.
+- **Forget** — stage-1 outputs outside the usage window (`maxUnusedDays`, default 30) are pruned: rollout summaries are deleted and `MEMORY.md` blocks citing only them are surgically removed via baseline diffing. Mixed blocks survive. Retrieval is lexical today; a semantic/vector backend stays an optional future backend.
+- **Growth control** — Phase 1's no-op gate, the usage window, the per-batch new-input limit (`maxInputs`, default 256), bounded evidence snapshots and injection budgets (default 2,500 tokens), retention cleanup, and the consolidator's own curation instructions keep `MEMORY.md` a handbook rather than an append log.
+
+### Known deviations from Codex
+
+- **Search** — ranked lexical retrieval (IDF + phrase bonus, CJK bigrams) instead of Codex's substring search; no `match_mode`/`context_lines`/`normalized` parameters.
+- **Citations** — the native `memory_cite` tool instead of the `<oai-mem-citation>` text block.
+- **Injection surface** — a plugin-sourced user message plus a system-prompt guide (DSH has no developer-role injection seam); Codex injects a developer fragment and omits the guide when the store is empty.
+- **Token accounting** — CJK-aware estimator (CJK 1 token/char, ASCII 0.25) instead of Codex's fixed 4-bytes-per-token approximation.
+- **Tool arguments** — out-of-range values are rejected with an error instead of being clamped to the cap.
+- **Consolidation inputs** — `maxInputs` bounds new inputs per batch; Codex's `max_raw_memories_for_consolidation` bounds the whole re-selected window.
+- **Enablement** — the plugin injects by default; Codex keeps `memories` behind a feature flag that defaults to off.
 
 ## Environment
 

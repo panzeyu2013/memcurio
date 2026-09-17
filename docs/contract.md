@@ -8,7 +8,7 @@
 <DSH home>/memcurio/
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
-│   ├── memory_summary.md            # v1 头；非空时每会话注入；User Profile / User preferences / General Tips / What's in Memory
+│   ├── memory_summary.md            # v1 头；非空时每个上下文窗口注入一次；User Profile / User preferences / General Tips / What's in Memory
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序；codex 式 "# Raw Memories" 头 + "## Rollout" 段）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID（sha256(rollout_key) 前 24 hex）；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包
@@ -332,8 +332,8 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
   // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；校验 memory_summary 若存在首行须为 "v1"。
 export interface PipelineConfig {
-  maxUnusedDays: number;         // 默认 60（stage1 选择窗口）
-  maxInputs: number;             // 默认 50（单次整合 stage1 上限）
+  maxUnusedDays: number;         // 默认 30（stage1 选择窗口，对齐 codex max_unused_days）
+  maxInputs: number;             // 默认 256（单批新进 stage1 上限；codex 的 max_raw_memories_for_consolidation 限整批重选窗口，memcurio 增量为整批保留已选行）
   retentionDays: number;         // 默认 90：completed extraction job 的保留天数（audit 表另有 20k 行自动裁剪）；配置最小 1（0 拒绝）
   resourceRetentionDays: number; // 默认 7（对齐 codex RETENTION_DAYS）：extensions/<name>/resources 清理窗口；与 retentionDays 解耦
   maxAgentSteps: number;         // 默认 25
@@ -394,7 +394,7 @@ export function readMemory(root, opts: { path; lineOffset?; maxLines?; maxTokens
 
 ```ts
 export function renderMemoryContext(root: string, budgetTokens?: number): string
-  // 读 memory_summary.md（sanitize 过滤：注入命中→整体跳过并 audit）→ redact → fitContext 裁剪（默认 1500）；
+  // 读 memory_summary.md（sanitize 过滤：注入命中→整体跳过并 audit）→ redact → truncateMiddle 中间截断（默认 2500 token，保头尾）；
   // 若无 summary：返回空串（不注入占位符）。
 export function renderStaticContext(root: string, budgetTokens?: number): string
   // v1.9：静态注入 = 仅摘要区块（renderMemoryContext 的别名）；空库返回空串。
@@ -471,8 +471,8 @@ export class MemcurioAdapter {
                                                              // （channel ? new LlmLoopConsolidateProvider(undefined, channel) : RuleConsolidateProvider）；
                                                              // best-effort，失败仅 log + 记录退避时间；整合入口由 workspace lease 串行化
   buildStaticContext(workdir, budgetTokens?): Promise<string>  // 仅摘要区块（renderMemoryContext；read_path 指南自 v1.9 起是 system prompt section；空库返回空串）
-  buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory 预算派生 4–8 命中拼接（MIN/MAX_DYNAMIC_HITS，sanitized）
-  buildCompactionContext(id, workdir): Promise<string>      // static + dynamic（引擎能力；DSH 无 compaction 注入缝，插件不使用）
+  buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory 预算派生 4–8 命中拼接（MIN/MAX_DYNAMIC_HITS，sanitized）——引擎 API；插件自 v2.1 起不再每轮调用
+  buildCompactionContext(id, workdir): Promise<string>      // static + 会话文件（引擎能力；DSH 无 compaction 注入缝，插件不使用）
   buildReplacePrompt(sessionId, context): string            // 引擎能力（同左，插件不使用）
 }
 ```
@@ -481,7 +481,7 @@ export class MemcurioAdapter {
 
 - Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 已删，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base（第二十五/二十六轮）；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
-- 注入：`agent/pre-step` 静态注入（**仅摘要区块**，每会话一次；read path 指引在 system prompt section）+ 相关命中动态注入 top-K（IDF/短语/去重/单文件 cap）；注入内容与 worker 消息不进证据（防回注 feed-back）；
+- 注入（v2.1，对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮与 `compaction/end` 之后各一次；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `plugin` 等机器消息不进用户证据（防回注 feed-back）；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与会话退休时自动 drain + maybeConsolidate（退休入口起 30s wall-clock 预算，超时 abort 在飞 worker 调用后 dispose，queue 稍后重试）；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。

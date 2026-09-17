@@ -12,6 +12,10 @@ import { ensureLayout, indexDb } from "../src/core/paths.js";
 import { readWorkspaceText, rolloutSlugs, writeWorkspaceText } from "../src/core/workspace.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
 
+/** Selection windows are measured against the wall clock; keep fixture rows
+ *  inside the default maxUnusedDays window. */
+const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+
 let root: string;
 
 afterEach(() => {
@@ -27,8 +31,8 @@ const snapshot: RolloutSnapshot = {
   messages: 2,
   tools: ["edit"],
   files: ["MEMORY.md"],
-  startedAt: "2026-08-11T00:00:00.000Z",
-  endedAt: "2026-08-11T01:00:00.000Z",
+  startedAt: daysAgo(6),
+  endedAt: daysAgo(5),
 };
 
 class Provider implements ExtractProvider {
@@ -118,14 +122,14 @@ describe("hard purge", () => {
         rawMemory: "task_group: target\ncwd: /tmp/target\n\n### Task 1\n\nReusable knowledge:\n- TARGET_PRIVATE_FACT",
         rolloutSummary: "target recap",
         rolloutSlug: "target",
-        sourceUpdatedAt: "2026-08-11T01:00:00.000Z",
+        sourceUpdatedAt: daysAgo(5),
       });
       idx.stageUpsert({
         rolloutKey: "codex|survivor",
         rawMemory: "task_group: survivor\ncwd: /tmp/survivor\n\n### Task 1\n\nReusable knowledge:\n- SURVIVING_FACT",
         rolloutSummary: "survivor recap",
         rolloutSlug: "survivor",
-        sourceUpdatedAt: "2026-08-11T01:00:00.000Z",
+        sourceUpdatedAt: daysAgo(5),
       });
     } finally {
       idx.close();
@@ -138,7 +142,7 @@ describe("hard purge", () => {
         rawMemory: "task_group: pending\n\nReusable knowledge:\n- UNSELECTED_PENDING_FACT",
         rolloutSummary: "pending recap",
         rolloutSlug: "pending",
-        sourceUpdatedAt: "2026-08-11T02:00:00.000Z",
+        sourceUpdatedAt: daysAgo(4),
       });
     } finally {
       idx2.close();

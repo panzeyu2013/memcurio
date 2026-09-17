@@ -10,7 +10,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  budget: { maxInjectTokens: 1500 },
+  budget: { maxInjectTokens: 2500 },
   pipeline: structuredClone(DEFAULT_PIPELINE_CONFIG),
 };
 

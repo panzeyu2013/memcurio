@@ -39,7 +39,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         scope: workspace          # workspace | global
         injectContext: true
         registerTools: true
-        # injectBudgetTokens: 1500  # 注入预算下限 128
+        # injectBudgetTokens: 2500  # 注入预算下限 128
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
         # 可选固定 worker 路由；省略两者则跟随会话 request/header 路由：
         # provider: deepseek
@@ -111,7 +111,7 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 ### What it integrates
 
 - `session/created`, `session/event`, `session/flush`, and `session/disposed` map to the durable Memcurio session lifecycle.
-- `agent/pre-step` injects a static memory summary once per session and query-relevant hits on each accepted model step. Compaction re-arms static injection. Because DSH's agent loop persists every pre-step decision message into the durable session log, unchanged content is not re-injected (the model already has it) and plugin-source messages are excluded from extraction evidence — injected memory can never feed back into itself.
+- `agent/pre-step` injects the memory summary once per context window — the session's first step, and again after a compaction re-arms it. Steady-state turns inject nothing (codex parity: memory is a window snapshot, not per-turn recall) and the model searches through the memory tools. Extraction evidence admits only user-authored messages and assistant turns, so injected memory and machine messages can never feed back into itself.
 - Successful compactions (and model-free `compaction/prune` events) prune the evidence parts their `shadowedSeqs` cover, keeping the bounded evidence window focused on the live surface.
 - `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); the native `memory_cite` call registers the memory entries and rollout ids a reply relied on (audited as `integration.cite`), so rollouts the model cites without searching still count. Assistant text is never parsed for telemetry.
 - Seven native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`.

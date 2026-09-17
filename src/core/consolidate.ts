@@ -44,8 +44,13 @@ export interface PipelineConfig {
 }
 
 export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
-  maxUnusedDays: 60,
-  maxInputs: 50,
+  // Codex parity (memories config defaults): 30 unused days drop a stage-1 row
+  // from the Phase-2 selection window. maxInputs bounds the NEW pending rows a
+  // batch admits; codex's max_raw_memories_for_consolidation bounds its whole
+  // re-selected input window, while memcurio consolidates incrementally and
+  // keeps already-selected rows in the batch.
+  maxUnusedDays: 30,
+  maxInputs: 256,
   retentionDays: 90,
   resourceRetentionDays: 7,
   maxAgentSteps: 25,

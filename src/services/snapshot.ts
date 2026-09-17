@@ -14,7 +14,7 @@
  */
 import { basename } from "node:path";
 
-import { loadConfig, pipelineConfig } from "../core/config.js";
+import { DEFAULT_CONFIG, loadConfig, pipelineConfig } from "../core/config.js";
 import { AUTO_CONSOLIDATE_COOLDOWN_MS } from "../engine.js";
 import type { ListResult, ReadResult, StatusResult } from "./memory.js";
 import { list as memoryList, read as memoryRead } from "./memory.js";
@@ -298,7 +298,7 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
       return undefined;
     }
   })();
-  const maxInputs = cfg?.maxInputs ?? 8;
+  const maxInputs = cfg?.maxInputs ?? DEFAULT_CONFIG.pipeline.maxInputs;
   // Deployment-level budget: the workbench face reports the configured value.
   const configuredBudget = (() => {
     try {

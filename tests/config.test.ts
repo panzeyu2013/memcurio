@@ -21,6 +21,12 @@ describe("loadConfig", () => {
     expect(cfg).toEqual(DEFAULT_CONFIG);
   });
 
+  test("codex-parity defaults: 2500 inject tokens, 30 unused days, 256 inputs", () => {
+    expect(DEFAULT_CONFIG.budget.maxInjectTokens).toBe(2500);
+    expect(DEFAULT_CONFIG.pipeline.maxUnusedDays).toBe(30);
+    expect(DEFAULT_CONFIG.pipeline.maxInputs).toBe(256);
+  });
+
   test("falls back to defaults on corrupt JSON", () => {
     writeFileSync(join(dir, "config.json"), "{ not valid json");
     const cfg = loadConfig(dir);
