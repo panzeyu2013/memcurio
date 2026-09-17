@@ -9,6 +9,7 @@ import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.j
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { memoryWorkspace } from "../core/paths.js";
+import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
 import { installUiTransport } from "./ui-transport.js";
@@ -166,6 +167,20 @@ function textFromContent(content) {
 }
 function textFromMessage(message) {
     return textFromContent(message.content);
+}
+/** Session id behind one prompt-assembly context. The harness keys an assembly
+ *  by its agent (assembleContextFor sets `scope` to the agent object), so the
+ *  session is readable structurally; an unknown shape degrades to "no session",
+ *  which keeps the memory section empty rather than leaking it to a foreign
+ *  scope. */
+function sessionIdOfAssembly(context) {
+    const record = context;
+    for (const candidate of [record?.agent, record?.scope]) {
+        const id = candidate?.session?.id;
+        if (typeof id === "string" && id !== "")
+            return id;
+    }
+    return undefined;
 }
 function messageFromEvent(event) {
     if (event.type === "user/message")
@@ -1155,9 +1170,26 @@ export function apply(ctx, config = {}) {
     //
     // v1.9: the read-path GUIDE is instructions, not memory data, so it rides the
     // SYSTEM PROMPT next to the tool schemas — never an injected user message
-    // (the injected message carries memory content only). The text is
-    // store-independent and path-free; `systemPrompt` is absent in test
-    // compositions, so registration goes through a scoped inject and no-ops there.
+    // (the injected message carries memory content only). The text is path-free
+    // and gated on the session's store actually having a summary (Codex parity);
+    // `systemPrompt` is absent in test compositions, so registration goes
+    // through a scoped inject and no-ops there.
+    /** Codex parity: a store with no `memory_summary.md` emits NO memory
+     *  instructions at all — codex's build_memory_tool_developer_instructions
+     *  returns None when the summary is missing or blank. */
+    const storeHasSummary = (sessionId) => {
+        if (sessionId === undefined)
+            return false;
+        const runtime = sessions.get(sessionId);
+        if (runtime === undefined)
+            return false;
+        try {
+            return readWorkspaceText(runtime.root, "memory_summary.md").trim() !== "";
+        }
+        catch {
+            return false;
+        }
+    };
     ctx.inject(["systemPrompt"], (scoped) => {
         const systemPrompt = scoped.systemPrompt;
         if (systemPrompt === undefined) {
@@ -1166,10 +1198,13 @@ export function apply(ctx, config = {}) {
         const dispose = systemPrompt.section({
             name: "memcurio-read-path",
             order: MEMCURIO_READ_PATH_ORDER,
-            // The guide is tool-call instructions: with native tools disabled the
-            // model cannot follow them, so the section stays empty (a store summary
-            // may still be injected as data).
-            text: () => (live().registerTools ? renderReadPathInstructions() : ""),
+            // Two gates, both Codex parity: the guide is tool-call instructions, so
+            // it stays empty when native tools are disabled; and it rides WITH the
+            // summary, so a store with nothing to inject gets no memory instructions
+            // either (the assembly scope is the agent, whose session names the store).
+            text: (context) => !live().registerTools || !storeHasSummary(sessionIdOfAssembly(context))
+                ? ""
+                : renderReadPathInstructions(),
         });
         return dispose;
     });

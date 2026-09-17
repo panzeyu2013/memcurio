@@ -14,7 +14,7 @@
 - **两阶段管线** —— 会话事件经抽取流入 stage-1 存储，选择窗口挑选输入做整合，写入 Markdown 事实来源；workspace 文件与 SQLite 变更由 generation manifest 驱动，确定性可恢复。
 - **基于 diff 的遗忘** —— 没有状态机：`prune` 选出使用窗口之外（`maxUnusedDays`）的 stage-1 输出，经基线 diff 外科手术式删除其摘要与仅被它引用的 `MEMORY.md` 区块；混合区块保留。
 - **临时 notes** —— 用户显式 `memory_remember`（kind 可 remember/forget/update）写入 `extensions/ad_hoc/notes/`，只追加，下次整合时应用。
-- **读取路径渐进式披露（v1.9）** —— read-path 使用指南（何时该用记忆、怎么用 `memory_search`、citation 与写入纪律）作为 **system prompt 段落**注册，与工具 schema 同区、**不含任何文件系统路径**；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时在每个上下文窗口打开时注入一次（脱敏、注入扫描、2500 token 预算 + 中间截断），空库不注入任何东西；不做每轮自动检索，模型经 `memory_search` 主动检索（IDF 打分 + 短语奖励 + 去重 + 单文件 cap）。
+- **读取路径渐进式披露（v1.9）** —— read-path 使用指南（何时该用记忆、怎么用 `memory_search`、citation 与写入纪律）作为 **system prompt 段落**注册（与 codex 一致：该会话 store 没有非空 `memory_summary.md` 时整段不发），与工具 schema 同区、**不含任何文件系统路径**；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时在每个上下文窗口打开时注入一次（脱敏、注入扫描、2500 token 预算 + 中间截断），空库不注入任何东西；不做每轮自动检索，模型经 `memory_search` 主动检索（IDF 打分 + 短语奖励 + 去重 + 单文件 cap）。
 - **用量遥测闭环** —— 原生 `read`/`grep`/`glob`/`bash`/`pwsh` 命中记忆文件与原生 `memory_cite` 调用计入每条 rollout 的 `usage_count`/`last_usage`，驱动选择窗口：真被复用的记忆留下，闲置的过期淘汰。
 - **Markdown 作为事实来源** —— `memory/*.md` 可读可直接编辑；SQLite（schema v11）保存 stage-1 输出、稳定 artifact ID、notes、会话、审计、持久抽取任务与整合租约；`.baseline/` 与 generation manifest 驱动可恢复的整合 diff。
 - **默认安全** —— 提示词注入净化、密钥脱敏、私有权限（数据目录 `0700`、数据文件 `0600`）、模型写入由引擎沙箱校验，所有写入留审计。
@@ -55,7 +55,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 
 - **检索** —— 带排序的词法检索（IDF + 短语奖励、CJK bigram），不是 codex 的子串匹配；没有 `match_mode`/`context_lines`/`normalized` 参数。
 - **引用** —— 原生 `memory_cite` 工具，不是 `<oai-mem-citation>` 文本块。
-- **注入面** —— 插件来源 user message + system prompt 指南（DSH 没有 developer 角色注入缝）；codex 注入 developer 片段，且空库时连指南一起不发。
+- **注入面** —— 插件来源 user message + system prompt 指南（DSH 没有 developer 角色注入缝）；codex 把两部分渲染进同一个 developer 片段。两边都在 store 无摘要时什么都不发。
 - **Token 估算** —— CJK 感知 estimator（CJK 1 token/字、ASCII 0.25），不是 codex 的固定 4 bytes/token。
 - **工具参数越界** —— 直接报错，不 clamp 到上限。
 - **整合输入** —— `maxInputs` 限每批新增；codex 的 `max_raw_memories_for_consolidation` 限整批重选窗口。

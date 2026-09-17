@@ -3,11 +3,14 @@ import { MAX_HIT_CHARS, renderHitBlock, renderMemoryContext, renderReadPathInstr
 import { redactSecrets } from "../core/sanitize.js";
 import { searchMemory } from "../core/search.js";
 /** Budget-capped summary plus read-path instructions, separately — the two
- *  pieces real injection composes (and the workbench preview keeps apart). */
+ *  pieces real injection composes (and the workbench preview keeps apart).
+ *  Codex parity: the guide rides WITH the summary, so an empty store previews
+ *  no instructions either (matching the empty system-prompt section). */
 export function staticParts(root, budgetTokens) {
+    const summary = renderMemoryContext(root, budgetTokens);
     return {
-        summary: renderMemoryContext(root, budgetTokens),
-        instructions: renderReadPathInstructions(),
+        summary,
+        instructions: summary === "" ? "" : renderReadPathInstructions(),
     };
 }
 /** Full static injection preview: the budget-capped summary DATA the engine

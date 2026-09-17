@@ -450,6 +450,9 @@ describe("DSH plugin contract", () => {
 test("registers the read-path guide as a system prompt section, path-free", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("guide-section"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
     const pluginFiber = await ctx.plugin(plugin, {
       root,
       scope: "global",
@@ -457,9 +460,12 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       provider: "test",
       model: "test",
     });
-    // The plugin scope sees its own registration; the guide must carry no
-    // filesystem location at all.
-    const assembly = await ctx.systemPrompt.assemble({ scope: pluginFiber.ctx });
+    await ctx.sessions.flush(session);
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
+    // The assembly context is agent-shaped (scope = agent): the section resolves
+    // the store from the agent's session, so a bare plugin scope would answer
+    // the empty-store branch.
+    const assembly = await ctx.systemPrompt.assemble({ scope: { session } } as never);
     const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
     expect(section).toBeDefined();
     expect(section?.text).toContain("## memcurio memory");
@@ -470,6 +476,31 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     expect(section?.text).not.toContain(memoryWorkspace(root));
     expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeGreaterThan(2_900);
     expect(plugin.MEMCURIO_READ_PATH_ORDER).toBeLessThan(5_000);
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("omits the guide while the store has no summary (Codex parity)", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("guide-empty"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+    // No memory_summary.md: codex's build_memory_tool_developer_instructions
+    // returns None, so memcurio must ship no memory instructions either.
+    const assembly = await ctx.systemPrompt.assemble({ scope: { session } } as never);
+    const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
+    expect(section?.text ?? "").toBe("");
+    detach();
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });
@@ -477,6 +508,9 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
   test("omits the guide when native tools are disabled", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("guide-tools-off"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
     const pluginFiber = await ctx.plugin(plugin, {
       root,
       scope: "global",
@@ -485,11 +519,15 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       provider: "test",
       model: "test",
     });
-    // The guide only tells the model how to call tools; with the tools off it
-    // must not ship dead instructions into the system prompt.
-    const assembly = await ctx.systemPrompt.assemble({ scope: pluginFiber.ctx });
+    await ctx.sessions.flush(session);
+    // A summary exists, so ONLY the tool gate can empty the section: the guide
+    // only tells the model how to call tools, and with the tools off it must
+    // not ship dead instructions into the system prompt.
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## User preferences\n");
+    const assembly = await ctx.systemPrompt.assemble({ scope: { session } } as never);
     const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
     expect(section?.text ?? "").toBe("");
+    detach();
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });

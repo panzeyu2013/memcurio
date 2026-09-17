@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merging remember notes only. Safety is unchanged: redaction + injection
   scan at the entry point, append-only notes, audit, and consolidation as the
   only writer of `MEMORY.md`.
+- The read-path guide now ships only while the session's store has a
+  non-empty `memory_summary.md` (Codex parity: its
+  `build_memory_tool_developer_instructions` returns `None` for an empty
+  store), in the system prompt and in the workbench injection preview alike.
+  A store with nothing to inject emits no memory instructions at all.
 - The browser store's delta fold compares trimmed static text when the delta
   carries it, so a whitespace-only difference no longer reads as a fresh
   injection (matching the snapshot fold).

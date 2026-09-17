@@ -172,7 +172,7 @@ DSH Web（浏览器）
 
 ### 注入面
 
-- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。动态命中段自 v2.1 起已随每轮自动注入一并移除：快照与 inject-updated delta 不再携带该字段（需要动态命中时用注入模拟器）。
+- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列；与模型可见面一致：store 无摘要时连同 read 指引一起为空）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。动态命中段自 v2.1 起已随每轮自动注入一并移除：快照与 inject-updated delta 不再携带该字段（需要动态命中时用注入模拟器）。
 - **注入模拟器（M0 核心）**：输入框（默认取当前会话最新用户消息作 query 种子）→ `inject.simulate` → 命中列表（内容**已脱敏预览**）、来源 rollout/行号、blocked 计数（注入扫描拦截）、预算占用。空态引导："还没有记忆——去会话里让模型记住第一条"。
 - 每次真实注入经推送通道即时刷新（实时性设计一节）。
 

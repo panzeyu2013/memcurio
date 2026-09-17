@@ -251,7 +251,9 @@ describe("buildSnapshot", () => {
     expect(snapshot.consolidation).toBeNull();
     // An empty store has no summary block to preview (the guide is separate).
     expect(snapshot.injection.staticSummary).toBe("");
-    expect(snapshot.injection.readGuide).toContain("## memcurio memory");
+    // Codex parity: the guide rides with the summary, so an empty store
+    // previews no instructions either.
+    expect(snapshot.injection.readGuide).toBe("");
     expect(snapshot.settings).toEqual({
       dataRoot: root,
       scopeBadge: "workspace",
