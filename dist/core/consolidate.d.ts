@@ -37,12 +37,35 @@ export interface ConsolidatePlan {
     preview: string;
     changed: boolean;
 }
+export interface RawProjection {
+    text: string;
+    /** rollout keys this render accounted for: rendered rows plus rows with an
+     *  empty raw memory (nothing to project). Rows dropped by the byte cap are
+     *  absent so callers can leave them pending for a later rotated render. */
+    included: string[];
+}
 /** Render raw_memories.md from the selected stage-1 outputs in stable
  *  ascending rollout_key order (never usage-rank order, which would churn the
  *  file on every selection). The format mirrors codex storage.rs: a file
  *  header, then one `## Rollout` section per output with metadata lines
  *  (updated_at / rollout_summary_file) followed by the raw memory body. An
- *  empty selection renders the codex empty-input placeholder. */
+ *  empty selection renders the codex empty-input placeholder.
+ *
+ *  `afterKey` rotates the window for oversized stores: rendering starts at
+ *  the first key strictly greater than it and wraps around. planConsolidation
+ *  derives it from the last block of the on-disk projection, so the byte cap
+ *  cuts a different tail every run and each row eventually reaches the
+ *  provider instead of the same ascending suffix being dropped forever. */
+export declare function projectRawMemories(selected: ReadonlyArray<{
+    rolloutKey: string;
+    rawMemory: string;
+    artifactFilename: string;
+    sourceUpdatedAt: string;
+}>, opts?: {
+    truncate?: boolean;
+    afterKey?: string;
+}): RawProjection;
+/** Render raw_memories.md (see projectRawMemories). */
 export declare function renderRawMemories(selected: ReadonlyArray<{
     rolloutKey: string;
     rawMemory: string;
@@ -50,6 +73,7 @@ export declare function renderRawMemories(selected: ReadonlyArray<{
     sourceUpdatedAt: string;
 }>, opts?: {
     truncate?: boolean;
+    afterKey?: string;
 }): string;
 /** Compute the Phase-2 plan without writing anything to the workspace:
  *  select stage-1 rows (read-only), render expected artifacts, diff against

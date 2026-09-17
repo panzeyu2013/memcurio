@@ -110,7 +110,7 @@ docs/
 session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
   → 插件组装有界、脱敏 EvidenceSnapshot（消息/工具/文件/压缩摘要）
   → SQLite extraction_jobs（幂等键 + lease + retry/dead-letter；`blocked` 是配置等待态，路由/模型可用后自动复活，另有 5 分钟慢探兜底）
-  → worker 执行 Phase 1 抽取：模型判断 no-op 门 → 回复解析（严格 JSON → 容忍字符串内控制字符/截断 → 注入策略**按行修复**，修复后仍不安全才拒绝）→ stage1_outputs（raw_memory / rollout_summary / slug）
+  → worker 执行 Phase 1 抽取：模型回合只调用 save_extraction（载荷字段格式在工具 schema）或 skip_extraction（no-op 门）→ 校验（redactSecrets + 注入扫描**按行修复**，修复后仍不安全或为空才拒绝）→ stage1_outputs（raw_memory / rollout_summary / slug）
   → stage1 DB（stageUpsert + audit）
   → Phase 2 整合（consolidate.ts，会话结束后由引擎自动触发 maybeConsolidate）：
        planConsolidation 选窗口内 stage1 → 渲染 artifacts（raw_memories 升序合并 / rollout_summaries）
@@ -125,7 +125,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 ```
 SYSTEM PROMPT（v1.9，与工具 schema 同区，order 2950）：read_path 使用指南（决策边界 / 快速检索预算 ≤4-6 步 / verify 防漂移 / citation 遥测要求：调用 memory_cite 原生工具 / 写入纪律）——指令进提示词，且全文无文件系统路径
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南）
-模型自检索：按需 memory_search / memory_list / memory_read / memory_status（指南描述的自助路径，不经文件系统）
+模型自检索：按需调用 memory_* 工具（各自 schema 自带说明，不经文件系统）
 动态注入（每次用户输入）：检索 query 由"最近一条用户文本"经去噪/停用词处理后生成 → searchMemory 两遍打分（IDF + 短语奖励 + 去重 + 单文件 cap）取 top-K
 注入线格式（v1.9.1，引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块 = 一行 "Memory hits:" + 每行 "rel:line content"（空白折叠、220 字符截断），无逐行前缀
 使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用 + search/read 命中

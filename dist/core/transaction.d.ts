@@ -8,7 +8,24 @@ export interface LockOptions {
     timeoutMs?: number;
 }
 export declare function withFileLock<T>(lockPath: string, fn: () => T, opts?: LockOptions): T;
+export interface LockSnapshot {
+    /** Lock content exactly as read (untrimmed); the reclaim compares it
+     *  byte-for-byte with the file it moved aside. */
+    raw: string;
+    ino: number;
+    mtimeMs: number;
+}
+/** Read a lock's content and identity; null when it is missing/unreadable. */
+export declare function lockSnapshot(lockPath: string): LockSnapshot | null;
 export declare function isStaleLock(lockPath: string): boolean;
+/** Reclaim a stale lock without deleting a lock another process acquired in
+ *  the meantime. The move to a private name is atomic, so exactly one
+ *  contender wins it; the winner verifies the moved file still matches the
+ *  snapshot the stale decision was based on (content, inode, mtime) before
+ *  unlinking. A mismatch means the path held a freshly created lock at rename
+ *  time: it is restored (link() never overwrites an existing path) and the
+ *  reclaim is abandoned. Returns true when the sampled lock was removed. */
+export declare function reclaimStaleLock(lockPath: string, snapshot?: LockSnapshot | null): boolean;
 export declare function truncateLog(logPath: string): void;
 /** Rename a log larger than maxBytes to <log>.1, keeping one older segment.
  *  Callers must hold the log lock (Transaction.append does). */

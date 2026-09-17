@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import { PLATFORM_EXTERNALS } from "./platform-externals.js";
+import { parsePackedPaths } from "./pack-output.js";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const distRoot = join(repoRoot, "dist");
@@ -59,10 +60,7 @@ if (result.exitCode !== 0) {
   throw new Error(new TextDecoder().decode(result.stderr));
 }
 const output = new TextDecoder().decode(result.stdout);
-const packed = output
-  .split("\n")
-  .map((line) => line.match(/^packed\s+\S+\s+(.+)$/)?.[1])
-  .filter((path): path is string => Boolean(path));
+const packed = parsePackedPaths(output);
 const allowed = /^(?:package\.json|README\.md|LICENSE|cordis\.patch\.yml|dist\/.*|lib\/client\.js)$/;
 // The browser half ships prebuilt: the loader artifact must exist, wear the
 // official factory shape, and carry the package id the host discovers.

@@ -28,9 +28,25 @@ const WRITE_PATH_ACTIONS = [
     "consolidate.",
     "prune.",
     "purge.",
-    "warn.",
 ];
+/** extract.* rows that are bookkeeping/notices, never durable writes (mirror
+ *  of the bridge filter: no false "memory updated" marker). */
+const NON_WRITE_EXTRACT_ACTIONS = new Set([
+    "extract.noop",
+    "extract.stale",
+    "extract.repaired",
+    "extract.requeued",
+    "extract.queued",
+    "extract.queue_complete",
+    "extract.queue_retry",
+    "extract.queue_dead",
+    "extract.queue_blocked",
+    "extract.queue_unblocked",
+]);
 function isWritePath(action) {
+    if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
+        return false;
+    }
     return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
 }
 /** Session id from an audit ns like "dsh|<session>" (mirror of bridge).
@@ -101,7 +117,9 @@ export async function buildSnapshot(options) {
         memoryList(root, { path: "rollout_summaries" }).catch(() => null),
         (() => {
             try {
-                return staticParts(root);
+                // The live inject budget must ride the preview: dropping it showed the
+                // config-file budget while real injection used the settings override.
+                return staticParts(root, injectBudgetTokens);
             }
             catch {
                 return undefined;

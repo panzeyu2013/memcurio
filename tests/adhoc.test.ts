@@ -230,6 +230,35 @@ describe("note lifecycle", () => {
     expect((await listAdHocNotes(dir)).find((n) => n.id === a.id)?.applied).toBe(true);
   });
 
+  test("a hand-edited pending note reports the file content, not the stale DB row", async () => {
+    const note = await addAdHocNote(dir, "original pending text", "remember");
+    writeFileSync(join(adHocNotesDir(dir), note.filename), "edited pending text");
+    const pending = await pendingAdHocNotes(dir);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.id).toBe(note.id);
+    expect(pending[0]?.content).toBe("edited pending text");
+    // Reporting reads through; the DB row itself is untouched.
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.noteList()[0]?.content).toBe("original pending text");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("a pending note whose file became unreadable falls back to the DB row", async () => {
+    const note = await addAdHocNote(dir, "row fallback text", "remember");
+    // Replace the file with a directory of the same name: existsSync passes,
+    // but reading it throws (EISDIR) and the row must be used instead.
+    const path = join(adHocNotesDir(dir), note.filename);
+    rmSync(path, { force: true });
+    mkdirSync(path);
+    const pending = await pendingAdHocNotes(dir);
+    expect(pending.map((n) => n.id)).toEqual([note.id]);
+    expect(pending[0]?.content).toBe("row fallback text");
+    expect(pending[0]?.applied).toBe(false);
+  });
+
   test("filename slug is sanitized and lowercase", async () => {
     const note = await addAdHocNote(dir, "My Great 记忆 Project", "remember");
     expect(note.filename).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-z0-9-]+\.md$/);

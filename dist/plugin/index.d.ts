@@ -5,6 +5,22 @@ import type { AgentTurnMessage } from "../api.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { HostBridge } from "./bridge.js";
 export declare const name = "memcurio";
+/** One browser route table per process: the web server rejects a duplicate
+ *  prefix, so exactly one plugin instance may mount the transport at a time.
+ *  When the owner unloads, the next live instance takes over immediately
+ *  instead of leaving the memory UI dark until a reload (multi-instance
+ *  profiles are an expected topology: one store per workspace). */
+export type UiTransportMount = () => boolean;
+export declare class UiTransportRegistry {
+    private readonly candidates;
+    private owner;
+    /** Register one instance's mount and run it when the route is free. The
+     *  returned disposer releases the candidate and hands the route over. */
+    register(mount: UiTransportMount): () => void;
+    release(mount: UiTransportMount): void;
+    /** Instance currently serving the route (observability/tests). */
+    current(): UiTransportMount | undefined;
+}
 /** Live host bridge for a base root (present once the plugin applied; the
  *  bridge is always on — it is not configurable). */
 export declare function hostBridgeForRoot(root: string): HostBridge | undefined;

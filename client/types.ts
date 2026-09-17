@@ -2,7 +2,7 @@
  * @memcurio/dsh-plugin — browser client half, local structural types (S0 scaffold).
  *
  * Purpose: define, with NO imports from `@deepseek-ai/*` and NO React dependency,
- * the type vocabulary the memory workbench (design docs/design/plugin-ui-v1.md §3/§7)
+ * the type vocabulary the memory workbench (design docs/ui.md §3/§7)
  * and its host bridge are expected to agree on, so the S0 spike has a single,
  * reviewable contract to verify against the real DSH Web client-module machinery.
  *

@@ -191,6 +191,13 @@ export function isUiSnapshotResponse(value: unknown): value is UiSnapshotRespons
   if (typeof record.seq !== "number" || !Number.isFinite(record.seq)) return false;
   const snapshot = record.snapshot;
   if (typeof snapshot !== "object" || snapshot === null) return false;
+  // The store face is dereferenced by the transport (`store.root`) and the
+  // model (`store.id`): a malformed shape must be rejected here instead of
+  // throwing a TypeError inside every refresh/poll tick.
+  const store = (snapshot as { store?: unknown }).store;
+  if (typeof store !== "object" || store === null) return false;
+  const storeRecord = store as { id?: unknown; root?: unknown };
+  if (typeof storeRecord.id !== "string" || typeof storeRecord.root !== "string") return false;
   const receipts = (snapshot as { receipts?: unknown }).receipts;
   const injection = (snapshot as { injection?: unknown }).injection;
   return Array.isArray(receipts) && typeof injection === "object" && injection !== null;

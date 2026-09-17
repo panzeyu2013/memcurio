@@ -34,6 +34,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Audit round: data-integrity and concurrency hardening.** `redactSecrets`
+  now returns the raw text with only the matched spans replaced — Cyrillic,
+  Greek and fullwidth text is no longer rewritten by the detection fold —
+  while homoglyph/zero-width-obfuscated secrets are still redacted;
+  stale-lock reclaim snapshots content + inode + mtime and re-verifies them
+  after an atomic rename, and a holder releases only its own lock;
+  concurrent first-open migrations re-read the schema inside
+  `BEGIN IMMEDIATE` and tolerate a duplicate column; `raw_memories.md`
+  rotates its byte-capped window and keeps dropped rows pending instead of
+  marking them integrated; workspace listings skip symlinks and directories;
+  pending notes are read from the file (the source of truth);
+  `pipeline.maxInputs` validation matches its clamp.
+- **Session lifecycle recovery.** An event-lane failure is surfaced once and
+  cleared instead of poisoning every later pre-step, flush and memory tool; a
+  dispose racing an extraction drain stops before the next job instead of
+  burning an attempt; a policy-repaired extraction audits `extract.repaired`.
+- **Memory UI realtime fixes.** Switching sessions rebinds the SSE stream;
+  reconnects close the previous stream and drop already-applied frames; a
+  stale browse response cannot overwrite a newer store; a browsed store
+  disappearing folds back to the current store; snapshots without a valid
+  store are dropped instead of throwing; and warning/bookkeeping audit rows no
+  longer raise the unread badge or a "memory updated" toast.
+- **Preview and presentation parity.** Workbench and `memory_context` previews
+  use the live inject budget; the projector duplicate window is really
+  LRU; the browser transport hands the route to the next live instance on
+  unload; and the guide is omitted when native tools are disabled.
+- **Release and packaging gates.** The release workflow treats only a
+  confirmed "release not found" as absent (any other `gh` failure fails
+  closed); `pack-check` fails loudly when the bun dry-run output cannot be
+  parsed; release notes fall back to a non-empty `[Unreleased]`; the package
+  pins `packageManager` and declares the missing settings peer as optional.
 - **Phase 2 is a real tool-calling agent loop.** The consolidation provider no
   longer asks the model to emit a JSON object in prose: the host channel now
   exposes a native tool turn (`agent()` over DSH's `llm.stream` tools field),
@@ -131,7 +162,7 @@ memory workbench over the store remains the next milestone.
   `memcurio-dsh-plugin-<version>.tgz` with a `.sha256` sidecar; npm
   publishing is prepared (`publishConfig.access: public`) but disabled in
   the release workflow until a token/provenance decision is made — see
-  `docs/RELEASE.md`.
+  `docs/operations.md`.
 
 - **Settings panel (browser half)**: the package now declares `dsh.client`
   (`platform: "web"` + official client inject rows) and ships a prebuilt
@@ -298,9 +329,9 @@ memory workbench over the store remains the next milestone.
 - **Aligned to DSH `0.1.5-rc.1`** (current npm `latest`; peers now
   `^0.1.5-rc.1`). The only contract delta encountered was
   `assistant/message` events carrying a required `stream` record; plugin
-  runtime code was already compatible. The rc.1 spike ledger in
-  `docs/design/` was verified against `0.1.2-rc.1` artifacts and must be
-  re-checked on the run target.
+  runtime code was already compatible. The rc.1 spike ledger (removed from
+  the tree by the 2026-09-16 docs reorg) was verified against `0.1.2-rc.1`
+  artifacts and must be re-checked on the run target.
 - Test fixtures that encoded absolute August dates in the 30-day usage
   window were made clock-independent (`daysAgo()` helpers), so the suite no
   longer rots as wall-clock time advances.

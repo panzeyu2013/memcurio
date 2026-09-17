@@ -7,7 +7,7 @@
  * The model consumes the local structural types from ./types.js — a host
  * bridge implementing {@link MemoryClientApi} is the ONLY external input.
  *
- * Milestone mapping (design docs/design/plugin-ui-v1.md): refresh()/snapshot
+ * Milestone mapping (design docs/ui.md): refresh()/snapshot
  * = §8.3 full-snapshot semantics; applyDelta() = §8.2 projector deltas
  * (inject-updated / usage-tick / queue-updated / memory-list-updated /
  * receipt / snapshot-ready); select()/setStore() = §7 tab switching and the
@@ -205,6 +205,11 @@ function initialState(): WorkbenchState {
 function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): WorkbenchState {
     const browsingStillListed =
         base.browsingStoreId !== null && snapshot.stores.some((candidate) => candidate.id === base.browsingStoreId);
+    // A store that vanished from the list folds back to the current store:
+    // computing the browsing decision from the stale id would keep the
+    // vanished store's caches (and its browse payload) on screen even though
+    // browsingStoreId is reset to null.
+    const nextBrowsingStoreId = browsingStillListed ? base.browsingStoreId : null;
     // §7.6 read-only browsing: while a non-current store is being browsed,
     // the (current-store) snapshot must NOT overwrite the browsing caches.
     // browse() is the refill path for the browsed store — it clears and then
@@ -212,13 +217,13 @@ function withSnapshot(base: WorkbenchState, snapshot: SnapshotPayload): Workbenc
     // (S0/host-bridge decision point; absent, browsing stays cleared until
     // the user switches back — client/README Q2/Q3).
     const browsingAnother =
-        base.browsingStoreId !== null && base.browsingStoreId !== snapshot.store.id;
+        nextBrowsingStoreId !== null && nextBrowsingStoreId !== snapshot.store.id;
     return {
         ...base,
         stores: snapshot.stores,
         currentStore: snapshot.store,
         currentStoreId: snapshot.store.id,
-        browsingStoreId: browsingStillListed ? base.browsingStoreId : null,
+        browsingStoreId: nextBrowsingStoreId,
         injection: snapshot.injection,
         ...(browsingAnother
             ? {}
@@ -344,6 +349,9 @@ export function formatSimulationResult(result: SimulateResult): string {
 export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
     let state: WorkbenchState = initialState();
     let counter = 0;
+    /** Newest browse() read: only the latest read for the browsing context
+     *  still on screen may fold (an A→B switch leaves A's response in flight). */
+    let browseRequest = 0;
     const seenOrigin = new Set<number>();
     /** Origin-window high-water mark: dedupe only recent seqs (the unordered
      *  channel's replay horizon); older ones are evicted so the set cannot
@@ -533,6 +541,12 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                 switchBrowsingStore(storeId);
                 return;
             }
+            // Request sequence: a rapid A→B switch (or a re-browse of the same
+            // store) can leave several reads in flight; only the newest read
+            // may fold. Together with the context check below this keeps a
+            // LATE A response from overwriting B's caches (or from setting a
+            // stale browseError while another store is on screen).
+            const request = ++browseRequest;
             // Switch the browsing context synchronously (like setStore): clear
             // the previous store's caches before the fetch lands so stale rows
             // are never shown as the new store's. A same-store re-browse skips
@@ -550,6 +564,7 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
             }
             try {
                 const payload = await api.browseSnapshot(storeId);
+                if (request !== browseRequest || state.browsingStoreId !== storeId) return;
                 state = {
                     ...state,
                     persistence: { entries: payload.entries, stale: false, loadedAt: payload.at },
@@ -559,6 +574,7 @@ export function createWorkbenchModel(api: MemoryClientApi): WorkbenchModel {
                     browseError: null,
                 };
             } catch (error) {
+                if (request !== browseRequest || state.browsingStoreId !== storeId) return;
                 state = { ...state, browseError: error instanceof Error ? error.message : String(error) };
             }
         },

@@ -71,6 +71,51 @@ describe("planConsolidation", () => {
     }])).toThrow(/projection exceeds/);
   });
 
+  test("afterKey rotates the projection window and wraps around", () => {
+    const rows = ["a", "b", "c"].map((key) => ({
+      rolloutKey: key,
+      rawMemory: `body ${key}`,
+      artifactFilename: `${key}.md`,
+      sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+    }));
+    const order = (text: string): string[] => [...text.matchAll(/## Rollout `([^`]+)`/g)].map((m) => m[1] ?? "");
+    expect(order(renderRawMemories(rows))).toEqual(["a", "b", "c"]);
+    expect(order(renderRawMemories(rows, { afterKey: "a" }))).toEqual(["b", "c", "a"]);
+    expect(order(renderRawMemories(rows, { afterKey: "c" }))).toEqual(["a", "b", "c"]);
+    expect(order(renderRawMemories(rows, { afterKey: "missing" }))).toEqual(["a", "b", "c"]);
+  });
+
+  test("rows beyond the 1MB cap are projected in rotating pages until each row appears", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      for (let i = 1; i <= 6; i++) {
+        idx.stageUpsert({
+          rolloutKey: `big|${i}`,
+          rawMemory: `task_group: big${i}\n\n### Task 1\n\n${String.fromCharCode(64 + i).repeat(240 * 1024)}`,
+          rolloutSummary: `big ${i} recap`,
+          rolloutSlug: `big-${i}`,
+          sourceUpdatedAt: new Date().toISOString(),
+        });
+      }
+    } finally {
+      idx.close();
+    }
+    const seen = new Set<string>();
+    for (let round = 0; round < 8 && seen.size < 6; round++) {
+      const plan = await planConsolidation(dir);
+      const text = plan.artifacts["raw_memories.md"] ?? "";
+      for (const match of text.matchAll(/## Rollout `([^`]+)`/g)) {
+        seen.add(match[1] ?? "");
+      }
+      // A row reported selected must be inside the artifact the provider gets.
+      for (const s of plan.selected) {
+        expect(text).toContain(`## Rollout \`${s.rolloutKey}\``);
+      }
+      syncArtifacts(dir, plan);
+    }
+    expect([...seen].sort()).toEqual(["big|1", "big|2", "big|3", "big|4", "big|5", "big|6"]);
+  });
+
   test("empty store: only the raw_memories placeholder diff (codex INIT)", async () => {
     const plan = await planConsolidation(dir);
     expect(plan.artifacts["raw_memories.md"]).toBe("# Raw Memories\n\nNo raw memories yet.\n");
@@ -927,12 +972,13 @@ describe("runConsolidation", () => {
     expect(first.notes.map((n) => n.filename)).toEqual(["my-notes.md"]);
     const second = await planConsolidation(dir, undefined, { adopt: true, settle: true });
     expect(second.notes.map((n) => n.filename)).toEqual(["my-notes.md"]);
-    // Adoption stores the sanitize-normalized text (fullwidth punctuation is
-    // folded), so the provider applies that form.
-    expect(second.notes[0]?.content).toContain("手写记忆:接口用 REST");
+    // Redaction must not rewrite unmatched characters: adoption stores the
+    // raw file text (the fullwidth colon survives), so the provider applies
+    // that form.
+    expect(second.notes[0]?.content).toContain("手写记忆：接口用 REST");
     const run = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });
     expect(run.applied).toBe(true);
-    expect(readWorkspaceText(dir, "MEMORY.md")).toContain("手写记忆:接口用 REST");
+    expect(readWorkspaceText(dir, "MEMORY.md")).toContain("手写记忆：接口用 REST");
     // Once consumed and applied, the note is no longer pending.
     expect((await pendingAdHocNotes(dir)).map((n) => n.filename)).toEqual([]);
   });

@@ -71,16 +71,37 @@ export interface BridgeSessionInfo {
  *  projector maps every audit record to a receipt, so the bridge filters
  *  lifecycle/injection noise — adapter.*, integration.*, baseline writes —
  *  before projection). */
-const WRITE_PATH_PREFIXES = ["extract.", "adhoc.", "consolidate.", "prune.", "purge.", "warn."] as const;
+const WRITE_PATH_PREFIXES = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
+
+/** extract.* rows that are bookkeeping/notices, never durable writes: an
+ *  unread badge and a "memory updated" toast for a queue hop or a policy
+ *  repair would be a false write notification. */
+const NON_WRITE_EXTRACT_ACTIONS = new Set([
+  "extract.noop",
+  "extract.stale",
+  "extract.repaired",
+  "extract.requeued",
+  "extract.queued",
+  "extract.queue_complete",
+  "extract.queue_retry",
+  "extract.queue_dead",
+  "extract.queue_blocked",
+  "extract.queue_unblocked",
+]);
 
 function isWritePathAction(action: string): boolean {
+  if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
+    return false;
+  }
   return WRITE_PATH_PREFIXES.some((prefix) => action.startsWith(prefix));
 }
 
 /** Audit actions that mutate durable memory and therefore surface as
  *  memory-list updates (all others only produce receipts or nothing). */
 function memoryKindForAction(action: string): MemoryUpdateKind | undefined {
-  if (action === "extract.staged" || action === "extract.backfill" || action === "extract.noop") {
+  // extract.noop deliberately absent: the gate decided nothing was worth
+  // remembering, so the memory list must not announce a new rollout.
+  if (action === "extract.staged" || action === "extract.backfill") {
     return "rollout";
   }
   if (action === "adhoc.note" || action === "adhoc.adopt") {

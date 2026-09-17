@@ -15,7 +15,6 @@ export const en = {
   statusTokens: "~{tokens} tokens",
   statusDegraded: "Realtime degraded (polling)",
   statusOffline: "Memory UI offline",
-  statusError: "Memory UI unavailable",
   statusDisabled: "Memory injection off",
   contextRowTitle: "Memory injection",
   guideRowTitle: "Memory guide",
@@ -50,8 +49,6 @@ export const en = {
   toolEmpty: "No details",
   toolArguments: "Arguments",
   toolResult: "Result",
-  toolExpand: "Show details",
-  toolCollapse: "Hide details",
 } as const;
 
 export const zh = {
@@ -62,7 +59,6 @@ export const zh = {
   statusTokens: "约 {tokens} tokens",
   statusDegraded: "实时性降级（轮询中）",
   statusOffline: "记忆界面离线",
-  statusError: "记忆界面不可用",
   statusDisabled: "记忆注入已关闭",
   contextRowTitle: "记忆注入",
   guideRowTitle: "记忆指南",
@@ -97,8 +93,6 @@ export const zh = {
   toolEmpty: "无详情",
   toolArguments: "参数",
   toolResult: "结果",
-  toolExpand: "展开详情",
-  toolCollapse: "收起详情",
 } as const;
 
 export type UiKey = keyof typeof en;

@@ -82,10 +82,14 @@ export function createProjector() {
                     const previous = lastStaticBySession.get(record.sessionId);
                     const current = record.staticText ?? "";
                     const duplicate = previous !== undefined && current === previous;
+                    // Refresh on hit: delete + set moves the session to the tail, so the
+                    // eviction below really drops the least-recently-seen session (a
+                    // plain Map.set on an existing key keeps its original position and
+                    // would evict active sessions instead).
+                    lastStaticBySession.delete(record.sessionId);
                     lastStaticBySession.set(record.sessionId, current);
-                    // Bounded duplicate window: evict the oldest session once the cap
-                    // is exceeded (insertion order is update order because Map.set on
-                    // an existing key keeps its position — refresh on hit).
+                    // Bounded duplicate window: evict the least-recently-seen session
+                    // once the cap is exceeded.
                     if (lastStaticBySession.size > MAX_TRACKED_SESSIONS) {
                         const oldest = lastStaticBySession.keys().next().value;
                         if (oldest !== undefined)

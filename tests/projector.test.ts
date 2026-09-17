@@ -328,4 +328,20 @@ describe("review regressions (tool path trim, citation shape filter, audit ns, s
     const node = replay.find((delta) => delta.kind === "inject-updated");
     expect(node?.duplicate).toBe(false);
   });
+
+  test("an actively re-injected session survives eviction (refresh on hit)", () => {
+    const projector = createProjector();
+    for (let index = 0; index < 300; index += 1) {
+      // sess-0 is touched again midway: it is the oldest insert but NOT the
+      // least recently seen, so its duplicate state must survive the cap.
+      if (index === 150) {
+        projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+      }
+      projector.project({ kind: "pre-step-inject", sessionId: `sess-${index}`, workdir: "/w", staticText: "same" });
+    }
+    expect(projector.lastStaticBySession.has("sess-0")).toBe(true);
+    const replay = projector.project({ kind: "pre-step-inject", sessionId: "sess-0", workdir: "/w", staticText: "same" });
+    const node = replay.find((delta) => delta.kind === "inject-updated");
+    expect(node?.duplicate).toBe(true);
+  });
 });

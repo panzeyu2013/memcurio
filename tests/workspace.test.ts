@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { diffTexts, diffWorkspace, listWorkspaceFiles, MAX_WORKSPACE_FILE_BYTES, readWorkspaceText, rolloutSlugs, saveBaseline, loadBaseline, hasWorkspaceChanges, writeRolloutSummary, readRolloutSummary, deleteRolloutSummary, writeWorkspaceText, deleteWorkspaceText } from "../src/core/workspace.js";
 import { ensureLayout, memoryWorkspace } from "../src/core/paths.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -81,6 +81,31 @@ describe("workspace text IO", () => {
     expect(files).toContain("rollout_summaries/one.md");
     expect(files).toContain("rollout_summaries/nested/two.md");
     expect(files.some((f) => f.includes(".baseline"))).toBe(false);
+  });
+
+  test("skips symlinks and directories even when named *.md", () => {
+    const ws = memoryWorkspace(dir);
+    writeWorkspaceText(dir, "real.md", "real");
+    const outside = join(tmpdir(), `ws-outside-${process.pid}-${Date.now()}.md`);
+    writeFileSync(outside, "outside");
+    try {
+      // Escaping link, in-workspace link (write-through target) and a
+      // directory named *.md must all stay out of the managed file list.
+      symlinkSync(outside, join(ws, "escape.md"));
+      symlinkSync(join(ws, "real.md"), join(ws, "internal-link.md"));
+      mkdirSync(join(ws, "dir.md"));
+      symlinkSync(join(ws, "real.md"), join(ws, "rollout_summaries", "link.md"));
+      const files = listWorkspaceFiles(dir);
+      expect(files).toContain("real.md");
+      expect(files).not.toContain("escape.md");
+      expect(files).not.toContain("internal-link.md");
+      expect(files).not.toContain("dir.md");
+      // rolloutSlugs is fed by listWorkspaceFiles: no write-through link may
+      // be treated as a summary.
+      expect(rolloutSlugs(dir)).toEqual([]);
+    } finally {
+      rmSync(outside, { force: true });
+    }
   });
 });
 

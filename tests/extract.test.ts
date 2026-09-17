@@ -7,6 +7,7 @@ import {
   LlmExtractProvider,
   NoopExtractProvider,
   parseExtractToolReply,
+  policyRepairAuditor,
   MAX_EXTRACT_FIELD_BYTES,
   processExtractionQueue,
   queueExtraction,
@@ -14,7 +15,7 @@ import {
   stageSession,
 } from "../src/core/extract.js";
 import type { ExtractProvider, ExtractionPolicyReport, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
-import type { AgentToolReply } from "../src/core/channel.js";
+import type { AgentToolReply, LlmChannel } from "../src/core/channel.js";
 import { ensureLayout } from "../src/core/paths.js";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
@@ -408,6 +409,94 @@ describe("LlmExtractProvider / buildExtractPrompt", () => {
     const textOnly = new LlmExtractProvider({ name: "text-only" } as never);
     expect(textOnly.availability().configured).toBe(false);
     await expect(textOnly.extract(snapshot)).rejects.toThrow(/native tool calling/);
+  });
+
+  test("a repaired extraction notifies the policy reporter once with the dropped line count", async () => {
+    const channel: LlmChannel = {
+      name: "fake",
+      async agent(): Promise<AgentToolReply> {
+        return {
+          text: "",
+          toolCalls: [{
+            id: "call-1",
+            name: "save_extraction",
+            arguments: JSON.stringify({
+              rollout_summary: "会话完成了网关 token 联调。\nThe service sends the token to the gateway on boot.\n其余工作正常。",
+              rollout_slug: "repair-case",
+              raw_memory: "- 会话其余内容",
+            }),
+          }],
+          finish: "stop",
+        };
+      },
+    };
+    const calls: number[] = [];
+    const provider = new LlmExtractProvider(channel, undefined, (removed) => {
+      calls.push(removed);
+    });
+    const out = await provider.extract(snapshot);
+    expect(calls).toEqual([1]);
+    expect(out?.rolloutSummary).toContain("网关 token 联调");
+    expect(out?.rolloutSummary).not.toContain("sends the token");
+  });
+
+  test("a clean extraction never notifies the policy reporter", async () => {
+    const channel: LlmChannel = {
+      name: "fake",
+      async agent(): Promise<AgentToolReply> {
+        return {
+          text: "",
+          toolCalls: [{
+            id: "call-1",
+            name: "save_extraction",
+            arguments: JSON.stringify({ rollout_summary: "clean summary", rollout_slug: "s", raw_memory: "raw body" }),
+          }],
+          finish: "stop",
+        };
+      },
+    };
+    const calls: number[] = [];
+    await new LlmExtractProvider(channel, undefined, (removed) => {
+      calls.push(removed);
+    }).extract(snapshot);
+    expect(calls).toEqual([]);
+  });
+
+  test("a failing policy reporter never fails or delays the extraction", async () => {
+    const channel: LlmChannel = {
+      name: "fake",
+      async agent(): Promise<AgentToolReply> {
+        return {
+          text: "",
+          toolCalls: [{
+            id: "call-1",
+            name: "save_extraction",
+            arguments: JSON.stringify({
+              rollout_summary: "会话完成了网关 token 联调。\nThe service sends the token to the gateway on boot.\n其余工作正常。",
+              rollout_slug: "repair-case",
+              raw_memory: "- 会话其余内容",
+            }),
+          }],
+          finish: "stop",
+        };
+      },
+    };
+    const provider = new LlmExtractProvider(channel, undefined, async () => {
+      throw new Error("audit store down");
+    });
+    const out = await provider.extract(snapshot);
+    expect(out?.rolloutSummary).toContain("网关 token 联调");
+  });
+
+  test("policyRepairAuditor records extract.repaired best-effort", async () => {
+    await policyRepairAuditor(dir)(2);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const audits = idx.auditRecent(5);
+      expect(audits.some((a) => String(a.action) === "extract.repaired" && String(a.detail).includes("2 line"))).toBe(true);
+    } finally {
+      idx.close();
+    }
   });
 
   test("prompt embeds the snapshot as untrusted JSON", () => {

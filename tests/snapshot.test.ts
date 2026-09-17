@@ -403,6 +403,9 @@ describe("acceptance-round receipt semantics (production audit shapes)", () => {
     // warn.promptware action leg reads ok (no failure marker), matching the
     // heuristic — receipts for warnings stay informational.
     expect(byAction.get("warn.promptware")?.ok).toBe(true);
+    // Warnings are not writes: the receipt must not drive the unread badge or
+    // a "memory updated" toast on the client.
+    expect(byAction.get("warn.promptware")?.writePath).toBe(false);
     // Production ns is the bare host "dsh": the session id must be derived
     // from the staged detail rollout key "host|<session>".
     expect(byAction.get("extract.staged")?.sessionId).toBe("s1");

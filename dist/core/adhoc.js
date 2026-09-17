@@ -258,7 +258,27 @@ export async function pendingAdHocNotes(root, opts) {
             continue;
         }
         if (!row.applied) {
-            out.push(row);
+            // The file is the source of truth for pending notes too (see the applied
+            // branch below): a hand-edited pending note must merge its edited text,
+            // not the stale DB copy, or the old and new text end up merged as two
+            // separate edits. A file that vanished or became unreadable between the
+            // existence check above and this read falls back to the row.
+            let fileText;
+            try {
+                fileText = readWorkspaceText(root, `extensions/ad_hoc/notes/${row.filename}`);
+            }
+            catch {
+                out.push(row);
+                continue;
+            }
+            if (!fileText.trim()) {
+                out.push(row);
+                continue;
+            }
+            // Same normalization as the applied branch, so a hand-edited secret
+            // never reaches the provider prompt un-redacted.
+            const normalized = redactSecrets(fileText).text.trim();
+            out.push(normalized === row.content ? row : { ...row, content: normalized });
             continue;
         }
         let fileText;

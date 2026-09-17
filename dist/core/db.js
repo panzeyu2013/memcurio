@@ -932,6 +932,44 @@ function busyRetryWaitMs(attempt) {
     const waits = [250, 500, 1000];
     return attempt < waits.length ? waits[attempt] ?? 1000 : null;
 }
+/** Add missing columns atomically and idempotently. The schema is re-read
+ *  INSIDE the BEGIN IMMEDIATE transaction, which serializes with any other
+ *  migrator: a concurrent first open that added a column between the caller's
+ *  schema snapshot and this call is skipped instead of failing Index.create
+ *  with "duplicate column name". The duplicate-column catch covers writers
+ *  that did not honor the write lock; a real failure still rolls the whole
+ *  batch back. Exported for tests. */
+export function addMissingColumns(driver, table, columns) {
+    driver.exec("BEGIN IMMEDIATE");
+    try {
+        const existing = new Set(driver.all(`PRAGMA table_info(${table})`).map((row) => row.name));
+        for (const column of columns) {
+            if (existing.has(column.name)) {
+                continue;
+            }
+            try {
+                driver.exec(column.ddl);
+            }
+            catch (err) {
+                const now = new Set(driver.all(`PRAGMA table_info(${table})`).map((row) => row.name));
+                if (!now.has(column.name)) {
+                    throw err;
+                }
+            }
+            existing.add(column.name);
+        }
+        driver.exec("COMMIT");
+    }
+    catch (err) {
+        try {
+            driver.exec("ROLLBACK");
+        }
+        catch {
+            void 0;
+        }
+        throw err;
+    }
+}
 function migrate(driver) {
     const version = driver.get("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
     const current = typeof version === "string" && /^\d+$/.test(version) ? Number(version) : 1;
@@ -964,12 +1002,10 @@ function migrate(driver) {
     const stageColumns = new Set(driver.all("PRAGMA table_info(stage1_outputs)").map((row) => row.name));
     const repairV8 = current < 8 || !stageColumns.has("artifact_id") || !stageColumns.has("artifact_filename");
     if (repairV8) {
-        if (!stageColumns.has("artifact_id")) {
-            driver.exec("ALTER TABLE stage1_outputs ADD COLUMN artifact_id TEXT");
-        }
-        if (!stageColumns.has("artifact_filename")) {
-            driver.exec("ALTER TABLE stage1_outputs ADD COLUMN artifact_filename TEXT");
-        }
+        addMissingColumns(driver, "stage1_outputs", [
+            { name: "artifact_id", ddl: "ALTER TABLE stage1_outputs ADD COLUMN artifact_id TEXT" },
+            { name: "artifact_filename", ddl: "ALTER TABLE stage1_outputs ADD COLUMN artifact_filename TEXT" },
+        ]);
         const rows = driver.all("SELECT rollout_key FROM stage1_outputs");
         for (const row of rows) {
             const artifactId = artifactIdForRolloutKey(row.rollout_key);
@@ -985,18 +1021,14 @@ function migrate(driver) {
     const extractionColumns = new Set(driver.all("PRAGMA table_info(extraction_jobs)").map((row) => row.name));
     const repairV9 = current < 9 || !refreshedStageColumns.has("checkpoint_rank") || !refreshedStageColumns.has("checkpoint_source_event") || !extractionColumns.has("provider") || !extractionColumns.has("claim_token");
     if (repairV9) {
-        if (!refreshedStageColumns.has("checkpoint_rank")) {
-            driver.exec("ALTER TABLE stage1_outputs ADD COLUMN checkpoint_rank INTEGER NOT NULL DEFAULT 0");
-        }
-        if (!refreshedStageColumns.has("checkpoint_source_event")) {
-            driver.exec("ALTER TABLE stage1_outputs ADD COLUMN checkpoint_source_event TEXT NOT NULL DEFAULT ''");
-        }
-        if (!extractionColumns.has("provider")) {
-            driver.exec("ALTER TABLE extraction_jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'http'");
-        }
-        if (!extractionColumns.has("claim_token")) {
-            driver.exec("ALTER TABLE extraction_jobs ADD COLUMN claim_token TEXT");
-        }
+        addMissingColumns(driver, "stage1_outputs", [
+            { name: "checkpoint_rank", ddl: "ALTER TABLE stage1_outputs ADD COLUMN checkpoint_rank INTEGER NOT NULL DEFAULT 0" },
+            { name: "checkpoint_source_event", ddl: "ALTER TABLE stage1_outputs ADD COLUMN checkpoint_source_event TEXT NOT NULL DEFAULT ''" },
+        ]);
+        addMissingColumns(driver, "extraction_jobs", [
+            { name: "provider", ddl: "ALTER TABLE extraction_jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'http'" },
+            { name: "claim_token", ddl: "ALTER TABLE extraction_jobs ADD COLUMN claim_token TEXT" },
+        ]);
         if (current < 9) {
             driver.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '9')");
         }

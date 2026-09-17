@@ -138,6 +138,35 @@ describe("redactSecrets", () => {
     const r = redactSecrets("the quick brown fox jumps over the lazy dog 0123456789");
     expect(r.redacted).toBe(false);
   });
+
+  test("preserves unmatched non-Latin text byte-for-byte (no homoglyph folding in output)", () => {
+    // Regression: redactSecrets used to return normalizeText(text) and rewrote
+    // every Cyrillic/Greek/fullwidth character into its Latin lookalike before
+    // persisting notes, raw memories and MEMORY.md.
+    for (const text of ["привет мир", "καλημέρα κόσμε", "ｆｏｏｂａｒ　ｂａｚ"]) {
+      expect(redactSecrets(text)).toEqual({ text, redacted: false });
+    }
+  });
+
+  test("redacts a secret in place without rewriting the surrounding original text", () => {
+    const r = redactSecrets("привет sk-abc1234567890XYZ мир");
+    expect(r.redacted).toBe(true);
+    expect(r.text).toBe("привет [REDACTED] мир");
+  });
+
+  test("still detects secrets hidden behind homoglyphs/fullwidth and redacts the raw span", () => {
+    // Cyrillic 'а' in "password": detection runs on the folded form, the raw
+    // span is what gets replaced.
+    const homoglyph = "pаssword=AbCdEf1234567890xyz";
+    const h = redactSecrets(homoglyph);
+    expect(h.redacted).toBe(true);
+    expect(h.text).toContain("[REDACTED]");
+    expect(h.text).not.toContain("AbCdEf");
+    const fullwidth = "密钥＝ＡＢＣＤＥＦＧＨＩＪＫＬＭＮ";
+    const fw = redactSecrets(fullwidth);
+    expect(fw.redacted).toBe(true);
+    expect(fw.text).not.toContain("ＡＢＣＤ");
+  });
 });
 
 describe("scanInjection", () => {

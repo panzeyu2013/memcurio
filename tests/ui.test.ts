@@ -9,11 +9,22 @@
 import { describe, expect, test } from "bun:test";
 
 import { memoryMarkSvg } from "../client/ui/icons.js";
-import { actionCategory, countDynamicHits, createMemoryUiStore, estimateTokens } from "../client/ui/model.js";
+import { actionCategory, countDynamicHits, createMemoryUiStore, estimateTokens, isWritePathAction } from "../client/ui/model.js";
 import { rowStateOf, summarizeArgs, resultTextOf } from "../client/ui/tool-rows.js";
 import { createUiTransportClient } from "../client/ui/transport.js";
 import { isUiDelta, isUiEventFrame, isUiSnapshotResponse, type UiSnapshot } from "../client/ui/wire.js";
 import { isSameOriginLoopbackRequest } from "../src/plugin/ui-transport.js";
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(5);
+  }
+  throw new Error("waitFor timed out");
+};
 
 const SNAPSHOT: UiSnapshot = {
   at: "2026-09-14T00:00:00.000Z",
@@ -227,6 +238,65 @@ describe("snapshot receipt folding (review regressions)", () => {
   });
 });
 
+describe("write-path guard + injection duplicate comparison (review regressions)", () => {
+  test("classifies only real memory mutations as write-path actions", () => {
+    expect(isWritePathAction("extract.staged")).toBe(true);
+    expect(isWritePathAction("extract.backfill")).toBe(true);
+    expect(isWritePathAction("adhoc.note")).toBe(true);
+    expect(isWritePathAction("consolidate.auto")).toBe(true);
+    expect(isWritePathAction("prune.retention")).toBe(true);
+    expect(isWritePathAction("purge.hard")).toBe(true);
+    expect(isWritePathAction("warn.promptware")).toBe(false);
+    expect(isWritePathAction("adapter.dynamic_context")).toBe(false);
+  });
+
+  test("warn/unknown receipt deltas never inflate unread or toast as writes", () => {
+    const store = createMemoryUiStore();
+    const events = store.applyDeltas(
+      [
+        { kind: "receipt", time: Date.parse("2026-09-14T00:00:07.000Z"), action: "warn.promptware", detail: "blocked hit(s)" },
+        { kind: "receipt", time: Date.parse("2026-09-14T00:00:08.000Z"), action: "adapter.dynamic_context", detail: "3 hit(s)" },
+      ],
+      "s1",
+    );
+    expect(events).toEqual([]);
+    expect(store.getSnapshot().unread).toBe(0);
+    expect(store.getSnapshot().receipts).toEqual([]);
+    // The real write that follows still counts.
+    const applied = store.applyDeltas(
+      [{ kind: "receipt", time: Date.parse("2026-09-14T00:00:09.000Z"), action: "adhoc.note", detail: "note saved" }],
+      "s1",
+    );
+    expect(applied).toEqual([{ type: "write", action: "adhoc.note" }]);
+    expect(store.getSnapshot().unread).toBe(1);
+    expect(store.getSnapshot().receipts[0]?.action).toBe("adhoc.note");
+  });
+
+  test("a snapshot row the host mislabels write-path is still filtered by action", () => {
+    const store = createMemoryUiStore();
+    const events = store.applySnapshot({
+      ...SNAPSHOT,
+      receipts: [{ seq: 1, time: "2026-09-14T00:00:00.000Z", action: "warn.promptware", detail: "blocked", writePath: true }],
+    });
+    expect(events).toEqual([]);
+    expect(store.getSnapshot().receipts).toEqual([]);
+    expect(store.getSnapshot().unread).toBe(0);
+  });
+
+  test("compares the trimmed static/dynamic text when flagging a duplicate injection", () => {
+    const store = createMemoryUiStore();
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary ", dynamicText: "a:1 hit " } });
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary", dynamicText: "a:1 hit" } });
+    const injection = store.getSnapshot().injection;
+    expect(injection?.staticText).toBe("[memcurio] summary");
+    expect(injection?.dynamicText).toBe("a:1 hit");
+    expect(injection?.duplicate).toBe(true);
+    // A real text change is still not a duplicate.
+    store.applySnapshot({ ...SNAPSHOT, injection: { staticSummary: "[memcurio] summary", dynamicText: "a:1 changed" } });
+    expect(store.getSnapshot().injection?.duplicate).toBe(false);
+  });
+});
+
 describe("wire guards (review regressions)", () => {
   test("rejects deltas whose fields the store cannot read", () => {
     expect(isUiDelta({ kind: "receipt", action: "a", detail: "d" })).toBe(false);
@@ -240,6 +310,17 @@ describe("wire guards (review regressions)", () => {
     expect(isUiEventFrame({ deltas: [] })).toBe(false);
     expect(isUiEventFrame({ seq: 1, deltas: [] })).toBe(true);
     expect(isUiSnapshotResponse({ snapshot: SNAPSHOT })).toBe(false);
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: SNAPSHOT })).toBe(true);
+  });
+
+  test("rejects a snapshot response whose store shape the transport/model dereference", () => {
+    // The transport reads snapshot.store.root and the model reads store.id: a
+    // malformed store must be rejected before either would throw a TypeError.
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: { ...SNAPSHOT, store: undefined } })).toBe(false);
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: { ...SNAPSHOT, store: {} } })).toBe(false);
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: { ...SNAPSHOT, store: { id: "w1" } } })).toBe(false);
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: { ...SNAPSHOT, store: { id: 1, root: "/tmp" } } })).toBe(false);
+    expect(isUiSnapshotResponse({ seq: 1, snapshot: { ...SNAPSHOT, store: { id: "w1", root: 5 } } })).toBe(false);
     expect(isUiSnapshotResponse({ seq: 1, snapshot: SNAPSHOT })).toBe(true);
   });
 });
@@ -302,7 +383,230 @@ describe("transport ordering", () => {
   });
 });
 
+describe("transport session rebind + stream lifecycle (review regressions)", () => {
+  const encoder = new TextEncoder();
+  const frame = (seq: number, root: string, sessionId: string): Uint8Array =>
+    encoder.encode(`data: ${JSON.stringify({ seq, root, deltas: [{ kind: "citation", sessionId, rolloutKeys: [] }] })}\n\n`);
+  const eventCalls = (calls: readonly string[]): string[] => calls.filter((call) => call.includes("/events"));
+
+  interface StreamingFetch {
+    calls: string[];
+    signals: Array<AbortSignal | undefined>;
+    streams: Array<ReadableStreamDefaultController<Uint8Array>>;
+    restore(): void;
+  }
+
+  /** Fake fetch: snapshots answer synchronously for the current session; every
+   *  `/events` call hands back a controllable body (a 500 when `eventsFail`). */
+  const installStreamingFetch = (session: () => string, eventsFail?: () => boolean): StreamingFetch => {
+    const original = globalThis.fetch;
+    const calls: string[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    const streams: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+    let snapshotSeq = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const target = String(input);
+      calls.push(target);
+      if (target.includes("/snapshot")) {
+        snapshotSeq += 1;
+        const body = JSON.stringify({
+          seq: snapshotSeq,
+          snapshot: {
+            at: "x",
+            store: { id: session(), root: `/root/${session()}`, isolated: false },
+            injection: {},
+            receipts: [],
+            realtime: { mode: "push", degraded: false },
+          },
+        });
+        return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (eventsFail?.() === true) return new Response(null, { status: 500 });
+      signals.push(init?.signal ?? undefined);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    return {
+      calls,
+      signals,
+      streams,
+      restore() {
+        globalThis.fetch = original;
+      },
+    };
+  };
+
+  test("rebind() closes the old stream and re-subscribes for the new session", async () => {
+    let session = "s1";
+    const fake = installStreamingFetch(() => session);
+    const snapshots: string[] = [];
+    const deltas: number[] = [];
+    const client = createUiTransportClient({
+      basePath: "/memcurio",
+      token: "secret",
+      sessionId: () => session,
+      onSnapshot: (snapshot) => snapshots.push(snapshot.store.id),
+      onDeltas: (batch) => deltas.push(batch.length),
+    });
+    try {
+      client.start();
+      await waitFor(() => eventCalls(fake.calls).length === 1);
+      expect(eventCalls(fake.calls)[0]).toContain("session=s1");
+      expect(snapshots).toEqual(["s1"]);
+
+      // A frame from the s1 stream folds once.
+      fake.streams[0]?.enqueue(frame(1, "/root/s1", "s1"));
+      await waitFor(() => deltas.length === 1);
+
+      session = "s2";
+      client.rebind();
+      await waitFor(() => eventCalls(fake.calls).length === 2);
+      // The stream URL carries the NEW session and the old one was aborted —
+      // never left running for the old session to be delivered to.
+      expect(eventCalls(fake.calls)[1]).toContain("session=s2");
+      expect(fake.signals[0]?.aborted).toBe(true);
+      expect(snapshots).toEqual(["s1", "s2"]);
+
+      // A leftover frame of the old stream is dropped (its parser was
+      // invalidated before the new session's snapshot could fold).
+      try {
+        fake.streams[0]?.enqueue(frame(9, "/root/s1", "s1"));
+      } catch {
+        // The reader already released the old body.
+      }
+      await sleep(10);
+      expect(deltas).toHaveLength(1);
+
+      // The new session's stream delivers live increments.
+      fake.streams[1]?.enqueue(frame(10, "/root/s2", "s2"));
+      await waitFor(() => deltas.length === 2);
+      expect(deltas[1]).toBe(1);
+    } finally {
+      client.stop();
+      fake.restore();
+    }
+  });
+
+  test("a reconnect replays from the applied cursor and drops an already-applied frame", async () => {
+    const fake = installStreamingFetch(() => "s1");
+    const deltas: number[] = [];
+    const client = createUiTransportClient({
+      basePath: "/memcurio",
+      token: "secret",
+      sessionId: () => "s1",
+      onSnapshot: () => undefined,
+      onDeltas: (batch) => deltas.push(batch.length),
+      retryMs: 10,
+    });
+    try {
+      client.start();
+      await waitFor(() => eventCalls(fake.calls).length === 1);
+      fake.streams[0]?.enqueue(frame(5, "/root/s1", "s1"));
+      await waitFor(() => deltas.length === 1);
+
+      // The host drops the stream: the retry re-reads the snapshot and
+      // reconnects with the applied cursor instead of opening a second stream.
+      fake.streams[0]?.close();
+      await waitFor(() => eventCalls(fake.calls).length === 2);
+      expect(eventCalls(fake.calls)[1]).toContain("after=5");
+
+      // A replayed frame at or below the cursor must not double-apply
+      // (usage counters, unread, receipts).
+      fake.streams[1]?.enqueue(frame(5, "/root/s1", "s1"));
+      await sleep(10);
+      expect(deltas).toHaveLength(1);
+
+      // A newer frame still applies.
+      fake.streams[1]?.enqueue(frame(6, "/root/s1", "s1"));
+      await waitFor(() => deltas.length === 2);
+    } finally {
+      client.stop();
+      fake.restore();
+    }
+  });
+
+  test("rebind() keeps the degraded polling fallback alive while the stream is down", async () => {
+    let session = "s1";
+    const fake = installStreamingFetch(() => session, () => true);
+    const modes: string[] = [];
+    const client = createUiTransportClient({
+      basePath: "/memcurio",
+      token: "secret",
+      sessionId: () => session,
+      onSnapshot: () => undefined,
+      onDeltas: () => undefined,
+      onMode: (mode) => modes.push(mode),
+      pollMs: 5,
+      retryMs: 5,
+    });
+    try {
+      client.start();
+      await waitFor(() => modes.includes("polling"));
+      await waitFor(() => fake.calls.some((call) => call.includes("/snapshot?session=s1")));
+
+      session = "s2";
+      client.rebind();
+      // The rebind reads the new session immediately...
+      await waitFor(() => fake.calls.some((call) => call.includes("/snapshot?session=s2")));
+      const afterRebind = fake.calls.filter((call) => call.includes("/snapshot?session=s2")).length;
+      // ...and the polling fallback keeps refreshing it: a failed stream never
+      // silences the new session.
+      await waitFor(() => fake.calls.filter((call) => call.includes("/snapshot?session=s2")).length > afterRebind);
+      expect(modes).toContain("polling");
+    } finally {
+      client.stop();
+      fake.restore();
+    }
+  });
+
+  test("treats a snapshot response without a usable store as a bad response, not a crash", async () => {
+    const original = globalThis.fetch;
+    const calls: string[] = [];
+    const applied: unknown[] = [];
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const target = String(input);
+      calls.push(target);
+      if (target.includes("/snapshot")) {
+        return new Response(
+          JSON.stringify({ seq: 1, snapshot: { at: "x", injection: {}, receipts: [], realtime: { mode: "push", degraded: false } } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    try {
+      const client = createUiTransportClient({
+        basePath: "/memcurio",
+        token: "secret",
+        sessionId: () => "s1",
+        onSnapshot: (snapshot) => applied.push(snapshot),
+        onDeltas: () => undefined,
+      });
+      client.start();
+      // The malformed body is dropped and the stream still opens (no TypeError
+      // and no bogus "degraded" mode).
+      await waitFor(() => calls.some((call) => call.includes("/events")));
+      expect(applied).toEqual([]);
+      client.stop();
+    } finally {
+      streamController?.close();
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe("host transport guard", () => {
+
   const url = new URL("http://127.0.0.1:30800/memcurio/snapshot");
   const request = (overrides: Record<string, unknown>): Parameters<typeof isSameOriginLoopbackRequest>[0] =>
     ({ method: "GET", headers: { host: "127.0.0.1:30800", "x-memcurio-token": "secret" }, socket: { remoteAddress: "127.0.0.1" }, ...overrides }) as never;

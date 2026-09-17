@@ -265,7 +265,11 @@ export function apply(ctx: Context): void {
       // Another workspace's receipts must not stay on screen while the new
       // session's snapshot is in flight.
       store.resetStoreView();
-      transport?.refresh();
+      // The event stream is bound to the session it connected with, so a plain
+      // refresh() would update the view once and then stay silent: rebind
+      // closes the old stream and re-subscribes for the new session (falling
+      // back to snapshot polling if the new store is not ready yet).
+      transport?.rebind();
     });
   }, "memcurio: session switches");
 

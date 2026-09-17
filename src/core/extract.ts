@@ -157,16 +157,58 @@ export class NoopExtractProvider implements ExtractProvider {
   }
 }
 
+/** Notification fired once per extraction whose reply needed line-level
+ *  injection-policy repair, carrying the number of dropped lines. Hosts use it
+ *  for audit bookkeeping; implementations may be async. */
+export type PolicyRepairReporter = (removedLines: number) => void | Promise<void>;
+
+/** Reporter that records the repair in the audit log. Best-effort and lazy: an
+ *  audit failure must never fail (or delay) an extraction that succeeded. */
+export function policyRepairAuditor(root: string): PolicyRepairReporter {
+  return async (removedLines) => {
+    let idx: Index | undefined;
+    try {
+      idx = await Index.create(indexDb(root));
+      idx.audit("extract.repaired", "-", `injection policy dropped ${removedLines} line(s)`);
+    } catch {
+      // best effort: the staged extraction is already durable
+    } finally {
+      idx?.close();
+    }
+  };
+}
+
 /** Channel-backed Phase-1 extraction provider. The embedding host's model
  *  channel is the only model source; without one the provider reports
  *  unconfigured, so a durable job degrades to blocked instead of burning
  *  retries when no model is reachable.
- *  `claimName` overrides the queue provider namespace used for claims. */
+ *  `claimName` overrides the queue provider namespace used for claims.
+ *  `onPolicyRepair` is an optional fire-and-forget hook (see
+ *  {@link PolicyRepairReporter}); it never blocks or fails the extraction. */
 export class LlmExtractProvider implements ExtractProvider {
   private readonly claimName: string | undefined;
 
-  constructor(private readonly channel?: LlmChannel, claimName?: string) {
+  constructor(
+    private readonly channel?: LlmChannel,
+    claimName?: string,
+    private readonly onPolicyRepair?: PolicyRepairReporter,
+  ) {
     this.claimName = claimName?.trim() || undefined;
+  }
+
+  /** Fire-and-forget notification: audit bookkeeping must never block, delay
+   *  or fail the durable extraction path. */
+  private notifyPolicyRepair(removedLines: number): void {
+    if (!this.onPolicyRepair) {
+      return;
+    }
+    try {
+      void Promise.resolve(this.onPolicyRepair(removedLines)).catch(() => {
+        void 0;
+      });
+    } catch {
+      // A synchronously-throwing reporter is ignored for the same reason.
+    }
   }
 
   get name(): string {
@@ -190,7 +232,12 @@ export class LlmExtractProvider implements ExtractProvider {
         [{ role: "user", text: buildExtractPrompt(snapshot) }],
         EXTRACT_TOOLS,
       );
-      return parseExtractToolReply(reply, snapshotToFallback(snapshot));
+      const report: ExtractionPolicyReport = {};
+      const output = parseExtractToolReply(reply, snapshotToFallback(snapshot), report);
+      if (report.repairedLines !== undefined) {
+        this.notifyPolicyRepair(report.repairedLines);
+      }
+      return output;
     } catch (err) {
       console.warn(`[memcurio] llm extraction failed: ${String(err)}`);
       // Transport/provider failures must escape so the durable queue can

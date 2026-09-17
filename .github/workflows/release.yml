@@ -7,9 +7,13 @@ name: Release
 #   must be self-contained);
 # - publication is serialized and never re-publishes over an existing
 #   release: a *published* release for the tag fails closed; only stale
-#   drafts are deleted (softprops would silently update an existing release);
-# - release notes are composed from the CHANGELOG section of the released
-#   version (missing/empty/undated section fails the run);
+#   drafts are deleted (softprops would silently update an existing release).
+#   A `gh release view` failure counts as "no release yet" ONLY when gh
+#   reports its explicit not-found signal; network, rate-limit and 5xx errors
+#   fail the gate closed instead of falling through to an overwrite;
+# - release notes are composed from the released version's CHANGELOG section;
+#   a non-empty [Unreleased] block is the fallback when that dated section is
+#   missing or empty, and an empty pair fails the run;
 # - the packed tgz ships with a .sha256 sidecar; the asset is exactly the
 #   bytes the local gates produced;
 # - every action is pinned to a 40-hex commit SHA and the pin/structure
@@ -24,9 +28,12 @@ name: Release
 # add the repository secret NPM_TOKEN, and restore `id-token: write` in
 # `permissions` when using `--provenance`.
 #
-# Release prep (enforced by the notes gate): move the CHANGELOG [Unreleased]
-# content into `## [<version>] - <date>`, bump package.json, then tag v<version>
-# (or dispatch this workflow with `version: <version>` and dry_run first).
+# Release prep (recommended by the notes gate): move the CHANGELOG
+# [Unreleased] content into `## [<version>] - <date>`, bump package.json,
+# then tag v<version> (or dispatch this workflow with `version: <version>`
+# and dry_run first). The gate falls back to a non-empty [Unreleased] when the
+# dated section is not in the tree yet, and warns when [Unreleased] would be
+# left behind.
 
 on:
   push:
@@ -123,13 +130,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "v${{ env.PKG_VERSION }}" --json id,draft --jq '{id,draft}' >/tmp/rel.json 2>/dev/null; then
+          view_err="$(mktemp)"
+          if gh release view "v${{ env.PKG_VERSION }}" --json id,draft --jq '{id,draft}' >/tmp/rel.json 2>"$view_err"; then
             draft=$(jq -r '.draft' /tmp/rel.json)
             if [ "$draft" = "true" ]; then
               echo "stale draft v${{ env.PKG_VERSION }} exists — deleting before re-release"
               gh release delete "v${{ env.PKG_VERSION }}" --yes --cleanup-tag=false
             else
               echo "::error::release v${{ env.PKG_VERSION }} is already published; refusing to overwrite"
+              exit 1
+            fi
+          else
+            # A failed `gh release view` is NOT proof the release is absent:
+            # network errors, rate limits and 5xx responses must fail closed,
+            # or softprops/action-gh-release would silently overwrite the
+            # published release. Only gh's explicit not-found signal means
+            # "no release for this tag yet".
+            status=$?
+            if [ "$status" -eq 1 ] && grep -qiE '(release not found|HTTP 404: Not Found)' "$view_err"; then
+              echo "no release v${{ env.PKG_VERSION }} yet — proceeding"
+            else
+              echo "::error::cannot prove release v${{ env.PKG_VERSION }} does not exist (gh exit $status); failing closed"
+              cat "$view_err" >&2
               exit 1
             fi
           fi

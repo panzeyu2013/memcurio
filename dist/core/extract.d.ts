@@ -76,15 +76,28 @@ export declare class NoopExtractProvider implements ExtractProvider {
     readonly name = "noop";
     extract(): Promise<Stage1Output | null>;
 }
+/** Notification fired once per extraction whose reply needed line-level
+ *  injection-policy repair, carrying the number of dropped lines. Hosts use it
+ *  for audit bookkeeping; implementations may be async. */
+export type PolicyRepairReporter = (removedLines: number) => void | Promise<void>;
+/** Reporter that records the repair in the audit log. Best-effort and lazy: an
+ *  audit failure must never fail (or delay) an extraction that succeeded. */
+export declare function policyRepairAuditor(root: string): PolicyRepairReporter;
 /** Channel-backed Phase-1 extraction provider. The embedding host's model
  *  channel is the only model source; without one the provider reports
  *  unconfigured, so a durable job degrades to blocked instead of burning
  *  retries when no model is reachable.
- *  `claimName` overrides the queue provider namespace used for claims. */
+ *  `claimName` overrides the queue provider namespace used for claims.
+ *  `onPolicyRepair` is an optional fire-and-forget hook (see
+ *  {@link PolicyRepairReporter}); it never blocks or fails the extraction. */
 export declare class LlmExtractProvider implements ExtractProvider {
     private readonly channel?;
+    private readonly onPolicyRepair?;
     private readonly claimName;
-    constructor(channel?: LlmChannel | undefined, claimName?: string);
+    constructor(channel?: LlmChannel | undefined, claimName?: string, onPolicyRepair?: PolicyRepairReporter | undefined);
+    /** Fire-and-forget notification: audit bookkeeping must never block, delay
+     *  or fail the durable extraction path. */
+    private notifyPolicyRepair;
     get name(): string;
     availability(): {
         configured: boolean;

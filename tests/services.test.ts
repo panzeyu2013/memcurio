@@ -166,6 +166,16 @@ describe("inject services", () => {
     expect(text).not.toContain("ignore previous instructions");
   });
 
+  test("staticContext honours the caller budget override (live settings parity)", async () => {
+    const root = makeStore("inj-budget");
+    ensureLayout(root);
+    writeWorkspaceText(root, "memory_summary.md", `v1\n\n## Prefs\n\n${"- keep the summary short\n".repeat(400)}`);
+    const wide = staticContext(root, 20_000).text;
+    const narrow = staticContext(root, 128).text;
+    expect(wide.length).toBeGreaterThan(narrow.length);
+    expect(narrow.length).toBeGreaterThan(0);
+  });
+
   test("simulate reports hits, blocked injection lines and budget tokens", async () => {
     const root = makeStore("inj");
     await seedRollout(root, "dsh|inj-1", [
@@ -322,7 +332,9 @@ describe("audit services", () => {
       time: "2026-08-10T00:00:00.000Z",
       action: "extract.staged",
       object: "dsh|s2",
-      detail: "staged rollout with token [REDACTED]",
+      // The keyword+value span is redacted as one unit (the keyword is part of
+      // the secret pattern), so "token" is replaced together with the value.
+      detail: "staged rollout with [REDACTED]",
     });
     expect(await auditCount(root)).toBe(3);
 

@@ -97,7 +97,6 @@ export const ERROR_KEYS = {
   notLanded: "errNotLanded",
   notReady: "errNotReady",
   resetNotLanded: "errResetNotLanded",
-  partialReset: "errPartialReset",
   hostRejected: "errHostRejected",
 } as const;
 

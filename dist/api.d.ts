@@ -53,8 +53,8 @@ export declare function integrationContext(root: string, budgetTokens?: number):
 }>;
 /** Native citation telemetry: register the structured refs a `memory_cite`
  *  tool call carries (memory-file locators and/or bare rollout ids) and audit
- *  the outcome. Returns the rollout keys actually counted — the same contract
- *  the legacy text-block harvest has. */
+ *  the outcome. Returns the rollout keys actually counted (unknown refs are
+ *  dropped by registerMemoryUsage). */
 export declare function integrationCite(root: string, refs: readonly string[]): Promise<{
     counted: string[];
 }>;

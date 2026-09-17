@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 // Process start time for lock staleness: a lock whose recorded pid matches
@@ -95,13 +95,16 @@ export function withFileLock(lockPath, fn, opts = {}) {
             if (Date.now() - start > timeoutMs) {
                 throw new Error(`file lock timeout: ${lockPath}`);
             }
-            if (isStaleLock(lockPath)) {
-                try {
-                    unlinkSync(lockPath);
-                }
-                catch {
-                    void 0;
-                }
+            // Snapshot first, then judge: the reclaim uses the same snapshot to
+            // verify that the file it removes is still the one judged stale. The
+            // lock may have vanished between EEXIST and the read (a holder released
+            // it): retry acquisition immediately.
+            const snapshot = lockSnapshot(lockPath);
+            if (snapshot === null) {
+                continue;
+            }
+            if (isStaleSnapshot(snapshot)) {
+                reclaimStaleLock(lockPath, snapshot);
                 continue;
             }
             if (lockHeldByUs(lockPath)) {
@@ -122,17 +125,23 @@ export function withFileLock(lockPath, fn, opts = {}) {
             return fn();
         }
         finally {
-            // A contender that reclaimed our lock as stale (or a crash-cleanup
-            // racing us) may have already removed the file: tolerate ENOENT instead
-            // of failing the completed operation. Any other failure (EACCES, EISDIR)
-            // leaves a lock behind that would wedge future holders, so surface it.
-            try {
-                unlinkSync(lockPath);
+            // Release only the lock THIS call wrote. A contender may have reclaimed
+            // our lock as stale and created its own at the same path; blindly
+            // unlinking would delete the contender's lock and break mutual exclusion
+            // for every later holder. The holder token (pid|timestamp) is compared
+            // first, and the removal itself goes through the same rename-then-verify
+            // path as stale reclaim, so a lock that changes hands in the window is
+            // restored instead of deleted.
+            const own = lockSnapshot(lockPath);
+            if (own === null) {
+                // Already gone (reclaimed or released): tolerate ENOENT instead of
+                // failing the completed operation.
             }
-            catch (err) {
-                if (err.code !== "ENOENT") {
-                    console.warn(`[memcurio] failed to release file lock ${lockPath}: ${String(err)}`);
-                }
+            else if (own.raw !== holder) {
+                console.warn(`[memcurio] file lock ${lockPath} changed hands before release; leaving it in place`);
+            }
+            else {
+                reclaimStaleLock(lockPath, own);
             }
         }
     }
@@ -146,24 +155,25 @@ function lockHeldByUs(lockPath) {
         return false;
     }
 }
-export function isStaleLock(lockPath) {
-    let raw;
-    let mtimeMs;
+/** Read a lock's content and identity; null when it is missing/unreadable. */
+export function lockSnapshot(lockPath) {
     try {
-        mtimeMs = statSync(lockPath).mtimeMs;
-        raw = readFileSync(lockPath, "utf-8").trim();
+        const st = statSync(lockPath);
+        return { raw: readFileSync(lockPath, "utf-8"), ino: st.ino, mtimeMs: st.mtimeMs };
     }
     catch {
-        return true;
+        return null;
     }
-    const parts = raw.split("|");
+}
+function isStaleSnapshot(snapshot) {
+    const parts = snapshot.raw.trim().split("|");
     const pidStr = parts[0] ?? "";
     if (!pidStr) {
-        return Date.now() - mtimeMs > STALE_LOCK_MS;
+        return Date.now() - snapshot.mtimeMs > STALE_LOCK_MS;
     }
     const pid = Number(pidStr);
     if (!Number.isFinite(pid) || pid <= 0) {
-        return Date.now() - mtimeMs > STALE_LOCK_MS;
+        return Date.now() - snapshot.mtimeMs > STALE_LOCK_MS;
     }
     if (pid === process.pid) {
         // A lock this process genuinely holds records an acquisition timestamp no
@@ -172,7 +182,7 @@ export function isStaleLock(lockPath) {
         const heldSince = Number(parts[1]);
         return Number.isFinite(heldSince) && heldSince > 0 && heldSince < processStartedAt;
     }
-    const age = Date.now() - mtimeMs;
+    const age = Date.now() - snapshot.mtimeMs;
     // A crash leaves the pid dead (ESRCH): reclaim immediately. EPERM means the
     // pid belongs to another user (still alive). If the pid is alive but the
     // lock is far older than any legitimate hold time, the pid was almost
@@ -186,6 +196,72 @@ export function isStaleLock(lockPath) {
         alive = err.code !== "ESRCH";
     }
     return !alive || age > STALE_LOCK_MS;
+}
+export function isStaleLock(lockPath) {
+    const snapshot = lockSnapshot(lockPath);
+    // A lock that vanished between EEXIST and this read counts as stale; the
+    // acquisition loop retries either way.
+    return snapshot === null || isStaleSnapshot(snapshot);
+}
+/** Reclaim a stale lock without deleting a lock another process acquired in
+ *  the meantime. The move to a private name is atomic, so exactly one
+ *  contender wins it; the winner verifies the moved file still matches the
+ *  snapshot the stale decision was based on (content, inode, mtime) before
+ *  unlinking. A mismatch means the path held a freshly created lock at rename
+ *  time: it is restored (link() never overwrites an existing path) and the
+ *  reclaim is abandoned. Returns true when the sampled lock was removed. */
+export function reclaimStaleLock(lockPath, snapshot) {
+    const expected = snapshot ?? lockSnapshot(lockPath);
+    if (expected === null) {
+        return true; // already gone: the caller can retry acquisition
+    }
+    // Temp name matches the stale-tmp sweeper pattern and starts with a dot, so
+    // a crash between rename and unlink leaves a file that readAll/truncateLog
+    // (both keyed on the base log name) never mistake for a log segment.
+    const tmp = join(dirname(lockPath), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}.${basename(lockPath)}`);
+    try {
+        renameSync(lockPath, tmp);
+    }
+    catch {
+        // Another contender moved or released the path first. The acquisition loop
+        // retries from scratch; nothing was deleted.
+        return false;
+    }
+    const moved = lockSnapshot(tmp);
+    if (moved !== null &&
+        moved.raw === expected.raw &&
+        moved.ino === expected.ino &&
+        moved.mtimeMs === expected.mtimeMs) {
+        try {
+            unlinkSync(tmp);
+        }
+        catch {
+            void 0;
+        }
+        return true;
+    }
+    // We moved a lock created after our snapshot. Put the holder's file back if
+    // the path is still free; link() is atomic and refuses to overwrite, unlike
+    // rename() which would clobber a newer lock.
+    try {
+        linkSync(tmp, lockPath);
+    }
+    catch {
+        // Residual three-party window: between our rename and this link another
+        // process may have occupied lockPath. The holder whose lock we moved is
+        // then silently abandoned (its temp file is dropped below) — but its own
+        // release compares the token before unlinking, so it can no longer delete
+        // the third party's lock. Strictly better than the old blind unlink, which
+        // broke mutual exclusion outright.
+        void 0;
+    }
+    try {
+        unlinkSync(tmp);
+    }
+    catch {
+        void 0;
+    }
+    return false;
 }
 export function truncateLog(logPath) {
     mkdirSync(dirname(logPath), { recursive: true });

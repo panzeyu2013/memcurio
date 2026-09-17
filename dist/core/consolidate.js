@@ -19,14 +19,32 @@ export const DEFAULT_PIPELINE_CONFIG = {
  *  file on every selection). The format mirrors codex storage.rs: a file
  *  header, then one `## Rollout` section per output with metadata lines
  *  (updated_at / rollout_summary_file) followed by the raw memory body. An
- *  empty selection renders the codex empty-input placeholder. */
-export function renderRawMemories(selected, opts = {}) {
+ *  empty selection renders the codex empty-input placeholder.
+ *
+ *  `afterKey` rotates the window for oversized stores: rendering starts at
+ *  the first key strictly greater than it and wraps around. planConsolidation
+ *  derives it from the last block of the on-disk projection, so the byte cap
+ *  cuts a different tail every run and each row eventually reaches the
+ *  provider instead of the same ascending suffix being dropped forever. */
+export function projectRawMemories(selected, opts = {}) {
     const header = "# Raw Memories\n\n";
+    const sorted = [...selected].sort((a, b) => a.rolloutKey.localeCompare(b.rolloutKey));
+    let ordered = sorted;
+    if (opts.afterKey !== undefined) {
+        const start = sorted.findIndex((s) => s.rolloutKey.localeCompare(opts.afterKey) > 0);
+        if (start > 0) {
+            ordered = [...sorted.slice(start), ...sorted.slice(0, start)];
+        }
+    }
     const parts = [];
+    const included = [];
     let bytes = Buffer.byteLength(header, "utf-8") + Buffer.byteLength("Merged stage-1 raw memories (stable ascending rollout-key order):\n\n", "utf-8");
-    for (const s of [...selected].sort((a, b) => a.rolloutKey.localeCompare(b.rolloutKey))) {
+    for (const s of ordered) {
         const body = s.rawMemory.trim();
         if (!body) {
+            // Nothing to project; account for the row so callers do not keep it
+            // pending forever over content that does not exist.
+            included.push(s.rolloutKey);
             continue;
         }
         const block = [
@@ -36,23 +54,57 @@ export function renderRawMemories(selected, opts = {}) {
             "",
             body,
         ].join("\n");
-        bytes += Buffer.byteLength(block, "utf-8") + (parts.length ? 2 : 0) + 1;
-        if (bytes > MAX_WORKSPACE_FILE_BYTES) {
+        const blockBytes = Buffer.byteLength(block, "utf-8") + (parts.length ? 2 : 0) + 1;
+        if (bytes + blockBytes > MAX_WORKSPACE_FILE_BYTES) {
             // Truncate mode drops the remaining rows instead of throwing: readers
             // throw above the limit, so an uncapped projection would wedge every
             // consumer. The dropped rows stay in the stage DB and re-enter a later
-            // batch once the window shrinks (or are pruned by retention).
-            if (opts.truncate) {
-                break;
+            // rotated batch (or are pruned by retention).
+            if (!opts.truncate) {
+                throw new Error(`raw_memories.md projection exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit`);
             }
-            throw new Error(`raw_memories.md projection exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit`);
+            if (parts.length === 0) {
+                // The head row does not fit on its own (its raw memory alone is larger
+                // than the cap). Skip it instead of breaking: breaking here would
+                // render the placeholder, wipe the previously published projection and
+                // freeze the rotation on that row forever.
+                continue;
+            }
+            break;
         }
+        bytes += blockBytes;
         parts.push(block);
+        included.push(s.rolloutKey);
     }
     if (!parts.length) {
-        return `${header}No raw memories yet.\n`;
+        return { text: `${header}No raw memories yet.\n`, included };
     }
-    return `${header}Merged stage-1 raw memories (stable ascending rollout-key order):\n\n${parts.join("\n\n")}\n`;
+    return {
+        text: `${header}Merged stage-1 raw memories (stable ascending rollout-key order):\n\n${parts.join("\n\n")}\n`,
+        included,
+    };
+}
+/** Render raw_memories.md (see projectRawMemories). */
+export function renderRawMemories(selected, opts = {}) {
+    return projectRawMemories(selected, opts).text;
+}
+/** The rollout key of the last `## Rollout` block in the on-disk projection,
+ *  or undefined when the file is missing/never projected. planConsolidation
+ *  passes it as the rotation anchor so the next render starts with the first
+ *  row the previous page had to drop. */
+function lastProjectedRolloutKey(root) {
+    let text;
+    try {
+        text = readWorkspaceText(root, "raw_memories.md");
+    }
+    catch {
+        return undefined;
+    }
+    let last;
+    for (const match of text.matchAll(/^## Rollout `(.+)`$/gm)) {
+        last = match[1];
+    }
+    return last;
 }
 /** Compute the Phase-2 plan without writing anything to the workspace:
  *  select stage-1 rows (read-only), render expected artifacts, diff against
@@ -80,7 +132,8 @@ export async function planConsolidation(root, cfg, opts) {
         // oversized raw_memories.md would wedge every reader (search/MCP/
         // consolidation) with no self-healing path. Rows dropped here stay in the
         // stage DB and re-enter a later batch.
-        artifacts["raw_memories.md"] = renderRawMemories(rows, { truncate: true });
+        const projection = projectRawMemories(rows, { truncate: true, afterKey: lastProjectedRolloutKey(root) });
+        artifacts["raw_memories.md"] = projection.text;
         for (const r of activeRows) {
             const body = r.rolloutSummary.trim();
             // Cap the summary file at the workspace limit: the read path throws on
@@ -120,7 +173,14 @@ export async function planConsolidation(root, cfg, opts) {
             }
         }
         diff.sort((a, b) => a.rel.localeCompare(b.rel));
-        const selected = rows.map((r) => ({
+        // Only rows that actually made it into the projection count as selected:
+        // marking a cap-dropped row integrated while its raw memory never reached
+        // the provider would exclude it from later batches as a retained row.
+        // Dropped rows stay pending and lead the next rotated render.
+        const included = new Set(projection.included);
+        const selected = rows
+            .filter((r) => included.has(r.rolloutKey))
+            .map((r) => ({
             rolloutKey: r.rolloutKey,
             rolloutSlug: r.rolloutSlug,
             artifactId: r.artifactId,

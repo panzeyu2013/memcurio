@@ -37,7 +37,7 @@ DSH Web（浏览器）
                 │ ② 意图草稿（仅合成用户消息文本，不落库）
 ┌───────────────▼──────────────────────────────────────┐
 │ host 半侧（同包，node）                                   │
-│  现有 Cordis 插件：事件接线 / pre-step 注入 / 6 工具 /      │
+│  现有 Cordis 插件：事件接线 / pre-step 注入 / 7 工具 /      │
 │  ctx.llm → LlmChannel                                    │
 │  Services 层（新增）：读服务 / 投影器（事件→脱敏 delta）/    │
 │  意图草稿服务 / 审计查询                                  │
@@ -80,7 +80,7 @@ DSH Web（浏览器）
 | 读 | `memory.tree/list/read` | 目录树/分页/内容（行/Token 截断、再脱敏、符号链接拒绝） | `api.ts` integrationList/Read → `core/read.ts` |
 | 读 | `memory.status` | stage1 计数/notes/队列/审计数 | `api.ts` integrationStatus |
 | 注入 | `inject.static()` | → 静态上下文全文 + 预算内裁剪后形态（预览） | `engine.buildStaticContext` |
-| 注入 | `inject.simulate(query)` | **注入模拟器**：query → top-8 命中+来源+blocked+脱敏预览+预算占用 | `engine.buildDynamicContext` / `searchMemory` 内部组装 |
+| 注入 | `inject.simulate(query)` | **注入模拟器**：query → 预算派生 4–8 命中+来源+blocked+脱敏预览+预算占用 | `engine.buildDynamicContext` / `searchMemory` 内部组装 |
 | 用量 | `usage.list/byKey` | usage_count/last_usage（db stage 行；预览路径不计数） | `src/services/usage.ts`（最近命中时间线为客户端对 usage-tick 增量的折叠，宿主无内存态） |
 | 状态 | `queue.list()` | 抽取 job：pending/processing/blocked/completed（终态，不入列表）/dead + attempts + lastError（脱敏） | db `extractionList` |
 | 状态 | `consolidation.state()` | 自动整合 last/failed/冷却剩余（meta 键） | `metaGet("consolidation_auto_last"/"_failed")` |
@@ -172,7 +172,7 @@ DSH Web（浏览器）
 
 ### 注入面
 
-- **当前注入预览**：静态摘要（预算内裁剪后）+ read 指引摘要 + 最近一次动态命中（来源/命中行）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。
+- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列）+ 最近一次动态命中（来源/命中行）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。
 - **注入模拟器（M0 核心）**：输入框（默认取当前会话最新用户消息作 query 种子）→ `inject.simulate` → 命中列表（内容**已脱敏预览**）、来源 rollout/行号、blocked 计数（注入扫描拦截）、预算占用。空态引导："还没有记忆——去会话里让模型记住第一条"。
 - 每次真实注入经推送通道即时刷新（实时性设计一节）。
 
@@ -214,7 +214,7 @@ DSH Web（浏览器）
 
 ### 通道（v1.2 实证修订）
 
-host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱敏 delta 推送浏览器。**S0 预查结论：官方 `ctx.remote`（api-remote/controller 模式）对第三方关闭**——能力集为构建期固定值导入、转发事件为官方 allowlist，客户端无法运行时发现宿主服务。候选通道（按优先级，S0 门禁）：① 自定义前缀路由 + SSE（`ctx.webServer.register` 对任意插件开放，默认 loopback、无自带鉴权——需自持会话绑定）；② `ctx.sessionProjections`（开放注册表，但 fold 输入仅限已提交的 session-log 事件，队列等非日志 delta 未验证）；③ 轮询降级。另发现挂载平面风险：web profile 中 agent 平面运行在 agent preset 之后，根平面行（inject tools/llm/sessions）能否在 preset 平面解析需 S0 专项验证（P3 阶段）。
+host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱敏 delta 推送浏览器。**S0 预查结论：官方 `ctx.remote`（api-remote/controller 模式）对第三方关闭**——能力集为构建期固定值导入、转发事件为官方 allowlist，客户端无法运行时发现宿主服务。候选通道（按优先级，S0 门禁）：① 自定义前缀路由 + SSE（`ctx.webServer.register` 对任意插件开放，默认 loopback、无自带鉴权——需自持会话绑定）；② `ctx.sessionProjections`（开放注册表，但 fold 输入仅限已提交的 session-log 事件，队列等非日志 delta 未验证）；③ 轮询降级。另发现挂载平面风险：web profile 中 agent 平面运行在 agent preset 之后，根平面行（inject tools/llm/sessions/settings）能否在 preset 平面解析需 S0 专项验证（P3 阶段）。
 
 ### delta 类型（初版清单）
 
@@ -222,7 +222,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 |---|---|---|
 | `agent/pre-step` 注入成功 | inject.static/dynamic 内容+预算 | 注入面 |
 | `tools/result` 命中记忆文件 | usage-tick（**+1 增量**；读命中键=相对路径，引用键=rollout key） | 持久面/时间线 |
-| `turn/end` 引用收获 | citation 节点 | 时间线 |
+| `memory_cite` 原生调用（turn/end 不再解析文本） | citation 节点 | 时间线 |
 | `session/event`（消息） | 证据窗口增量 | 状态面/时间线 |
 | compaction summary/end/prune | 剪除标注 | 时间线/证据 |
 | job 状态迁移（pending→processing/blocked/dead/完成消失） | **单 job** queue-updated（jobId/status/attempts/lastError；消失即 completed 终态），counts 客户端自 jobs 重算 | 状态面 |

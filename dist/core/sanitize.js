@@ -122,49 +122,172 @@ const GREEK_PLAIN_PATTERN = /[\u{0370}-\u{03FF}]/gu;
 function foldGreekPlain(ch) {
     return GREEK_LATIN[ch.toLowerCase()] ?? ch;
 }
+/** The folding pipeline in application order. It is defined once so the
+ *  offset-preserving `normalizeWithMap` and the plain `normalizeText` can
+ *  never drift apart. */
+const NORMALIZE_STEPS = [
+    {
+        // zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/PDI),
+        // Arabic letter mark, soft hyphen, Mongolian vowel separator, combining
+        // grapheme joiner, and C0 control characters
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: the C0 range and bidi controls are stripped on purpose
+        // biome-ignore lint/suspicious/noMisleadingCharacterClass: mixed ranges of zero-width/control chars are intentional
+        pattern: /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g,
+        fold: () => "",
+    },
+    {
+        pattern: /[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g,
+        fold: (c) => HOMOGLYPH_MAP[c] ?? c,
+    },
+    // fullwidth latin letters/digits/punctuation -> ASCII
+    { pattern: /[\uff01-\uff5e]/g, fold: (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0) },
+    // mathematical alphanumeric variants ("𝑖𝑔𝑛𝑜𝑟𝑒", "𝐢𝐠𝐧𝐨𝐫𝐞") -> ASCII
+    { pattern: MATH_VARIANT_PATTERN, fold: foldMathVariants },
+    // Greek (plain and math variants): homoglyph letters fold to Latin so
+    // "𝛊𝛾𝜈𝜊𝜌𝜀" cannot spell "ignore" past the scanner.
+    { pattern: GREEK_MATH_PATTERN, fold: foldGreekMath },
+    { pattern: GREEK_PLAIN_PATTERN, fold: foldGreekPlain },
+];
 /** Zero-width/bidi-marker/control-character stripping + transliteration of
  *  Cyrillic/fullwidth homoglyphs so that obfuscated injection text
  *  ("ignore prevіous instructions", "ｉｇｎｏｒｅ …") is detected. */
 export function normalizeText(text) {
-    return text
-        .replace(
-    // zero-width joiners/marks, bidi controls (LRE/RLE/LRO/RLO/PDF/LRI/RLI/FSI/PDI),
-    // Arabic letter mark, soft hyphen, Mongolian vowel separator, combining
-    // grapheme joiner, and C0 control characters
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: the C0 range and bidi controls are stripped on purpose
-    // biome-ignore lint/suspicious/noMisleadingCharacterClass: mixed ranges of zero-width/control chars are intentional
-    /[\u200b-\u200f\u2060-\u206f\ufeff\u202a-\u202e\u061c\u00ad\u180e\u034f\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
-        .replace(/[аеіоѕрсухёһјїАЕІОЅРСУХЁНЈЇ’‘“”‑–—…　]/g, (c) => HOMOGLYPH_MAP[c] ?? c)
-        // fullwidth latin letters/digits/punctuation -> ASCII
-        .replace(/[\uff01-\uff5e]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
-        // mathematical alphanumeric variants ("𝑖𝑔𝑛𝑜𝑟𝑒", "𝐢𝐠𝐧𝐨𝐫𝐞") -> ASCII
-        .replace(MATH_VARIANT_PATTERN, foldMathVariants)
-        // Greek (plain and math variants): homoglyph letters fold to Latin so
-        // "𝛊𝛾𝜈𝜊𝜌𝜀" cannot spell "ignore" past the scanner.
-        .replace(GREEK_MATH_PATTERN, foldGreekMath)
-        .replace(GREEK_PLAIN_PATTERN, foldGreekPlain);
+    let out = text;
+    for (const step of NORMALIZE_STEPS) {
+        out = out.replace(step.pattern, step.fold);
+    }
+    return out;
+}
+function normalizeWithMap(input) {
+    let text = input;
+    let starts = Array.from({ length: input.length }, (_, i) => i);
+    let ends = Array.from({ length: input.length }, (_, i) => i + 1);
+    for (const step of NORMALIZE_STEPS) {
+        const nextText = [];
+        const nextStarts = [];
+        const nextEnds = [];
+        const pattern = step.pattern;
+        pattern.lastIndex = 0;
+        let cursor = 0;
+        for (;;) {
+            const match = pattern.exec(text);
+            if (match === null) {
+                break;
+            }
+            if (match[0].length === 0) {
+                pattern.lastIndex += 1;
+                continue;
+            }
+            // Unchanged run: every output unit keeps its own source range.
+            for (let i = cursor; i < match.index; i++) {
+                nextText.push(text[i] ?? "");
+                nextStarts.push(starts[i] ?? i);
+                nextEnds.push(ends[i] ?? i + 1);
+            }
+            // Folded run: every produced unit maps back to the whole matched span,
+            // so a match spanning removed zero-width characters redacts all of it.
+            const start = starts[match.index] ?? match.index;
+            const end = ends[match.index + match[0].length - 1] ?? match.index + match[0].length;
+            const folded = step.fold(match[0]);
+            for (let i = 0; i < folded.length; i++) {
+                nextText.push(folded[i] ?? "");
+                nextStarts.push(start);
+                nextEnds.push(end);
+            }
+            cursor = match.index + match[0].length;
+        }
+        for (let i = cursor; i < text.length; i++) {
+            nextText.push(text[i] ?? "");
+            nextStarts.push(starts[i] ?? i);
+            nextEnds.push(ends[i] ?? i + 1);
+        }
+        text = nextText.join("");
+        starts = nextStarts;
+        ends = nextEnds;
+    }
+    return { text, starts, ends };
 }
 export function redactSecrets(text) {
-    let redacted = false;
-    let out = normalizeText(text);
+    // Detection runs on the normalized/folded form (homoglyphs, zero-width
+    // characters and fullwidth variants must not hide a secret), but the OUTPUT
+    // is the raw text with only the matched spans replaced. Returning the
+    // normalized text would rewrite every unmatched character (Cyrillic 'е' →
+    // Latin 'e', …) and corrupt the note/artifact being persisted.
+    //
+    // Patterns run independently over the folded text (not over each other's
+    // "[REDACTED]" output): a secret named by a later pattern is redacted as one
+    // keyword+value span even when an earlier pattern would have replaced only
+    // its value. Over-redaction is the accepted failure mode; the raw text
+    // outside the matched spans is never touched.
+    const mapped = normalizeWithMap(text);
+    const normalized = mapped.text;
+    const hits = [];
+    const record = (start, end, privateKey) => {
+        if (end > start) {
+            hits.push({ start, end, replacement: privateKey ? "[REDACTED PRIVATE KEY]" : "[REDACTED]" });
+        }
+    };
     for (const pattern of SECRET_PATTERNS) {
-        const next = out.replace(pattern, (m) => {
-            redacted = true;
-            return m.startsWith("-----BEGIN") ? "[REDACTED PRIVATE KEY]" : "[REDACTED]";
-        });
-        out = next;
+        pattern.lastIndex = 0;
+        for (;;) {
+            const match = pattern.exec(normalized);
+            if (match === null) {
+                break;
+            }
+            if (match[0].length === 0) {
+                pattern.lastIndex += 1;
+                continue;
+            }
+            record(match.index, match.index + match[0].length, match[0].startsWith("-----BEGIN"));
+        }
     }
-    out = out.replace(HIGH_ENTROPY, (m, tok) => {
+    HIGH_ENTROPY.lastIndex = 0;
+    for (;;) {
+        const match = HIGH_ENTROPY.exec(normalized);
+        if (match === null) {
+            break;
+        }
+        const tok = match[1] ?? "";
         const upper = /[A-Z]/.test(tok);
         const lower = /[a-z]/.test(tok);
         const digit = /\d/.test(tok);
         if ((upper ? 1 : 0) + (lower ? 1 : 0) + (digit ? 1 : 0) >= 3 && shannonEntropy(tok) >= 4.5) {
-            redacted = true;
-            return "[REDACTED]";
+            record(match.index, match.index + match[0].length, false);
         }
-        return m;
-    });
-    return { text: out, redacted };
+    }
+    if (!hits.length) {
+        return { text, redacted: false };
+    }
+    // Translate normalized offsets back to raw offsets, merge overlaps (a later
+    // pattern may match inside an earlier one), then splice the raw text.
+    const ranges = hits
+        .map((hit) => ({
+        start: mapped.starts[hit.start] ?? 0,
+        end: mapped.ends[hit.end - 1] ?? text.length,
+        replacement: hit.replacement,
+    }))
+        .sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged = [];
+    for (const range of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && range.start <= last.end) {
+            last.end = Math.max(last.end, range.end);
+            if (range.replacement === "[REDACTED PRIVATE KEY]") {
+                last.replacement = range.replacement;
+            }
+        }
+        else {
+            merged.push({ ...range });
+        }
+    }
+    let out = "";
+    let cursor = 0;
+    for (const range of merged) {
+        out += text.slice(cursor, range.start) + range.replacement;
+        cursor = range.end;
+    }
+    out += text.slice(cursor);
+    return { text: out, redacted: true };
 }
 const INJECTION_PATTERNS = [
     /ignore\s*(?:all\s*)?(?:previous|prior|above|earlier)\s*(?:instructions|directions|directives|prompts)/i,

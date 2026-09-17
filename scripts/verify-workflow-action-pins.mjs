@@ -112,6 +112,14 @@ if (refuseStep === undefined) {
   if (!/if:.*inputs\.dry_run/.test(refuseStep)) {
     fail("release.yml: the refuse step must be skipped on dry runs (if: ... inputs.dry_run)");
   }
+  if (!/release not found/i.test(refuseStep)) {
+    fail(
+      "release.yml: the refuse step must accept only gh's explicit not-found signal (any other gh failure must fail closed)",
+    );
+  }
+  if (/2>\s*\/dev\/null/.test(refuseStep)) {
+    fail("release.yml: the refuse step must not discard gh's stderr (a non-not-found failure must fail closed)");
+  }
 }
 const createStep = stepBlock(releaseYaml, "Create GitHub Release");
 if (createStep === undefined || !/if:.*inputs\.dry_run/.test(createStep)) {

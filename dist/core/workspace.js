@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { adHocNotesDir, baselineDir, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
@@ -86,6 +86,23 @@ export function deleteWorkspaceText(root, rel) {
         }
     });
 }
+/** True for a dirent that is a regular file, never following a symlink.
+ *  Filesystems that report DT_UNKNOWN fall back to lstat; a symlink is always
+ *  rejected even when it resolves to a regular file inside the workspace. */
+function isRegularFileEntry(path, entry) {
+    if (entry.isFile()) {
+        return true;
+    }
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+        return false;
+    }
+    try {
+        return lstatSync(path).isFile();
+    }
+    catch {
+        return false;
+    }
+}
 /** Recursively list workspace .md files (skipping .baseline and dot dirs). */
 export function listWorkspaceFiles(root, sub) {
     const base = sub ? resolveWorkspacePath(root, assertWorkspaceRel(sub)) : memoryWorkspace(root);
@@ -106,10 +123,15 @@ export function listWorkspaceFiles(root, sub) {
                 continue;
             }
             const p = join(dir, e.name);
+            // Only regular files are managed inputs: a symlink (even one pointing at
+            // another file inside the workspace) or a directory named *.md would
+            // otherwise enter every consumer's file list — an escaping link makes
+            // search/consolidation throw forever, and a link to a workspace file
+            // lets summary writes land on its target.
             if (e.isDirectory()) {
                 walk(p, depth + 1);
             }
-            else if (e.name.endsWith(".md")) {
+            else if (e.name.endsWith(".md") && isRegularFileEntry(p, e)) {
                 out.push(relative(memoryWorkspace(root), p));
                 if (out.length > MAX_WORKSPACE_FILES) {
                     throw new Error(`workspace contains more than ${MAX_WORKSPACE_FILES} markdown files`);

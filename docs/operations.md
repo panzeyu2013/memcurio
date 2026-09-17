@@ -1,6 +1,6 @@
 # memcurio 运维手册（安装 · 配置 · 集成 · 发布）
 
-> 合并自原 `operations.md` / `operations.md` / `operations.md`（2026-09-16 文档重组织）。
+> 合并自原 `installation.md` / `integration-dsh.md` / `RELEASE.md`（2026-09-16 文档重组织）。
 > 行为契约见 [contract.md](contract.md)；架构见 [architecture.md](architecture.md)；待办与开放决策见 [todo.md](todo.md)。
 
 ## 安装与配置
@@ -139,7 +139,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 ### Settings integration
 
 The host half hard-injects the DSH `settings` service (official plugin pattern) and registers the `memcurio` namespace through `ctx.settings.installSection`:
-`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`), together with the memory visibility surfaces (session-header injection indicator, injection/write toasts, six keyed `memory_*` tool rows) served over the same-origin `/memcurio` snapshot/SSE route. Real-Web rendering, slot governance and the route's token/session binding are still S0 verification items.
+`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`), together with the memory visibility surfaces (the memory-injection transcript row, the system-prompt guide row, injection/write toasts, seven keyed `memory_*` tool rows) served over the same-origin `/memcurio` snapshot/SSE route. The session header deliberately carries no memcurio surface: the injection-indicator component stays unregistered for the future workbench status surface. Real-Web rendering, slot governance and the route's token/session binding are still S0 verification items.
 
 ### Settings coupling and profile requirements
 
@@ -149,7 +149,7 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 ### Verification status
 
-`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
+`scripts/probe-dsh-profile.sh` packs the committed tree (`bun pm pack --ignore-scripts`) and installs that tarball into an isolated DSH profile; it asserts that (a) the packaged entry imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
 
 ### Profile-plane facts
 
@@ -189,7 +189,10 @@ Both workflows run `scripts/verify-workflow-action-pins.mjs` first: every
 action must be a 40-hex commit SHA with a `# vX.Y.Z` comment (no moving
 majors), the same action must not be pinned twice, and the release invariants
 (serialized publication, gate before mutation, fail-closed refuse step,
-dry-run guards) are asserted. Bump pins by hand (`git ls-remote <repo>
+dry-run guards) are asserted. The refuse step itself accepts only gh's explicit
+not-found stderr/HTTP 404 as "release absent" and fails closed on every other
+gh failure (regression-tested by `scripts/release-integrity.test.ts` under
+`bun test`). Bump pins by hand (`git ls-remote <repo>
 refs/tags/<tag>^{}`), update both workflows in one commit, re-run
 `bun run verify:workflows`. A hosted runner cannot execute the live
 `scripts/probe-dsh-profile.sh` probe (it needs a real DSH install), so that
@@ -204,7 +207,7 @@ bun run pack:check          # rebuild + allowlist + dist reverse check
 bun run verify:workflows    # action pins + release structure
 bun pm pack --dry-run       # tarball content dry-run
 bun run pack:tgz            # → .smoke/memcurio-dsh-plugin-<version>.tgz (dist + lib/client.js)
-node scripts/release-notes.mjs <version> --out /tmp/release-notes.md   # section must exist
+node scripts/release-notes.mjs <version> --out /tmp/release-notes.md   # dated section, else [Unreleased]
 ```
 
 All must be green and `git status --short` empty except the release commit.
@@ -215,8 +218,11 @@ All must be green and `git status --short` empty except the release commit.
 - `package.json#version`, the `CHANGELOG.md` section
   (`## [X.Y.Z] - YYYY-MM-DD`), and the git tag `vX.Y.Z` MUST agree — the
   release workflow fails otherwise.
-- Every release needs a dated CHANGELOG section; missing/empty sections fail
-  the workflow (notes are composed from that section).
+- Notes come from the dated `## [X.Y.Z]` section; when that section is
+  missing/empty the workflow falls back to a non-empty `[Unreleased]` block
+  (so notes cannot silently lag the tree), and when both are empty it fails.
+  A non-empty `[Unreleased]` next to a dated section only warns, so fold it
+  into the dated section during prep.
 
 ### Steps
 
@@ -228,8 +234,9 @@ All must be green and `git status --short` empty except the release commit.
    The section must describe what actually ships: fold the `[Unreleased]`
    block into it (and leave `[Unreleased]` empty) rather than tagging a stale
    snapshot. Nothing has been published yet — no git tag, no GitHub Release, no
-   npm package — so the first release is `v0.0.1` with the section dated
-   2026-09-16 (already prepared in the tree).
+   npm package — so the first release is `v0.0.1`; its in-tree section is dated
+   2026-09-16, and later `[Unreleased]` work still has to be folded in during
+   this prep (the notes gate warns when it has not been).
 2. Run the local pre-flight above.
 3. Push `main` (CI runs the full chain), then tag:
    `git tag vX.Y.Z && git push origin vX.Y.Z`.
@@ -249,7 +256,7 @@ workflow/script/pin change with one dry run before the formal tag.
 
 ### Requirements per environment
 
-- CI/release runners: bun 1.3.14 (pinned, same as local) + node 22 (the
+- CI/release runners: bun 1.3.14 (pinned via `packageManager` and setup-bun, same as local) + node 22 (the
   plugin entry runs under node:sqlite once the host loads it; CI imports
   `dist/plugin/index.js`).
 - Local smoke of the tarball into a real DSH instance needs a live
@@ -262,7 +269,9 @@ workflow/script/pin change with one dry run before the formal tag.
 ### Safety norms
 
 - Never re-publish over an existing published release (workflow fails
-  closed; stale drafts are deleted first).
+  closed; stale drafts are deleted first). Only gh's explicit not-found signal
+  counts as "no release yet" — network, rate-limit and 5xx errors fail the
+  gate closed instead of falling through to an overwrite.
 - Tag pushes run the same CI chain as `main` — a tag can never carry an
   untested commit.
 - `dist/` and `lib/` are committed and drift-checked in CI and in the release gate (`git diff --exit-code -- dist/ lib/`);

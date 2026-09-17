@@ -18,6 +18,23 @@ function validInteger(v: unknown, def: number, min: number, max = Number.MAX_SAF
   return typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max ? v : def;
 }
 
+/** Single source of truth for pipeline bounds. Strict validation and the
+ *  lenient load clamp must agree: with two different maxima a value could
+ *  pass `config validate` and then be silently rewritten (or dropped to the
+ *  default) by loadConfig. */
+const PIPELINE_BOUNDS: Record<keyof PipelineConfig, { min: number; max: number }> = {
+  maxUnusedDays: { min: 0, max: 36_500 },
+  maxInputs: { min: 1, max: 10_000 },
+  retentionDays: { min: 1, max: 36_500 },
+  resourceRetentionDays: { min: 1, max: 36_500 },
+  maxAgentSteps: { min: 1, max: 1000 },
+};
+
+function clampPipeline<K extends keyof PipelineConfig>(value: unknown, key: K): number {
+  const bounds = PIPELINE_BOUNDS[key];
+  return validInteger(value, DEFAULT_PIPELINE_CONFIG[key], bounds.min, bounds.max);
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -33,21 +50,24 @@ function normalizeConfig(value: unknown, strict: boolean): Config {
   const bd = isRecord(budget) ? budget : {};
   const pl = isRecord(pipeline) ? pipeline : {};
   if (strict && bd.maxInjectTokens !== undefined && validInteger(bd.maxInjectTokens, -1, 128, 1_000_000) === -1) throw new Error("config.budget.maxInjectTokens must be an integer in [128, 1000000]");
-  for (const key of ["maxUnusedDays", "maxInputs", "retentionDays", "resourceRetentionDays", "maxAgentSteps"] as const) {
-    if (strict && pl[key] !== undefined && validInteger(pl[key], -1, key === "maxInputs" || key === "maxAgentSteps" || key === "retentionDays" || key === "resourceRetentionDays" ? 1 : 0, key === "maxAgentSteps" ? 1000 : 36_500) === -1) throw new Error(`config.pipeline.${key} must be an integer`);
+  for (const key of Object.keys(PIPELINE_BOUNDS) as Array<keyof PipelineConfig>) {
+    const bounds = PIPELINE_BOUNDS[key];
+    if (strict && pl[key] !== undefined && validInteger(pl[key], -1, bounds.min, bounds.max) === -1) {
+      throw new Error(`config.pipeline.${key} must be an integer in [${bounds.min}, ${bounds.max}]`);
+    }
   }
   return {
     budget: {
       maxInjectTokens: validInteger(bd.maxInjectTokens, DEFAULT_CONFIG.budget.maxInjectTokens, 128, 1_000_000),
     },
     pipeline: {
-      maxUnusedDays: validInteger(pl.maxUnusedDays, DEFAULT_PIPELINE_CONFIG.maxUnusedDays, 0, 36_500),
-      maxInputs: validInteger(pl.maxInputs, DEFAULT_PIPELINE_CONFIG.maxInputs, 1, 10_000),
+      maxUnusedDays: clampPipeline(pl.maxUnusedDays, "maxUnusedDays"),
+      maxInputs: clampPipeline(pl.maxInputs, "maxInputs"),
       // A 0 retentionDays would make the next consolidation delete ALL
       // eligible extension resources, so the floor is 1 day.
-      retentionDays: validInteger(pl.retentionDays, DEFAULT_PIPELINE_CONFIG.retentionDays, 1, 36_500),
-      resourceRetentionDays: validInteger(pl.resourceRetentionDays, DEFAULT_PIPELINE_CONFIG.resourceRetentionDays, 1, 36_500),
-      maxAgentSteps: validInteger(pl.maxAgentSteps, DEFAULT_PIPELINE_CONFIG.maxAgentSteps, 1, 1000),
+      retentionDays: clampPipeline(pl.retentionDays, "retentionDays"),
+      resourceRetentionDays: clampPipeline(pl.resourceRetentionDays, "resourceRetentionDays"),
+      maxAgentSteps: clampPipeline(pl.maxAgentSteps, "maxAgentSteps"),
     },
   };
 }

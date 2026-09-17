@@ -231,6 +231,47 @@ describe("refresh", () => {
     expect(await bridge.refresh(root)).toEqual([]);
   });
 
+  test("warn audit rows are informational: no receipt and no write notification", async () => {
+    const root = makeStore("warndiff");
+    const sink = collector();
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.attachSink(sink);
+    expect(await bridge.refresh(root)).toEqual([]);
+
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.audit("warn.promptware", "dsh|s1", "blocked injection pattern");
+    } finally {
+      idx.close();
+    }
+
+    // A blocked note/promptware warning is not a memory write: projecting it
+    // would bump the unread badge and toast "memory updated" on the client.
+    expect(await bridge.refresh(root)).toEqual([]);
+    expect(sink.deltas).toEqual([]);
+  });
+
+  test("extract bookkeeping rows are not write notifications either", async () => {
+    const root = makeStore("extractbook");
+    const sink = collector();
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.attachSink(sink);
+    expect(await bridge.refresh(root)).toEqual([]);
+
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.audit("extract.repaired", "-", "injection policy dropped 1 line(s)");
+      idx.audit("extract.queued", "-", "job queued");
+      idx.audit("extract.noop", "dsh|s1", "nothing worth remembering");
+    } finally {
+      idx.close();
+    }
+
+    // Queue hops, repairs and the no-op gate are not durable writes.
+    expect(await bridge.refresh(root)).toEqual([]);
+    expect(sink.deltas).toEqual([]);
+  });
+
   test("diffs extraction-job rows into queue job-updates incl. terminal completed", async () => {
     const root = makeStore("qdiff");
     await seedRollout(root, "dsh|q", ["base"]);

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
+import { Transaction, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, withFileLock } from "../src/core/transaction.js";
 import type { TxnRecord } from "../src/core/transaction.js";
 import { processStartedAt } from "../src/core/transaction.js";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -168,6 +168,19 @@ describe("Transaction", () => {
     }
   });
 
+  test("release leaves a lock that changed hands after acquisition", () => {
+    const lockPath = join(dir, "handover.lock");
+    const replacement = `${process.pid}|9999999999999`;
+    withFileLock(lockPath, () => {
+      // A contender reclaimed our lock as stale and created its own (same pid,
+      // different token) before the protected operation returned. The release
+      // must not delete it.
+      writeFileSync(lockPath, replacement);
+    });
+    expect(existsSync(lockPath)).toBe(true);
+    expect(readFileSync(lockPath, "utf-8")).toBe(replacement);
+  });
+
   test("does not retry a protected callback that itself throws EEXIST", () => {
     const lockPath = join(dir, "locks", "callback.lock");
     let calls = 0;
@@ -178,6 +191,53 @@ describe("Transaction", () => {
     })).toThrow("inner collision");
     expect(calls).toBe(1);
     expect(existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe("stale lock reclaim", () => {
+  test("reclaims the sampled lock when it is unchanged", () => {
+    const lock = join(dir, "unchanged.lock");
+    writeFileSync(lock, "999999|1234567890");
+    const snapshot = lockSnapshot(lock);
+    expect(snapshot).not.toBeNull();
+    expect(reclaimStaleLock(lock, snapshot)).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    // The rename-then-verify reclaim leaves no temp file behind.
+    expect(readdirSync(dir).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
+
+  test("does not delete a fresh lock that replaced the sampled stale lock (A/B interleaving)", () => {
+    const lock = join(dir, "interleave.lock");
+    writeFileSync(lock, "999999|1234567890");
+    // A and B both sample the same stale lock before either reclaims it.
+    const sampleA = lockSnapshot(lock);
+    const sampleB = lockSnapshot(lock);
+    expect(sampleA).not.toBeNull();
+    expect(sampleB).not.toBeNull();
+    // B wins the reclaim and immediately acquires its own lock...
+    expect(reclaimStaleLock(lock, sampleB)).toBe(true);
+    writeFileSync(lock, "424242|9999999999999", { flag: "wx" });
+    const freshIno = statSync(lock).ino;
+    // ...then A reclaims from its now-stale snapshot. Without the identity
+    // check this unlink removed B's lock and both entered the critical section.
+    expect(reclaimStaleLock(lock, sampleA)).toBe(false);
+    expect(existsSync(lock)).toBe(true);
+    expect(readFileSync(lock, "utf-8")).toBe("424242|9999999999999");
+    expect(statSync(lock).ino).toBe(freshIno);
+  });
+
+  test("reclaim loses cleanly when another contender moved the lock first", () => {
+    const lock = join(dir, "lost.lock");
+    writeFileSync(lock, "999999|1234567890");
+    const snapshot = lockSnapshot(lock);
+    expect(reclaimStaleLock(lock, snapshot)).toBe(true);
+    // Second reclaim loses the rename (the lock is gone): false, no delete.
+    expect(reclaimStaleLock(lock, snapshot)).toBe(false);
+    // ...and a contender that sampled the file but lost the rename race does
+    // not delete whatever appeared in the meantime.
+    writeFileSync(lock, "424242|9999999999999", { flag: "wx" });
+    expect(reclaimStaleLock(lock, snapshot)).toBe(false);
+    expect(readFileSync(lock, "utf-8")).toBe("424242|9999999999999");
   });
 });
 

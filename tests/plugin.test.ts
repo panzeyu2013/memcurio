@@ -463,6 +463,26 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     await disposeFibers(fibers);
   });
 
+  test("omits the guide when native tools are disabled", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      registerTools: false,
+      provider: "test",
+      model: "test",
+    });
+    // The guide only tells the model how to call tools; with the tools off it
+    // must not ship dead instructions into the system prompt.
+    const assembly = await ctx.systemPrompt.assemble({ scope: pluginFiber.ctx });
+    const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
+    expect(section?.text ?? "").toBe("");
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
   test("memory_cite registers structured citation usage through the native tool", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
@@ -1382,5 +1402,83 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     detach();
     await pluginFiber.dispose();
     await disposeFibers(fibers);
+  });
+
+  test("an event-lane failure surfaces once and does not poison the session", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("sticky-failure"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await ctx.sessions.flush(session);
+
+    // Break the store: a regular file at the store root makes every SQLite
+    // open fail, so the next event-lane task (tool telemetry for a memory
+    // read) fails on the lane.
+    rmSync(root, { recursive: true, force: true });
+    writeFileSync(root, "not a directory");
+    ctx.emit("tools/result", {
+      name: "read",
+      arguments: { file_path: join(memoryWorkspace(root), "rollout_summaries", "x.md") },
+      agent: { session },
+    } as never, { isError: false } as never);
+
+    // The failure surfaces exactly once...
+    await expect(ctx.sessions.flush(session)).rejects.toThrow();
+    // ...and the lane is healthy again: a transient DB error must not poison
+    // every later pre-step, flush and memory tool of the session.
+    await ctx.sessions.flush(session);
+
+    // Restore a usable store so disposal drains cleanly.
+    rmSync(root, { force: true });
+    mkdirSync(root, { recursive: true });
+
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+});
+
+describe("UiTransportRegistry", () => {
+  test("hands the browser route to the next live instance on unload", () => {
+    const registry = new plugin.UiTransportRegistry();
+    const mounted: string[] = [];
+    const a = (): boolean => { mounted.push("a"); return true; };
+    const b = (): boolean => { mounted.push("b"); return true; };
+    const releaseA = registry.register(a);
+    expect(registry.current()).toBe(a);
+    // The route is taken: registering b must not attempt a colliding mount.
+    const releaseB = registry.register(b);
+    expect(mounted).toEqual(["a"]);
+    releaseA();
+    expect(mounted).toEqual(["a", "b"]);
+    expect(registry.current()).toBe(b);
+    releaseB();
+    expect(registry.current()).toBeUndefined();
+  });
+
+  test("a failing candidate never latches the route", () => {
+    const registry = new plugin.UiTransportRegistry();
+    let goodCalls = 0;
+    const failing = (): boolean => false;
+    const good = (): boolean => {
+      goodCalls += 1;
+      return true;
+    };
+    const releaseFailing = registry.register(failing);
+    expect(registry.current()).toBeUndefined();
+    const releaseGood = registry.register(good);
+    expect(goodCalls).toBe(1);
+    expect(registry.current()).toBe(good);
+    releaseGood();
+    expect(registry.current()).toBeUndefined();
+    releaseFailing();
   });
 });

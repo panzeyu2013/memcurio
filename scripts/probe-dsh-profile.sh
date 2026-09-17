@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Real-profile probe: install this package into an isolated DSH profile and
-# verify that the shipped bundle composes.
+# Real-profile probe: pack this package, install the tarball into an isolated
+# DSH profile and verify that the shipped bundle composes.
 #
 # What it proves on ANY machine with a working `dsh` CLI (or bun as a
 # stand-in, see below):
-#   1. `@memcurio/dsh-plugin` resolves and imports from a profile's
-#      node_modules (exports + dsh.bundle.patch are well formed);
+#   1. the packed tarball installs and `@memcurio/dsh-plugin` resolves and
+#      imports from a profile's node_modules (files allowlist, exports and
+#      dsh.bundle.patch are well formed);
 #   2. its `cordis.patch.yml` insert row survives composition — the composed
 #      tree lists `id: memcurio` with the declared inject list and config;
 #   3. the profile is untouched otherwise (isolated DSH_HOME under $WORK).
@@ -48,11 +49,18 @@ cd "$DSH_HOME/profiles/$PROFILE"
 
 "$RUNNER" add "@deepseek-ai/dsh-base@$DSH_VERSION" "@deepseek-ai/dsh-web-app@$DSH_VERSION" >/dev/null
 # Artifacts (dist/, lib/client.js) are committed, so consumer-side scripts are
-# skipped on purpose: the probe must not need a build step.
-"$RUNNER" add --ignore-scripts "file:$REPO_ROOT" >/dev/null
+# skipped on purpose: the probe must not need a build step. Pack first and
+# install the TARBALL: a `file:` link into the source tree would bypass the
+# shipped `files` allowlist and probe more than the release artifact.
+PKG_VERSION="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)".*$/\1/p' "$REPO_ROOT/package.json")"
+[ -n "$PKG_VERSION" ] || { echo "FAIL: cannot read the version from package.json"; exit 1; }
+mkdir -p "$WORK/pack"
+(cd "$REPO_ROOT" && "$RUNNER" pm pack --ignore-scripts --destination "$WORK/pack" >/dev/null)
+TARBALL="$WORK/pack/memcurio-dsh-plugin-$PKG_VERSION.tgz"
+[ -f "$TARBALL" ] || { echo "FAIL: bun pm pack did not produce $TARBALL"; exit 1; }
+"$RUNNER" add --ignore-scripts "file:$TARBALL" >/dev/null
 
 # 2) The user layer: the same insert row the package declares.
-sed -e 's/^/  /' "$REPO_ROOT/cordis.patch.yml" > /dev/null 2>&1 || true
 cp "$REPO_ROOT/cordis.patch.yml" cordis.patch.yml
 
 echo "== import check"

@@ -115,6 +115,17 @@ export function injectionView(input: {
   };
 }
 
+/** Audit actions that mutate durable memory (mirrors the host's write-path
+ *  prefixes). Only these may raise a write event; `warn.*` and unrecognized
+ *  labels are audit noise and must never surface as "memory updated". */
+const WRITE_PATH_ACTIONS = ["extract.", "adhoc.", "consolidate.", "prune.", "purge."] as const;
+
+/** True for an action that actually changed stored memory (defensive client
+ *  guard; the host's write-path filter is the primary one). */
+export function isWritePathAction(action: string): boolean {
+  return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));
+}
+
 /** Action category of one audit action label (for localized toast copy). */
 export function actionCategory(action: string): "extract" | "adhoc" | "consolidate" | "prune" | "purge" | "other" {
   if (action.startsWith("extract.") || action.startsWith("backfill.")) return "extract";
@@ -166,7 +177,11 @@ function sameInjection(left: InjectionView | null, right: InjectionView | null):
     left.dynamicText === right.dynamicText &&
     left.budgetTokens === right.budgetTokens &&
     left.hits === right.hits &&
-    left.tokens === right.tokens
+    left.tokens === right.tokens &&
+    // `duplicate` is state too: without it a repeat fold of the same content
+    // would keep the previous flag and a repeated static part would never
+    // read as a duplicate.
+    left.duplicate === right.duplicate
   );
 }
 
@@ -208,7 +223,9 @@ export function createMemoryUiStore(): MemoryUiStore {
     applySnapshot(snapshot) {
       const events: MemoryUiEvent[] = [];
       const source = snapshot.injection;
-      const hasContent = Boolean(source.staticSummary?.trim() || source.readGuide?.trim() || source.dynamicText?.trim());
+      const staticText = source.staticSummary?.trim() ?? "";
+      const dynamicText = source.dynamicText?.trim() ?? "";
+      const hasContent = Boolean(staticText || source.readGuide?.trim() || dynamicText);
       const previous = state.injection;
       const injection = hasContent
         ? injectionView({
@@ -216,12 +233,17 @@ export function createMemoryUiStore(): MemoryUiStore {
             readGuide: source.readGuide,
             dynamicText: source.dynamicText,
             budgetTokens: snapshot.settings?.injectBudgetTokens,
-            duplicate: previous?.staticText === source.staticSummary && previous?.dynamicText === source.dynamicText,
+            // Compare the TRIMMED text the view stores (injectionView trims):
+            // a static summary with trailing whitespace is still the same
+            // static part.
+            duplicate: (previous?.staticText ?? "") === staticText && (previous?.dynamicText ?? "") === dynamicText,
           })
         : null;
-      // Host order is newest-first; window from the head and keep it.
+      // Host order is newest-first; window from the head and keep it. The
+      // write-path flag is the host's; the action prefix is the client's
+      // defensive backstop so audit noise (warn.*) never reads as a write.
       const receipts = snapshot.receipts
-        .filter((row) => row.writePath)
+        .filter((row) => row.writePath && isWritePathAction(row.action))
         .slice(0, RECEIPT_LIMIT)
         .map(snapshotReceipt);
       let unread = state.unread;
@@ -263,6 +285,10 @@ export function createMemoryUiStore(): MemoryUiStore {
           changed = true;
           events.push({ type: "injection", hits: injection.hits, tokens: injection.tokens, duplicate: delta.duplicate });
         } else if (delta.kind === "receipt") {
+          // Defensive write-path guard (the host filters too): audit noise
+          // such as warn.promptware must not inflate unread or toast as a
+          // memory write.
+          if (!isWritePathAction(delta.action)) continue;
           const receipt = deltaReceipt(delta);
           receipts = [receipt, ...receipts.filter((row) => row.key !== receipt.key)].slice(0, RECEIPT_LIMIT);
           unread += 1;

@@ -201,6 +201,9 @@ class FakeApi implements MemoryClientApi {
     failNextSnapshot = false;
     browseSnapshotCalls = 0;
     failNextBrowseSnapshot = false;
+    /** When true the snapshot list omits every store but the current one
+     *  (a browsed workspace removed/unmounted). */
+    hideBrowsedStore = false;
 
     async snapshot(): Promise<SnapshotPayload> {
         this.snapshotCalls += 1;
@@ -208,7 +211,9 @@ class FakeApi implements MemoryClientApi {
             this.failNextSnapshot = false;
             throw new Error('snapshot failed (simulated)');
         }
-        return makeSnapshotPayload();
+        const payload = makeSnapshotPayload();
+        if (!this.hideBrowsedStore) return payload;
+        return { ...payload, stores: payload.stores.filter((store) => store.id === payload.store.id) };
     }
 
     /** Optional per-store read (S0/host decision): delete to emulate a bridge
@@ -487,6 +492,93 @@ describe('browse (per-store refill, design §7.6)', () => {
         expect(model.state.browseError).toBeNull();
         expect(model.state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
         expect(model.state.browse?.store.id).toBe('store-beta');
+    });
+});
+
+describe('browse request ordering (review regression, §7.6)', () => {
+    interface PendingBrowse {
+        storeId: string;
+        resolve(payload: BrowseSnapshot): void;
+        reject(error: unknown): void;
+    }
+
+    const pendingBrowses = (api: FakeApi): PendingBrowse[] => {
+        const calls: PendingBrowse[] = [];
+        api.browseSnapshot = (storeId: string) =>
+            new Promise<BrowseSnapshot>((resolve, reject) => {
+                calls.push({ storeId, resolve, reject });
+            });
+        return calls;
+    };
+
+    const payloadWithTitle = (title: string): BrowseSnapshot => {
+        const base = makeBrowseSnapshot('store-beta');
+        const entry = base.entries[0];
+        if (entry === undefined) throw new Error('fixture: no entry');
+        return { ...base, entries: [{ ...entry, title }] };
+    };
+
+    test('a late A→B browse response never overwrites the newer store payload', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        const pending = pendingBrowses(api);
+
+        const first = model.browse('store-beta');
+        const second = model.browse('store-beta');
+        expect(pending).toHaveLength(2);
+
+        // B lands first...
+        pending[1]?.resolve(payloadWithTitle('fresh entry'));
+        await second;
+        expect(model.state.browse?.entries[0]?.title).toBe('fresh entry');
+        // ...then A's late response must be discarded (it would overwrite B
+        // without the request-sequence guard).
+        pending[0]?.resolve(payloadWithTitle('stale entry'));
+        await first;
+        expect(model.state.persistence.entries.map((entry) => entry.title)).toEqual(['fresh entry']);
+        expect(model.state.browse?.entries[0]?.title).toBe('fresh entry');
+    });
+
+    test('a late rejection does not set browseError once the browsing context moved', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh();
+        const pending = pendingBrowses(api);
+
+        const request = model.browse('store-beta');
+        // The user switches back to the current store while the read is in flight.
+        model.setStore('store-alpha');
+        pending[0]?.reject(new Error('stale browse failure'));
+        await request;
+        expect(model.state.browseError).toBeNull();
+        expect(model.state.browsingStoreId).toBe('store-alpha');
+        expect(model.state.persistence).toEqual({ entries: [], stale: false, loadedAt: null });
+    });
+});
+
+describe('browsing store disappears from the store list (review regression, §7.6)', () => {
+    test('a snapshot that drops the browsed store clears its state and browse payload', async () => {
+        const api = new FakeApi();
+        const model = createWorkbenchModel(api);
+        await model.refresh(); // alpha (current) + beta listed
+        await model.browse('store-beta');
+        expect(model.state.browse?.store.id).toBe('store-beta');
+        expect(model.state.persistence.entries.map((entry) => entry.title)).toEqual(['beta entry']);
+
+        api.hideBrowsedStore = true;
+        await model.refresh();
+        const state = model.state;
+        expect(state.browsingStoreId).toBeNull();
+        expect(state.browse).toBeNull();
+        expect(state.browseError).toBeNull();
+        // The current-store snapshot folds instead of leaving the vanished
+        // store's caches on screen.
+        expect(state.currentStoreId).toBe('store-alpha');
+        expect(state.persistence.entries.map((entry) => entry.title)).toEqual(['rollout one', 'manual note']);
+        expect(state.persistence.loadedAt).toBe(AT);
+        expect(state.usage.byKey['rollout-1']).toEqual({ count: 3, lastUsedAt: AT });
+        expect(state.consolidation?.candidateRolloutIds).toEqual(['rollout-1']);
     });
 });
 

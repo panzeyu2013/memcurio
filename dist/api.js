@@ -79,8 +79,8 @@ export async function integrationContext(root, budgetTokens) {
 }
 /** Native citation telemetry: register the structured refs a `memory_cite`
  *  tool call carries (memory-file locators and/or bare rollout ids) and audit
- *  the outcome. Returns the rollout keys actually counted — the same contract
- *  the legacy text-block harvest has. */
+ *  the outcome. Returns the rollout keys actually counted (unknown refs are
+ *  dropped by registerMemoryUsage). */
 export async function integrationCite(root, refs) {
     return withIndex(root, async (index) => {
         const counted = await registerMemoryUsage(root, refs);

@@ -15,7 +15,10 @@ import {
   MemcurioInjectionRow,
   type ContextRowProps,
 } from "../client/ui/context-row.js";
-import { MemcurioGuideRow } from "../client/ui/guide-row.js";
+import { extractGuideSection, guideDetailOf, MemcurioGuideRow } from "../client/ui/guide-row.js";
+import { apply } from "../client/entry.js";
+import { UI_BOOT_GLOBAL } from "../client/ui/wire.js";
+import { renderReadPathInstructions } from "../src/core/inject.js";
 import type { MemoryHook } from "../client/ui/injection-indicator.js";
 import { MemoryInjectionIndicator } from "../client/ui/injection-indicator.js";
 import { createMemoryUiStore } from "../client/ui/model.js";
@@ -42,6 +45,13 @@ afterEach(() => {
 
 const t = (key: string, params?: Record<string, unknown>): string =>
   params === undefined ? key : `${key}:${JSON.stringify(params)}`;
+
+/** The LIVE guide section and the facts the engine attaches to the row: both
+ *  derive from the real renderer, so this fixture cannot go stale when the
+ *  system-prompt guide changes (v1.9+: decision boundary / staleness /
+ *  memory_cite / writing; no tool-inventory sentence). */
+const GUIDE_TEXT = extractGuideSection(renderReadPathInstructions()) ?? "";
+const GUIDE_FACTS = guideDetailOf(GUIDE_TEXT);
 
 const SETTINGS: MemorySettingsFaceLike = { status: "ready", writable: true, value: { injectContext: true } };
 
@@ -72,12 +82,14 @@ function mount(): { container: HTMLElement; root: ReturnType<typeof createRoot> 
 
 describe("system-prompt guide row", () => {
   test("renders the guide disclosure and expands the injected text", async () => {
+    // The registered memory-tool set (guide-row.ts GUIDE_TOOL_NAMES).
+    expect(GUIDE_FACTS.tools).toBe(7);
     const { container, root } = mount();
     await act(async () => {
       root.render(
         React.createElement(MemcurioGuideRow, {
           t,
-          node: { data: { chars: 1554, tools: 6, text: "## memcurio memory\nReach it only through the memcurio tools." } },
+          node: { data: { chars: GUIDE_FACTS.chars, tools: GUIDE_FACTS.tools, text: GUIDE_TEXT } },
         }),
       );
     });
@@ -96,8 +108,12 @@ describe("system-prompt guide row", () => {
     // The body OPENS with the measured facts, then the injected guide text.
     const body = container.querySelector("[data-memcurio-guide-body]");
     expect(body).not.toBeNull();
-    expect(body?.textContent?.startsWith(t("guideRowDetail", { chars: 1554, tools: 6 }))).toBe(true);
-    expect(body?.textContent).toContain("Reach it only through the memcurio tools.");
+    expect(body?.textContent?.startsWith(t("guideRowDetail", { chars: GUIDE_FACTS.chars, tools: GUIDE_FACTS.tools }))).toBe(true);
+    // The guide now carries the tool-CALL rules only; the tool bodies belong
+    // to their schemas, and the old inventory sentence is gone.
+    expect(body?.textContent).toContain("call memory_cite once");
+    expect(body?.textContent).toContain("call memory_remember when the user asks");
+    expect(body?.textContent).not.toContain("Reach it only through the memcurio tools");
 
     await act(async () => {
       root.unmount();
@@ -116,7 +132,12 @@ describe("system-prompt guide row", () => {
   });
 });
 
-describe("memory indicator", () => {
+// RESERVED status surface: docs/ui.md (v1.7 product instruction, 2026-09-16)
+// records client/ui/injection-indicator.ts as deliberately UNREGISTERED in
+// client/entry.ts — the switch/config live in the Settings panel and the
+// header carries no memcurio surface. These tests prove the COMPONENT (the
+// future M0/M1 workbench seat); they do not imply a shipped header entry.
+describe("memory indicator (reserved, deliberately unregistered)", () => {
   test("renders the hit count and opens the injection preview on click", async () => {
     const store = createMemoryUiStore();
     store.applySnapshot(SNAPSHOT);
@@ -406,5 +427,134 @@ describe("memory injection context row", () => {
     });
   });
 });
+
+/* ------------------------------------- 3. entry session-switch rebind --- */
+
+/**
+ * P1 regression: the host binds each `/events` stream to the session named at
+ * connect time, so the entry's session subscription must REBIND the transport
+ * (close the old stream + reconnect with the new session) instead of merely
+ * refreshing the snapshot. This drives the real `apply()` from source against
+ * a fake cordis context and a fake fetch.
+ */
+describe("entry transport rebind on session switch", () => {
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await sleep(5);
+    }
+    throw new Error("waitFor timed out");
+  };
+  const eventCalls = (calls: readonly string[]): string[] => calls.filter((call) => call.includes("/events"));
+
+  test("switching sessions closes the old stream and re-subscribes for the new session", async () => {
+    const globals = globalThis as unknown as Record<string, unknown>;
+    const originalFetch = globalThis.fetch;
+    const originalBoot = globals[UI_BOOT_GLOBAL];
+    const calls: string[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    const streams: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const target = String(input);
+      calls.push(target);
+      if (target.includes("/snapshot")) {
+        return new Response(
+          JSON.stringify({
+            seq: 1,
+            snapshot: {
+              at: "x",
+              store: { id: "w1", root: "/root/w1", isolated: false },
+              injection: {},
+              receipts: [],
+              realtime: { mode: "push", degraded: false },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      signals.push(init?.signal ?? undefined);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    globals[UI_BOOT_GLOBAL] = { basePath: "/memcurio", token: "secret" };
+
+    let current: string | undefined = "s1";
+    const listeners = new Set<() => void>();
+    const disposers: Array<() => void> = [];
+    const ctx = {
+      effect(callback: () => (() => void) | undefined) {
+        const dispose = callback();
+        disposers.push(() => dispose?.());
+        return () => undefined;
+      },
+      locale: {
+        register: () => () => undefined,
+        bind: () => (key: string) => key,
+      },
+      settingsScope: {
+        bind: () => ({
+          getSnapshot: () => ({
+            status: "unavailable",
+            value: undefined,
+            base: undefined,
+            user: undefined,
+            revision: undefined,
+            writable: false,
+            mode: "memory",
+          }),
+          subscribe: () => () => undefined,
+          set: async () => undefined,
+          unset: async () => undefined,
+          mutate: async () => undefined,
+        }),
+      },
+      slots: {
+        inject: () => () => undefined,
+        register: () => () => undefined,
+      },
+      sessions: {
+        list: {
+          getSnapshot: () => ({ current }),
+          subscribe(listener: () => void) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+      },
+    };
+    try {
+      apply(ctx as never);
+      await waitFor(() => eventCalls(calls).length === 1);
+      expect(eventCalls(calls)[0]).toContain("session=s1");
+
+      // The user switches sessions: the entry must rebind the transport, so a
+      // fresh /events fetch goes out for s2 and the old one is aborted.
+      current = "s2";
+      for (const listener of [...listeners]) listener();
+      await waitFor(() => eventCalls(calls).length === 2);
+      expect(eventCalls(calls)[1]).toContain("session=s2");
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      for (const dispose of disposers.reverse()) dispose();
+      for (const controller of streams) {
+        try {
+          controller.close();
+        } catch {
+          // already released by the abort
+        }
+      }
+      globalThis.fetch = originalFetch;
+      if (originalBoot === undefined) delete globals[UI_BOOT_GLOBAL];
+      else globals[UI_BOOT_GLOBAL] = originalBoot;
+    }
+  });
+});
+
 
 

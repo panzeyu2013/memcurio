@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Index } from "../src/core/db.js";
+import { Index, addMissingColumns } from "../src/core/db.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
 import { openDb } from "../src/core/sqlite.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -55,6 +55,39 @@ describe("Index schema v11", () => {
       expect(legacy?.c).toBe(0);
     } finally {
       idx.close();
+    }
+  });
+
+  test("migration ALTERs tolerate a concurrent first open and roll back as a batch", async () => {
+    const driverA = await openDb(dbPath);
+    const driverB = await openDb(dbPath);
+    try {
+      driverA.exec("CREATE TABLE stage1_outputs(rollout_key TEXT PRIMARY KEY, raw_memory TEXT NOT NULL)");
+      const columns = [
+        { name: "artifact_id", ddl: "ALTER TABLE stage1_outputs ADD COLUMN artifact_id TEXT" },
+        { name: "artifact_filename", ddl: "ALTER TABLE stage1_outputs ADD COLUMN artifact_filename TEXT" },
+      ];
+      // Both snapshots were taken before either ALTER: the second batch must
+      // re-read the schema inside its transaction and skip, instead of failing
+      // Index.create with "duplicate column name".
+      addMissingColumns(driverA, "stage1_outputs", columns);
+      expect(() => addMissingColumns(driverB, "stage1_outputs", columns)).not.toThrow();
+      const names = driverB.all<{ name: string }>("PRAGMA table_info(stage1_outputs)").map((r) => r.name);
+      expect(names).toContain("artifact_id");
+      expect(names).toContain("artifact_filename");
+      // A failing ALTER rolls the whole batch back: no partial schema.
+      expect(() =>
+        addMissingColumns(driverB, "stage1_outputs", [
+          { name: "checkpoint_rank", ddl: "ALTER TABLE stage1_outputs ADD COLUMN checkpoint_rank INTEGER NOT NULL DEFAULT 0" },
+          { name: "broken", ddl: "ALTER TABLE stage1_outputs ADD NOT A COLUMN" },
+        ]),
+      ).toThrow();
+      const after = driverB.all<{ name: string }>("PRAGMA table_info(stage1_outputs)").map((r) => r.name);
+      expect(after).not.toContain("checkpoint_rank");
+      expect(after).not.toContain("broken");
+    } finally {
+      driverA.close();
+      driverB.close();
     }
   });
 

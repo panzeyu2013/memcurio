@@ -33,12 +33,12 @@ export function staticParts(root: string, budgetTokens?: number): { summary: str
   };
 }
 
-/** Full static injection preview: the budget-capped summary plus the read-path
- *  instructions, composed like the engine does. Two preview caveats: the
- *  budget resolves to config budget.maxInjectTokens ?? 1500 (the plugin may
- *  override via its injectBudgetTokens adapter option — pass it here for
- *  parity), and no audit row is written (real injections audit
- *  adapter.static_context / adapter.dynamic_context). */
+/** Full static injection preview: the budget-capped summary DATA the engine
+ *  injects (v1.9 keeps the guide prompt-side, so the injected message carries
+ *  no instructions). Two preview caveats: the budget resolves to config
+ *  budget.maxInjectTokens ?? 1500 unless the caller passes the live override,
+ *  and no audit row is written (real injections audit adapter.static_context /
+ *  adapter.dynamic_context). */
 export function staticContext(root: string, budgetTokens?: number): { text: string } {
   return { text: renderStaticContext(root, budgetTokens) };
 }

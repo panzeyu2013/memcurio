@@ -4,7 +4,7 @@ import { loadConfig } from "./core/config.js";
 import { pipelineConfig } from "./core/config.js";
 import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "./core/consolidate.js";
 import { Index } from "./core/db.js";
-import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, processExtractionQueue, stageSession } from "./core/extract.js";
+import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, policyRepairAuditor, processExtractionQueue, stageSession } from "./core/extract.js";
 import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
@@ -186,7 +186,10 @@ export class MemcurioAdapter {
     constructor(opts = {}) {
         this.root = resolve(opts.root ?? coreRoot());
         this.log = opts.log ?? (() => { });
-        this.extract = opts.extract ?? new LlmExtractProvider(opts.channel);
+        // A policy-repaired extraction is a durable event worth auditing: the
+        // provider reports the dropped-line count to an audit writer bound to this
+        // store (fire-and-forget; it never blocks or fails the extraction).
+        this.extract = opts.extract ?? new LlmExtractProvider(opts.channel, undefined, policyRepairAuditor(this.root));
         this.channel = opts.channel;
         this.readTools = new Set(opts.toolPreset?.readTools ?? DEFAULT_READ_TOOLS);
         this.shellTools = new Set(opts.toolPreset?.shellTools ?? DEFAULT_SHELL_TOOLS);
@@ -847,6 +850,13 @@ export class MemcurioAdapter {
             const results = [];
             let blocked = false;
             for (let i = 0; i < limit; i += 1) {
+                // Dispose can land while a drain is in flight (retire aborts the
+                // session and disposes the adapter). Re-check every iteration: racing
+                // one more model call would burn an attempt on an abort the host
+                // caused, and scheduleRetry is already a no-op once disposed.
+                if (this.disposed) {
+                    break;
+                }
                 // Retire-time callers pass a deadline reserving room for the automatic
                 // Phase-2 pass: without it a slow extraction stream eats the whole
                 // retire budget and consolidation is disposed before it ever runs.

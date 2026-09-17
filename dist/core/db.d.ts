@@ -255,3 +255,14 @@ export declare class Index {
     rawAll<T = SqlRow>(sql: string, params?: unknown[]): T[];
     close(): void;
 }
+/** Add missing columns atomically and idempotently. The schema is re-read
+ *  INSIDE the BEGIN IMMEDIATE transaction, which serializes with any other
+ *  migrator: a concurrent first open that added a column between the caller's
+ *  schema snapshot and this call is skipped instead of failing Index.create
+ *  with "duplicate column name". The duplicate-column catch covers writers
+ *  that did not honor the write lock; a real failure still rolls the whole
+ *  batch back. Exported for tests. */
+export declare function addMissingColumns(driver: DbDriver, table: string, columns: ReadonlyArray<{
+    name: string;
+    ddl: string;
+}>): void;

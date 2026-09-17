@@ -42,9 +42,49 @@ export const name = "memcurio";
 const bridgesByRoot = new Map<string, HostBridge>();
 
 /** One browser route table per process: the web server rejects a duplicate
- *  prefix, so only the first applied instance may mount the transport (later
- *  ones stay host-only rather than attempting a colliding registration). */
-let uiTransportMounted = false;
+ *  prefix, so exactly one plugin instance may mount the transport at a time.
+ *  When the owner unloads, the next live instance takes over immediately
+ *  instead of leaving the memory UI dark until a reload (multi-instance
+ *  profiles are an expected topology: one store per workspace). */
+export type UiTransportMount = () => boolean;
+
+export class UiTransportRegistry {
+  private readonly candidates = new Set<UiTransportMount>();
+  private owner: UiTransportMount | undefined;
+
+  /** Register one instance's mount and run it when the route is free. The
+   *  returned disposer releases the candidate and hands the route over. */
+  register(mount: UiTransportMount): () => void {
+    this.candidates.add(mount);
+    if (this.owner === undefined && mount()) {
+      this.owner = mount;
+    }
+    return () => this.release(mount);
+  }
+
+  release(mount: UiTransportMount): void {
+    this.candidates.delete(mount);
+    if (this.owner !== mount) {
+      return;
+    }
+    this.owner = undefined;
+    for (const candidate of this.candidates) {
+      // A failing candidate (its web server is gone) is skipped; a later
+      // release retries the rest, so one bad instance never latches the UI.
+      if (candidate()) {
+        this.owner = candidate;
+        return;
+      }
+    }
+  }
+
+  /** Instance currently serving the route (observability/tests). */
+  current(): UiTransportMount | undefined {
+    return this.owner;
+  }
+}
+
+const uiTransportRegistry = new UiTransportRegistry();
 
 /** Live host bridge for a base root (present once the plugin applied; the
  *  bridge is always on — it is not configurable). */
@@ -458,12 +498,19 @@ function enqueueWorker(runtime: SessionRuntime, task: () => Promise<void>, onErr
   return enqueueOn(runtime, "workerQueue", task, onError);
 }
 
-/** Wait for the event lane and rethrow its first failure. The worker lane is
- *  deliberately NOT awaited: model calls must never stall a model step,
- *  a flush boundary, or a memory tool. */
+/** Wait for the event lane and rethrow its pending failure ONCE. The worker
+ *  lane is deliberately NOT awaited: model calls must never stall a model
+ *  step, a flush boundary, or a memory tool. The failure is cleared when it
+ *  is surfaced — a transient DB/IO error must not poison every later
+ *  pre-step, flush and memory tool of the session; a persistent cause simply
+ *  re-arms the lane on the next failing task. */
 async function awaitRuntime(runtime: SessionRuntime): Promise<void> {
   await runtime.queue;
-  if (runtime.failure !== undefined) throw runtime.failure;
+  const failure = runtime.failure;
+  if (failure !== undefined) {
+    runtime.failure = undefined;
+    throw failure;
+  }
 }
 
 function requireSession(exec: ToolExecution, sessions: Map<string, SessionRuntime>): SessionRuntime {
@@ -532,6 +579,9 @@ function registerMemoryTools(
   ctx: Context,
   sessions: Map<string, SessionRuntime>,
   bridge: HostBridge,
+  /** Live inject-budget accessor: the tool must preview what real injection
+   *  would use, not the config-file base. */
+  injectBudget: () => number | undefined,
 ): void {
   ctx.tools.register(defineTool({
     name: "memory_search",
@@ -638,7 +688,7 @@ function registerMemoryTools(
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       const runtime = requireSession(exec, sessions);
-      return runTool(runtime, exec, async () => JSON.stringify(await integrationContext(runtime.root)));
+      return runTool(runtime, exec, async () => JSON.stringify(await integrationContext(runtime.root, injectBudget())));
     },
   }));
 
@@ -662,8 +712,8 @@ function registerMemoryTools(
       return runTool(runtime, exec, async () => {
         const { counted } = await integrationCite(runtime.root, [...entries, ...rolloutIds]);
         if (counted.length) {
-          // Only the refs the engine actually counted reach the UI timeline
-          // (unknown keys are dropped), exactly like the text-block harvest.
+          // Only the refs the engine actually counted reach the UI timeline:
+          // unknown keys are dropped by registerMemoryUsage.
           bridge.tagCitations(runtime.session.id, counted);
         }
         return JSON.stringify({ counted: counted.length });
@@ -731,27 +781,29 @@ export function apply(ctx: Context, config: Config = {}): void {
   // still gets a usable route instead of parking its jobs as blocked.
   let lastKnownRoute: { provider: string; model: string } | undefined;
   // Browser transport (G5/G6): the same-origin snapshot/SSE route plus the
-  // bridge sink. Mounted once per process (the route table is per path).
-  if (!uiTransportMounted) {
-    uiTransportMounted = true;
+  // bridge sink. One route table per process (the web server rejects a
+  // duplicate prefix), with hand-off to the next live instance on unload.
+  const mountUiTransport = (): boolean => {
     try {
       installUiTransport(ctx, {
         bridge,
         // Sessions resolve strictly (the transport 404s an unknown id);
-      // session-less reads (settings page) fall back to the latest store.
-      resolveRoot: (sessionId) => (sessionId === undefined ? bridge.defaultRoot() : bridge.rootForSession(sessionId)),
+        // session-less reads (settings page) fall back to the latest store.
+        resolveRoot: (sessionId) => (sessionId === undefined ? bridge.defaultRoot() : bridge.rootForSession(sessionId)),
         warn,
         onDispose: () => {
-          uiTransportMounted = false;
+          uiTransportRegistry.release(mountUiTransport);
         },
       });
+      return true;
     } catch (error) {
-      // A failed mount must not latch the process-level flag: the next apply
-      // would otherwise be the only chance to serve the UI, ever.
-      uiTransportMounted = false;
+      // A failed mount must not latch the ownership: the next apply (or the
+      // surviving instance) must still be able to serve the UI.
       warn(error);
+      return false;
     }
-  }
+  };
+  ctx.effect(() => uiTransportRegistry.register(mountUiTransport), "memcurio: browser transport registry");
 
   /** Per-store one-time bootstrap. Sessions are adopted lazily in this
    *  composition (the session list is empty while apply() runs), so the
@@ -1199,7 +1251,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     const dispose = systemPrompt.section({
       name: "memcurio-read-path",
       order: MEMCURIO_READ_PATH_ORDER,
-      text: () => renderReadPathInstructions(),
+      // The guide is tool-call instructions: with native tools disabled the
+      // model cannot follow them, so the section stays empty (a store summary
+      // may still be injected as data).
+      text: () => (live().registerTools ? renderReadPathInstructions() : ""),
     });
     return dispose;
   });
@@ -1281,7 +1336,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // The resolved settings document is authoritative (the profile config is
   // only the composition base), and a hard `settings` inject guarantees the
   // section resolved before apply.
-  if (live().registerTools) registerMemoryTools(ctx, sessions, bridge);
+  if (live().registerTools) registerMemoryTools(ctx, sessions, bridge, () => live().injectBudgetTokens);
 
   // Adopting a session bootstraps its store exactly once (see bootstrapRoot):
   // pending durable jobs from a previous process run would otherwise sit until

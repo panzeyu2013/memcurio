@@ -83,6 +83,20 @@ describe("loadConfig", () => {
     expect(loadConfig(dir).pipeline.retentionDays).toBe(DEFAULT_CONFIG.pipeline.retentionDays);
   });
 
+  test("maxInputs validation and clamping share one upper bound", () => {
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ pipeline: { maxInputs: 10_000 } }));
+    expect(loadConfig(dir).pipeline.maxInputs).toBe(10_000);
+    expect(validateConfig(dir).pipeline.maxInputs).toBe(10_000);
+    // 36500 used to pass strict validation while loadConfig clamped to 10000:
+    // the bounds now agree, so validate reports the range and load falls back
+    // to the documented default instead of silently rewriting the value.
+    writeFileSync(path, JSON.stringify({ pipeline: { maxInputs: 36_500 } }));
+    expect(loadConfig(dir).pipeline.maxInputs).toBe(DEFAULT_CONFIG.pipeline.maxInputs);
+    expect(() => validateConfig(dir)).toThrow(/maxInputs/);
+    expect(() => validateConfig(dir)).toThrow(/10000/);
+  });
+
   test("resourceRetentionDays defaults to 7 (codex RETENTION_DAYS) with the same floor", () => {
     const path = join(dir, "config.json");
     expect(loadConfig(dir).pipeline.resourceRetentionDays).toBe(7);
