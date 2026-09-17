@@ -2,20 +2,20 @@
 
 > 维护说明：本文是仓库唯一的进度/待办跟踪入口（合并自 2026-08-11 的三份 review/verification 记录）；完成一项即勾选并保留证据链接；新增待办须在对应阶段小节补充。
 >
-> 最近更新：2026-09-16（第 46 轮：Phase-2 改为宿主原生 tool calling、阻塞队列热循环/遥测通胀/休眠 store 排空/CJK 检索修复/thinking 模式 reasoning 回传；598 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
+> 最近更新：2026-09-17（第 47 轮：实机确认 Phase-2 原生 tool calling 成功——thinking 模式必须回传 reasoning_content，修复后审计为 `consolidate.done provider=llm-loop`；同轮实机核对遥测只计真正返回的命中、CJK 检索命中、阻塞队列 5 分钟有界探测、休眠 store 排空；598 tests 全绿）。逐轮历史见 git log 与 CHANGELOG。
 
 ## 当前状态
 
 | 维度 | 状态 | 说明 |
 |---|---|---|
-| 核心单元测试与静态质量 | ✅ Green | 598 tests / 3438 assertions / 36 files（第 46 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
+| 核心单元测试与静态质量 | ✅ Green | 598 tests / 3438 assertions / 36 files（第 47 轮实测）、typecheck（含 client）、lint（含 client）、clean build、单包 pack allowlist（dist 反向校验，83 文件） |
 | 本地安全边界 | ✅ Green | 注入入口门禁与词表负向回归、脱敏全链、路径/符号链接、purge 破坏半径收敛、事件字段校验 |
 | 队列与一致性（本地） | ✅ Green | spool 重放去重、陈旧 checkpoint 跳过、claim-token fencing、generation manifest、lease/revision、maxInputs 无振荡 |
 | Codex 真实集成 | 🗑️ 已移除 | codex 适配器整体移除，codex 用户使用 codex 原生 memory 机制 |
 | OpenCode / MCP / CLI 发行面 | 🗑️ 已移除（第十五轮） | 代码/测试/产物/文档整体移除；运维操作语义（curate/retry/audit 等）将内化为 host 服务与 UI |
 | DeepSeek Harness 集成 | 🟡 开发者预览 | 根仓库单包 `@memcurio/dsh-plugin`（引擎并入）对齐 DSH 0.1.5-rc.1（本机实机运行 0.1.5-rc.2，实机验证均在其上完成）：workspace 隔离（含 no-cwd 回退）、双队列生命周期、注入去重与证据过滤、自动 Phase-2（**原生 tool calling**：list/read/write/finish 走宿主 provider tools 通道）、6 工具、`ctx.llm` 通道；真实 DSH lifecycle smoke 未验收 |
 | 数据耐久性与一致性 | 🟡 本地完成 | 跨进程故障注入、多进程压力、真实断电演练未做 |
-| 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；真实 LLM extraction/consolidation 质量未知 |
+| 记忆质量 | 🟡 离线基线 | lexical 检索/注入/泄漏基线已建立；实机已完成一次真实 LLM extraction + 原生 tool calling consolidation（第 47 轮 `provider=llm-loop`），但样本量与质量评估仍不足 |
 | 对外发布准备度 | 🔴 **NO-GO** | 未达 Release Gate R1（见「待办」） |
 
 ## 支持矩阵
