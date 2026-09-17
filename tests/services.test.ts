@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { integrationContext } from "../src/api.js";
 import { Index } from "../src/core/db.js";
 import { LlmExtractProvider, processExtractionQueue, queueExtraction } from "../src/core/extract.js";
 import { ensureLayout, indexDb } from "../src/core/paths.js";
@@ -382,6 +383,19 @@ describe("intent drafts", () => {
     const msg = draft({ kind: "remove", ref: { title: long } });
     expect(msg.includes("Z")).toBe(false);
     expect(msg).toBe(`这条不再需要：${"a".repeat(2000)}。请移除仅依赖它的内容。`);
+  });
+});
+
+describe("integration context (memory_context tool surface)", () => {
+  test("answers no instructions while the store has no summary (Codex parity)", async () => {
+    const empty = await integrationContext(dir);
+    expect(empty.summary).toBe("");
+    expect(empty.instructions).toBe("");
+    // The guide rides WITH the summary: once the store has one, both come back.
+    writeWorkspaceText(dir, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
+    const filled = await integrationContext(dir);
+    expect(filled.summary).toContain("<<<MEMORY_SUMMARY");
+    expect(filled.instructions).toContain("## memcurio memory");
   });
 });
 

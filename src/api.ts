@@ -101,9 +101,13 @@ export async function integrationStatus(root: string) {
 }
 
 export async function integrationContext(root: string, budgetTokens?: number) {
+  // Codex parity: the guide rides WITH the summary, so an empty store answers
+  // memory_context with no instructions either (same rule as the system-prompt
+  // section and the static-injection preview).
+  const summary = renderMemoryContext(root, budgetTokens);
   return withIndex(root, () => ({
-    summary: renderMemoryContext(root, budgetTokens),
-    instructions: renderReadPathInstructions(),
+    summary,
+    instructions: summary === "" ? "" : renderReadPathInstructions(),
   }));
 }
 

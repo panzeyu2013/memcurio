@@ -763,7 +763,12 @@ export function removeBlocksCitingOnly(memory: string, deleted: Set<string>, rep
 }
 
 function renderMinimalSummary(memory: string): string {
-  const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
+  // Group names are copied out of MEMORY.md into the summary index; redact
+  // them here so a secret that survived in a user-authored header can never
+  // ride into memory_summary.md (the edit still passes validateEdits later).
+  const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)]
+    .map((m) => redactSecrets(m[1] ?? "").text)
+    .filter(Boolean);
   const indexLines = groups.length
     ? groups.map((g) => `- ${g}: see MEMORY.md "# Task Group: ${g}"`)
     : ["- (no memory yet; run memcurio remember or let sessions consolidate)"];
@@ -1633,19 +1638,23 @@ export async function runConsolidation(
         .filter((d) => d.rel.startsWith("rollout_summaries/") && !d.hunks.some((h) => h.kind === "add"))
         .map((d) => d.rel.replace(/^rollout_summaries\//, "")),
     );
-    let edits = validateEdits(result.edits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
     // Codex INIT parity: a store that has never carried a schema-valid summary
     // must leave this run with one. Both the read-path guide and the window
     // injection key off memory_summary.md, so a provider that consolidated
     // MEMORY.md but skipped the summary would strand every later session
     // without memory instructions. The rule provider regenerates the summary
-    // itself; this guard is the shared safety net for every provider.
+    // itself; this guard is the shared safety net for every provider. The
+    // synthesized edit joins the provider's list BEFORE validation so it
+    // passes the same secret / injection / size / v1-header checks as any
+    // model-authored edit.
+    const providerEdits: ConsolidateEdit[] = [...result.edits];
     if (!(input.workspace["memory_summary.md"] ?? "").trim().startsWith("v1")) {
-      const memoryAfter = edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
-      if (!edits.some((edit) => edit.rel === "memory_summary.md")) {
-        edits = [...edits, { rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) }];
+      const memoryAfter = providerEdits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
+      if (!providerEdits.some((edit) => edit.rel === "memory_summary.md")) {
+        providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) });
       }
     }
+    const edits = validateEdits(providerEdits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
     const applied = edits.length > 0;
     const beforeWorkspace = snapshotWorkspace(root);
     const beforeBaseline = snapshotBaseline(root);
