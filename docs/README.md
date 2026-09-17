@@ -11,19 +11,19 @@
 | [contract.md](contract.md) | 实现契约：模块职责、导出签名、数据格式（schema v11）、行为规则、测试契约 | 贡献者（改代码前必读） |
 | [ui.md](ui.md) | 记忆 UI 契约：入口与面、host 服务层、写语义铁律、实时性通道、安全与非功能要求 | 客户端/插件贡献者 |
 | [operations.md](operations.md) | 安装、配置、DSH 集成面、发布流程、FAQ、源码开发 | 运维/部署 |
-| [todo.md](todo.md) | 当前状态、支持矩阵、待办（Release Gate R1）、开放决策、验收与验证记录 | 所有人（进度唯一入口） |
+| [todo.md](todo.md) | 未完成待办（Release Gate R1）、集成/UI 遗留、开放决策 | 所有人（开放工作唯一入口） |
 
 仓库根的 [README.md](../README.md) 是英文用户入口；[CHANGELOG.md](../CHANGELOG.md) 记录每次发布的行为变化。
 
 ## 阅读路径
 
 - **只是想用**：根 README → [operations.md](operations.md) 的「安装与配置」。
-- **要改引擎/管线**：[architecture.md](architecture.md) → [contract.md](contract.md) → [todo.md](todo.md) 的「当前状态」。
+- **要改引擎/管线**：[architecture.md](architecture.md) → [contract.md](contract.md) → [todo.md](todo.md) 的未完成项。
 - **要改 UI/客户端**：[ui.md](ui.md) → [contract.md](contract.md) 的模块契约 → [todo.md](todo.md)。
 - **要发版**：[operations.md](operations.md) 的「发布流程」→ [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 文档纪律
 
 - 一个事实只写一处：架构不重复契约细节，契约不重复 UI 面描述，UI 不重复安装步骤；跨文档只放链接。
-- 轮次流水不进文档：逐轮历史看 `git log` 与 `CHANGELOG.md`；[todo.md](todo.md) 只保留当前状态、待办与验收。
-- 一次性验证报告不随仓库分发：证据写进 [todo.md](todo.md) 的「关键验证记录」，或留在提交信息里。
+- 轮次流水不进文档：逐轮历史看 `git log` 与 `CHANGELOG.md`；[todo.md](todo.md) 只保留未完成待办与开放决策，完成即删除。
+- 一次性验证报告不随仓库分发：证据留在提交信息里，不进文档。

@@ -37,11 +37,8 @@ This directory carries TWO halves with different maturity:
    against the settings seat (disabled state hides the counts and labels the preview as history), one memory tool
    row, and the injected-memory context row (own title + expansion, delegation to the shipped context row for
    foreign producers, no delegation for memcurio nodes); `tests/client-nav-mark.test.ts` pins the settings-nav marking contract (match, idempotence,
-   unmark) and the bundle test renders the shipped probe component against the shell's row shape. Real-browser
-   rendering, slot governance and the `settings.yaml` round trip still
-   were verified in a real DSH Web on 2026-09-15 (isolated profile: bundle execution, boot-token transport,
-   `settings.section` render, verified on the isolated DSH Web on 2026-09-15); the session-header
-   entry still needs a live conversation. `client/entry.ts`'s code is exercised through the built bundle rather than
+   unmark) and the bundle test renders the shipped probe component against the shell's row shape. The
+   session-header entry still needs a live conversation. `client/entry.ts`'s code is exercised through the built bundle rather than
    imported directly, so it does not appear in the coverage table.
 2. **Pre-S0 scaffold: the workbench view-model** (`types.ts`, `index.ts`) — the section below documents it.
 
@@ -172,7 +169,7 @@ The following host→client wire differences are INTENTIONALLY unmapped until th
 
 ## 4. (a) Intended package wiring (UNVERIFIED-until-spike)
 
-SUPERSEDED by round 26 (kept for the S0 record): the shipped shape is
+The shipped shape is
 `dsh.client = {platform:"web", inject:["@deepseek-ai/dsh-client-locale","@deepseek-ai/dsh-client-ui-renderer","@deepseek-ai/dsh-client-ui-settings"]}`,
 `exports["./client"] = {"default":"./lib/client.js"}`, `files: ["dist","lib","README.md","LICENSE","cordis.patch.yml"]`,
 and the bundle is built by `scripts/build-client.ts` (esbuild; externals = the frozen platform seed table; the only runtime

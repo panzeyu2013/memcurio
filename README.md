@@ -76,7 +76,7 @@ Besides the settings document (`<DSH home>/settings.yaml`, editable from the Set
 | [docs/contract.md](docs/contract.md) | Implementation contract: module responsibilities, exports, schema v11, behavior rules |
 | [docs/ui.md](docs/ui.md) | Memory-UI contract: surfaces and entry, host service layer, write semantics, realtime |
 | [docs/operations.md](docs/operations.md) | Operations: install, configure, DSH integration, release |
-| [docs/todo.md](docs/todo.md) | Progress / todo / acceptance: support matrix, Release Gate R1, open decisions, verification records |
+| [docs/todo.md](docs/todo.md) | Open work: Release Gate R1, integration/UI leftovers, open decisions |
 | [docs/README_cn.md](docs/README_cn.md) | 中文版说明 |
 
 ## Development

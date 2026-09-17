@@ -1,7 +1,7 @@
 # memcurio 记忆 UI 契约
 
 > 状态：**现行契约**（原 `ui.md` 设计基线；2026-09-16 文档重组织后精简，移除调研对照、阶段路线、开放项、决策记录与附录等历史内容）。
-> 交付状态与待办见 [todo.md](todo.md)；安装与发布见 [operations.md](operations.md)；行为契约见 [contract.md](contract.md)。
+> 未完成待办见 [todo.md](todo.md)；安装与发布见 [operations.md](operations.md)；行为契约见 [contract.md](contract.md)。
 ## 背景与目标
 
 ### 目标
@@ -239,7 +239,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 ### host 桥接层（v1.4 实现批次）
 
-已落地的 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——v1.6 起默认开，v1.7 起连配置项一并删除）：
+node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——v1.6 起默认开，v1.7 起连配置项一并删除）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
 - **事件打标点**：pre-step 注入（static/dynamic/budget；投影器仅置 duplicate 标记，重复注入仍出流——实际去重在插件 pre-step 的 lastInjectedContext）、非插件 user/assistant 证据（沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge./warn.）才产生收据，adapter./integration. 生命周期行不出 delta；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
@@ -257,7 +257,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 - **G5 注入可见**：每次内容变化的注入经 Toast 提示（`duplicate=true` 且无新动态命中不提示）；注入预览（静态上下文 / read 指引 / 最近动态命中 / 预算条）与未读写入圆点由 `client/ui/injection-indicator.ts` 承载但**不在会话头部注册**（v1.7 产品指令：顶部栏无 memcurio 图标），待工作台（M0/M1）提供状态面。注入 ON/OFF 由 Settings 面板承载（v1.7，同一 `injectContext` 字段）。注入消息本身在会话转录里的行由 `client/ui/context-row.ts` 承载（v1.8）：插件自有标题「记忆注入 / Memory injection」+ 生产者标签 + 可展开的模型可见正文，其余 context 节点转发给被影子的 shipped 行。
 - **G6 写入可见**：写路径 receipt delta → 状态面最近写入列表 + 未读计数 + Toast（note/extract/consolidate/prune/purge 各自措辞）；`memory_remember` 等 6 个原生工具注册 keyed `tool.call.toolview` 行：book 主标记 leading（所有状态统一；终态只改变标记颜色 error/warning，不再替换成状态点 —— v1.8.3）、参数摘要、可展开参数/结果。
 - **图标**：主标记 = 第一版候选的 book（书＋书签丝带）内联 SVG（24 单位、stroke 2、round、`currentColor`、14px，沿用 dsh-chamber-mcp 约定）；注入事件 = 平台 `IconContextInjectionOutline16` 路径内联（零图标包依赖，bundle 运行期仍只 require `react`）：注入 Toast 继续用它，注入行（v1.8）改用书页主标记——memcurio 自有行用自有 mark，适配器兜底的通用行保留平台几何。
-- **验证与残留**：boot token 下发、守卫矩阵、SSE 上限/回收与 `settings.section` 注册已在隔离真机验证通过（2026-09-15，报告已随文档清理移除；见 git 历史）；跨 store delta 归属（帧带 root，SSE 按根过滤）与 snapshot↔stream 窗口（`?after=` 重放）已落地。剩余：会话内头部入口需真实会话人工确认一次、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及完整工作台（三面一轴 / 意图草稿 / 时间线回链，M0/M1）。v1.7 新增面同样只到 jsdom 回归网，待真实 Web 人工确认：Settings 的记忆 ON/OFF 首行（只读/不可用态禁用、写入被拒时的面板内报错）、Settings 布尔开关行与输入控件样式、`settings.action` 探针驱动的导航行书页标记（外壳 navIcon 的实证版本为 rc.2；rc.1 行为未复核）。
+- **待确认与残留**：跨 store delta 归属（帧带 root，SSE 按根过滤）与 snapshot↔stream 窗口（`?after=` 重放）的实现见 `src/plugin/ui-transport.ts` / `src/services/snapshot.ts`；仍需真实会话人工确认：会话内头部入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及完整工作台（三面一轴 / 意图草稿 / 时间线回链，M0/M1）。v1.7 新增面目前只到 jsdom 回归网，待真实 Web 人工确认：Settings 的记忆 ON/OFF 首行（只读/不可用态禁用、写入被拒时的面板内报错）、Settings 布尔开关行与输入控件样式、`settings.action` 探针驱动的导航行书页标记（外壳 navIcon 的实证版本为 rc.2；rc.1 行为未复核）。
 
 ## 安全与隐私边界
 

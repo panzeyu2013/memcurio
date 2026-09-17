@@ -70,7 +70,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 | [docs/contract.md](contract.md) | 实现契约：模块职责、导出签名、schema v11、行为规则 |
 | [docs/ui.md](ui.md) | 记忆 UI 契约：面与入口、host 服务层、写语义、实时性 |
 | [docs/operations.md](operations.md) | 运维手册：安装、配置、DSH 集成、发布 |
-| [docs/todo.md](todo.md) | 进度/待办/验收：支持矩阵、Release Gate R1、开放决策、验证记录 |
+| [docs/todo.md](todo.md) | 未完成待办：Release Gate R1、集成/UI 遗留、开放决策 |
 | [README.md](../README.md) | English |
 
 ## 开发

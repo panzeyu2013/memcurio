@@ -1,7 +1,7 @@
 # memcurio 实现契约（memory pipeline）
 
 > 本文是唯一的实现契约：模块职责、导出签名、数据格式与行为规则；与实现不一致时**先改本文再改代码**。
-> 设计目标与数据流见 [architecture.md](architecture.md)，安装/发布见 [operations.md](operations.md)，进度与验收见 [todo.md](todo.md)。
+> 设计目标与数据流见 [architecture.md](architecture.md)，安装/发布见 [operations.md](operations.md)，未完成待办与开放决策见 [todo.md](todo.md)。
 ## 存储布局
 
 ```

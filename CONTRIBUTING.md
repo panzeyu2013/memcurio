@@ -51,7 +51,7 @@ Reviewers are read-only; output "issue + file:line + suggestion". After a fix, r
 
 ## 6. Documentation guidelines
 
-- `docs/` is living documentation: when implementation and design diverge, the docs must be updated (mark implementation status ✅/⏳ and "verified against source" provenance; stale content takes priority over new content).
+- `docs/` is living documentation: it records the current contracts and **open** work only. When implementation and design diverge, update the docs first (stale content takes priority over new content); do not keep completed-work ledgers, round history, verification reports, test counts or status marks (✅/⏳/"verified against") in docs — evidence belongs in commit messages.
 - External protocols (the DSH/Cordis package contracts: `@deepseek-ai/dsh-*` peer typings, events, hooks) follow the installed published package declarations — never write contracts from memory; re-verify peers on every DSH upgrade.
 
 ## 7. Explicitly out of scope (for now)

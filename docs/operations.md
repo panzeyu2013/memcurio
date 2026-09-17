@@ -1,7 +1,7 @@
 # memcurio 运维手册（安装 · 配置 · 集成 · 发布）
 
 > 合并自原 `operations.md` / `operations.md` / `operations.md`（2026-09-16 文档重组织）。
-> 行为契约见 [contract.md](contract.md)；架构见 [architecture.md](architecture.md)；进度、待办与验收见 [todo.md](todo.md)。
+> 行为契约见 [contract.md](contract.md)；架构见 [architecture.md](architecture.md)；待办与开放决策见 [todo.md](todo.md)。
 
 ## 安装与配置
 
@@ -149,15 +149,15 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 ### Verification status
 
-`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. That ran green against real DSH 0.1.5-rc.1 (third-round probe, "sandbox pre-check"). Booting the web app still requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
+`scripts/probe-dsh-profile.sh` installs this package into an isolated DSH profile and asserts that (a) the package imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
 
-### Profile-plane facts (composition-verified)
+### Profile-plane facts
 
 In a composed `web`-family profile the root plane provides the services this plugin injects — `llm` (`@deepseek-ai/dsh-llm`), `tools` (`@deepseek-ai/dsh-tools`), `session` (`@deepseek-ai/dsh-session`) and `settings` (`@deepseek-ai/dsh-settings-file`) — while the web-app layer merely disables concrete entries (`tool-bash`, `tool-pwsh`, `tool-jobs`, `tool-fs`, `tool-fs-search`, `agent-instructions`, `skill-*`). Consequences: a root-plane insert row (this package's `cordis.patch.yml`) is the right mounting point, and because the built-in fs tools are disabled in the web profile, read-hit telemetry comes from this plugin's own `memory_read`/`memory_search` tools.
 
-### Current validation boundary
+### Validation boundary
 
-The repository validates strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources AND tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation + native read-tool usage telemetry, seed replay (tool telemetry rebuild), the public integration read/write surface (including the injection gate on memory reads), and all existing core regressions. The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). A full application smoke test remains required before calling the adapter stable; DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+Local suites cover strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
 
 ## 发布流程
 

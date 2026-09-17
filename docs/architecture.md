@@ -45,7 +45,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 └── state/                           # 事务日志 / 锁（不变）
 ```
 
-删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md 全部废弃。codex 适配器（daemon/hook/spool/plugin 生成）已整体移除，codex 用户使用 codex 原生 memory 机制。DSH 单宿主收敛重构（已完成）移除 opencode 适配器、MCP server、CLI 与 HTTP LLM 通道（`src/core/llm.ts`、HttpChannel 与 `MEMCURIO_LLM_*` 家族；**仅保留 `MEMCURIO_LLM_PROVIDER=none`** 作为 Phase-2 熔断门禁，engine.ts）：memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），模型访问仅来自宿主注入的 `ctx.llm` 通道。
+现状约束：cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载，不使用命名空间（ns）、`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md。模型访问仅来自宿主注入的 `ctx.llm` 通道；`MEMCURIO_LLM_PROVIDER=none` 保留为 Phase-2 熔断门禁（`src/engine.ts`）。memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），不再有 codex 适配器、opencode 适配器、MCP server、CLI 或 HTTP LLM 通道（`src/core/llm.ts`/HttpChannel/`MEMCURIO_LLM_*` 家族）。
 
 ## 模块地图
 
@@ -95,7 +95,7 @@ docs/
 ├── contract.md      实现契约：模块职责、导出签名、schema、行为规则
 ├── ui.md            记忆 UI 契约：面、槽位、传输、写语义、非功能要求
 ├── operations.md    运维手册：安装、配置、DSH 集成、发布
-├── todo.md          进度、待办、开放决策与验收
+├── todo.md          未完成待办与开放决策
 └── README_cn.md     中文用户入口
 ```
 
@@ -144,4 +144,4 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
 
 ## 里程碑状态
 
-见 [todo.md](todo.md) 的当前状态、待办与验收小节。
+见 [todo.md](todo.md) 的未完成待办与开放决策。
