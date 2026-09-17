@@ -127,11 +127,16 @@ export function isUiDelta(value: unknown): value is UiDelta {
     case "citation":
       return typeof delta.sessionId === "string" && Array.isArray(delta.rolloutKeys);
     case "evidence":
-      return typeof delta.sessionId === "string" && typeof delta.partId === "string";
+      return typeof delta.sessionId === "string" && typeof delta.partId === "string" && typeof delta.itemKind === "string";
     case "compaction-prune":
       return typeof delta.sessionId === "string" && Array.isArray(delta.seqs);
     case "queue-updated":
-      return typeof delta.jobId === "string" && typeof delta.status === "string";
+      return (
+        typeof delta.jobId === "string" &&
+        typeof delta.status === "string" &&
+        typeof delta.attempts === "number" &&
+        Number.isFinite(delta.attempts)
+      );
     case "memory-list-updated":
       return delta.updateKind === "rollout" || delta.updateKind === "consolidation" || delta.updateKind === "note";
     case "snapshot-ready":

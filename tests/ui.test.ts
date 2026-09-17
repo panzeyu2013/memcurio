@@ -9,7 +9,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { memoryMarkSvg } from "../client/ui/icons.js";
-import { actionCategory, createMemoryUiStore, estimateTokens, isWritePathAction } from "../client/ui/model.js";
+import {
+  actionCategory,
+  createMemoryUiStore,
+  estimateTokens,
+  isWritePathAction,
+  shouldAnnounceInjection,
+} from "../client/ui/model.js";
 import { rowStateOf, summarizeArgs, resultTextOf } from "../client/ui/tool-rows.js";
 import { createUiTransportClient } from "../client/ui/transport.js";
 import { isUiDelta, isUiEventFrame, isUiSnapshotResponse, type UiSnapshot } from "../client/ui/wire.js";
@@ -41,6 +47,16 @@ describe("injection derivations", () => {
   test("estimates preview tokens", () => {
     expect(estimateTokens("abcd")).toBe(1);
     expect(estimateTokens("")).toBe(0);
+  });
+
+  test("announces only injections that are news", () => {
+    // The host tags an injection whenever its preview changes; a duplicate is
+    // the same summary re-injected after a compaction, and an injection with
+    // nothing measurable carries no information.
+    expect(shouldAnnounceInjection({ duplicate: false, tokens: 120 })).toBe(true);
+    expect(shouldAnnounceInjection({ duplicate: true, tokens: 120 })).toBe(false);
+    expect(shouldAnnounceInjection({ duplicate: false, tokens: 0 })).toBe(false);
+    expect(shouldAnnounceInjection({ duplicate: true, tokens: 0 })).toBe(false);
   });
 
   test("maps audit actions to toast categories", () => {
@@ -301,6 +317,11 @@ describe("wire guards (review regressions)", () => {
     expect(isUiDelta({ kind: "receipt", time: 1, action: "a", detail: "d" })).toBe(true);
     expect(isUiDelta({ kind: "inject-updated", sessionId: "s1" })).toBe(false);
     expect(isUiDelta({ kind: "unknown" })).toBe(false);
+    // Fields the types mark required are part of the boundary contract too.
+    expect(isUiDelta({ kind: "queue-updated", jobId: "j1", status: "pending" })).toBe(false);
+    expect(isUiDelta({ kind: "queue-updated", jobId: "j1", status: "pending", attempts: 2 })).toBe(true);
+    expect(isUiDelta({ kind: "evidence", sessionId: "s1", partId: "user/message:1" })).toBe(false);
+    expect(isUiDelta({ kind: "evidence", sessionId: "s1", partId: "user/message:1", itemKind: "user" })).toBe(true);
   });
 
   test("requires a numeric seq on frames and snapshot responses", () => {

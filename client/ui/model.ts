@@ -78,6 +78,13 @@ export function estimateTokens(text: string | undefined): number {
   return Math.ceil(text.length / 4);
 }
 
+/** Whether an injection event deserves a toast. A duplicate is the same
+ *  summary re-injected into a new window (after a compaction), and an
+ *  injection with nothing measurable is not news either. */
+export function shouldAnnounceInjection(event: { duplicate: boolean; tokens: number }): boolean {
+  return !event.duplicate && event.tokens > 0;
+}
+
 export function injectionView(input: {
   staticText?: string | undefined;
   readGuide?: string | undefined;

@@ -42,7 +42,7 @@ import "./ui/contracts.js";
 import { CONTEXT_ROW_PRIORITY, createContextRow } from "./ui/context-row.js";
 import { registerGuideRow, type GuideRegistrationHost } from "./ui/guide-row.js";
 import { NS as UI_NS, en as uiEn, zh as uiZh, type UiKey } from "./ui/locales.js";
-import { actionCategory, createMemoryUiStore, type MemoryUiEvent } from "./ui/model.js";
+import { actionCategory, createMemoryUiStore, shouldAnnounceInjection, type MemoryUiEvent } from "./ui/model.js";
 import { mountUiStyles } from "./ui/styles.js";
 import { createToastHost, type ToastHost } from "./ui/toast.js";
 import { MEMORY_TOOL_NAMES, memoryToolView } from "./ui/tool-rows.js";
@@ -108,10 +108,10 @@ const NOTIFICATION_KEY: Record<ReturnType<typeof actionCategory>, UiKey> = {
 /** One applied change → one visible banner (the toast host dedupes by key). */
 function notify(toasts: ToastHost, t: (key: UiKey, params?: Record<string, unknown>) => string, event: MemoryUiEvent): void {
   if (event.type === "injection") {
-    // The host tags an injection only when its context changed; a duplicate is
-    // the same summary re-injected into a new window (after a compaction),
-    // which is not news. An injection with nothing measurable is silent too.
-    if (event.duplicate || event.tokens === 0) return;
+    // The host tags an injection only when its context changed; the pure
+    // decision (duplicate / nothing measurable = silent) lives in the model so
+    // it is unit-testable without mounting the browser half.
+    if (!shouldAnnounceInjection(event)) return;
     toasts.push({
       key: `inject-static:${String(event.tokens)}`,
       icon: "injection",

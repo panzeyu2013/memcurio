@@ -2,11 +2,13 @@
  * Session-header memory indicator (G5) — the visible answer to "what memory
  * is the model thinking with right now".
  *
- * Registered into `conversation.session.header.utilities`; the glyph is the
- * platform context-injection mark and the badge is the unread write-receipt
- * count. The popover carries the injection switch (the same injectContext
- * setting the Settings panel owns), the injection preview (static text, read
- * guide, budget) plus the recent memory-write receipts (G6).
+ * RESERVED and deliberately NOT registered: the session header carries no
+ * memcurio surface (v1.7 product instruction — see client/entry.ts and
+ * docs/ui.md). The glyph is the platform context-injection mark and the badge
+ * is the unread write-receipt count. The popover carries the injection switch
+ * (the same injectContext setting the Settings panel owns), the injection
+ * preview (static text, read guide, budget) plus the recent memory-write
+ * receipts (G6).
  *
  * All values come from the injected seats, never from a value snapshot. An
  * instance with injection switched off renders as off — never as a healthy
