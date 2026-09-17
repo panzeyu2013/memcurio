@@ -327,7 +327,10 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无通道或无 agent → completed=false 零提交（回退 Rule）
   // 工具循环：channel.agent(system, transcript, tools) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
-  // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、红action），
+  // INIT 兜底：runConsolidation 在 provider 返回后检查落盘前 workspace 的 memory_summary.md——
+  // 首行不是 v1 且本次 edits 没有该文件时，补一条最小 v1 摘要（renderMinimalSummary），
+  // 使「首条记忆」的引导链（摘要 → 指南 → 注入）不依赖模型的自觉（rule 路径本就自行 regen）。
+  // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、INIT 模式、红action），
   // 含降噪条款：删除 stale/重复/低信号内容、不设固定数量目标、最有用的记忆排前、摘要索引清理失效主题；
   // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
   // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；校验 memory_summary 若存在首行须为 "v1"。

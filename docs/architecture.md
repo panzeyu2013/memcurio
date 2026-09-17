@@ -115,7 +115,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
   → stage1 DB（stageUpsert + audit）
   → Phase 2 整合（consolidate.ts，会话结束后由引擎自动触发 maybeConsolidate）：
        planConsolidation 选窗口内 stage1 → 渲染 artifacts（raw_memories 升序合并 / rollout_summaries）
-       → provider（llm-loop 或 Rule；无 ctx.llm 通道时回退 Rule，LLM 通道失败时同样降级 Rule 并审计 consolidate.fallback）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
+       → provider（llm-loop 或 Rule；无 ctx.llm 通道时回退 Rule，LLM 通道失败时同样降级 Rule 并审计 consolidate.fallback；INIT：落盘前 workspace 无 v1 摘要时由 runConsolidation 兜底补最小 v1 摘要）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
        → workspace lease + revision check → generation manifest 原子阶段/提交/恢复 + audit + note 标记 applied + noteSyncContent + saveBaseline
        → 剪枝行 stagePruneRetention 物理回收 + pruneExtensionResources（保留期清理）
   → MEMORY.md 改写完成（模型组织 Task Group，引擎只做校验/原子写/脱敏/注入扫描）

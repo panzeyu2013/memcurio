@@ -956,6 +956,8 @@ function buildConsolidationSystemPrompt(input, prunedResources = []) {
         "- Evidence-based only; never invent facts or claim verification that did not happen.",
         "- Avoid copying large outputs; prefer compact summaries + exact error snippets + pointers.",
         "- No-op is allowed and preferred when there is no meaningful, reusable learning worth saving.",
+        "- INIT mode: when the memory folder has no schema-valid 'memory_summary.md' yet, still create the",
+        "  minimal required files ('MEMORY.md' and 'memory_summary.md') instead of making no changes.",
         "",
         "MEMORY FOLDER LAYOUT (progressive disclosure, most general first)",
         "- MEMORY.md: durable handbook; '# Task Group: <scope>' blocks with 'scope:' and 'applies_to:'",
@@ -1399,7 +1401,19 @@ export async function runConsolidation(root, provider, opts) {
         const deletedSummaries = new Set(freshPlan.diff
             .filter((d) => d.rel.startsWith("rollout_summaries/") && !d.hunks.some((h) => h.kind === "add"))
             .map((d) => d.rel.replace(/^rollout_summaries\//, "")));
-        const edits = validateEdits(result.edits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
+        let edits = validateEdits(result.edits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
+        // Codex INIT parity: a store that has never carried a schema-valid summary
+        // must leave this run with one. Both the read-path guide and the window
+        // injection key off memory_summary.md, so a provider that consolidated
+        // MEMORY.md but skipped the summary would strand every later session
+        // without memory instructions. The rule provider regenerates the summary
+        // itself; this guard is the shared safety net for every provider.
+        if (!(input.workspace["memory_summary.md"] ?? "").trim().startsWith("v1")) {
+            const memoryAfter = edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
+            if (!edits.some((edit) => edit.rel === "memory_summary.md")) {
+                edits = [...edits, { rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) }];
+            }
+        }
         const applied = edits.length > 0;
         const beforeWorkspace = snapshotWorkspace(root);
         const beforeBaseline = snapshotBaseline(root);

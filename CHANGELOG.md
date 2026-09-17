@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `build_memory_tool_developer_instructions` returns `None` for an empty
   store), in the system prompt and in the workbench injection preview alike.
   A store with nothing to inject emits no memory instructions at all.
+- Phase 2 INIT is guaranteed: a consolidation run that finds no schema-valid
+  `memory_summary.md` now leaves one behind even when the provider produced
+  no summary edit (the rule provider already regenerated it; the new guard in
+  `runConsolidation` covers the LLM path). Both the read-path guide and the
+  window injection key off that file, so the first memory can no longer strand
+  a store without memory instructions.
 - The browser store's delta fold compares trimmed static text when the delta
   carries it, so a whitespace-only difference no longer reads as a fresh
   injection (matching the snapshot fold).

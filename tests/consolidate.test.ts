@@ -565,6 +565,23 @@ describe("RuleConsolidateProvider", () => {
 });
 
 describe("runConsolidation", () => {
+  test("INIT: a run without a schema-valid summary leaves one behind", async () => {
+    // Codex init mode: the store has no memory_summary.md and the provider
+    // finishes without writing one. The run must still INIT it — the read-path
+    // guide and the window injection both key off that file, so an omission
+    // would strand every later session without memory instructions.
+    await addAdHocNote(dir, "seed", "remember");
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel([JSON.stringify({ tool: "finish", args: { report: "no memory changes" } })]),
+    );
+    const run = await runConsolidation(dir, provider, { execute: true });
+    expect(run.applied).toBe(true);
+    const summary = readWorkspaceText(dir, "memory_summary.md");
+    expect(summary.startsWith("v1")).toBe(true);
+    expect(summary).toContain("## User preferences");
+  });
+
   test("dry run writes nothing", async () => {
     await addAdHocNote(dir, "dry note", "remember");
     const run = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: false });
