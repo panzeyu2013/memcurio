@@ -31,11 +31,6 @@ export declare function diffTexts(before: string, after: string): DiffHunk[];
 export declare function diffWorkspace(rel: string, before: string, after: string): WorkspaceDiff;
 export declare function saveBaseline(root: string): void;
 export declare function loadBaseline(root: string): Record<string, string>;
-/** Restore a baseline snapshot after a failed multi-file consolidation. The
- *  baseline is not a database transaction, so the caller supplies the last
- *  known-good contents and this function removes files introduced by the
- *  failed save as well. */
-export declare function restoreBaseline(root: string, snapshot: Record<string, string>): void;
 /** True when any managed doc differs from the last successful baseline.
  *  Covers MEMORY_DOCS plus skills/ (codex diffs the whole memory root); the
  *  skills comparison is only meaningful when the baseline actually covers
@@ -54,6 +49,4 @@ export declare function readAdHocNoteFile(root: string, filename: string): strin
 export declare function writeAdHocNoteFile(root: string, filename: string, content: string): void;
 export declare function deleteAdHocNoteFile(root: string, filename: string): void;
 export declare function listAdHocNoteFiles(root: string): string[];
-/** True when a workspace directory exists (guard for stat/read). */
-export declare function existsDir(path: string): boolean;
 export { existsSync };

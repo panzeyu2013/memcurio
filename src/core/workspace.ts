@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, unlinkSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -301,30 +301,6 @@ export function loadBaseline(root: string): Record<string, string> {
   return out;
 }
 
-/** Restore a baseline snapshot after a failed multi-file consolidation. The
- *  baseline is not a database transaction, so the caller supplies the last
- *  known-good contents and this function removes files introduced by the
- *  failed save as well. */
-export function restoreBaseline(root: string, snapshot: Record<string, string>): void {
-  const current = loadBaseline(root);
-  const rels = new Set([...Object.keys(current), ...Object.keys(snapshot)]);
-  for (const rel of rels) {
-    const safe = assertWorkspaceRel(rel);
-    const target = resolveWorkspacePath(root, `.baseline/${safe}`);
-    if (Object.hasOwn(snapshot, safe)) {
-      atomicWrite(target, snapshot[safe] ?? "");
-    } else {
-      try {
-        unlinkSync(target);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw err;
-        }
-      }
-    }
-  }
-}
-
 /** True when any managed doc differs from the last successful baseline.
  *  Covers MEMORY_DOCS plus skills/ (codex diffs the whole memory root); the
  *  skills comparison is only meaningful when the baseline actually covers
@@ -421,13 +397,5 @@ export function listAdHocNoteFiles(root: string): string[] {
   return valid;
 }
 
-/** True when a workspace directory exists (guard for stat/read). */
-export function existsDir(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 export { existsSync };

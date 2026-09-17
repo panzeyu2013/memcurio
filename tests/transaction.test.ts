@@ -1,97 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { Transaction, STALE_EMPTY_LOCK_MS, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, rotateLog, truncateLog, tryCreateLock, withFileLock } from "../src/core/transaction.js";
-import type { TxnRecord } from "../src/core/transaction.js";
+import { STALE_EMPTY_LOCK_MS, STALE_LOCK_MS, atomicWrite, isStaleLock, lockSnapshot, reclaimStaleLock, tryCreateLock, withFileLock } from "../src/core/transaction.js";
 import { processStartedAt } from "../src/core/transaction.js";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writeWorkspaceText, readWorkspaceText } from "../src/core/workspace.js";
 
 let dir: string;
-let log: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "txn-"));
-  log = join(dir, "state", "transactions.jsonl");
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("Transaction", () => {
-  test("records BEGIN and COMMIT, no pending", () => {
-    const txn = new Transaction(log);
-    txn.run("remember", "default", "abc", () => {});
-    const records = readRecords(log);
-    expect(records.map((r) => r.op)).toEqual(["BEGIN", "COMMIT"]);
-    expect(txn.pending()).toHaveLength(0);
-  });
-
-  test("records ROLLBACK on failure; rolled-back txns are not pending", () => {
-    const txn = new Transaction(log);
-    expect(() =>
-      txn.run("remember", "default", "abc", () => {
-        throw new Error("boom");
-      }),
-    ).toThrow("boom");
-    const records = readRecords(log);
-    expect(records.map((r) => r.op)).toEqual(["BEGIN", "ROLLBACK"]);
-    expect(records[1]?.error).toContain("boom");
-    // ROLLBACK marks the transaction as resolved: the synchronous md/SQLite
-    // writes were already undone, so it must not show up as pending work.
-    expect(txn.pending()).toHaveLength(0);
-  });
-
-  test("pending reports unfinished transactions", () => {
-    const txn = new Transaction(log);
-    const finish = () => txn.run("a", "default", "x", () => {});
-    finish();
-    appendRaw(log, JSON.stringify({ op: "BEGIN", txn: "orphan1", action: "a", ns: "default", detail: "x", ts: "2026-01-01T00:00:00.000Z" }));
-    expect(txn.pending().map((r) => r.txn)).toEqual(["orphan1"]);
-  });
-
-  test("pending() sees closed transactions across log rotation", () => {
-    const txn = new Transaction(log);
-    appendRaw(log, JSON.stringify({ op: "BEGIN", txn: "c1", ts: "2026-01-01T00:00:00.000Z" }));
-    appendRaw(log, JSON.stringify({ op: "COMMIT", txn: "c1", ts: "2026-01-01T00:00:01.000Z" }));
-    rotateLog(log, 5);
-    appendRaw(log, JSON.stringify({ op: "BEGIN", txn: "orphan2", action: "a", ns: "default", detail: "x", ts: "2026-01-01T00:00:02.000Z" }));
-    expect(txn.pending().map((r) => r.txn)).toEqual(["orphan2"]);
-  });
-
-  test("torn lines are counted as corrupt, not reported as pending", () => {
-    const txn = new Transaction(log);
-    txn.run("remember", "default", "abc", () => {});
-    appendRaw(log, '{"op":"BEGIN","txn":"orphan1","ts":"2026-01-01T00:00:00.000Z"}');
-    appendRaw(log, '{"op":"BEGIN","txn":"torn'); // truncated write
-    expect(txn.pending().map((r) => r.txn)).toEqual(["orphan1"]);
-    expect(txn.corruptLines()).toBe(1);
-  });
-
-  test("truncateLog clears records but never a live append", () => {
-    const txn = new Transaction(log);
-    txn.run("remember", "default", "abc", () => {});
-    truncateLog(log);
-    expect(readRecords(log)).toHaveLength(0);
-    // Appends after truncation are still recorded and visible.
-    txn.run("remember", "default", "def", () => {});
-    expect(txn.pending()).toHaveLength(0);
-    expect(readRecords(log).map((r) => r.op)).toEqual(["BEGIN", "COMMIT"]);
-  });
-
-  test("truncateLog also clears repair-visible records in rotated logs", () => {
-    appendRaw(log, JSON.stringify({ op: "BEGIN", txn: "old-failure", ts: "2026-01-01T00:00:00.000Z" }));
-    rotateLog(log, 1);
-    const txn = new Transaction(log);
-    expect(txn.pending()).toHaveLength(1);
-    truncateLog(log);
-    expect(txn.pending()).toHaveLength(0);
-    expect(statSync(log).mode & 0o777).toBe(0o600);
-  });
-
+describe("file lock", () => {
   test("withFileLock serializes concurrent critical sections via the same lock", () => {
     const lockPath = join(dir, "locks", "x.lock");
     const seen: number[] = [];
@@ -393,14 +320,4 @@ describe("workspace writes (atomic + locked)", () => {
   });
 });
 
-function readRecords(path: string): TxnRecord[] {
-  return readFileSync(path, "utf-8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as TxnRecord);
-}
 
-function appendRaw(path: string, line: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${line}\n`, "utf-8");
-}

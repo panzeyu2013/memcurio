@@ -16,7 +16,7 @@ import { basename } from "node:path";
 
 import { DEFAULT_CONFIG, loadConfig, pipelineConfig } from "../core/config.js";
 import { AUTO_CONSOLIDATE_COOLDOWN_MS } from "../engine.js";
-import type { ListResult, ReadResult, StatusResult } from "./memory.js";
+import type { ReadResult } from "./memory.js";
 import { list as memoryList, read as memoryRead } from "./memory.js";
 import { staticParts } from "./inject.js";
 import { listStores } from "./context.js";
@@ -329,6 +329,3 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Work
   };
 }
 
-/** Status pass-through used by snapshots of the state face. */
-export type SnapshotStatus = StatusResult;
-export type SnapshotListResult = ListResult;

@@ -9,7 +9,6 @@ export declare function skillsDir(root: string): string;
 export declare function baselineDir(root: string): string;
 export declare function indexDb(root: string): string;
 export declare function configPath(root: string): string;
-export declare function txnLog(root: string): string;
 /** Resolve a workspace-relative path against the memory workspace and reject
  *  anything that escapes it (symlinks, "..", absolute paths). */
 export declare function resolveWorkspacePath(root: string, rel: string): string;

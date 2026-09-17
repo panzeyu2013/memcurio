@@ -6,7 +6,6 @@ export declare const STALE_LOCK_MS = 300000;
  *  a short grace instead of the full STALE_LOCK_MS: the caller's lock timeout
  *  is 20s, so a 5-minute wait would guarantee a timeout on crash debris. */
 export declare const STALE_EMPTY_LOCK_MS = 5000;
-export declare const LOG_ROTATE_BYTES = 1048576;
 export declare function atomicWrite(path: string, content: string): void;
 export interface LockOptions {
     /** Override LOCK_TIMEOUT_MS (used by tests to exercise the timeout path). */
@@ -40,26 +39,3 @@ export declare function isStaleLock(lockPath: string): boolean;
  *  time: it is restored (link() never overwrites an existing path) and the
  *  reclaim is abandoned. Returns true when the sampled lock was removed. */
 export declare function reclaimStaleLock(lockPath: string, snapshot?: LockSnapshot | null): boolean;
-export declare function truncateLog(logPath: string): void;
-/** Rename a log larger than maxBytes to <log>.1, keeping one older segment.
- *  Callers must hold the log lock (Transaction.append does). */
-export declare function rotateLog(logPath: string, maxBytes?: number): void;
-export interface TxnRecord {
-    op: "BEGIN" | "COMMIT" | "ROLLBACK";
-    txn: string;
-    action?: string;
-    ns?: string;
-    detail?: string;
-    ts: string;
-    error?: string;
-}
-export declare class Transaction {
-    private readonly logPath;
-    constructor(logPath: string);
-    private append;
-    run(action: string, ns: string, detail: string, work: () => void): void;
-    pending(): TxnRecord[];
-    /** Number of unparsable (torn/corrupt) lines across the log and rotated logs. */
-    corruptLines(): number;
-    private readAll;
-}

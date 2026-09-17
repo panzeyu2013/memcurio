@@ -1,4 +1,3 @@
-import type { ListResult, StatusResult } from "./memory.js";
 import { list as queueList, consolidation as consolidationMeta } from "./queue.js";
 /** Store marker shape shared by snapshot + deltas. */
 export interface SnapshotStore {
@@ -97,6 +96,3 @@ export interface BuildSnapshotOptions {
 /** Assemble the full-state read for one store. Never throws: individual face
  *  failures degrade to empty fields so the workbench always has a frame. */
 export declare function buildSnapshot(options: BuildSnapshotOptions): Promise<WorkbenchSnapshot>;
-/** Status pass-through used by snapshots of the state face. */
-export type SnapshotStatus = StatusResult;
-export type SnapshotListResult = ListResult;

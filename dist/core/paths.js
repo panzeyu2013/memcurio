@@ -102,9 +102,6 @@ export function indexDb(root) {
 export function configPath(root) {
     return join(root, "config.json");
 }
-export function txnLog(root) {
-    return join(root, "state", "transactions.jsonl");
-}
 /** Resolve a workspace-relative path against the memory workspace and reject
  *  anything that escapes it (symlinks, "..", absolute paths). */
 export function resolveWorkspacePath(root, rel) {

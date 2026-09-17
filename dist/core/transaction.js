@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 // Process start time for lock staleness: a lock whose recorded pid matches
 // ours but whose acquisition timestamp predates our process could only have
@@ -20,12 +20,6 @@ export const STALE_LOCK_MS = 300_000;
  *  a short grace instead of the full STALE_LOCK_MS: the caller's lock timeout
  *  is 20s, so a 5-minute wait would guarantee a timeout on crash debris. */
 export const STALE_EMPTY_LOCK_MS = 5_000;
-// Rotate the transaction log once it exceeds this many bytes (two rotated
-// segments are kept: <log>.1 and <log>.2).
-export const LOG_ROTATE_BYTES = 1_048_576;
-function logLockPath(logPath) {
-    return `${logPath}.lock`;
-}
 export function atomicWrite(path, content) {
     // A symlinked target must keep receiving updates: rename() would replace
     // the link itself with a regular file, severing the external target.
@@ -263,8 +257,9 @@ export function reclaimStaleLock(lockPath, snapshot) {
         return true; // already gone: the caller can retry acquisition
     }
     // Temp name matches the stale-tmp sweeper pattern and starts with a dot, so
-    // a crash between rename and unlink leaves a file that readAll/truncateLog
-    // (both keyed on the base log name) never mistake for a log segment.
+    // a crash between rename and unlink leaves a dot-prefixed temp
+    // file that the lock sweeper (keyed on the base lock name) never mistakes
+    // for a lock segment.
     const tmp = join(dirname(lockPath), `.tmp-${Date.now()}-${randomBytes(8).toString("hex")}.${basename(lockPath)}`);
     try {
         renameSync(lockPath, tmp);
@@ -309,158 +304,4 @@ export function reclaimStaleLock(lockPath, snapshot) {
         void 0;
     }
     return false;
-}
-export function truncateLog(logPath) {
-    mkdirSync(dirname(logPath), { recursive: true });
-    withFileLock(logLockPath(logPath), () => {
-        const dir = dirname(logPath);
-        const base = basename(logPath);
-        try {
-            for (const name of readdirSync(dir)) {
-                // Only memcurio's own rotated segments (<base>.1/.2, legacy <base>.<ts>.old)
-                // are removed; unrelated files sharing the prefix are left alone.
-                const suffix = name.startsWith(`${base}.`) ? name.slice(base.length + 1) : "";
-                const isLog = name === base || (suffix !== "" && /^(?:\d+|old|\d+\.old)$/.test(suffix));
-                if (isLog) {
-                    try {
-                        unlinkSync(join(dir, name));
-                    }
-                    catch {
-                        void 0;
-                    }
-                }
-            }
-        }
-        catch {
-            void 0;
-        }
-        writeFileSync(logPath, "", { mode: 0o600 });
-    });
-}
-/** Rename a log larger than maxBytes to <log>.1, keeping one older segment.
- *  Callers must hold the log lock (Transaction.append does). */
-export function rotateLog(logPath, maxBytes = LOG_ROTATE_BYTES) {
-    try {
-        if (statSync(logPath).size <= maxBytes) {
-            return;
-        }
-    }
-    catch {
-        return; // no log yet
-    }
-    try {
-        unlinkSync(`${logPath}.2`);
-    }
-    catch {
-        void 0;
-    }
-    try {
-        renameSync(`${logPath}.1`, `${logPath}.2`);
-    }
-    catch {
-        void 0;
-    }
-    try {
-        renameSync(logPath, `${logPath}.1`);
-    }
-    catch {
-        void 0;
-    }
-}
-export class Transaction {
-    logPath;
-    constructor(logPath) {
-        this.logPath = logPath;
-    }
-    append(record) {
-        mkdirSync(dirname(this.logPath), { recursive: true });
-        withFileLock(logLockPath(this.logPath), () => {
-            rotateLog(this.logPath);
-            appendFileSync(this.logPath, `${JSON.stringify(record)}\n`, { encoding: "utf-8", mode: 0o600 });
-        });
-    }
-    run(action, ns, detail, work) {
-        const txn = randomUUID().slice(0, 12);
-        const ts = new Date().toISOString();
-        this.append({ op: "BEGIN", txn, action, ns, detail, ts });
-        try {
-            work();
-        }
-        catch (err) {
-            this.append({ op: "ROLLBACK", txn, error: String(err), ts: new Date().toISOString() });
-            throw err;
-        }
-        try {
-            this.append({ op: "COMMIT", txn, ts: new Date().toISOString() });
-        }
-        catch (err) {
-            // The md/SQLite writes already committed; failing the caller here would
-            // make it retry and duplicate the writes. Retry the append once, and if
-            // it still fails, record a COMMIT line carrying the error so pending()
-            // resolves this transaction (a bare BEGIN would leave a phantom pending
-            // that `repair` misinterprets as an unfinished write).
-            try {
-                this.append({ op: "COMMIT", txn, ts: new Date().toISOString() });
-            }
-            catch {
-                try {
-                    this.append({ op: "COMMIT", txn, error: String(err), ts: new Date().toISOString() });
-                }
-                catch (second) {
-                    console.warn(`[memcurio] failed to record COMMIT for ${txn} (business writes succeeded): ${String(second)}`);
-                }
-            }
-        }
-    }
-    pending() {
-        const { records } = this.readAll();
-        const begins = records.filter((r) => r.op === "BEGIN");
-        const committed = new Set(records.filter((r) => r.op === "COMMIT").map((r) => r.txn));
-        // ROLLBACK marks a transaction whose synchronous md/SQLite writes were
-        // already rolled back, so it is resolved and must not count as pending.
-        const rolledBack = new Set(records.filter((r) => r.op === "ROLLBACK").map((r) => r.txn));
-        return begins.filter((r) => !committed.has(r.txn) && !rolledBack.has(r.txn));
-    }
-    /** Number of unparsable (torn/corrupt) lines across the log and rotated logs. */
-    corruptLines() {
-        return this.readAll().corrupt;
-    }
-    readAll() {
-        return withFileLock(logLockPath(this.logPath), () => {
-            const records = [];
-            let corrupt = 0;
-            let names = [];
-            try {
-                const base = basename(this.logPath);
-                names = readdirSync(dirname(this.logPath))
-                    .filter((n) => !n.endsWith(".lock") && (n === base || n.startsWith(`${base}.`)))
-                    .sort();
-            }
-            catch {
-                names = [];
-            }
-            for (const name of names) {
-                try {
-                    const text = readFileSync(join(dirname(this.logPath), name), "utf-8");
-                    for (const line of text.split("\n")) {
-                        if (!line.trim()) {
-                            continue;
-                        }
-                        try {
-                            records.push(JSON.parse(line));
-                        }
-                        catch {
-                            corrupt += 1;
-                        }
-                    }
-                }
-                catch {
-                    // A segment that vanished mid-read is a concurrent truncate; a real
-                    // read failure is treated as corruption so it is not silently lost.
-                    corrupt += 1;
-                }
-            }
-            return { records, corrupt };
-        });
-    }
 }

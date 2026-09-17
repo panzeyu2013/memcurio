@@ -165,7 +165,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CJK retrieval.** A Chinese sentence was one un-matchable token for the
   substring scanner; query terms now expand into adjacent two-character grams,
   and the first dynamic query with zero hits is audited
-  (`adapter.dynamic_miss`) instead of failing silently.
+  (`adapter.dynamic_miss`) instead of failing silently. (The dynamic path now
+  serves the injection simulator and the engine API only: the plugin's
+  per-turn dynamic injection was removed in the same cycle.)
 - **Work-driven consolidation trigger.** A three-row pending batch, a pending
   row older than two hours, or an unapplied note bypasses the 6 h success
   cooldown (the failure backoff still applies); a successful run clears the
@@ -178,12 +180,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persisted and documented, but never read by selection). Config files that
   still carry it keep loading; the key is ignored.
 - Dynamic memory hits are derived from the injection budget (≈1 hit per 176
-  tokens, clamped to 4–8) instead of a second hard-coded limit.
+  tokens, clamped to 4–8) instead of a second hard-coded limit (simulator and
+  engine API; the per-turn dynamic injection itself was removed in this cycle).
 - Citation usage counts one unique rollout key once per call: naming the same
   memory both as a `rollout_summaries/<file>.md` entry and as its bare
   `host|sessionId` key no longer bumps `usage_count` twice.
 
 ### Removed
+
+- **Dead pre-SQLite transaction machinery and unused helpers.** `Transaction`,
+  `truncateLog`, `rotateLog`, `paths.txnLog`, `ids.newNoteId`,
+  `workspace.restoreBaseline`, `workspace.existsDir` and the snapshot status
+  aliases are gone: the audit trail lives in SQLite, and nothing had called
+  them since the single-plugin convergence (only their own tests did).
 
 - **Pre-S0 workbench scaffold.** `client/types.ts`, `client/index.ts` and
   `tests/client-types.test.ts` are gone: they were never part of the built

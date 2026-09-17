@@ -16,7 +16,7 @@
 │   └── .baseline/                   # 上次成功整合后的快照（MEMORY.md / memory_summary.md / raw_memories.md / rollout_summaries/ / skills/），用于 diff
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 ├── config.json
-└── state/                           # 事务日志 / 锁 / socket（不变）
+└── state/                           # 锁 / socket（不变）
 ```
 
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md、MEMORY.md 旧格式全部废弃。
@@ -148,7 +148,7 @@ export function rolloutSummariesDir(root: string): string
 export function adHocNotesDir(root: string): string
 export function baselineDir(root: string): string          // join(memoryWorkspace,".baseline")
 // 删除：nsDir / namespaces / namespaceFor / nsName / assertValidNs 相关逻辑移除
-// 保留：rootDir / ensureLayout / memoryRoot / indexDb / configPath / txnLog
+// 保留：rootDir / ensureLayout / memoryRoot / indexDb / configPath
 ```
 
 ### src/core/workspace.ts（新）
@@ -425,7 +425,7 @@ export interface Config {
 ```
 
 ### src/core/sanitize.ts / budget.ts / transaction.ts / events.ts / sqlite.ts / ids.ts
-保留现状；`ids.ts` 新增 `newNoteId()`（UUIDv4 32hex，与旧 newEntryId 同）；`json.ts`（JSON-in-prose 提取器）已随原生工具调用删除。
+保留现状：`ids.ts` 的 `newEntryId/derivedEntryId`（UUIDv4 32hex）；`json.ts`（JSON-in-prose 提取器）已随原生工具调用删除；`transaction.ts` 的 `Transaction`/`truncateLog`/`rotateLog` 与 `paths.txnLog`（被 SQLite audit 取代、自单插件收敛后零调用的旧事务日志）已删除。
 
 ## 原生工具契约（7 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
 

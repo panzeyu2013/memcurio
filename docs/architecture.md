@@ -18,12 +18,12 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
                         选择窗口遗忘（窗口外 stage1 剪除 + diff 外科删除）
                         ad-hoc notes（用户显式 remember/forget/update）
                         安全层（脱敏 / 注入扫描 / 原子写 / 权限）
-                        审计/事务基础设施（audit + 事务日志 + 单文件原子写 + workspace lease/revision + generation manifest recovery）
+                        审计/原子写基础设施（audit + 单文件原子写 + workspace lease/revision + generation manifest recovery）
 ```
 
 - **写记忆的决策交给模型**：Phase 1 抽取（session 结束 → 模型产出 rollout_summary/raw_memory），Phase 2 整合（模型基于 diff 直接改写 MEMORY.md 文档）；
 - **遗忘 = 选择窗口 + diff 驱动的外科删除**：不再有 active/stale/archived 状态机；窗口外 stage1 标记 deleted，其 rollout_summary 与 MEMORY.md 引用块被剪除；
-- **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、事务日志、沙箱（模型写文件走引擎校验）；
+- **引擎只做安全与基础设施**：原子写、密钥脱敏、注入扫描、审计、沙箱（模型写文件走引擎校验）；
 - **用户显式操作走 ad-hoc note**：仅在用户明确要求 remember/forget/update 时调用 memory_remember（与 codex ad_hoc_note 一致）；kind 默认 remember，forget/update 由 LLM 整合 agent 语义执行，下次整合时生效。
 
 ## 存储布局
@@ -42,7 +42,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11；位于 store 根）
 ├── config.json
-└── state/                           # 事务日志 / 锁（不变）
+└── state/                           # 锁（不变）
 ```
 
 现状约束：cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载，不使用命名空间（ns）、`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md。模型访问仅来自宿主注入的 `ctx.llm` 通道；`MEMCURIO_LLM_PROVIDER=none` 保留为 Phase-2 熔断门禁（`src/engine.ts`）。memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），不再有 codex 适配器、opencode 适配器、MCP server、CLI 或 HTTP LLM 通道（`src/core/llm.ts`/HttpChannel/`MEMCURIO_LLM_*` 家族）。
@@ -61,7 +61,7 @@ src/
 │   ├── db.ts           stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 │   ├── events.ts       事件模型（host/event 校验，不变）
 │   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；save_extraction/skip_extraction 原生工具回合 + 校验/脱敏）
-│   ├── ids.ts          UUIDv4 id（含 newNoteId）
+│   ├── ids.ts          UUIDv4 id（newEntryId / derivedEntryId）
 │   ├── inject.ts       读路径注入（renderMemoryContext 摘要区块 / renderReadPathInstructions 系统提示指南；renderHitBlock 动态块自 v2.1 起只服务模拟器）
 │   ├── paths.ts        布局（0700）+ memory workspace 路径（ns 逻辑移除）
 │   ├── purge.ts        本地 rollout hard purge（只删引用目标的 skills/块）与显式 JSONL export scrub
@@ -69,7 +69,7 @@ src/
 │   ├── sanitize.ts     注入扫描 + 密钥脱敏（不变）
 │   ├── search.ts       读路径检索（searchMemory：MEMORY.md / summary / rollout_summaries，注入过滤 + usage 记账）
 │   ├── sqlite.ts       驱动按运行时分流：bun → bun:sqlite，node（>=22.5）→ node:sqlite（双驱动，第九轮）
-│   ├── transaction.ts  原子写 + 文件锁 + 事务日志（不变）
+│   ├── transaction.ts  原子写 + 文件锁（含 stale 回收；不变）
 │   ├── generation.ts   workspace + baseline generation manifest、提交标记和故障恢复
 │   ├── workspace.ts    工作区读写/快照/diff/baseline（MEMORY_DOCS / snapshot / diffTexts / saveBaseline）
 │   ├── budget.ts       token 估算 + 裁剪（不变）

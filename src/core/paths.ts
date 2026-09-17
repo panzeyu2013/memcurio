@@ -108,9 +108,6 @@ export function configPath(root: string): string {
   return join(root, "config.json");
 }
 
-export function txnLog(root: string): string {
-  return join(root, "state", "transactions.jsonl");
-}
 
 /** Resolve a workspace-relative path against the memory workspace and reject
  *  anything that escapes it (symlinks, "..", absolute paths). */
