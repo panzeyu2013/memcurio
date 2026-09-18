@@ -175,8 +175,13 @@ const GH_STUB = [
   "#!/usr/bin/env bash",
   'printf "%s\\n" "$*" >> "$STUB_LOG"',
   'case "$STUB_MODE" in',
-  "  published) printf '{\"id\":1,\"draft\":false}\\n' ; exit 0 ;;",
-  "  draft) printf '{\"id\":1,\"draft\":true}\\n' ; exit 0 ;;",
+  // Emulate gh's real field validation: the shipped step must ask for
+  // isDraft (there is no `draft` field) or the lookup would exit 1.
+  "  published|draft)",
+  '    if [[ "$*" == *"release delete"* ]]; then exit 0; fi',
+  "    if [[ \"$*\" != *isDraft* ]]; then echo \"Unknown JSON field: \\\"draft\\\"\" >&2; exit 1; fi",
+  "    if [ \"$STUB_MODE\" = \"draft\" ]; then printf '{\"id\":1,\"isDraft\":true}\\n'; else printf '{\"id\":1,\"isDraft\":false}\\n'; fi",
+  "    exit 0 ;;",
   '  notfound) echo "release not found" >&2 ; exit 1 ;;',
   '  notfound-http) echo "HTTP 404: Not Found (https://api.github.com/example/releases/tags/v9.9.9)" >&2 ; exit 1 ;;',
   '  rate-limit) echo "HTTP 403: API rate limit exceeded" >&2 ; exit 1 ;;',

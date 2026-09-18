@@ -30,7 +30,6 @@ jobs:
         # the version used by maintainers locally.
         with:
           bun-version: 1.3.14
-          cache: true
 
       # prepare only verifies committed artifacts (dsh plugin installs from
       # local tarballs must not trigger a tsc build on user machines), so CI
