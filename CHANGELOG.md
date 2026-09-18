@@ -7,216 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Citations are a native tool call (v2.0).** The read-path guide now tells the
-  model to call `memory_cite` once before the final answer with the memory
-  entries and rollout ids the reply used, instead of appending a
-  `<memcurio-citation>` text block. The tool validates and bounds its arguments
-  (≤100 refs each), registers usage through the same selection window, audits as
-  `integration.cite`, and feeds the UI citation node; the client registers the
-  seventh keyed `tool.call.toolview` row. There is no text-block fallback: the
-  old parser and its `turn/end` harvest are removed, and assistant text is
-  never parsed for telemetry.
-- **Phase-1 extraction is a native tool turn.** The extraction provider no
-  longer asks the model for a JSON object in prose: it sends two tool schemas
-  (`save_extraction` with the payload, `skip_extraction` for the no-op gate)
-  through the same `agent()` channel and reads the single call. Field formats
-  live in the tool schemas, so the system prompt carries only how to make the
-  call. The tolerant JSON extractor (`src/core/json.ts`), the `LlmChannel.chat`
-  text turn and the plugin's text transport are removed; malformed or missing
-  calls fail the durable job instead of being repaired from prose.
-- **System-prompt guide trimmed to tool-call rules.** The read-path guide no
-  longer restates tool bodies (their schemas already describe them) and carries
-  only the decision boundary, quick-pass budget, staleness rules, the
-  `memory_cite` call and the write gate. The client's "memory tools" count is
-  now the registered set instead of a scan of the section text.
-
-### Changed
-
-- **Context injection is a context-window snapshot (codex parity).** The
-  per-turn dynamic recall injection is removed: `agent/pre-step` injects the
-  summary once when a window opens — the session's first step, and again after
-  `compaction/end` — and steady-state turns inject nothing, so the model
-  reaches the store through the memory tools. The summary cap rises to 2,500
-  tokens and an over-budget summary is middle-truncated (head and tail
-  survive; a head-only cut silently dropped the newest sections). Tool budgets
-  follow codex: `memory_search` defaults to and caps at 200 results,
-  `memory_list` at 2,000 entries, `memory_read` at 20,000 tokens; the
-  pipeline defaults move to `maxUnusedDays` 30 (the unused window) and
-  `maxInputs` 256 (new inputs per consolidation batch; the selected backlog
-  stays in the batch because memcurio consolidates incrementally).
-- **Browser/delta field surface trimmed to what is produced and read.** The
-  injection preview's `dynamicText` is gone end to end: per-turn dynamic
-  recall was already removed in v2.1, so that field could only ever be empty —
-  the client toast now announces the static summary only. The
-  `inject-updated` delta no longer carries the unread `workdir`, and the
-  snapshot no longer reports the constant
-  `realtime: { mode: "polling", degraded: false }` placeholder (connection
-  mode is transport state, set by `onMode`). The host write-path filter
-  (bridge + snapshot) moved into `src/services/write-path.ts` and is pinned
-  to the browser copy by `tests/write-path.test.ts`.
-- **Prompts follow Codex's composition; note writing stays explicit-ask.**
-  The read-path guide is composed like Codex's `memories/read_path.md`
-  (decision boundary, memory layout, quick pass + budget, verification and
-  disclosure, citation requirements, updating memories), and the Phase 1/2
-  prompts gained Codex's sectioning (safety/hygiene/no-filler rules, no-op
-  gate, high-signal buckets, rollout reading order, outcome triage). Two
-  adaptations stay deliberate: the layout is path-free (memory is reached
-  through the tools) and citations are the native `memory_cite` call rather
-  than a text block. `memory_remember` keeps the explicit-user-request gate
-  — matching Codex's `ad_hoc_note` — while gaining an optional `kind`
-  (remember|forget|update, default remember); forget/update notes are applied
-  by the LLM consolidation agent, and the deterministic rule provider keeps
-  merging remember notes only. Safety is unchanged: redaction + injection
-  scan at the entry point, append-only notes, audit, and consolidation as the
-  only writer of `MEMORY.md`.
-- The read-path guide now ships only while the session's store has a
-  non-empty `memory_summary.md` (Codex parity: its
-  `build_memory_tool_developer_instructions` returns `None` for an empty
-  store), in the system prompt and in the workbench injection preview alike.
-  A store with nothing to inject emits no memory instructions at all.
-- Phase 2 INIT is guaranteed: a consolidation run that finds no schema-valid
-  `memory_summary.md` now leaves one behind even when the provider produced
-  no summary edit (the rule provider already regenerated it; the new guard in
-  `runConsolidation` covers the LLM path). Both the read-path guide and the
-  window injection key off that file, so the first memory can no longer strand
-  a store without memory instructions.
-- The browser store's delta fold compares trimmed static text when the delta
-  carries it, so a whitespace-only difference no longer reads as a fresh
-  injection (matching the snapshot fold).
-- `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
-  not implement it lose the LLM consolidation path (rule fallback) rather than
-  receiving a text protocol.
-- **The read-path guide now tracks what the process can actually do.** It is
-  gated on the apply-time `registerTools` decision (the setting still takes
-  effect on restart) and on the session's store having an *injectable* summary:
-  a summary the injection scan blocks counts as absent, and an empty or
-  schema-invalid summary is repaired by the Phase-2 INIT guard instead of
-  silently disabling memory instructions.
-- **A forget/update note no longer hot-loops the rule provider.** Without a
-  model channel those kinds are unfulfillable, so they stay pending without
-  counting as urgent work; every turn/end previously ran a full Phase 2 pass
-  that could not consume them and bypassed the 6 h success cooldown.
-- **Phase-2 note settlement is evidence-based.** `finish.applied_notes` is
-  honored only when the run actually rewrote `MEMORY.md` (otherwise the note
-  stays pending and the report says so), and the prompt now documents
-  `kind: update` alongside remember/forget. The synthesized INIT summary is
-  recorded as `init=memory_summary.md` on the `consolidate.done` audit row
-  and in the run message (the provider's own report stays untouched).
-
-### Fixed
-
-- **Only user-authored messages become evidence.** Extraction evidence now
-  admits DSH's `source.kind === "user"` and assistant turns. A subagent
-  settlement, a child's `send_message` report, a goal round, an instruction
-  projection and a plugin injection no longer enter evidence as the user's own
-  statements — the previous filter excluded only plugin-sourced messages, so a
-  child agent's report was extracted as the strongest preference evidence.
-- **Audit round: data-integrity and concurrency hardening.** `redactSecrets`
-  now returns the raw text with only the matched spans replaced — Cyrillic,
-  Greek and fullwidth text is no longer rewritten by the detection fold —
-  while homoglyph/zero-width-obfuscated secrets are still redacted;
-  stale-lock reclaim snapshots content + inode + mtime and re-verifies them
-  after an atomic rename, and a holder releases only its own lock;
-  concurrent first-open migrations re-read the schema inside
-  `BEGIN IMMEDIATE` and tolerate a duplicate column; `raw_memories.md`
-  rotates its byte-capped window and keeps dropped rows pending instead of
-  marking them integrated; workspace listings skip symlinks and directories;
-  pending notes are read from the file (the source of truth);
-  `pipeline.maxInputs` validation matches its clamp.
-- **Session lifecycle recovery.** An event-lane failure is surfaced once and
-  cleared instead of poisoning every later pre-step, flush and memory tool; a
-  dispose racing an extraction drain stops before the next job instead of
-  burning an attempt; a policy-repaired extraction audits `extract.repaired`.
-- **Memory UI realtime fixes.** Switching sessions rebinds the SSE stream;
-  reconnects close the previous stream and drop already-applied frames; a
-  stale browse response cannot overwrite a newer store; a browsed store
-  disappearing folds back to the current store; snapshots without a valid
-  store are dropped instead of throwing; and warning/bookkeeping audit rows no
-  longer raise the unread badge or a "memory updated" toast.
-- **Preview and presentation parity.** Workbench and `memory_context` previews
-  use the live inject budget; the projector duplicate window is really
-  LRU; the browser transport hands the route to the next live instance on
-  unload; and the guide is omitted when native tools are disabled.
-- **Release and packaging gates.** The release workflow treats only a
-  confirmed "release not found" as absent (any other `gh` failure fails
-  closed); `pack-check` fails loudly when the bun dry-run output cannot be
-  parsed; release notes fall back to a non-empty `[Unreleased]`; the package
-  pins `packageManager` and declares the missing settings peer as optional.
-- **Phase 2 is a real tool-calling agent loop.** The consolidation provider no
-  longer asks the model to emit a JSON object in prose: the host channel now
-  exposes a native tool turn (`agent()` over DSH's `llm.stream` tools field),
-  the model calls `list_files` / `read_file` / `write_file` / `finish`
-  schemas, and tool results travel back as correlated tool-result messages. A
-  channel without native tool calling reports the run as incomplete and the
-  deterministic rule provider takes over — the JSON-in-prose protocol and its
-  parser are removed. The live instance had never succeeded at the old protocol
-  ("no tool call parsed": four failures plus a rule fallback).
-- **Thinking-mode tool replay.** With the tool loop live, every follow-up
-  request failed with `400 invalid_request_error: The reasoning_content in the
-  thinking mode must be passed back to the API` (reproduced against the live
-  route): the loop dropped the provider's reasoning when echoing the tool-call
-  assistant message. `AgentToolReply`/`AgentTurnMessage` now carry reasoning
-  and the DSH channel maps it to a reasoning block that the adapter replays as
-  `reasoning_content`.
-- **Dead AGENTS.md injection removed.** `renderBaselineSection` /
-  `updateAgentsMd` / `injectBaseline` had no callers, wrote absolute store
-  paths into a project `AGENTS.md` (contradicting the path-free guide) and
-  could follow a symlinked `AGENTS.md` outside the workspace. The whole
-  marker-managed baseline surface is gone.
-- **Blocked extractions no longer hot-loop.** A route-less provider parked jobs
-  as blocked, and `scheduleNextWake()` then replaced the 5-minute probe with a
-  ~100 ms retry (live-observed: 7.5 wakeups/s for 17 minutes, 15,052 audit rows
-  = 97% of the table). The wake is now suppressed while the provider is blocked.
-- **Usage telemetry counts only what the model receives.** `searchMemory`
-  registered every matching candidate line as reuse, so one broad query bumped
-  11 stage rows while showing 6 files and refreshed their retention window.
-  Only the surfaced hits (and the rollout a MEMORY.md citation names) count.
-- **Dormant stores drain.** Recovery was bound to the first live session of a
-  store, so a workspace whose sessions had all ended kept an expired processing
-  lease and pending jobs forever (live: one store with 1 expired-lease
-  processing job, 2 pending, 1 blocked, zero extracted rows). A bounded sweep
-  now drains every store root once a worker route is known.
-- **CJK retrieval.** A Chinese sentence was one un-matchable token for the
-  substring scanner; query terms now expand into adjacent two-character grams,
-  and the first dynamic query with zero hits is audited
-  (`adapter.dynamic_miss`) instead of failing silently. (The dynamic path now
-  serves the injection simulator and the engine API only: the plugin's
-  per-turn dynamic injection was removed in the same cycle.)
-- **Work-driven consolidation trigger.** A three-row pending batch, a pending
-  row older than two hours, or an unapplied note bypasses the 6 h success
-  cooldown (the failure backoff still applies); a successful run clears the
-  stale `consolidation_auto_failed` marker.
-- **Injected messages stop claiming a form they cannot satisfy.**
-  `form: "recall"` only renders a platform recall body when the source also
-  carries `references` (label/retainedMessages/omittedMessages/truncated); the
-  summary block is opaque context and memcurio's own row renders it anyway.
-- Removed the reserved-but-inert `pipeline.minUsage` knob (validated,
-  persisted and documented, but never read by selection). Config files that
-  still carry it keep loading; the key is ignored.
-- Dynamic memory hits are derived from the injection budget (≈1 hit per 176
-  tokens, clamped to 4–8) instead of a second hard-coded limit (simulator and
-  engine API; the per-turn dynamic injection itself was removed in this cycle).
-- Citation usage counts one unique rollout key once per call: naming the same
-  memory both as a `rollout_summaries/<file>.md` entry and as its bare
-  `host|sessionId` key no longer bumps `usage_count` twice.
-
-### Removed
-
-- **Dead pre-SQLite transaction machinery and unused helpers.** `Transaction`,
-  `truncateLog`, `rotateLog`, `paths.txnLog`, `ids.newNoteId`,
-  `workspace.restoreBaseline`, `workspace.existsDir` and the snapshot status
-  aliases are gone: the audit trail lives in SQLite, and nothing had called
-  them since the single-plugin convergence (only their own tests did).
-
-- **Pre-S0 workbench scaffold.** `client/types.ts`, `client/index.ts` and
-  `tests/client-types.test.ts` are gone: they were never part of the built
-  bundle (`client/entry.ts` is the only entry) and their client-side delta
-  vocabulary had drifted from the shipped `client/ui/wire.ts`. The memory
-  workbench (M0) will be built on the shipped store/transport;
-  `client/README.md` now documents the shipped half only.
-
 ## [0.0.1] - 2026-09-16
 
 First release of `@memcurio/dsh-plugin`, a memory and context-management plugin for the
@@ -327,6 +117,29 @@ memory workbench over the store remains the next milestone.
   `?after=<lastSeq>` on reconnect (replay before subscribe); a cursor older
   than the buffer receives a `snapshot-ready` marker instead of a silent gap.
 
+- **Citations are a native tool call (v2.0).** The read-path guide now tells the
+  model to call `memory_cite` once before the final answer with the memory
+  entries and rollout ids the reply used, instead of appending a
+  `<memcurio-citation>` text block. The tool validates and bounds its arguments
+  (≤100 refs each), registers usage through the same selection window, audits as
+  `integration.cite`, and feeds the UI citation node; the client registers the
+  seventh keyed `tool.call.toolview` row. There is no text-block fallback: the
+  old parser and its `turn/end` harvest are removed, and assistant text is
+  never parsed for telemetry.
+- **Phase-1 extraction is a native tool turn.** The extraction provider no
+  longer asks the model for a JSON object in prose: it sends two tool schemas
+  (`save_extraction` with the payload, `skip_extraction` for the no-op gate)
+  through the same `agent()` channel and reads the single call. Field formats
+  live in the tool schemas, so the system prompt carries only how to make the
+  call. The tolerant JSON extractor (`src/core/json.ts`), the `LlmChannel.chat`
+  text turn and the plugin's text transport are removed; malformed or missing
+  calls fail the durable job instead of being repaired from prose.
+- **System-prompt guide trimmed to tool-call rules.** The read-path guide no
+  longer restates tool bodies (their schemas already describe them) and carries
+  only the decision boundary, quick-pass budget, staleness rules, the
+  `memory_cite` call and the write gate. The client's "memory tools" count is
+  now the registered set instead of a scan of the section text.
+
 ### Fixed
 
 - **Extraction survives the injection scanner's false positives**: a Phase-1
@@ -401,6 +214,101 @@ memory workbench over the store remains the next milestone.
   model input, Save button) occupies its own full-width line beneath the label
   and note, instead of squeezing the note into a narrow column beside it.
 
+- **Only user-authored messages become evidence.** Extraction evidence now
+  admits DSH's `source.kind === "user"` and assistant turns. A subagent
+  settlement, a child's `send_message` report, a goal round, an instruction
+  projection and a plugin injection no longer enter evidence as the user's own
+  statements — the previous filter excluded only plugin-sourced messages, so a
+  child agent's report was extracted as the strongest preference evidence.
+- **Audit round: data-integrity and concurrency hardening.** `redactSecrets`
+  now returns the raw text with only the matched spans replaced — Cyrillic,
+  Greek and fullwidth text is no longer rewritten by the detection fold —
+  while homoglyph/zero-width-obfuscated secrets are still redacted;
+  stale-lock reclaim snapshots content + inode + mtime and re-verifies them
+  after an atomic rename, and a holder releases only its own lock;
+  concurrent first-open migrations re-read the schema inside
+  `BEGIN IMMEDIATE` and tolerate a duplicate column; `raw_memories.md`
+  rotates its byte-capped window and keeps dropped rows pending instead of
+  marking them integrated; workspace listings skip symlinks and directories;
+  pending notes are read from the file (the source of truth);
+  `pipeline.maxInputs` validation matches its clamp.
+- **Session lifecycle recovery.** An event-lane failure is surfaced once and
+  cleared instead of poisoning every later pre-step, flush and memory tool; a
+  dispose racing an extraction drain stops before the next job instead of
+  burning an attempt; a policy-repaired extraction audits `extract.repaired`.
+- **Memory UI realtime fixes.** Switching sessions rebinds the SSE stream;
+  reconnects close the previous stream and drop already-applied frames; a
+  stale browse response cannot overwrite a newer store; a browsed store
+  disappearing folds back to the current store; snapshots without a valid
+  store are dropped instead of throwing; and warning/bookkeeping audit rows no
+  longer raise the unread badge or a "memory updated" toast.
+- **Preview and presentation parity.** Workbench and `memory_context` previews
+  use the live inject budget; the projector duplicate window is really
+  LRU; the browser transport hands the route to the next live instance on
+  unload; and the guide is omitted when native tools are disabled.
+- **Release and packaging gates.** The release workflow treats only a
+  confirmed "release not found" as absent (any other `gh` failure fails
+  closed); `pack-check` fails loudly when the bun dry-run output cannot be
+  parsed; release notes fall back to a non-empty `[Unreleased]`; the package
+  pins `packageManager` and declares the missing settings peer as optional.
+- **Phase 2 is a real tool-calling agent loop.** The consolidation provider no
+  longer asks the model to emit a JSON object in prose: the host channel now
+  exposes a native tool turn (`agent()` over DSH's `llm.stream` tools field),
+  the model calls `list_files` / `read_file` / `write_file` / `finish`
+  schemas, and tool results travel back as correlated tool-result messages. A
+  channel without native tool calling reports the run as incomplete and the
+  deterministic rule provider takes over — the JSON-in-prose protocol and its
+  parser are removed. The live instance had never succeeded at the old protocol
+  ("no tool call parsed": four failures plus a rule fallback).
+- **Thinking-mode tool replay.** With the tool loop live, every follow-up
+  request failed with `400 invalid_request_error: The reasoning_content in the
+  thinking mode must be passed back to the API` (reproduced against the live
+  route): the loop dropped the provider's reasoning when echoing the tool-call
+  assistant message. `AgentToolReply`/`AgentTurnMessage` now carry reasoning
+  and the DSH channel maps it to a reasoning block that the adapter replays as
+  `reasoning_content`.
+- **Dead AGENTS.md injection removed.** `renderBaselineSection` /
+  `updateAgentsMd` / `injectBaseline` had no callers, wrote absolute store
+  paths into a project `AGENTS.md` (contradicting the path-free guide) and
+  could follow a symlinked `AGENTS.md` outside the workspace. The whole
+  marker-managed baseline surface is gone.
+- **Blocked extractions no longer hot-loop.** A route-less provider parked jobs
+  as blocked, and `scheduleNextWake()` then replaced the 5-minute probe with a
+  ~100 ms retry (live-observed: 7.5 wakeups/s for 17 minutes, 15,052 audit rows
+  = 97% of the table). The wake is now suppressed while the provider is blocked.
+- **Usage telemetry counts only what the model receives.** `searchMemory`
+  registered every matching candidate line as reuse, so one broad query bumped
+  11 stage rows while showing 6 files and refreshed their retention window.
+  Only the surfaced hits (and the rollout a MEMORY.md citation names) count.
+- **Dormant stores drain.** Recovery was bound to the first live session of a
+  store, so a workspace whose sessions had all ended kept an expired processing
+  lease and pending jobs forever (live: one store with 1 expired-lease
+  processing job, 2 pending, 1 blocked, zero extracted rows). A bounded sweep
+  now drains every store root once a worker route is known.
+- **CJK retrieval.** A Chinese sentence was one un-matchable token for the
+  substring scanner; query terms now expand into adjacent two-character grams,
+  and the first dynamic query with zero hits is audited
+  (`adapter.dynamic_miss`) instead of failing silently. (The dynamic path now
+  serves the injection simulator and the engine API only: the plugin's
+  per-turn dynamic injection was removed in the same cycle.)
+- **Work-driven consolidation trigger.** A three-row pending batch, a pending
+  row older than two hours, or an unapplied note bypasses the 6 h success
+  cooldown (the failure backoff still applies); a successful run clears the
+  stale `consolidation_auto_failed` marker.
+- **Injected messages stop claiming a form they cannot satisfy.**
+  `form: "recall"` only renders a platform recall body when the source also
+  carries `references` (label/retainedMessages/omittedMessages/truncated); the
+  summary block is opaque context and memcurio's own row renders it anyway.
+- Removed the reserved-but-inert `pipeline.minUsage` knob (validated,
+  persisted and documented, but never read by selection). Config files that
+  still carry it keep loading; the key is ignored.
+- Dynamic memory hits are derived from the injection budget (≈1 hit per 176
+  tokens, clamped to 4–8) instead of a second hard-coded limit (simulator and
+  engine API; the per-turn dynamic injection itself was removed in this cycle).
+- Citation usage counts one unique rollout key once per call: naming the same
+  memory both as a `rollout_summaries/<file>.md` entry and as its bare
+  `host|sessionId` key no longer bumps `usage_count` twice.
+
 ### Changed
 
 - The workbench snapshot reports the real deployment knobs (`settings.maxInjectTokens`
@@ -447,6 +355,92 @@ memory workbench over the store remains the next milestone.
 - The session header carries no memcurio surface: the injection indicator is
   kept as the workbench status surface but is deliberately not registered.
 
+- **Context injection is a context-window snapshot (codex parity).** The
+  per-turn dynamic recall injection is removed: `agent/pre-step` injects the
+  summary once when a window opens — the session's first step, and again after
+  `compaction/end` — and steady-state turns inject nothing, so the model
+  reaches the store through the memory tools. The summary cap rises to 2,500
+  tokens and an over-budget summary is middle-truncated (head and tail
+  survive; a head-only cut silently dropped the newest sections). Tool budgets
+  follow codex: `memory_search` defaults to and caps at 200 results,
+  `memory_list` at 2,000 entries, `memory_read` at 20,000 tokens; the
+  pipeline defaults move to `maxUnusedDays` 30 (the unused window) and
+  `maxInputs` 256 (new inputs per consolidation batch; the selected backlog
+  stays in the batch because memcurio consolidates incrementally).
+- **Browser/delta field surface trimmed to what is produced and read.** The
+  injection preview's `dynamicText` is gone end to end: per-turn dynamic
+  recall was already removed in v2.1, so that field could only ever be empty —
+  the client toast now announces the static summary only. The
+  `inject-updated` delta no longer carries the unread `workdir`, and the
+  snapshot no longer reports the constant
+  `realtime: { mode: "polling", degraded: false }` placeholder (connection
+  mode is transport state, set by `onMode`). The host write-path filter
+  (bridge + snapshot) moved into `src/services/write-path.ts` and is pinned
+  to the browser copy by `tests/write-path.test.ts`.
+- **Prompts follow Codex's composition; note writing stays explicit-ask.**
+  The read-path guide is composed like Codex's `memories/read_path.md`
+  (decision boundary, memory layout, quick pass + budget, verification and
+  disclosure, citation requirements, updating memories), and the Phase 1/2
+  prompts gained Codex's sectioning (safety/hygiene/no-filler rules, no-op
+  gate, high-signal buckets, rollout reading order, outcome triage). Two
+  adaptations stay deliberate: the layout is path-free (memory is reached
+  through the tools) and citations are the native `memory_cite` call rather
+  than a text block. `memory_remember` keeps the explicit-user-request gate
+  — matching Codex's `ad_hoc_note` — while gaining an optional `kind`
+  (remember|forget|update, default remember); forget/update notes are applied
+  by the LLM consolidation agent, and the deterministic rule provider keeps
+  merging remember notes only. Safety is unchanged: redaction + injection
+  scan at the entry point, append-only notes, audit, and consolidation as the
+  only writer of `MEMORY.md`.
+- The read-path guide now ships only while the session's store has a
+  non-empty `memory_summary.md` (Codex parity: its
+  `build_memory_tool_developer_instructions` returns `None` for an empty
+  store), in the system prompt and in the workbench injection preview alike.
+  A store with nothing to inject emits no memory instructions at all.
+- Phase 2 INIT is guaranteed: a consolidation run that finds no schema-valid
+  `memory_summary.md` now leaves one behind even when the provider produced
+  no summary edit (the rule provider already regenerated it; the new guard in
+  `runConsolidation` covers the LLM path). Both the read-path guide and the
+  window injection key off that file, so the first memory can no longer strand
+  a store without memory instructions.
+- The browser store's delta fold compares trimmed static text when the delta
+  carries it, so a whitespace-only difference no longer reads as a fresh
+  injection (matching the snapshot fold).
+- `LlmChannel` gains an optional `agent()` native tool turn; hosts that do
+  not implement it lose the LLM consolidation path (rule fallback) rather than
+  receiving a text protocol.
+- **The read-path guide now tracks what the process can actually do.** It is
+  gated on the apply-time `registerTools` decision (the setting still takes
+  effect on restart) and on the session's store having an *injectable* summary:
+  a summary the injection scan blocks counts as absent, and an empty or
+  schema-invalid summary is repaired by the Phase-2 INIT guard instead of
+  silently disabling memory instructions.
+- **A forget/update note no longer hot-loops the rule provider.** Without a
+  model channel those kinds are unfulfillable, so they stay pending without
+  counting as urgent work; every turn/end previously ran a full Phase 2 pass
+  that could not consume them and bypassed the 6 h success cooldown.
+- **Phase-2 note settlement is evidence-based.** `finish.applied_notes` is
+  honored only when the run actually rewrote `MEMORY.md` (otherwise the note
+  stays pending and the report says so), and the prompt now documents
+  `kind: update` alongside remember/forget. The synthesized INIT summary is
+  recorded as `init=memory_summary.md` on the `consolidate.done` audit row
+  and in the run message (the provider's own report stays untouched).
+
+### Removed
+
+- **Dead pre-SQLite transaction machinery and unused helpers.** `Transaction`,
+  `truncateLog`, `rotateLog`, `paths.txnLog`, `ids.newNoteId`,
+  `workspace.restoreBaseline`, `workspace.existsDir` and the snapshot status
+  aliases are gone: the audit trail lives in SQLite, and nothing had called
+  them since the single-plugin convergence (only their own tests did).
+
+- **Pre-S0 workbench scaffold.** `client/types.ts`, `client/index.ts` and
+  `tests/client-types.test.ts` are gone: they were never part of the built
+  bundle (`client/entry.ts` is the only entry) and their client-side delta
+  vocabulary had drifted from the shipped `client/ui/wire.ts`. The memory
+  workbench (M0) will be built on the shipped store/transport;
+  `client/README.md` now documents the shipped half only.
+
 ### Known limitations (this release)
 
 - The full memory **workbench** over the store is not assembled yet: the shipped browser
@@ -455,5 +449,5 @@ memory workbench over the store remains the next milestone.
   view-model, host bridge and delta protocol are delivered as verified pre-work.
 - DSH itself is a developer preview: every DSH upgrade needs a peer-contract re-check
   (currently aligned with `0.1.5-rc.1`).
-- Git remote push, node:sqlite-driven test runs and npm publish require an environment
-  with credentials / a node >= 22.13 binary (CI covers them).
+- npm publish and node:sqlite-driven test runs require an environment with credentials /
+  a node >= 22.13 binary (CI covers them).
