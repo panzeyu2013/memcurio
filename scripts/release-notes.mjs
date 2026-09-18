@@ -14,7 +14,7 @@
  * A non-empty [Unreleased] next to a dated section emits a lag warning: the
  * release still uses the dated section, and prep should fold [Unreleased] in.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -75,5 +75,8 @@ if (dated?.body) {
   process.exit(1);
 }
 
+// CI checks out a tree with no .smoke/ (gitignored), so the workflow's
+// --out path may have no parent directory yet.
+mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, notes, "utf8");
 console.log(`release notes written: ${outPath} (${notes.length} chars)`);

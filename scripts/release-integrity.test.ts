@@ -122,6 +122,16 @@ describe("release notes", () => {
     expect(readFileSync(out, "utf8")).toContain("dated fix");
   });
 
+  test("creates a missing output directory (CI trees have no .smoke/)", () => {
+    const changelogPath = writeChangelog(MIXED_CHANGELOG);
+    const out = join(tempDir("memcurio-notes-"), "nested", "deeper", "notes.md");
+    const result = spawnSync(process.execPath, [releaseNotesScript, "1.2.3", "--out", out, "--changelog", changelogPath], {
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(readFileSync(out, "utf8")).toContain("dated fix");
+  });
+
   test("does not warn when [Unreleased] is empty", () => {
     const dated = "# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2026-01-02\n\n### Fixed\n\n- dated fix\n";
     const { status, stderr } = runReleaseNotes("1.2.3", writeChangelog(dated));
