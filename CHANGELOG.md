@@ -425,6 +425,13 @@ memory workbench over the store remains the next milestone.
   `kind: update` alongside remember/forget. The synthesized INIT summary is
   recorded as `init=memory_summary.md` on the `consolidate.done` audit row
   and in the run message (the provider's own report stays untouched).
+- **CI toolchain moved off the deprecated Node 20 action runtime.** Both
+  workflows pin `oven-sh/setup-bun` to v2.2.0 (a node24 build) and
+  smoke-import the plugin entry under node 22 (the supported floor) *and*
+  node 24. The release gate also composes notes into a missing `.smoke/`
+  directory and the refuse guard asks gh for `isDraft` instead of the
+  nonexistent `draft` field — the two defects the first v0.0.1 publication
+  attempt exposed.
 
 ### Removed
 

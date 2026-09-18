@@ -256,9 +256,9 @@ workflow/script/pin change with one dry run before the formal tag.
 
 ### Requirements per environment
 
-- CI/release runners: bun 1.3.14 (pinned via `packageManager` and setup-bun, same as local) + node 22 (the
-  plugin entry runs under node:sqlite once the host loads it; CI imports
-  `dist/plugin/index.js`).
+- CI/release runners: bun 1.3.14 (pinned via `packageManager` and setup-bun, same as local) + node 22
+  (the supported floor) and node 24 (current LTS; the pinned actions themselves run on node24). The plugin
+  entry runs under node:sqlite once the host loads it, and CI imports `dist/plugin/index.js` on both.
 - Local smoke of the tarball into a real DSH instance needs a live
   `dsh` CLI + profile (see `docs/operations.md` for the
   real-environment probe scope). The sandbox/CI gates cover everything else
