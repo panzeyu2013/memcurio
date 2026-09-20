@@ -7,18 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **The system-prompt guide is now contract-only.** The read-path section keeps
-  the decision boundary, the staleness disclosure, the citation obligation, the
-  explicit-ask write gate and a user-precedence clause, and its heading is
-  `## memory` (was `## memcurio memory`, kept in sync with the client's
-  `GUIDE_HEADING`). The retrieval mechanics (memory layout, quick-pass steps and
-  budget) moved into the `memory_search` / `memory_list` / `memory_read` /
-  `memory_cite` tool descriptions, and citations are now scoped to the files the
-  model actually searched or read — relying on the injected summary alone
-  requires no `memory_cite`.
-
 ## [0.0.1] - 2026-09-16
 
 First release of `@memcurio/dsh-plugin`, a memory and context-management plugin for the
@@ -444,6 +432,15 @@ memory workbench over the store remains the next milestone.
   directory and the refuse guard asks gh for `isDraft` instead of the
   nonexistent `draft` field — the two defects the first v0.0.1 publication
   attempt exposed.
+- **The system-prompt guide is now contract-only.** The read-path section keeps
+  the decision boundary, the staleness disclosure, the citation obligation, the
+  explicit-ask write gate and a user-precedence clause, and its heading is
+  `## memory` (was `## memcurio memory`, kept in sync with the client's
+  `GUIDE_HEADING`). The retrieval mechanics (memory layout, quick-pass steps and
+  budget) moved into the `memory_search` / `memory_list` / `memory_read` /
+  `memory_cite` tool descriptions, and citations are now scoped to the files the
+  model actually searched or read — relying on the injected summary alone
+  requires no `memory_cite`.
 
 ### Removed
 
