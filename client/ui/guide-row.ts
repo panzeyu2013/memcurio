@@ -36,7 +36,7 @@ import { NS, type UiKey } from "./locales.js";
 export const GUIDE_NODE_KIND = "memcurio-guide-injected";
 
 /** Marker that opens the generated prompt section (`renderReadPathInstructions`). */
-export const GUIDE_HEADING = "## memcurio memory";
+export const GUIDE_HEADING = "## memory";
 
 /** Memory tools the plugin registers (the guide detail line counts them). */
 export const GUIDE_TOOL_NAMES = [

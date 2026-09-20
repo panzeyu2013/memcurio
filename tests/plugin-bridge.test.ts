@@ -193,7 +193,7 @@ describe("hostBridge plugin wiring (real ctx)", () => {
       // Data only: the summary block, never the read-path guide or a placeholder.
       expect(inject.staticText).toContain("<<<MEMORY_SUMMARY");
       expect(inject.staticText).toContain("项目用 bun");
-      expect(inject.staticText).not.toContain("## memcurio memory");
+      expect(inject.staticText).not.toContain("## memory");
       expect(inject.staticText).not.toContain("not consolidated yet");
     }
 

@@ -14,7 +14,7 @@
 - **两阶段管线** —— 会话事件经抽取流入 stage-1 存储，选择窗口挑选输入做整合，写入 Markdown 事实来源；workspace 文件与 SQLite 变更由 generation manifest 驱动，确定性可恢复。
 - **基于 diff 的遗忘** —— 没有状态机：`prune` 选出使用窗口之外（`maxUnusedDays`）的 stage-1 输出，经基线 diff 外科手术式删除其摘要与仅被它引用的 `MEMORY.md` 区块；混合区块保留。
 - **临时 notes** —— 用户显式 `memory_remember`（kind 可 remember/forget/update）写入 `extensions/ad_hoc/notes/`，只追加，下次整合时应用。
-- **读取路径渐进式披露（v1.9）** —— read-path 使用指南（何时该用记忆、怎么用 `memory_search`、citation 与写入纪律）作为 **system prompt 段落**注册（与 codex 一致：该会话 store 没有非空 `memory_summary.md` 时整段不发），与工具 schema 同区、**不含任何文件系统路径**；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时在每个上下文窗口打开时注入一次（脱敏、注入扫描、2500 token 预算 + 中间截断），空库不注入任何东西；不做每轮自动检索，模型经 `memory_search` 主动检索（IDF 打分 + 短语奖励 + 去重 + 单文件 cap）。
+- **读取路径渐进式披露（v1.9）** —— read-path 指南的**契约版**（标题 `## memory`：决策边界、诚实性/披露、条件式 citation、显式写入门槛、用户优先序）作为 **system prompt 段落**注册（与 codex 一致：该会话 store 没有可注入的 `memory_summary.md` 时整段不发），与工具 schema 同区、**不含任何文件系统路径**；检索机制（布局与 quick pass）下沉到 `memory_*` 工具 description；注入的 user message 只承载记忆内容本体：`memory_summary.md` 存在时在每个上下文窗口打开时注入一次（脱敏、注入扫描、2500 token 预算 + 中间截断），空库不注入任何东西；不做每轮自动检索，模型经 `memory_search` 主动检索（IDF 打分 + 短语奖励 + 去重 + 单文件 cap）。
 - **用量遥测闭环** —— 原生 `read`/`grep`/`glob`/`bash`/`pwsh` 命中记忆文件与原生 `memory_cite` 调用计入每条 rollout 的 `usage_count`/`last_usage`，驱动选择窗口：真被复用的记忆留下，闲置的过期淘汰。
 - **Markdown 作为事实来源** —— `memory/*.md` 可读可直接编辑；SQLite（schema v11）保存 stage-1 输出、稳定 artifact ID、notes、会话、审计、持久抽取任务与整合租约；`.baseline/` 与 generation manifest 驱动可恢复的整合 diff。
 - **默认安全** —— 提示词注入净化、密钥脱敏、私有权限（数据目录 `0700`、数据文件 `0600`）、模型写入由引擎沙箱校验，所有写入留审计。
@@ -61,7 +61,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 - **整合输入** —— `maxInputs` 限每批新增；codex 的 `max_raw_memories_for_consolidation` 限整批重选窗口。
 - **默认开启** —— 插件默认注入；codex 的 `memories` feature 默认关闭。
 - **note 载荷** —— 写入门槛与 codex 一致（"only when explicitly asked"），形状不同：memcurio 的 `memory_remember` 收 `content` + 可选 `kind`（remember/forget/update），文件名由服务端生成；codex 的 `ad_hoc_note` 由模型提供文件名 + note 原文。
-- **prompt 构成** —— read_path 指南与 Phase 1/2 prompt 按 codex 的 `read_path.md` / `stage_one_system.md` / `consolidation.md` 分节重排，并按 memcurio 的接缝适配（无路径、原生工具调用、`memory_cite` 代替引用文本块）。
+- **prompt 构成** —— read_path 指南与 Phase 1/2 prompt 按 codex 的 `read_path.md` / `stage_one_system.md` / `consolidation.md` 分节重排，并按 memcurio 的接缝适配（无路径、原生工具调用、`memory_cite` 代替引用文本块）。一处刻意拆分：codex 把布局与 quick pass 机制留在提示词里，memcurio 的 system 段只放契约、机制在工具 description。
 
 ## 环境变量
 

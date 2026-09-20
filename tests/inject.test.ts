@@ -79,20 +79,30 @@ describe("renderStaticContext", () => {
     expect(text).toContain("<<<MEMORY_SUMMARY");
     expect(text).toContain("项目用 bun");
     // Data only — no guide, no paths, no placeholder.
-    expect(text).not.toContain("## memcurio memory");
+    expect(text).not.toContain("## memory");
     expect(text).not.toContain(memoryWorkspace(dir));
     expect(text).not.toContain("not consolidated yet");
   });
 });
 
 describe("renderReadPathInstructions", () => {
-  test("carries only tool-call rules: no paths and no tool-body descriptions", () => {
+  test("carries the memory contracts and no retrieval mechanics", () => {
     const text = renderReadPathInstructions();
-    expect(text).toContain("memory_search");
-    expect(text).toContain("memory_cite");
-    expect(text).toContain("memory_remember");
-    expect(text).toContain("memory_read");
-    // Tools the guide never names stay out: their schemas describe themselves.
+    expect(text.startsWith("## memory\n")).toBe(true);
+    // Contracts stay in the system section: decision boundary, honesty,
+    // citation obligation, write gate, user precedence.
+    expect(text).toContain("If unsure, do a quick pass");
+    expect(text).toContain("never present unverified memory-derived facts as confirmed current");
+    expect(text).toContain("call memory_cite once at the end");
+    expect(text).toContain("Relying on the injected summary alone needs no citation");
+    expect(text).toContain("Update memory ONLY when the user explicitly asks");
+    expect(text).toContain("never overrides an explicit user instruction about memory use");
+    // Retrieval mechanics moved into the tool descriptions, where the model
+    // reads them when it picks the tool.
+    expect(text).not.toContain("Memory layout");
+    expect(text).not.toContain("Quick memory pass");
+    expect(text).not.toContain("memory_search");
+    expect(text).not.toContain("memory_read");
     expect(text).not.toContain("memory_list");
     expect(text).not.toContain("memory_status");
     expect(text).not.toContain("memory_context");

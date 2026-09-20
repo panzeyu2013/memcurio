@@ -147,7 +147,7 @@ describe("inject services", () => {
     expect(text).toContain("<<<MEMORY_SUMMARY");
     expect(text).toContain("cross-session summary about deployment");
     // v1.9: the read-path guide is a SYSTEM PROMPT section, not injected text.
-    expect(text).not.toContain("## memcurio memory");
+    expect(text).not.toContain("## memory");
   });
 
   test("staticContext is empty while the store has no summary (nothing to inject)", async () => {
@@ -395,7 +395,7 @@ describe("integration context (memory_context tool surface)", () => {
     writeWorkspaceText(dir, "memory_summary.md", "v1\n\n## User preferences\n\n- 项目用 bun\n");
     const filled = await integrationContext(dir);
     expect(filled.summary).toContain("<<<MEMORY_SUMMARY");
-    expect(filled.instructions).toContain("## memcurio memory");
+    expect(filled.instructions).toContain("## memory");
   });
 });
 

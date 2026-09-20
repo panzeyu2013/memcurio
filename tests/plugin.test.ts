@@ -468,8 +468,8 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     const assembly = await ctx.systemPrompt.assemble({ agent: { session }, scope: { session } } as never);
     const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
     expect(section).toBeDefined();
-    expect(section?.text).toContain("## memcurio memory");
-    expect(section?.text).toContain("memory_search");
+    expect(section?.text).toContain("## memory");
+    expect(section?.text).toContain("MEMORY_SUMMARY");
     // v2.0: citations are a native tool call, not a text block.
     expect(section?.text).toContain("memory_cite");
     expect(section?.text).not.toContain("<memcurio-citation>");
@@ -501,6 +501,30 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     const section = assembly.sections.find((entry) => entry.name === "memcurio-read-path");
     expect(section?.text ?? "").toBe("");
     detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("tool descriptions carry the retrieval mechanics the guide dropped", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    const search = ctx.tools.get("memory_search");
+    const list = ctx.tools.get("memory_list");
+    const read = ctx.tools.get("memory_read");
+    const cite = ctx.tools.get("memory_cite");
+    expect(search?.description).toContain("Start the memory pass here");
+    expect(search?.description).toContain("open only the files they point to");
+    expect(list?.description).toContain("SKILL.md");
+    expect(read?.description).toContain("Open only the files search hits point to");
+    expect(cite?.description).toContain("MEMORY.md:10-14");
+    expect(cite?.description).toContain("Relying on the injected summary alone needs no citation");
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });
@@ -710,7 +734,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     const injectedText = injected?.content.map((block) => (block.type === "text" ? block.text : "")).join("");
     expect(injectedText).toContain("<<<MEMORY_SUMMARY");
     // The guide is a system-prompt section now: never in an injected message.
-    expect(injectedText).not.toContain("## memcurio memory");
+    expect(injectedText).not.toContain("## memory");
 
     // The window is latched: a second step injects nothing (the model already
     // has the snapshot, and every appended message grows the durable log).

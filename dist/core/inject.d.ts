@@ -24,17 +24,16 @@ export declare function renderHitBlock(hits: readonly {
  *  instructions never ride an injected message, so a brand-new store injects
  *  nothing at all and a store with a summary injects only the summary. */
 export declare function renderMemoryContext(root: string, budgetTokens?: number): string;
-/** The read-path INSTRUCTIONS — when and how to use memory, never what each
- *  tool body does (their schemas describe themselves). Registered as a SYSTEM
- *  PROMPT section (v1.9), next to the tool schemas, so the injected user
- *  message carries only memory content.
+/** The read-path INSTRUCTIONS — the memory contracts a system-prompt section
+ *  carries; retrieval mechanics live in the memory tool descriptions instead.
+ *  Registered as a SYSTEM PROMPT section (v1.9) next to the tool schemas, so
+ *  the injected user message carries only memory content.
  *
- *  Composition follows Codex's `memories/read_path.md` section order: decision
- *  boundary, memory layout, quick pass + budget, verification/disclosure,
- *  citations, updating memories. Two adaptations are deliberate: the layout is
- *  PATH-FREE (memory is reached through the memory tools, never the
- *  filesystem) and citations are the native `memory_cite` call instead of a
- *  text block. */
+ *  The section keeps the contracts (decision boundary, honesty/disclosure,
+ *  citation obligation, explicit-ask write gate, user precedence) and drops
+ *  Codex's layout/quick-pass mechanics, which the native tool descriptions now
+ *  document where the model reads them. The heading is the client's
+ *  GUIDE_HEADING marker (client/ui/guide-row.ts) and must stay in sync. */
 export declare function renderReadPathInstructions(): string;
 /** What the plugin injects STATICALLY into the conversation: the summary block
  *  only (v1.9 — the how-to guide is a system-prompt section now). Empty when

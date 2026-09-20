@@ -403,15 +403,16 @@ export function renderMemoryContext(root: string, budgetTokens?: number): string
   // 若无 summary：返回空串（不注入占位符）。
 export function renderStaticContext(root: string, budgetTokens?: number): string
   // v1.9：静态注入 = 仅摘要区块（renderMemoryContext 的别名）；空库返回空串。
-  // read_path 指南不再进 user message，改由插件注册为 system prompt section；
+  // read_path 指南不再进 user message，改由插件注册为 system prompt section（标题 `## memory`，
+  // 与 client/ui/guide-row.ts 的 GUIDE_HEADING 同步）；
   // 与 codex 一致：store 无 memory_summary.md（或为空）时整段不注册（返回空串）。
 export function renderReadPathInstructions(): string
-  // 完整 read_path（按 codex read_path.md 的分节构成重排；路径无关、工具优先；仅在
-  // 该会话 store 有非空 memory_summary.md 且 registerTools 时作为 system prompt section 生效）：
-  // 决策边界（何时跳过/何时用）→ 快速检索流程与预算（≤4-6 步）→ verify 防漂移指引
-  // → 引用遥测要求（v2.0：调用 memory_cite 原生工具一次，而非输出文本引用块：
-  //   entries=<file>:<start>-<end> 定位符数组 + rolloutIds=裸 host|sessionId 数组）
-  // → 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
+  // 契约版 read_path（仅在会话 store 有可注入摘要且 registerTools 时作为 system prompt section
+  // 生效）：决策边界 → quick pass 一句话（布局/步骤/预算等机制在 memory_* 工具 description）
+  // → verify 防漂移与披露 → 条件式引用遥测（v2.0：只对真正 search/read 过的文件调用
+  //   memory_cite 一次；entries=<file>:<start>-<end> + rolloutIds=裸 host|sessionId，
+  //   仅靠注入摘要不计）→ 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
+  // → 用户优先序（用户明确说别用记忆/简短/不要引用时从用户）
 ```
 
 

@@ -48,8 +48,9 @@ const t = (key: string, params?: Record<string, unknown>): string =>
 
 /** The LIVE guide section and the facts the engine attaches to the row: both
  *  derive from the real renderer, so this fixture cannot go stale when the
- *  system-prompt guide changes (v1.9+: decision boundary / staleness /
- *  memory_cite / writing; no tool-inventory sentence). */
+ *  system-prompt guide changes (contract-only section: decision boundary,
+ *  staleness, conditional memory_cite, explicit-ask write gate, user
+ *  precedence; retrieval mechanics live in the tool descriptions). */
 const GUIDE_TEXT = extractGuideSection(renderReadPathInstructions()) ?? "";
 const GUIDE_FACTS = guideDetailOf(GUIDE_TEXT);
 
@@ -109,8 +110,10 @@ describe("system-prompt guide row", () => {
     expect(body?.textContent?.startsWith(t("guideRowDetail", { chars: GUIDE_FACTS.chars, tools: GUIDE_FACTS.tools }))).toBe(true);
     // The guide now carries the tool-CALL rules only; the tool bodies belong
     // to their schemas, and the old inventory sentence is gone.
-    expect(body?.textContent).toContain("call memory_cite exactly once");
-    expect(body?.textContent).toContain("You may update memory only when the user explicitly asks");
+    expect(body?.textContent).toContain("call memory_cite once at the end");
+    expect(body?.textContent).toContain("Relying on the injected summary alone needs no citation");
+    expect(body?.textContent).toContain("Update memory ONLY when the user explicitly asks");
+    expect(body?.textContent).toContain("never overrides an explicit user instruction about memory use");
     expect(body?.textContent).not.toContain("Reach it only through the memcurio tools");
 
     await act(async () => {
