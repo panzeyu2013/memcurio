@@ -1,7 +1,6 @@
 # memcurio 记忆 UI 契约
 
-> 状态：**现行契约**（原 `ui.md` 设计基线；2026-09-16 文档重组织后精简，移除调研对照、阶段路线、开放项、决策记录与附录等历史内容）。
-> 未完成待办见 [todo.md](todo.md)；安装与发布见 [operations.md](operations.md)；行为契约见 [contract.md](contract.md)。
+> 现行 UI 契约；未完成待办见 [todo.md](todo.md)，安装与发布见 [operations.md](operations.md)，行为契约见 [contract.md](contract.md)。
 ## 背景与目标
 
 ### 目标
@@ -58,13 +57,13 @@ DSH Web（浏览器）
 
 ### 入口（标题栏单按钮 + 配置面）
 
-**配置入口（v1.5 已实现，host + client 双侧）**：host 侧经 `@deepseek-ai/dsh-settings` 注册 `memcurio` 命名空间（`src/plugin/settings.ts`），client 侧注册 `settings.section` 槽位（`client/entry.ts` + `client/settings/*`，面板标签 "记忆/Memory"），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / provider / model；profile `cordis.patch.yml` 为默认层，settings.yaml 用户层覆盖。`root`（数据位置）在面板只读说明；`hostBridge`（记忆界面数据面）**不是配置项**（v1.7 产品决定 2026-09-16：默认常开、无必须关闭的用户场景、前端暂无该需求）：Config、settings 命名空间与面板三处均已删除该字段，桥恒开。生效语义：injectContext/budget/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器面板经 `dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一运行期 require = `react`）随包发布；渲染与槽位治理待 S0 实机确认。面板导航行由设置外壳投影 `settings.section` 账本生成，行图标归外壳（`SettingsRoot.navIcon` 按 id 映射，第三方 section 落到 General 齿轮，选项无 icon 字段）：v1.7 起 memcurio 用一个渲染 null 的 `settings.action` 探针（外壳打开面板时必然渲染）给本行打 `data-memcurio-nav`，样式以书页 mask 绘制标记；该适配器只加/删一个属性、不插入或移动外壳节点，随 fiber 撤销，上游提供 section icon 能力后删除。
+**配置入口（host + client 双侧）**：host 侧经 `@deepseek-ai/dsh-settings` 注册 `memcurio` 命名空间（`src/plugin/settings.ts`），client 侧注册 `settings.section` 槽位（`client/entry.ts` + `client/settings/*`，面板标签 "记忆/Memory"），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / provider / model；profile `cordis.patch.yml` 为默认层，settings.yaml 用户层覆盖。`root`（数据位置）在面板只读说明；`hostBridge`（记忆界面数据面）**不是配置项**：桥恒开（默认常开、无必须关闭的用户场景）。生效语义：injectContext/budget/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器面板经 `dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一运行期 require = `react`）随包发布；渲染与槽位治理待 S0 实机确认。面板导航行由设置外壳投影 `settings.section` 账本生成，行图标归外壳（`SettingsRoot.navIcon` 按 id 映射，第三方 section 落到 General 齿轮，选项无 icon 字段）：memcurio 用一个渲染 null 的 `settings.action` 探针（外壳打开面板时必然渲染）给本行打 `data-memcurio-nav`，样式以书页 mask 绘制标记；该适配器只加/删一个属性、不插入或移动外壳节点，随 fiber 撤销，上游提供 section icon 能力后删除。
 
-**记忆面入口**：标题栏单按钮唤起记忆界面（下述）。v1.7 修订：标题栏（会话头部）不再有任何 memcurio 图标——记忆的配置与开关只在 Settings 面板，反馈只经插件注入行（v1.8「记忆注入」）、Toast 与工具行；工作台落地后再按 v1.7 入口策略重议标题栏按钮。
+**记忆面入口**：标题栏单按钮唤起记忆界面（下述，工作台 M0 落地后启用）。当前会话头部没有任何 memcurio 图标：配置与开关只在 Settings 面板，反馈只经插件注入行、Toast 与工具行。
 
 主界面只放**一个标题栏按钮**（当前 workspace 的"记忆"入口）；点击唤起**记忆界面**，其余全部内容都在该界面内部承载——DSH 主界面不增加任何其他 memcurio 界面或入口。
 
-**记忆开关（v1.7，2026-09-16 产品指令：开关只放 Settings）**：记忆注入的 ON/OFF **只在 Settings 面板**（`settings.section` 首行，官方 Switch 几何：36×20、16px thumb、`role="switch"` + `aria-checked` + 必填 label），写 `injectContext` 字段（同一 controller、写后回读校验、失败以 locale key 在面板内报错）；开关行**不带说明行**（v1.9.3，2026-09-16 产品指令：移除该说明文本——开关只需 label + switch，面板保持紧凑；pre-step 每个 step 评估 / 内容未变不重复注入属实现细节，不占界面）。会话头部**不承载任何 memcurio 面**（v1.7 产品指令，2026-09-16：顶部栏不再有记忆注入图标/开关/未读点）：开关与配置只在 Settings，注入与写入反馈仅经 Toast；注入预览（静态上下文 / read 指引 / 预算条）与未读点保留在 `client/ui/injection-indicator.ts`（**有意不注册**，留给工作台 M0/M1 的状态面，入口注册即六行）；面板采用**紧凑行**布局（官方 General 偏好行范式：左文案 + 右控件，一行一项，说明折进行内第二行；Worker provider/model 合并为同一行的路由控件，编辑后由行内**保存按钮**提交，不做隐式失焦提交）——原先逐字段「标签行 + 控件行」把纵向空间翻倍。状态**只用图标**：标题行右侧 8px 状态点（chamber / dsh-chamber-mcp 约定：绿=就绪、灰=空闲/只读、红=错误、写入中脉冲；相位文案只在 title/aria-label，`prefers-reduced-motion` 下不动画），不再有「就绪」文字行；启用类开关（注册工具）的说明按实际语义写全（开启做什么、关闭影响什么、何时生效）；`hostBridge` 按产品决定连配置项一并删除（桥恒开：Config / settings 命名空间 / 面板三处都没有该字段），面板因此为五项设置。样式词汇对齐官方设置页（实证 rc.2：ui-settings-plugins/fields.module.css 的字段行 / 34px 输入 / 行内 reset、ui-settings-models/ModelsSection.module.css 的 16/24/500 标题与 14/22 说明、General 偏好行的开关行、平台 Switch 原子；--dsw-alias-label-error 在 rc.2 未定义，非法态改用 state-error-primary），只读态用 disabled、仅写入中用 readOnly（不伪装禁用）；关闭态是**独立状态**：指示器 `data-state="disabled"`、隐藏未读点、popover 明示"注入已关闭"（与"尚未注入"区分，且历史预览标注为关闭前值），状态不只靠颜色。S0 预查（v1.2，rc.1 实证）：候选槽位为 **`conversation.session.header.actions`**（"标题相邻会话操作"，ui-conversation 声明）或全宽 `conversation.view` tab；`settings.section` 仅适合设置页。`/memory` 回退存疑：rc.1 无已验证的"客户端命令唤起 UI"机制（命令在 agent 侧执行）——回退路径待 S0 实测后修订（可能为 conversation.view tab 或设置页直达）。
+**记忆开关（只在 Settings）**：记忆注入的 ON/OFF **只在 Settings 面板**（`settings.section` 首行，官方 Switch 几何：36×20、16px thumb、`role="switch"` + `aria-checked` + 必填 label），写 `injectContext` 字段（同一 controller、写后回读校验、失败以 locale key 在面板内报错）；开关行**不带说明行**（开关只需 label + switch，面板保持紧凑；pre-step 每个 step 评估 / 内容未变不重复注入属实现细节，不占界面）。会话头部**不承载任何 memcurio 面**（顶部栏没有记忆注入图标/开关/未读点）：开关与配置只在 Settings，注入与写入反馈仅经 Toast；注入预览（静态上下文 / read 指引 / 预算条）与未读点保留在 `client/ui/injection-indicator.ts`（**有意不注册**，留给工作台 M0/M1 的状态面，入口注册即六行）；面板采用**紧凑行**布局（官方 General 偏好行范式：左文案 + 右控件，一行一项，说明折进行内第二行；Worker provider/model 合并为同一行的路由控件，编辑后由行内**保存按钮**提交，不做隐式失焦提交）——原先逐字段「标签行 + 控件行」把纵向空间翻倍。状态**只用图标**：标题行右侧 8px 状态点（chamber / dsh-chamber-mcp 约定：绿=就绪、灰=空闲/只读、红=错误、写入中脉冲；相位文案只在 title/aria-label，`prefers-reduced-motion` 下不动画），不再有「就绪」文字行；启用类开关（注册工具）的说明按实际语义写全（开启做什么、关闭影响什么、何时生效）；`hostBridge` 不是配置项（桥恒开），面板为五项设置。样式词汇对齐官方设置页（ui-settings-plugins/fields.module.css 的字段行 / 34px 输入 / 行内 reset、ui-settings-models/ModelsSection.module.css 的 16/24/500 标题与 14/22 说明、General 偏好行的开关行、平台 Switch 原子；--dsw-alias-label-error 在 rc.2 未定义，非法态改用 state-error-primary），只读态用 disabled、仅写入中用 readOnly（不伪装禁用）；关闭态是**独立状态**：指示器 `data-state="disabled"`、隐藏未读点、popover 明示"注入已关闭"（与"尚未注入"区分，且历史预览标注为关闭前值），状态不只靠颜色。候选槽位为 **`conversation.session.header.actions`**（"标题相邻会话操作"，ui-conversation 声明）或全宽 `conversation.view` tab；`settings.section` 仅适合设置页。`/memory` 回退存疑：rc.1 无已验证的"客户端命令唤起 UI"机制（命令在 agent 侧执行）——回退路径待 S0 实测后修订（可能为 conversation.view tab 或设置页直达）。
 
 ---
 
@@ -172,7 +171,7 @@ DSH Web（浏览器）
 
 ### 注入面
 
-- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列；与模型可见面一致：store 无摘要时连同 read 指引一起为空）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。动态命中段自 v2.1 起已随每轮自动注入一并移除：快照与 inject-updated delta 不再携带该字段（需要动态命中时用注入模拟器）。
+- **当前注入预览**：静态摘要（预算内裁剪后；空库为空）+ read 指引（system prompt 段落，预览单列；与模型可见面一致：store 无摘要时连同 read 指引一起为空）；budget 条（注入量 vs `injectBudgetTokens`/`budget.maxInjectTokens`）。动态命中段不入会话上下文：快照与 inject-updated delta 不携带该字段（需要动态命中时用注入模拟器）。
 - **注入模拟器（M0 核心）**：输入框（默认取当前会话最新用户消息作 query 种子）→ `inject.simulate` → 命中列表（内容**已脱敏预览**）、来源 rollout/行号、blocked 计数（注入扫描拦截）、预算占用。空态引导："还没有记忆——去会话里让模型记住第一条"。
 - 每次真实注入经推送通道即时刷新（实时性设计一节）。
 
@@ -202,7 +201,7 @@ DSH Web（浏览器）
 - store 切换器列出所有 memcurio store（含 no-cwd）；只读浏览任意 store；
 - 写意图/收藏始终绑定**当前会话 workspace**（切换浏览不改变写语义）；切换时 UI 明示"当前写入目标仍是 <当前 workspace>"。
 
-### 入口与回退（v1.2 修订）
+### 入口与回退
 
 - 标题栏**唯一**按钮唤起记忆界面；界面内部以 Tab 承载：总览 / 注入面 / 持久面 / 状态面 / 时间线 / 设置（含数据根展示与作用域徽标）；
 - 首选槽位 `conversation.session.header.actions`（rc.1 声明级实证；运行时治理待 S0 浏览器探针）；备选 `conversation.view` 全宽 tab；
@@ -212,7 +211,7 @@ DSH Web（浏览器）
 
 ## 实时性设计（M0 即推送）
 
-### 通道（v1.2 实证修订）
+### 通道
 
 host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱敏 delta 推送浏览器。**S0 预查结论：官方 `ctx.remote`（api-remote/controller 模式）对第三方关闭**——能力集为构建期固定值导入、转发事件为官方 allowlist，客户端无法运行时发现宿主服务。候选通道（按优先级，S0 门禁）：① 自定义前缀路由 + SSE（`ctx.webServer.register` 对任意插件开放，默认 loopback、无自带鉴权——需自持会话绑定）；② `ctx.sessionProjections`（开放注册表，但 fold 输入仅限已提交的 session-log 事件，队列等非日志 delta 未验证）；③ 轮询降级。另发现挂载平面风险：web profile 中 agent 平面运行在 agent preset 之后，根平面行（inject tools/llm/sessions/settings）能否在 preset 平面解析需 S0 专项验证（P3 阶段）。
 
@@ -237,27 +236,25 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 ---
 
-### host 桥接层（v1.4 实现批次）
+### host 桥接层
 
-node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——v1.6 起默认开，v1.7 起连配置项一并删除）：
+node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开，无配置项）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
 - **事件打标点**：pre-step 注入（static/budget；窗口快照每窗口至多一次，投影器仅置 duplicate 标记——实际去重在插件 pre-step 的 staticInjected 闩）、user/assistant 证据（机器来源消息排除，沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge.）才产生收据（warn.* 与 adapter./integration. 同属 lifecycle noise，不出 delta）；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置）；字段名与客户端词汇对齐；delta 过滤与快照标记映射由 `src/plugin/ui-transport.ts` 落实（帧带 root、按 session/store root 过滤、`?after=` 重放）；
 - 客户端模型：shipped store 只折叠 inject-updated 与 receipt（其余 delta 由快照面覆盖）；queue-updated 为**单 job 语义**（jobId/status/attempts），completed 即终态（工作台状态面按 jobs 列表重算 counts）。
-- v1.4.1 增补：按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version；桥插件级集成测试落地；
-- v1.4.2 的客户端 M1 前置（证据窗折叠 + ⭐ 纯 UI 书签）随未接线的预 S0 view-model 脚手架一并移除（残留清理：脚手架词汇与 shipped wire 分叉，M0 工作台将在 `client/ui/*` 上重建）；v1.5：**配置面落定（host + client 双侧）**——`ctx.settings.installSection("memcurio", …)` 命名空间（profile config 为 base，settings.yaml 用户层覆盖）+ `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，字段 scope/injectContext/registerTools/injectBudgetTokens/provider/model，含覆盖徽标/恢复默认/跨字段校验与写后校验）；root 只读说明；记忆内容面不变（工作台/对话流，UI 永不静默写）。
+- 按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version；桥插件级集成测试落地；
+- **配置面（host + client 双侧）**：`ctx.settings.installSection("memcurio", …)` 命名空间（profile config 为 base，settings.yaml 用户层覆盖）+ `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，字段 scope/injectContext/registerTools/injectBudgetTokens/provider/model，含覆盖徽标/恢复默认/跨字段校验与写后校验）；root 只读说明；M0 工作台将在 `client/ui/*` 上重建记忆内容面（UI 永不静默写）。
 
-### G5/G6 先行批：传输与记忆可见性（v1.6，S0 依产品决定延期）
-
-> 决策依据：产品明确要求“写入记忆与注入上下文都应有明显提示”，并接受在真实 DSH Web 实测（S0）之前先落地代码。因此本批以实时性设计一节的候选 ① 为主通道、③ 为自动降级实现，安全上取保守替代（S0 的 token/session 绑定仍未验证）。
+### 传输与记忆可见性
 
 - **host 传输**（`src/plugin/ui-transport.ts`）：在 `ctx.webServer` 上用 prefix 路由 `/memcurio` 注册 `GET /snapshot?session=<id>`（WorkbenchSnapshot JSON）与 `GET /events?session=<id>`（SSE：`id:` = 状态版本、`data: { seq, deltas }`、`: ping` 心跳；按订阅的 session 过滤带 sessionId 的 delta）。路由/sink/心跳由 inject 回调的 fiber 持有（webServer 更换会重注册）。**自带守卫**（`dsh-host-webserver` 明确不提供鉴权/来源策略）：仅 GET；对端必须 loopback；`Host` 必须是 loopback 主机名（防 DNS rebinding，仅比对 Origin 不成立）；`Origin` 存在时必须等于 `Host`；`Sec-Fetch-Site` 非 same-origin/none 拒绝；**每进程随机 token 必填**，经 `webserver/index-inject` 的 `globalThis.__MEMCURIO_UI__` 下发，常数时间比较，无 token 的页面不请求、UI 置 offline（宁可不显示也不泄露）；不写任何 CORS 头、`Cache-Control: no-store`；SSE 并发上限 8、每流 4MB 背压上限、socket/req close 与心跳存活检查回收槽位。端点恒挂载（无 hostBridge 开关，也没有 403 分支）；无 web server 的 profile 保持 host-only。
 - **client 传输**（`client/ui/transport.ts`）：同源 fetch snapshot + SSE 流读取（`text/event-stream` 分帧、`data:` JSON、坏帧丢弃），流断开自动降级为 1–3s 轮询并周期性重试 SSE；模式上报驱动“实时性降级”角标。
-- **G5 注入可见**：每次内容变化的注入经 Toast 提示（重复注入不提示）；注入预览（静态上下文 / read 指引 / 预算条）与未读写入圆点由 `client/ui/injection-indicator.ts` 承载但**不在会话头部注册**（v1.7 产品指令：顶部栏无 memcurio 图标），待工作台（M0/M1）提供状态面。注入 ON/OFF 由 Settings 面板承载（v1.7，同一 `injectContext` 字段）。注入消息本身在会话转录里的行由 `client/ui/context-row.ts` 承载（v1.8）：插件自有标题「记忆注入 / Memory injection」+ 生产者标签 + 可展开的模型可见正文，其余 context 节点转发给被影子的 shipped 行。system prompt 里的指南由 `client/ui/guide-row.ts` 承载（v1.9）：从 `system/message` 事件提取 `## memory` 段落（契约版：决策边界/诚实性/条件引用/显式写入门槛/用户优先序；检索机制在工具 description 里），注册为 `conversation.chat.node` keyed `memcurio-guide-injected` 的「记忆指南 / Memory guide」行（详情为字符数与工具数）；store 无摘要时指南段落不存在，该行整行不出现（与模型可见面一致）。
-- **G6 写入可见**：写路径 receipt delta → 状态面最近写入列表 + 未读计数 + Toast（note/extract/consolidate/prune/purge 各自措辞）；`memory_remember` 等 7 个原生工具注册 keyed `tool.call.toolview` 行：book 主标记 leading（所有状态统一；终态只改变标记颜色 error/warning，不再替换成状态点 —— v1.8.3）、参数摘要、可展开参数/结果。
-- **图标**：主标记 = 第一版候选的 book（书＋书签丝带）内联 SVG（24 单位、stroke 2、round、`currentColor`、14px，沿用 dsh-chamber-mcp 约定）；注入事件 = 平台 `IconContextInjectionOutline16` 路径内联（零图标包依赖，bundle 运行期仍只 require `react`）：注入 Toast 继续用它，注入行（v1.8）改用书页主标记——memcurio 自有行用自有 mark，适配器兜底的通用行保留平台几何。
-- **待确认与残留**：跨 store delta 归属（帧带 root，SSE 按根过滤）与 snapshot↔stream 窗口（`?after=` 重放）的实现见 `src/plugin/ui-transport.ts` / `src/services/snapshot.ts`；仍需真实会话人工确认：会话内头部入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及完整工作台（三面一轴 / 意图草稿 / 时间线回链，M0/M1）。v1.7 新增面目前只到 jsdom 回归网，待真实 Web 人工确认：Settings 的记忆 ON/OFF 首行（只读/不可用态禁用、写入被拒时的面板内报错）、Settings 布尔开关行与输入控件样式、`settings.action` 探针驱动的导航行书页标记（外壳 navIcon 的实证版本为 rc.2；rc.1 行为未复核）。
+- **G5 注入可见**：每次内容变化的注入经 Toast 提示（重复注入不提示）；注入预览（静态上下文 / read 指引 / 预算条）与未读写入圆点由 `client/ui/injection-indicator.ts` 承载但**不在会话头部注册**（顶部栏无 memcurio 图标），待工作台（M0/M1）提供状态面。注入 ON/OFF 由 Settings 面板承载（同一 `injectContext` 字段）。注入消息本身在会话转录里的行由 `client/ui/context-row.ts` 承载：插件自有标题「记忆注入 / Memory injection」+ 生产者标签 + 可展开的模型可见正文，其余 context 节点转发给被影子的 shipped 行。system prompt 里的指南由 `client/ui/guide-row.ts` 承载：从 `system/message` 事件提取 `## memory` 段落（契约版：决策边界/诚实性/条件引用/显式写入门槛/用户优先序；检索机制在工具 description 里），注册为 `conversation.chat.node` keyed `memcurio-guide-injected` 的「记忆指南 / Memory guide」行（详情为字符数与工具数）；store 无摘要时指南段落不存在，该行整行不出现（与模型可见面一致）。
+- **G6 写入可见**：写路径 receipt delta → 状态面最近写入列表 + 未读计数 + Toast（note/extract/consolidate/prune/purge 各自措辞）；`memory_remember` 等 7 个原生工具注册 keyed `tool.call.toolview` 行：book 主标记 leading（所有状态统一；终态只改变标记颜色 error/warning，不再替换成状态点）、参数摘要、可展开参数/结果。
+- **图标**：主标记 = 第一版候选的 book（书＋书签丝带）内联 SVG（24 单位、stroke 2、round、`currentColor`、14px，沿用 dsh-chamber-mcp 约定）；注入事件 = 平台 `IconContextInjectionOutline16` 路径内联（零图标包依赖，bundle 运行期仍只 require `react`）：注入 Toast 继续用它，注入行改用书页主标记——memcurio 自有行用自有 mark，适配器兜底的通用行保留平台几何。
+- 开放项见 [todo.md](todo.md)。
 
 ## 安全与隐私边界
 
@@ -272,9 +269,9 @@ node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开——
 
 ## 非功能要求
 
-- **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定（S0 确定）。
-- **浏览器半侧打包（v1.5）**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.ts`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
-- **打包（v1.2 收窄）**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
+- **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定。
+- **浏览器半侧打包**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.ts`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
+- **打包**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 8 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
 - **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。
 - **i18n**：UI 文案跟随 DSH 客户端语言约定；记忆内容原样展示（不翻译）。

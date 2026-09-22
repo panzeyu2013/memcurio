@@ -110,7 +110,7 @@ consolidationRelease(key, owner): boolean
 
 ## 模块与导出契约
 
-### src/core/channel.ts（LLM 通道契约；随收敛精简）
+### src/core/channel.ts（LLM 通道契约）
 
 ```ts
 export interface LlmChannel { readonly name: string; agent(system, messages, tools, signal?): Promise<AgentToolReply> }
@@ -118,18 +118,20 @@ export interface LlmChannel { readonly name: string; agent(system, messages, too
 // channel 选项）；引擎从不自行连接任何 provider。
 // 无 chat/文本协议：Phase-1 抽取与 Phase-2 整合都只走 agent() 原生工具调用。
 // 无通道时：LlmExtractProvider.availability() → unconfigured（durable job 进 blocked，不计 attempts）；
-//           整合自动回退 RuleConsolidateProvider（engine.maybeConsolidate 内判定）。
+//           整合使用 RuleConsolidateProvider；有通道但无 agent()（结构性无 tool calling）时审计 consolidate.fallback 后同样降级 Rule；
+//           有可用通道的运行失败（abort/编辑非法/无 tool call）零提交并按失败退避重试，不降级 Rule。
 // 删除：HttpChannel / llmProviderMode / resolveChannel / MEMCURIO_LLM_*（随 HTTP 通道整体移除）
 ```
 
-### src/engine.ts + src/plugin/（宿主集成：引擎 + DSH Cordis 插件；原 adapters/contract.ts 与 shared/engine.ts 收敛合并）
+### src/engine.ts + src/plugin/（宿主集成：引擎 + DSH Cordis 插件）
 
 ```ts
 // 引擎（src/engine.ts）只消费宿主注入的选项，不感知宿主细节：
 export interface AdapterOptions {
   log?: AdapterLog;
   extract?: ExtractProvider;            // 默认 new LlmExtractProvider(opts.channel)（无 channel → unconfigured → blocked）
-  channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合回退 Rule
+  channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合用 Rule
+  consolidateChannel?: LlmChannel;      // Phase 2 专用通道（store 级 abort）；缺省回退 channel
   toolPreset?: HarnessToolPreset;       // 宿主遥测工具名（DSH 内建 read/grep/glob + bash/pwsh，见 plugin 内 DSH_TOOL_PRESET）
   injectBudgetTokens?: number;
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
@@ -293,7 +295,8 @@ export interface ConsolidatePlan {
 export function planConsolidation(root: string, cfg?: Partial<PipelineConfig>): ConsolidatePlan
   // 纯计算不写盘：选 stage1 → 渲染 artifacts（raw_memories 稳定升序合并、rollout_summaries 按选择、窗口外摘要删除）→ diff
 export function syncArtifacts(root: string, plan: ConsolidatePlan): void
-  // 按 plan.artifacts 写盘（rollout_summaries 裁剪：不在 artifacts 里的删除）
+  // 按 plan.artifacts 写盘（rollout_summaries 裁剪：不在 artifacts 里的删除）；不推进 baseline——baseline 只随成功提交推进
+  // runConsolidation 在 provider 之前调用它（codex sync_workspace_inputs 对应物），保证模型与 provenance 校验看到同一份磁盘文件
 export interface ConsolidateInput {
   workspace: Record<string, string>;   // 当前磁盘状态（含 MEMORY_DOCS 与 rollout_summaries 全部 .md）
   diff: WorkspaceDiff[];
@@ -313,19 +316,20 @@ export interface ConsolidateProvider {
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
 }
 export class RuleConsolidateProvider implements ConsolidateProvider {}
-  // 确定性规则整合（无 LLM 降级/测试后端），规则：
+  // 确定性规则整合（无模型部署模式/测试后端），规则：
   // 1) 对每张待合并 note：remember → 追加到 MEMORY.md 的 "# Task Group: ad hoc (memcurio remember)" 块（无则建）的 "## Reusable knowledge" 下一条 "- <content>"（内容去重，幂等）；
   //    forget/update → 忽略并保持 pending（report 注明 needs an LLM provider）；规则整合器不做任何机械删除；
   // 2) raw_memories 增量：对 artifacts.raw_memories.md 中新增（即 diff 的 add 行）的每个 "### Task N" 段，按 task_group 归入 "# Task Group: <task_group>" 块（无则建），
   //    保留原结构（Preference signals/Reusable knowledge/Failures/References 原样抄入）；块头带 applies_to: cwd=<raw_memory.cwd> 与 scope；
   //    段解析适配 codex 式 "# Raw Memories" 头 + "## Rollout `key`" 段 + updated_at/rollout_summary_file 元数据行；
-  //    diff 碎片（段头缺失）由 pendingSlug 兜底，citation 引用已存在 → 跳过（不重复追加）；
+  //    diff 碎片（段头缺失）由 pendingSlug 兜底；只有 body 真正开始（见过标题行）的块才成立，
+  //    纯 frontmatter 碎片不得产出幻影块抢占 citation；citation 引用已存在 → 跳过（不重复追加）；
   // 3) 剪除清理：MEMORY.md 中引用已剪除 rollout_summary 文件名的块（rollout_summary_files 行只含已删文件）整块删除；
   // 4) memory_summary.md：缺失或首行不是 v1 → 重建最小结构（v1 / User Profile（无档案占位）/ User preferences（空）/ General Tips（空）/ What's in Memory（列出 MEMORY.md 全部 Task Group 标题））；
   //    存在且 v1 且无 note 无 raw 变更 → 不改（churn 最小化）；
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
-  // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无通道或无 agent → completed=false 零提交（回退 Rule）
+  // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无 agent（结构性无 tool calling）→ engine 预判并直接使用 Rule（审计 consolidate.fallback）；其余失败 → completed=false 零提交、退避重试
   // 工具循环：channel.agent(system, transcript, tools) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
   // INIT 兜底：runConsolidation 在 provider 返回后计算「本次运行后」的 memory_summary.md——
   // 首行不是 v1（缺失/空/被写成空串/schema 不符）时，丢弃 provider 的摘要 edit 并补一条最小 v1
@@ -354,7 +358,9 @@ export function pruneExtensionResources(root: string, retentionDays: number): st
 export function runConsolidation(root: string, provider: ConsolidateProvider, opts: { execute: boolean }): Promise<{
   plan: ConsolidatePlan; result: ConsolidateResult | null; applied: boolean; message: string;
 }>
-  // execute=true：取得 workspace lease → syncArtifacts → provider.consolidate → revision/edits 校验 → 文件快照恢复保护下应用（audit + DB transaction + saveBaseline）
+  // execute=true：取得 workspace lease → plan → syncArtifacts 落盘（codex sync_workspace_inputs；baseline 不动）→ provider.consolidate（读到真实磁盘状态）
+  //   → revision/edits 校验 → 文件快照恢复保护下应用（audit + DB transaction；baseline 只在提交时推进）
+  //   失败零提交：provider 报错/completed=false 时 selection、note applied、baseline 均不变，workspace diff 保留供下一次重试
   //   空 diff 早退（codex succeeded_no_workspace_changes）：freshPlan.diff/notes/pruned 全空 → 不调 provider，
   //   直接返回 message="no changes: nothing to consolidate"（租约在 finally 释放；pending stage1 必然产生
   //   raw_memories diff，故空 diff 即无工作；notes 以计划列表为门而非 applied 标记，原地编辑重入仍会触发）
@@ -402,14 +408,14 @@ export function renderMemoryContext(root: string, budgetTokens?: number): string
   // 读 memory_summary.md（sanitize 过滤：注入命中→整体跳过并 audit）→ redact → truncateMiddle 中间截断（默认 2500 token，保头尾）；
   // 若无 summary：返回空串（不注入占位符）。
 export function renderStaticContext(root: string, budgetTokens?: number): string
-  // v1.9：静态注入 = 仅摘要区块（renderMemoryContext 的别名）；空库返回空串。
+  // 静态注入 = 仅摘要区块（renderMemoryContext 的别名）；空库返回空串。
   // read_path 指南不再进 user message，改由插件注册为 system prompt section（标题 `## memory`，
   // 与 client/ui/guide-row.ts 的 GUIDE_HEADING 同步）；
   // 与 codex 一致：store 无 memory_summary.md（或为空）时整段不注册（返回空串）。
 export function renderReadPathInstructions(): string
   // 契约版 read_path（仅在会话 store 有可注入摘要且 registerTools 时作为 system prompt section
   // 生效）：决策边界 → quick pass 一句话（布局/步骤/预算等机制在 memory_* 工具 description）
-  // → verify 防漂移与披露 → 条件式引用遥测（v2.0：只对真正 search/read 过的文件调用
+  // → verify 防漂移与披露 → 条件式引用遥测（只对真正 search/read 过的文件调用
   //   memory_cite 一次；entries=<file>:<start>-<end> + rolloutIds=裸 host|sessionId，
   //   仅靠注入摘要不计）→ 写入门槛（仅用户显式要求；note 写到 ad_hoc_notes 目录）
   // → 用户优先序（用户明确说别用记忆/简短/不要引用时从用户）
@@ -423,13 +429,13 @@ export interface Config {
   budget: { maxInjectTokens: number };
   pipeline: PipelineConfig;   // 复用 consolidate.PipelineConfig
 }
-// namespace/prune 配置项删除；兼容读取：旧配置含未知键不影响。
+// 兼容读取：旧配置含未知键不影响。
 ```
 
 ### src/core/sanitize.ts / budget.ts / transaction.ts / events.ts / sqlite.ts / ids.ts
-保留现状：`ids.ts` 的 `newEntryId/derivedEntryId`（UUIDv4 32hex）；`json.ts`（JSON-in-prose 提取器）已随原生工具调用删除；`transaction.ts` 的 `Transaction`/`truncateLog`/`rotateLog` 与 `paths.txnLog`（被 SQLite audit 取代、自单插件收敛后零调用的旧事务日志）已删除。
+保留现状：`ids.ts`（UUIDv4 32hex）、`transaction.ts` 的文件锁与原子写、`sanitize.ts`、`budget.ts`、`events.ts`、`sqlite.ts`（bun/node 双驱动）的既有契约不变。
 
-## 原生工具契约（7 个，插件注册为 DSH 工具；沿用 v2 的 MCP 工具契约）
+## 原生工具契约（7 个，插件注册为 DSH 工具）
 
 ```
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
@@ -443,13 +449,14 @@ memory_cite { entries[], rolloutIds? } → registerMemoryUsage（文件定位符
 
 ## 宿主集成契约（src/engine.ts + DSH 插件）
 
-### src/engine.ts（MemcurioAdapter；原 adapters/shared/engine.ts 收敛至仓库根）
+### src/engine.ts（MemcurioAdapter）
 
 ```ts
 export interface AdapterOptions {
   log?: AdapterLog;
   extract?: ExtractProvider;            // 默认 new LlmExtractProvider(opts.channel)（无 channel → availability unconfigured → blocked）
-  channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合回退 Rule
+  channel?: LlmChannel;                 // 宿主 ctx.llm 封装（DSH 注入）；无 channel → 抽取 blocked、整合用 Rule
+  consolidateChannel?: LlmChannel;      // Phase 2 专用通道（store 级 abort）；缺省回退 channel
   toolPreset?: HarnessToolPreset;       // 宿主遥测工具名集合（DSH_TOOL_PRESET = read/grep/glob + bash/pwsh）
   injectBudgetTokens?: number;
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
@@ -464,42 +471,42 @@ export class MemcurioAdapter {
                                                              // shell 工具命令串词法解析（白名单只读命令路径操作数、分隔符终止、绝不执行、单次调用去重）；
                                                              // 仅命中记忆 workspace 才记使用遥测（工具名集合由 toolPreset 声明）
   memoryUsageFromPath(filePath): Promise<void>              // 只读工具读取记忆文件（绝对路径）→ registerMemoryUsage
-  // citation 遥测（v2.0，无文本解析）：memory_cite 工具 → api.integrationCite(root, refs)
+  // citation 遥测（无文本解析）：memory_cite 工具 → api.integrationCite(root, refs)
   //   = registerMemoryUsage + integration.cite 审计；同一 rollout 的“文件条目 + 裸 key”两种写法在同一次调用内只计一次 usage。
   sessionIdle(id): Promise<void>                            // durable checkpoint
   sessionCompacted(id, summary?): Promise<void>             // 压缩摘要入 snapshot.summary + 证据
   sessionEnded(id): Promise<{staged; queued}>               // durable 模式原子入队 + 结束 sessions
   processPendingExtractions(limit?): Promise<QueueDrainResult[]> // worker drain；completed/retry/dead 结果
-  maybeConsolidate(): Promise<void>                         // 会话结束后自动 Phase 2（codex 式 startup 链对应物）：
+  maybeConsolidate(): Promise<void>                         // 自动 Phase 2（codex 式后台任务对应物；turn/end + 无会话 store 的休眠清扫触发）：
                                                              // 入口先无条件执行保留清理（stagePruneRetention 批次 200 + 审计 prune.retention，
                                                              // best-effort、不受冷却/退避影响；含 maxUnusedDays 年龄分支；keep-set 语义：
                                                              // 仅回收行删除其 rollout_summaries 工件文件，仍在库的行保留文件——下次整合的
                                                              // workspace diff 因此呈现删除并移除依赖块，孤儿 summary 顺带清扫），
                                                              // 有 pending notes 或未 selected 的 pending stage1 则整合
-                                                             // （channel ? new LlmLoopConsolidateProvider(undefined, channel) : RuleConsolidateProvider）；
-                                                             // best-effort，失败仅 log + 记录退避时间；整合入口由 workspace lease 串行化
-  buildStaticContext(workdir, budgetTokens?): Promise<string>  // 仅摘要区块（renderMemoryContext；read_path 指南自 v1.9 起是 system prompt section；空库返回空串）
-  buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory 预算派生 4–8 命中拼接（MIN/MAX_DYNAMIC_HITS，sanitized）——引擎 API；插件自 v2.1 起不再每轮调用
+                                                             // （可用 channel ? LlmLoopConsolidateProvider : RuleConsolidateProvider；
+                                                             // 结构性无 agent 的 channel 审计 consolidate.fallback 后降级 Rule）；
+                                                             // 失败零提交：audit consolidate.auto_failed + 退避，并按 codex retry_at 语义由 engine 定时自唤醒重试
+                                                             // （unref 定时器；dispose 清除，工作留给下一会话或休眠清扫）；入口由 workspace lease 串行化；
+                                                             // store 级通道（consolidateChannel）不随会话退役 abort
+  buildStaticContext(workdir, budgetTokens?): Promise<string>  // 仅摘要区块（renderMemoryContext；read_path 指南是 system prompt section；空库返回空串）
+  buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory 预算派生 4–8 命中拼接（MIN/MAX_DYNAMIC_HITS，sanitized）——引擎 API；插件不再每轮调用
   buildCompactionContext(id, workdir): Promise<string>      // static + 会话文件（引擎能力；DSH 无 compaction 注入缝，插件不使用）
   buildReplacePrompt(sessionId, context): string            // 引擎能力（同左，插件不使用）
 }
 ```
 
-### src/plugin/index.ts + scope.ts（DSH Cordis 插件；原 opencode/plugin.ts 的收敛对应物）
+### src/plugin/index.ts + scope.ts（DSH Cordis 插件）
 
-- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 已删，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base（第二十五/二十六轮）；
+- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 不是配置项，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
-- 注入（v2.1，对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮与 `compaction/end` 之后各一次；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `plugin` 等机器消息不进用户证据（防回注 feed-back）；
-- 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap 并把宿主 abort 透传给 engine；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；自动整合回退 Rule（见 engine.maybeConsolidate）；
-- 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与会话退休时自动 drain + maybeConsolidate（退休入口起 30s wall-clock 预算，超时 abort 在飞 worker 调用后 dispose，queue 稍后重试）；
+- 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮与 `compaction/end` 之后各一次；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `plugin` 等机器消息不进用户证据（防回注 feed-back）；
+- 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap，抽取通道透传会话 abort，Phase 2 另用 store 级 `consolidateChannel`（插件生命周期 abort）；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；无可用通道（或结构性无 agent）时整合用 Rule（见 engine.maybeConsolidate）；
+- 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 触发 worker drain + maybeConsolidate；会话退休只在 30s 预算内 drain 抽取（超时 abort 在飞抽取调用后 dispose，queue 稍后重试），Phase 2 由 store 级通道继续，退役 store 重新进入休眠清扫范围；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。
-
-> codex 适配器（daemon/hook/spool/transcript/plugin 生成）已整体移除：codex 用户直接使用 codex 原生 memory 机制，memcurio 不再提供 codex 插件。
 
 ## 测试契约
 
 （bun test，`MEMCURIO_ROOT` 指向临时目录）：
 - workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + LlmLoop 用 mock channel）/ search.test.ts / read.test.ts（list/read 语义、分页/转义拒绝、截断、脱敏、遥测）/ inject.test.ts
 - db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
-- plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 与退休自动整合、无 channel → blocked / 回退 Rule 等）
-- 删除：cli/mcp/adapters/opencode 相关测试，以及 mdStore/retriever/safeSearch/prune/curate/compact/transfer/baseline/select 相关测试（随收敛/重构移除）
+- plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule 等）

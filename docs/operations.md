@@ -83,7 +83,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 ### 常见问题
 
-- **为什么没有 CLI / MCP / 独立服务了？** memcurio 自第十五轮收敛为 DSH 单模块：模型路由由宿主提供，运维操作（整合/重试/审计）将逐步内化为插件 host 服务与未来的可视化界面（见 [docs/todo.md](todo.md)）。
+- **为什么没有 CLI / MCP / 独立服务？** memcurio 是 DSH 单模块：模型路由由宿主提供，运维操作（整合/重试/审计）将逐步内化为插件 host 服务与未来的可视化界面（见 [docs/todo.md](todo.md)）。
 - **数据在哪、怎么手动查看/编辑？** `＜DSH home＞/memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 store 根 `＜DSH home＞/memcurio/dsh/<key>/index.sqlite`（`state/` 只放事务日志与锁）。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
 - **记忆没有被注入？** 检查 store 是否为空、`injectContext` 是否开启、注入是否因内容未变化被去重（决策消息已持久化时不会重复注入）；DSH 会话无 `header.cwd` 时会告警并使用 no-cwd store。
 - **为什么模型说"没有权限/没有路由"？** 会话尚无 `request/header` 路由且插件未固定 `provider`/`model` 时，worker 调用不可用；durable job 会保持 pending 等待路由，不会烧重试预算。
@@ -116,7 +116,7 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 - `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); the native `memory_cite` call registers the memory entries and rollout ids a reply relied on (audited as `integration.cite`), so rollouts the model cites without searching still count. Assistant text is never parsed for telemetry.
 - Seven native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`.
 - Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. Phase 1 is one **native tool-calling** turn: the model calls `save_extraction` (payload) or `skip_extraction` (no-op), and no text protocol is parsed. Phase 2 is a **native tool-calling** agent loop: `list_files` / `read_file` / `write_file` / `finish` schemas are forwarded through the provider's tools field, tool results travel back as correlated tool-result messages, and the provider's reasoning content is replayed on each assistant turn (thinking-mode APIs reject a tool-call message that lost its reasoning_content). A host channel without a native tool-calling turn reports the run as incomplete and the deterministic rule provider takes over — there is no JSON-in-prose fallback. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
-- Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and at session retirement, under a 30s wall-clock budget that starts at retirement entry so shutdown stays bounded; worker model calls carry the session retire abort plus a 120s per-call cap.
+- Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and from the bounded dormant-store sweep for stores with no live session. It is store-scoped: neither the session-retire abort nor the 30s retire budget schedules or cancels it. Its inputs (`raw_memories.md` + rollout summaries) are synced to disk before the provider runs, so the agent and provenance validation share one view; a failed model run commits nothing and retries under the failure backoff, and the deterministic rule provider runs only when no model route is available. Worker model calls carry a 120s per-call cap.
 - Per-store recovery drains run for the first live session of a store and, independently, a bounded periodic sweep drains dormant stores once a worker route is known — so crash recovery covers every workspace, not only the one that happens to open a session. Sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.
 
 ### Storage isolation
@@ -147,7 +147,7 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 `settings` is a hard injection (the service is guaranteed by dsh-base and every profile layered on it, and a hard inject makes the namespace resolve synchronously before apply). Two consequences, both verified in review: a profile without any settings provider leaves the plugin inert (`dsh-sdk-minimal` is such a tree), and unloading/remounting the settings provider unloads and re-applies memcurio.
 
-### Verification status
+### Profile smoke probe
 
 `scripts/probe-dsh-profile.sh` packs the committed tree (`bun pm pack --ignore-scripts`) and installs that tarball into an isolated DSH profile; it asserts that (a) the packaged entry imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
 
@@ -157,7 +157,7 @@ In a composed `web`-family profile the root plane provides the services this plu
 
 ### Validation boundary
 
-Local suites cover strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire runs the drain and automatic consolidation under a bounded budget, aborts in-flight worker calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+Local suites cover strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
 
 ## 发布流程
 
