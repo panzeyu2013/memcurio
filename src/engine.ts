@@ -216,6 +216,10 @@ export interface AdapterOptions {
    *  default providers around it (extraction + automatic consolidation);
    *  an explicit `extract` provider override still wins for Phase 1. */
   channel?: LlmChannel;
+  /** Phase-2 route. Defaults to `channel`; harness adapters pass a channel
+   *  scoped to the store/plugin lifetime so a retiring session's abort cannot
+   *  cancel a consolidation mid-run. */
+  consolidateChannel?: LlmChannel;
   /** Harness-specific read/shell tool-name sets for usage telemetry; the
    *  engine defaults to the codex-style superset. */
   toolPreset?: HarnessToolPreset;
@@ -239,10 +243,11 @@ export class MemcurioAdapter {
   /** Phase-1 provider (harness-channel default or explicit override);
    *  public so harness adapters can inspect the resolved provider name. */
   readonly extract: ExtractProvider;
-  /** Host model channel (the DSH plugin wraps ctx.llm). When undefined,
-   *  Phase-1 extraction blocks and automatic consolidation falls back to
-   *  the rule provider. */
-  private readonly channel: LlmChannel | undefined;
+  /** Phase-2 channel (the DSH plugin wraps ctx.llm). When undefined,
+   *  automatic consolidation uses the rule provider. Harness adapters pass a
+   *  store-scoped channel so a retiring session's abort cannot cancel a
+   *  consolidation mid-run. */
+  private readonly consolidateChannel: LlmChannel | undefined;
   /** Read-only tool names that count as memory reuse (usage telemetry).
    *  Harness-specific overrides come from the adapter's toolPreset; the
    *  default is the codex-style superset. Writes must never inflate usage
@@ -257,6 +262,8 @@ export class MemcurioAdapter {
   private workerPromise: Promise<QueueDrainResult[]> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDueAt: number | undefined;
+  private consolidateRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  private consolidateRetryDueAt: number | undefined;
   private workspaceListCache: { at: number; files: string[] } | undefined;
   /** Retired adapters must never drain again: their channel may be aborted
    *  (harness dispose), so a late retry would burn job attempts into the
@@ -271,7 +278,7 @@ export class MemcurioAdapter {
     // provider reports the dropped-line count to an audit writer bound to this
     // store (fire-and-forget; it never blocks or fails the extraction).
     this.extract = opts.extract ?? new LlmExtractProvider(opts.channel, undefined, policyRepairAuditor(this.root));
-    this.channel = opts.channel;
+    this.consolidateChannel = opts.consolidateChannel ?? opts.channel;
     this.readTools = new Set(opts.toolPreset?.readTools ?? DEFAULT_READ_TOOLS);
     this.shellTools = new Set(opts.toolPreset?.shellTools ?? DEFAULT_SHELL_TOOLS);
     this.host = opts.host ?? "";
@@ -292,6 +299,11 @@ export class MemcurioAdapter {
       clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
       this.retryDueAt = undefined;
+    }
+    if (this.consolidateRetryTimer) {
+      clearTimeout(this.consolidateRetryTimer);
+      this.consolidateRetryTimer = undefined;
+      this.consolidateRetryDueAt = undefined;
     }
     this.workspaceListCache = undefined;
   }
@@ -1034,19 +1046,24 @@ export class MemcurioAdapter {
     return this.retryDueAt;
   }
 
-  /** Codex-style automatic Phase 2: after a session ends (or idles), drain
-   *  pending extractions first, then run a consolidation when there is pending
-   *  work (unapplied notes or never-selected stage-1 rows inside the window).
-   *  Runs at most once per cooldown after a success / backoff after a failure
-   *  (codex-style scheduling). Best-effort and detached: failures are logged,
-   *  never thrown into the host event path; the workspace lease still
-   *  serializes against manual curate runs. */
-  /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none
-   *  keeps the documented kill-switch: consolidation falls back to the rule
-   *  provider while Phase-1 extraction still uses the embedded host channel
-   *  (the plugin passes it straight to the extract provider). */
+  /** Codex-style automatic Phase 2: drain pending extractions first, then run
+   *  a consolidation when there is pending work (unapplied notes or
+   *  never-selected stage-1 rows inside the window). Runs at most once per
+   *  cooldown after a success / backoff after a failure (codex-style
+   *  scheduling). Best-effort and detached: failures are logged, never thrown
+   *  into the host event path; the workspace lease still serializes against
+   *  manual curate runs. A model route that fails commits nothing (codex
+   *  parity): the materialized workspace diff keeps the work pending for the
+   *  next trigger, so a transient failure can never consume a batch into
+   *  degraded memory. */
+  /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none keeps the
+   *  documented kill-switch: consolidation falls back to the rule provider
+   *  while Phase-1 extraction still uses the embedded host channel (the plugin
+   *  passes it straight to the extract provider). The harness passes a
+   *  store-scoped channel so a retiring session's abort cannot cancel a
+   *  consolidation mid-run. */
   private modelChannel(): LlmChannel | undefined {
-    return process.env.MEMCURIO_LLM_PROVIDER?.trim().toLowerCase() === "none" ? undefined : this.channel;
+    return process.env.MEMCURIO_LLM_PROVIDER?.trim().toLowerCase() === "none" ? undefined : this.consolidateChannel;
   }
 
   async maybeConsolidate(): Promise<void> {
@@ -1054,13 +1071,16 @@ export class MemcurioAdapter {
     if (this.disposed) {
       return;
     }
-    // A pending forget/update note is only consumable with a model channel (the
-    // rule provider merges remember notes only). Counting it as urgent work
-    // without one would make every turn/end run a zero-output Phase 2 and bypass
-    // the success cooldown forever; it stays pending until a channel exists.
+    // A pending forget/update note is only consumable with a usable model
+    // channel (the rule provider merges remember notes only). Counting it as
+    // urgent work without one would make every turn/end run a zero-output
+    // Phase 2 and bypass the success cooldown forever; it stays pending until
+    // a channel exists.
     const modelChannel = this.modelChannel();
+    const usableChannel =
+      modelChannel && typeof modelChannel.agent === "function" ? modelChannel : undefined;
     const actionableNote = (note: { kind: string; applied: boolean }): boolean =>
-      !note.applied && (modelChannel !== undefined || note.kind === "remember");
+      !note.applied && (usableChannel !== undefined || note.kind === "remember");
     try {
       // The pipeline config is loaded before the entry prune: the retention
       // recycle needs maxUnusedDays to also drop never-selected rows whose
@@ -1177,36 +1197,34 @@ export class MemcurioAdapter {
       if (!work) {
         return;
       }
-      const provider = modelChannel ? new LlmLoopConsolidateProvider(undefined, modelChannel) : new RuleConsolidateProvider();
-      try {
-        await runConsolidation(root, provider, { execute: true, config: cfg });
-      } catch (error) {
-        // An LLM reply without a tool call (or an edit citing an artifact that
-        // does not exist) must not strand unapplied notes and stage-1 rows for
-        // a whole backoff window: fall back to the deterministic rule provider
-        // — the next cycle tries the LLM again — and record why.
-        if (modelChannel === undefined) {
-          throw error;
-        }
-        this.log("warn", "llm consolidation failed; falling back to the rule provider", { error: String(error) });
-        await runConsolidation(root, new RuleConsolidateProvider(), { execute: true, config: cfg });
+      if (usableChannel === undefined && modelChannel !== undefined) {
+        // Structural capability fallback: a host channel without a native
+        // tool-calling turn can never run Phase 2, so the deterministic rule
+        // provider is the only writer. Transient failures are never degraded
+        // this way — they commit nothing and retry on the next trigger.
         const idxFallback = await Index.create(indexDb(root));
         try {
-          idxFallback.audit("consolidate.fallback", "-", `llm provider failed: ${String(error).slice(0, 200)}`);
+          idxFallback.audit("consolidate.fallback", "-", "host model channel has no native tool-calling turn");
         } finally {
           idxFallback.close();
         }
       }
+      const provider = usableChannel ? new LlmLoopConsolidateProvider(undefined, usableChannel) : new RuleConsolidateProvider();
+      // Codex parity: a failed run leaves selection, notes and the baseline
+      // untouched (no rule-provider commit), so the materialized workspace diff
+      // keeps the work pending; the outer catch arms the failure backoff.
+      await runConsolidation(root, provider, { execute: true, config: cfg });
       const idx3 = await Index.create(indexDb(root));
       try {
         idx3.metaSet("consolidation_auto_last", new Date().toISOString());
         // A past failure must not keep shortening the next window after a
         // successful run; the failure branch above ignores the empty marker.
         idx3.metaDelete("consolidation_auto_failed");
-        idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${modelChannel?.name ?? "rule"})`);
+        idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${usableChannel?.name ?? "rule"})`);
       } finally {
         idx3.close();
       }
+      this.clearConsolidateRetry();
       this.log("info", "automatic consolidation completed");
     } catch (err) {
       const message = String(err);
@@ -1232,8 +1250,20 @@ export class MemcurioAdapter {
       } catch {
         // best effort
       }
+      // Codex parity (retry_at): the failure backoff must not depend on the
+      // next host event — an idle session would otherwise strand its pending
+      // work. The timer is unref'd, replaced on every failure, and cleared by
+      // dispose (the durable workspace diff is then retried by the next owner:
+      // a later session, or the dormant-store sweep).
+      this.scheduleConsolidateRetry(AUTO_CONSOLIDATE_RETRY_MS);
       this.log("warn", "automatic consolidation skipped", { error: String(err) });
     }
+  }
+
+  /** Epoch ms of the next armed automatic-consolidation retry, or undefined.
+   *  Exposed for tests and worker observability; never a scheduling input. */
+  nextConsolidateRetryDueAt(): number | undefined {
+    return this.consolidateRetryDueAt;
   }
 
   async buildStaticContext(workdir: string, budgetTokens?: number): Promise<string> {
@@ -1418,6 +1448,39 @@ export class MemcurioAdapter {
     }, delay);
     const timer = this.retryTimer as unknown as { unref?: () => void };
     timer.unref?.();
+  }
+
+  /** Arm the codex-style retry_at for a failed automatic consolidation. */
+  private scheduleConsolidateRetry(delayMs: number): void {
+    if (this.disposed) {
+      return;
+    }
+    const delay = Math.max(100, Math.min(delayMs, 60 * 60_000));
+    const dueAt = Date.now() + delay;
+    if (this.consolidateRetryTimer && this.consolidateRetryDueAt !== undefined && this.consolidateRetryDueAt <= dueAt) {
+      return;
+    }
+    if (this.consolidateRetryTimer) {
+      clearTimeout(this.consolidateRetryTimer);
+    }
+    this.consolidateRetryDueAt = dueAt;
+    this.consolidateRetryTimer = setTimeout(() => {
+      this.consolidateRetryTimer = undefined;
+      this.consolidateRetryDueAt = undefined;
+      void this.maybeConsolidate().catch((err) => {
+        this.log("warn", "consolidation retry failed", { error: String(err) });
+      });
+    }, delay);
+    const timer = this.consolidateRetryTimer as unknown as { unref?: () => void };
+    timer.unref?.();
+  }
+
+  private clearConsolidateRetry(): void {
+    if (this.consolidateRetryTimer) {
+      clearTimeout(this.consolidateRetryTimer);
+      this.consolidateRetryTimer = undefined;
+      this.consolidateRetryDueAt = undefined;
+    }
   }
 
   private async scheduleNextWake(): Promise<void> {

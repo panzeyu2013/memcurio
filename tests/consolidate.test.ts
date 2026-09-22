@@ -207,6 +207,9 @@ describe("syncArtifacts", () => {
     syncArtifacts(dir, plan);
     expect(rolloutSlugs(dir)).toEqual([]);
     expect(readWorkspaceText(dir, "raw_memories.md")).toBe("# Raw Memories\n\nNo raw memories yet.\n");
+    // Materializing inputs never advances the baseline: only a consolidation
+    // commit does (Codex parity).
+    expect(loadBaseline(dir)["raw_memories.md"]).toBeUndefined();
   });
 });
 
@@ -248,6 +251,35 @@ describe("RuleConsolidateProvider", () => {
     const memory = result.edits.find((e) => e.rel === "MEMORY.md")?.content ?? "";
     expect(memory).toContain("# Task Group: a");
     expect(memory).not.toContain("# Task Group: evil");
+  });
+
+  test("a frontmatter-only fragment never claims a citation the real block needs", async () => {
+    // Regression: splitRawBlocks emitted a phantom block (body "---") at every
+    // `## Rollout` header, carrying the row's citation; the later real-content
+    // block with the same slug was then skipped as a duplicate, so the rule
+    // provider wrote citation-only Task Groups and never any memory content.
+    const raw = [
+      "## Rollout `test|a`",
+      "updated_at: 2026-08-11T00:00:00.000Z",
+      "rollout_summary_file: rollout-11111111111111111111111111111111.md",
+      "",
+      "task_group: alpha",
+      "cwd: /tmp/alpha",
+      "",
+      "### Task 1",
+      "",
+      "- REAL_FACT",
+    ].join("\n");
+    const result = await new RuleConsolidateProvider().consolidate({
+      workspace: {},
+      diff: [{ rel: "raw_memories.md", hunks: raw.split("\n").map((line) => ({ kind: "add", text: line })) }],
+      notes: [],
+      memoryRoot: dir,
+    } as never);
+    const memory = result.edits.find((e) => e.rel === "MEMORY.md")?.content ?? "";
+    expect(memory).toContain("# Task Group: alpha");
+    expect(memory).toContain("- REAL_FACT");
+    expect(memory).not.toContain("# Task Group: general");
   });
 
   test("mixed blocks keep surviving citations but drop the deleted ones", () => {
@@ -937,8 +969,9 @@ describe("runConsolidation", () => {
     expect(existsSync(join(resourcesDir, "2020-01-01T00-00-00-old.md"))).toBe(true);
   });
 
-  test("provider failure rolls back synchronized artifacts and leaves stage pending", async () => {
+  test("a failed provider leaves the materialized inputs and the pending stage row for the retry", async () => {
     await stageSession(dir, snapshot, new Provider(stage1({})));
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s1"));
     const failedProvider = {
       name: "failed",
       async consolidate(): Promise<ConsolidateResult> {
@@ -951,14 +984,55 @@ describe("runConsolidation", () => {
       },
     } as unknown as ConsolidateProvider;
     await expect(runConsolidation(dir, failedProvider, { execute: true })).rejects.toThrow(/did not complete/);
-    expect(readWorkspaceText(dir, "raw_memories.md")).toBe("");
-    expect(rolloutSlugs(dir)).toEqual([]);
+    // Codex parity (sync_workspace_inputs): phase-2 inputs are on disk before
+    // the provider runs, so the model and provenance validation share one view.
+    expect(readWorkspaceText(dir, "raw_memories.md")).toContain("SQLite FTS5 trigram works");
+    expect(readWorkspaceText(dir, `rollout_summaries/${artifactFilename}`)).toContain("# recap");
+    // …and a failed run commits nothing: no selection, no baseline advance.
+    expect(loadBaseline(dir)["raw_memories.md"]).toBeUndefined();
+    expect(hasWorkspaceChanges(dir)).toBe(true);
+    expect(readWorkspaceText(dir, "MEMORY.md")).toBe("");
     const idx = await Index.create(indexDb(dir));
     try {
       expect(idx.stageGet("test|s1")?.status).toBe("pending");
     } finally {
       idx.close();
     }
+    // The same inputs still drive the next run.
+    const retry = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });
+    expect(retry.applied).toBe(true);
+    expect(readWorkspaceText(dir, "MEMORY.md")).toContain("SQLite FTS5 trigram works");
+  });
+
+  test("a model provider may cite a rollout summary staged by the same run", async () => {
+    // Regression: provenance validation checked the on-disk workspace while the
+    // provider read a virtual overlay, so every citation of a freshly staged
+    // rollout summary was rejected as "does not exist" and the run degraded to
+    // the rule provider (leaving memory empty). Inputs are materialized now.
+    await stageSession(dir, snapshot, new Provider(stage1({})));
+    const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|s1"));
+    let sawFile = false;
+    const provider: ConsolidateProvider = {
+      name: "model-test",
+      async consolidate(): Promise<ConsolidateResult> {
+        sawFile = existsSync(join(dir, "memory", "rollout_summaries", artifactFilename));
+        return {
+          edits: [
+            {
+              rel: "MEMORY.md",
+              content: `# Task Group: proj\nscope: proj\napplies_to: cwd=/tmp/proj\n\n## Reusable knowledge\n\n- fts works\n\n### rollout_summary_files\n\n- rollout_summaries/${artifactFilename}\n`,
+            },
+          ],
+          report: "done",
+          rejected: [],
+          completed: true,
+        };
+      },
+    };
+    const run = await runConsolidation(dir, provider, { execute: true });
+    expect(sawFile).toBe(true);
+    expect(run.applied).toBe(true);
+    expect(readWorkspaceText(dir, "MEMORY.md")).toContain("fts works");
   });
 
   test("model providers cannot commit an uncited MEMORY task group", async () => {

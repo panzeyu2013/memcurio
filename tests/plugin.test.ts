@@ -337,7 +337,7 @@ describe("DSH plugin contract", () => {
     await disposeFibers(fibers);
   });
 
-  test("runs the retire drain plus automatic Phase-2 consolidation at dispose", async () => {
+  test("retire drains extractions but never degrades Phase-2 work inside the retire budget", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
     const session = ctx.sessions.prepare(SessionId("auto-consolidate"), { meta: { cwd: join(root, "workspace") } });
@@ -364,12 +364,13 @@ describe("DSH plugin contract", () => {
     }
     const idx = await Index.create(indexDb(root));
     try {
-      // No LLM adapter is registered in this test runtime, so the LLM
-      // consolidation attempt fails and the rule-provider fallback still lands
-      // the work — which proves maybeConsolidate actually ran at retire time.
-      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).not.toEqual([]);
-      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto'`)).not.toEqual([]);
-      expect(idx.metaGet("consolidation_auto_last")).toBeDefined();
+      // Phase 2 is store-scoped: retirement neither runs a degraded rule pass
+      // nor consumes the pending note; a later turn/end or the dormant sweep
+      // retries it on the plugin lane.
+      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).toEqual([]);
+      expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto'`)).toEqual([]);
+      expect(idx.noteList().every((note) => !note.applied)).toBe(true);
+      expect(idx.metaGet("consolidation_auto_last")).toBeUndefined();
     } finally {
       idx.close();
       await disposeFibers(fibers);
@@ -1584,10 +1585,12 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     try {
       // The idle checkpoint was written (event lane) …
       expect(index.extractionList().some((job) => job.sessionId === session.id && job.sourceEvent === "idle")).toBe(true);
-      // … and the detached worker ran the drain + maybeConsolidate (the LLM
-      // attempt fails without an adapter; the rule fallback records the run).
-      expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).not.toEqual([]);
-      expect(index.metaGet("consolidation_auto_last")).toBeDefined();
+      // … and the detached worker ran the drain + maybeConsolidate. No model
+      // adapter is registered in this runtime, so the run fails and is recorded
+      // as retryable work — never a degraded rule commit.
+      expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto_failed'`)).not.toEqual([]);
+      expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).toEqual([]);
+      expect(index.metaGet("consolidation_auto_last")).toBeUndefined();
     } finally {
       index.close();
       await disposeFibers(fibers);

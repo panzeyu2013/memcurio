@@ -181,15 +181,14 @@ export const DSH_TOOL_PRESET = {
  *  the extraction job lease so the job falls back to a normal retry. */
 const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
 
-/** Slice of the retire budget reserved for the automatic Phase-2 pass: the
- *  extraction drain must stop early so consolidation still runs before the
- *  runtime abort disposes the adapter (a drain that eats the whole budget
- *  starves consolidation on every event). */
-const DSH_CONSOLIDATE_RESERVE_MS = 10_000;
+/** Retire keeps a small margin below the budget so the final event-lane write
+ *  and the adapter dispose settle before the runtime abort. Automatic Phase 2
+ *  is store-scoped and never runs inside the retire budget. */
+const DSH_RETIRE_DRAIN_MARGIN_MS = 5_000;
 
-/** Wall-clock budget for the retire-time drain + automatic consolidation.
- *  On expiry the runtime abort cancels in-flight model calls so dispose (and
- *  DSH shutdown) stays bounded; the durable queue retries the leftovers. */
+/** Wall-clock budget for the retire-time extraction drain. On expiry the
+ *  runtime abort cancels in-flight extraction calls so dispose (and DSH
+ *  shutdown) stays bounded; the durable queue retries the leftovers. */
 const DSH_RETIRE_WORK_BUDGET_MS = 30_000;
 
 /** Bounded self-retry for a rejected retirement (transient DB failures). */
@@ -849,7 +848,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (bootstrappedRoots.has(runtime.root)) return;
     bootstrappedRoots.add(runtime.root);
     // Recover jobs a pre-repair policy false positive dead-lettered (the
-    // parser now repairs those lines), then drain pending work.
+    // parser now repairs those lines), then drain pending work. Phase 2 is
+    // store-scoped and triggered by turn/end or the dormant-store sweep; it is
+    // never tied to this session's startup or retirement abort.
     void runtime.adapter
       .requeuePolicyRejectedExtractions()
       .then((revived) => {
@@ -865,13 +866,23 @@ export function apply(ctx: Context, config: Config = {}): void {
     void bridge.refresh(runtime.root).catch(warn);
   };
 
-  /** Drain stores that no live session bootstrapped. The per-session
-   *  bootstrap above leaves dormant workspaces stranded forever: a live
-   *  instance showed one expired processing lease plus two pending jobs and
-   *  zero extracted rows for a workspace whose last session had ended hours
-   *  earlier. The sweep is bounded per run and per root, runs only once a
-   *  worker route is known (a route-less drain would just re-block every job),
-   *  and never touches a root a live session already bootstrapped. */
+  /** Store-scoped worker abort: Phase 2 and dormant sweeps use it instead of
+   *  a session's abort, so a retiring session cannot cancel work it does not
+   *  own. Aborted only when the plugin fiber unloads; leftover work stays
+   *  durable in SQLite and the workspace for the next trigger. */
+  const storeAbort = new AbortController();
+  ctx.effect(() => () => {
+    storeAbort.abort("memcurio: plugin disposed");
+  }, "memcurio store worker abort");
+
+  /** Drain stores whose session retired without finishing its durable work.
+   *  A retired session disposes its adapter's retry timers, so its pending
+   *  extractions and automatic Phase 2 would otherwise wait for the next
+   *  session of that store. The sweep is bounded per run and per root, runs
+   *  only once a worker route is known (a route-less drain would just
+   *  re-block every job), and skips roots with a live session — that adapter
+   *  owns the store. Retirement clears the bootstrap marker, so a store
+   *  becomes sweepable again. */
   const sweptRoots = new Map<string, number>();
   const sweepDormantStores = (reason: string): void => {
     const globalRoute = fixedRoute() ?? lastKnownRoute;
@@ -889,17 +900,24 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (roots.length === 0) {
       return;
     }
+    // Claim the whole batch synchronously: the periodic timer can fire while
+    // an earlier sweep is awaiting a model call, and two adapters must never
+    // race the same store.
+    const sweptAt = Date.now();
+    for (const root of roots) {
+      sweptRoots.set(root, sweptAt);
+    }
     ctx.logger.debug(`memcurio: sweeping ${String(roots.length)} dormant store(s) (${reason})`);
     void (async () => {
       for (const root of roots) {
-        sweptRoots.set(root, Date.now());
         const adapter = new MemcurioAdapter({
           root,
           host: "dsh",
           durableQueue: true,
           injectBudgetTokens: () => live().injectBudgetTokens,
           toolPreset: DSH_TOOL_PRESET,
-          channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => undefined),
+          channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal),
+          consolidateChannel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal),
           log: (level, message, details) => {
             if (level === "warn" || level === "error") {
               ctx.logger[level](`memcurio[${level}]: ${message}`, details);
@@ -914,6 +932,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
           }
           await adapter.processPendingExtractions(STORE_SWEEP_DRAIN_LIMIT);
+          await adapter.maybeConsolidate();
         } catch (error) {
           warn(error);
         } finally {
@@ -975,6 +994,13 @@ export function apply(ctx: Context, config: Config = {}): void {
         ctx,
         () => fixedRoute() ?? runtime.route ?? lastKnownRoute,
         () => runtime.abort.signal,
+      ),
+      // Phase 2 is store-scoped: the plugin-lifetime abort (not the session's)
+      // keeps a consolidation alive across session retirement.
+      consolidateChannel: dshChannel(
+        ctx,
+        () => fixedRoute() ?? runtime.route ?? lastKnownRoute,
+        () => storeAbort.signal,
       ),
       // Preserve warn/error levels: flattening them to debug would hide real
       // failures ("staging failed", "consolidation skipped", "retry failed")
@@ -1067,8 +1093,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   const retireSession = (runtime: SessionRuntime): Promise<void> => {
     if (runtime.retirement) return runtime.retirement;
     // The final checkpoint (sessionEnded) is durable and event-lane. The
-    // worker lane then harvests citations, drains pending extractions and
-    // runs the codex-style automatic Phase-2 consolidation.
+    // worker lane then drains pending extractions within the retire budget;
+    // automatic Phase 2 is store-scoped and keeps running on the plugin lane.
     const ended = enqueue(runtime, async () => {
       await runtime.adapter.sessionEnded(runtime.session.id);
     }, warn);
@@ -1091,9 +1117,12 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (runtime.abort.signal.aborted) return;
           await runtime.adapter.processPendingExtractions(
             8,
-            Date.now() + DSH_RETIRE_WORK_BUDGET_MS - DSH_CONSOLIDATE_RESERVE_MS,
+            Date.now() + DSH_RETIRE_WORK_BUDGET_MS - DSH_RETIRE_DRAIN_MARGIN_MS,
           );
-          await runtime.adapter.maybeConsolidate();
+          // Phase 2 deliberately does NOT run here: it is store-scoped work on
+          // the plugin lane (turn-end / dormant sweep) with its own abort, so a
+          // retiring session can neither starve it with the 30s budget nor
+          // cancel it mid-run.
           // Deliver queue/audit diffs produced by the retire drain.
           await bridge.refresh(runtime.root).catch(warn);
         })();
@@ -1110,10 +1139,11 @@ export function apply(ctx: Context, config: Config = {}): void {
         await Promise.race([work, budgetExpired]);
       } finally {
         if (budgetTimer) clearTimeout(budgetTimer);
-        // Settled: cancel leftover in-flight worker calls and stop the
+        // Settled: cancel leftover in-flight extraction calls and stop the
         // adapter's autonomous retry/drain work (its permanent abort must
-        // never burn retry attempts into the dead-letter path). The durable
-        // queue waits for the next live session's drain.
+        // never burn retry attempts into the dead-letter path). Phase 2 rides
+        // the store channel and keeps running; the durable queue waits for the
+        // next live session or the dormant sweep.
         runtime.abort.abort("memcurio: session retired");
         runtime.adapter.dispose();
         // Let the abort settle the raced work so workerFailure is final
@@ -1126,6 +1156,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     void retirement.then(
       () => {
         if (sessions.get(runtime.session.id) === runtime) sessions.delete(runtime.session.id);
+        // The store is dormant again: the periodic sweep may retry its durable
+        // work (extractions + Phase 2) until a new session adopts it.
+        bootstrappedRoots.delete(runtime.root);
       },
       () => {
         if (runtime.retirement === retirement) runtime.retirement = undefined;

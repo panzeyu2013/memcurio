@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Phase 2 no longer quietly produces empty memory**: the plan's artifacts
+  (`raw_memories.md` + rollout summaries) are materialized on disk before the
+  provider runs — the documented `syncArtifacts` step was never invoked — so
+  the agent and the provenance validation share one view and citations of
+  freshly staged rollout summaries are accepted instead of rejected as
+  "does not exist".
+- **The deterministic rule provider ingests real content again**: a
+  frontmatter-only fragment no longer becomes a phantom `general` Task Group
+  that claimed the row's citation and made the real block be skipped as a
+  duplicate. Rule-provider output is a handbook body again, not citation-only
+  shells.
+- **A failed model consolidation commits nothing**: transient failures
+  (abort, invalid edit, input race) no longer fall back to a rule provider that
+  consumed the batch into degraded memory and advanced the baseline. The
+  workspace diff, the pending notes and the selection survive for the next
+  retry under the failure backoff, and the engine arms its own codex-style
+  `retry_at` timer (unref'd, cleared by dispose) instead of depending on the
+  next host event; the rule provider still runs when no model route is
+  available, and a structurally unusable channel (no `agent` method) keeps the
+  audited `consolidate.fallback` capability path.
+
+### Changed
+
+- **Automatic Phase 2 is store-scoped**: it runs after `turn/end` and from the
+  bounded dormant-store sweep instead of inside the 30s session-retire budget.
+  A plugin-lifetime abort (not the session's) keeps a run alive across session
+  retirement, and a retired store re-enters the sweep instead of waiting for a
+  new session. Extraction draining at retirement is unchanged; leftover work
+  stays durable.
+
 ## [0.0.1] - 2026-09-16
 
 First release of `@memcurio/dsh-plugin`, a memory and context-management plugin for the

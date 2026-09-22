@@ -60,6 +60,10 @@ export interface AdapterOptions {
      *  default providers around it (extraction + automatic consolidation);
      *  an explicit `extract` provider override still wins for Phase 1. */
     channel?: LlmChannel;
+    /** Phase-2 route. Defaults to `channel`; harness adapters pass a channel
+     *  scoped to the store/plugin lifetime so a retiring session's abort cannot
+     *  cancel a consolidation mid-run. */
+    consolidateChannel?: LlmChannel;
     /** Harness-specific read/shell tool-name sets for usage telemetry; the
      *  engine defaults to the codex-style superset. */
     toolPreset?: HarnessToolPreset;
@@ -83,10 +87,11 @@ export declare class MemcurioAdapter {
     /** Phase-1 provider (harness-channel default or explicit override);
      *  public so harness adapters can inspect the resolved provider name. */
     readonly extract: ExtractProvider;
-    /** Host model channel (the DSH plugin wraps ctx.llm). When undefined,
-     *  Phase-1 extraction blocks and automatic consolidation falls back to
-     *  the rule provider. */
-    private readonly channel;
+    /** Phase-2 channel (the DSH plugin wraps ctx.llm). When undefined,
+     *  automatic consolidation uses the rule provider. Harness adapters pass a
+     *  store-scoped channel so a retiring session's abort cannot cancel a
+     *  consolidation mid-run. */
+    private readonly consolidateChannel;
     /** Read-only tool names that count as memory reuse (usage telemetry).
      *  Harness-specific overrides come from the adapter's toolPreset; the
      *  default is the codex-style superset. Writes must never inflate usage
@@ -101,6 +106,8 @@ export declare class MemcurioAdapter {
     private workerPromise;
     private retryTimer;
     private retryDueAt;
+    private consolidateRetryTimer;
+    private consolidateRetryDueAt;
     private workspaceListCache;
     /** Retired adapters must never drain again: their channel may be aborted
      *  (harness dispose), so a late retry would burn job attempts into the
@@ -215,19 +222,27 @@ export declare class MemcurioAdapter {
      *  armed. Exposed for tests and queue observability; never a scheduling
      *  input (the durable queue is the source of truth). */
     nextWakeDueAt(): number | undefined;
-    /** Codex-style automatic Phase 2: after a session ends (or idles), drain
-     *  pending extractions first, then run a consolidation when there is pending
-     *  work (unapplied notes or never-selected stage-1 rows inside the window).
-     *  Runs at most once per cooldown after a success / backoff after a failure
-     *  (codex-style scheduling). Best-effort and detached: failures are logged,
-     *  never thrown into the host event path; the workspace lease still
-     *  serializes against manual curate runs. */
-    /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none
-     *  keeps the documented kill-switch: consolidation falls back to the rule
-     *  provider while Phase-1 extraction still uses the embedded host channel
-     *  (the plugin passes it straight to the extract provider). */
+    /** Codex-style automatic Phase 2: drain pending extractions first, then run
+     *  a consolidation when there is pending work (unapplied notes or
+     *  never-selected stage-1 rows inside the window). Runs at most once per
+     *  cooldown after a success / backoff after a failure (codex-style
+     *  scheduling). Best-effort and detached: failures are logged, never thrown
+     *  into the host event path; the workspace lease still serializes against
+     *  manual curate runs. A model route that fails commits nothing (codex
+     *  parity): the materialized workspace diff keeps the work pending for the
+     *  next trigger, so a transient failure can never consume a batch into
+     *  degraded memory. */
+    /** Model channel for automatic Phase 2. MEMCURIO_LLM_PROVIDER=none keeps the
+     *  documented kill-switch: consolidation falls back to the rule provider
+     *  while Phase-1 extraction still uses the embedded host channel (the plugin
+     *  passes it straight to the extract provider). The harness passes a
+     *  store-scoped channel so a retiring session's abort cannot cancel a
+     *  consolidation mid-run. */
     private modelChannel;
     maybeConsolidate(): Promise<void>;
+    /** Epoch ms of the next armed automatic-consolidation retry, or undefined.
+     *  Exposed for tests and worker observability; never a scheduling input. */
+    nextConsolidateRetryDueAt(): number | undefined;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
     /** Reserved engine API (v2.1): the plugin no longer injects per-turn hits;
      *  kept for host integrations and the workbench's manual simulator. */
@@ -243,6 +258,9 @@ export declare class MemcurioAdapter {
     private snapshotFor;
     private enqueueSnapshot;
     private scheduleRetry;
+    /** Arm the codex-style retry_at for a failed automatic consolidation. */
+    private scheduleConsolidateRetry;
+    private clearConsolidateRetry;
     private scheduleNextWake;
 }
 interface QueueDrainResult {

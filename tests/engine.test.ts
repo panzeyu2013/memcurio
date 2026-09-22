@@ -10,7 +10,7 @@ import { addAdHocNote } from "../src/core/adhoc.js";
 import { Index } from "../src/core/db.js";
 import { ensureLayout, indexDb } from "../src/core/paths.js";
 import { MAX_HIT_CHARS } from "../src/core/inject.js";
-import { writeWorkspaceText } from "../src/core/workspace.js";
+import { readWorkspaceText, writeWorkspaceText } from "../src/core/workspace.js";
 
 let dir: string;
 let prevRoot: string | undefined;
@@ -203,24 +203,88 @@ describe("MemcurioAdapter retention prune (entry-side)", () => {
   });
 });
 
-describe("automatic consolidation LLM fallback", () => {
-  test("an LLM reply without a tool call falls back to the rule provider", async () => {
-    // Reproduces the live failure "no tool call parsed; nothing applied":
-    // the deterministic rule provider must still land the pending note rather
-    // than leaving it stranded for a whole backoff window.
+describe("automatic consolidation failure handling", () => {
+  test("a failed LLM run commits nothing and retries instead of degrading to the rule provider", async () => {
+    // Codex parity: a failing Phase-2 agent leaves the workspace diff, the
+    // notes and the selection state untouched and retries under the failure
+    // backoff. A silent rule-provider commit would consume the batch into
+    // citation-only memory that the next LLM run could never repair.
     const channel: LlmChannel = {
       name: "dsh",
       agent: async () => ({ text: "I could not find anything worth changing.", toolCalls: [], finish: "stop" as const }),
     };
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
-    await addAdHocNote(dir, "fallback note content", "remember");
+    await addAdHocNote(dir, "retry note content", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).not.toContain("consolidate.fallback");
+      expect(actions).not.toContain("consolidate.auto");
+      expect(actions).toContain("consolidate.auto_failed");
+      expect(idx.noteList().every((note) => !note.applied)).toBe(true);
+      expect(readWorkspaceText(dir, "MEMORY.md")).toBe("");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("a failed run arms the codex-style retry_at instead of waiting for the next host event", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => ({ text: "still no tool call", toolCalls: [], finish: "stop" as const }),
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "retry timer note", "remember");
+    await adapter.maybeConsolidate();
+    const due = adapter.nextConsolidateRetryDueAt();
+    expect(due).toBeDefined();
+    expect((due ?? 0) - Date.now()).toBeGreaterThan(50 * 60_000);
+    adapter.dispose();
+    expect(adapter.nextConsolidateRetryDueAt()).toBeUndefined();
+  });
+
+  test("Phase 2 runs on the store-scoped consolidateChannel, not the extraction channel", async () => {
+    let extractionCalls = 0;
+    let consolidateCalls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        extractionCalls += 1;
+        throw new Error("the extraction channel must never run Phase 2");
+      },
+    };
+    const consolidateChannel: LlmChannel = {
+      name: "dsh-store",
+      agent: async () => {
+        consolidateCalls += 1;
+        return {
+          text: "",
+          toolCalls: [{ id: "finish-1", name: "finish", arguments: JSON.stringify({ report: "wired" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel, consolidateChannel });
+    await addAdHocNote(dir, "wiring note", "remember");
+    await adapter.maybeConsolidate();
+    expect(extractionCalls).toBe(0);
+    expect(consolidateCalls).toBeGreaterThan(0);
+    adapter.dispose();
+  });
+
+  test("a channel without a native tool-calling turn falls back to the deterministic rule provider", async () => {
+    // Structural capability mismatch (not a transient failure): the host
+    // channel can never run Phase 2, so the rule provider is the only writer.
+    const channel = { name: "dsh" } as unknown as LlmChannel;
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "capability fallback note", "remember");
     await adapter.maybeConsolidate();
     const idx = await Index.create(indexDb(dir));
     try {
       const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
       expect(actions).toContain("consolidate.fallback");
       expect(actions).toContain("consolidate.auto");
-      expect(actions).not.toContain("consolidate.auto_failed");
       expect(idx.noteList().every((note) => note.applied)).toBe(true);
       expect(existsSync(join(dir, "memory", "MEMORY.md"))).toBe(true);
     } finally {

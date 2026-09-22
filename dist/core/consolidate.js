@@ -266,6 +266,10 @@ export async function planConsolidation(root, cfg, opts) {
 /** Apply the artifact part of a plan to disk (raw_memories.md, rollout
  *  summaries, deletions). Docs (MEMORY.md / memory_summary.md) are owned by
  *  the consolidator and applied later via validateEdits.
+ *  Codex parity (sync_workspace_inputs): phase 2 runs against the real
+ *  workspace files, and the baseline advances only when the consolidation
+ *  commit succeeds — a failed provider leaves the inputs in place for the
+ *  retry instead of dropping the workspace diff that drives it.
  *  Concurrency semantics: must only be invoked while holding
  *  WORKSPACE_WRITE_LEASE_KEY (every engine caller —
  *  does); it shares the generation-protocol stage with runConsolidation and
@@ -276,7 +280,7 @@ export function syncArtifacts(root, plan) {
     const beforeWorkspace = snapshotWorkspace(root);
     const beforeBaseline = snapshotBaseline(root);
     const afterWorkspace = virtualArtifactWorkspace(root, plan);
-    const generation = prepareGeneration(root, randomUUID().replaceAll("-", ""), beforeWorkspace, afterWorkspace, beforeBaseline, baselineAfterWorkspace(afterWorkspace));
+    const generation = prepareGeneration(root, randomUUID().replaceAll("-", ""), beforeWorkspace, afterWorkspace, beforeBaseline, beforeBaseline);
     try {
         applyGeneration(root, generation, "after");
         const committed = markGenerationCommitted(root, generation);
@@ -419,9 +423,12 @@ function splitRawBlocks(lines) {
     let pendingSlug;
     let inBody = false;
     const push = () => {
-        if (current) {
+        // Only a block whose body actually started (a heading was seen) is real
+        // content. A fragmentary hunk can stop at the frontmatter delimiter; that
+        // fragment must never become a phantom block that claims the row's
+        // citation before the real body block (same slug) is ingested.
+        if (current && inBody) {
             const rawBody = current.body.join("\n").trim();
-            // Skip empty scaffolds (a header/metadata line with no body yet).
             if (rawBody) {
                 // Remembered content may itself contain the Task Group header format
                 // (users paste Markdown documents). Written verbatim, that line would
@@ -1374,6 +1381,12 @@ export async function runConsolidation(root, provider, opts) {
         if (freshPlan.diff.length === 0 && freshPlan.notes.length === 0 && freshPlan.pruned.length === 0) {
             return { plan: freshPlan, result: null, applied: false, message: "no changes: nothing to consolidate" };
         }
+        // Codex parity (sync_workspace_inputs): stage the plan's artifacts on disk
+        // BEFORE the provider so the agent and the provenance validation read the
+        // same files. The baseline is deliberately untouched here — only the
+        // commit below advances it, so a failed provider leaves the workspace diff
+        // that drives the next retry intact.
+        syncArtifacts(root, freshPlan);
         // Codex-style extension-resource retention, BEFORE the provider sees the
         // workspace (alignment F2): the pruned resources are surfaced in the
         // provider prompt so the agent removes MEMORY.md content supported only
@@ -1381,15 +1394,6 @@ export async function runConsolidation(root, provider, opts) {
         // return [].
         const prunedResources = pruneExtensionResources(root, opts.config?.resourceRetentionDays ?? DEFAULT_PIPELINE_CONFIG.resourceRetentionDays);
         const workspace = workspaceSnapshotForProvider(root);
-        const virtualWorkspace = virtualArtifactWorkspace(root, freshPlan);
-        for (const [rel, snapshot] of Object.entries(virtualWorkspace)) {
-            if (snapshot.present) {
-                workspace[rel] = snapshot.content;
-            }
-            else {
-                delete workspace[rel];
-            }
-        }
         providerBaseRevision = workspaceRevision(root);
         const providerBaseStageRevision = stageRevision(idx);
         const input = {

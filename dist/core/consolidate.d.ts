@@ -88,6 +88,10 @@ export declare function planConsolidation(root: string, cfg?: Partial<PipelineCo
 /** Apply the artifact part of a plan to disk (raw_memories.md, rollout
  *  summaries, deletions). Docs (MEMORY.md / memory_summary.md) are owned by
  *  the consolidator and applied later via validateEdits.
+ *  Codex parity (sync_workspace_inputs): phase 2 runs against the real
+ *  workspace files, and the baseline advances only when the consolidation
+ *  commit succeeds — a failed provider leaves the inputs in place for the
+ *  retry instead of dropping the workspace diff that drives it.
  *  Concurrency semantics: must only be invoked while holding
  *  WORKSPACE_WRITE_LEASE_KEY (every engine caller —
  *  does); it shares the generation-protocol stage with runConsolidation and
