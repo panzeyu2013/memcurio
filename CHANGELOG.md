@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Repository hygiene: the unused `tests/fixtures.ts` helper, scratch and stale
+  verification output (`.dsh-tmp/`, regenerable `.smoke/` artifacts, empty
+  placeholder directories), the dead `.gitignore` `/cli` rule, and historical
+  round/verification commentary in `docs/` (current contracts and open work
+  only, per CONTRIBUTING).
+
 ### Fixed
 
 - **Phase 2 no longer quietly produces empty memory**: the plan's artifacts

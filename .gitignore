@@ -6,10 +6,6 @@ coverage/
 # (bun pm pack of the built package) must work without a build step on the
 # user machine. CI guards against drift with a fresh-build diff check.
 # A clean build is reproducible with the pinned toolchain (bun 1.3.14 + tsc 5.9.3).
-# The root `cli` binary is a leftover of the old compile-binary plan; ignore
-# it (root-anchored — a bare `cli` pattern would not affect src/ or dist/).
-/cli
-
 # A local .env should never be committed.
 .env
 .env.*
