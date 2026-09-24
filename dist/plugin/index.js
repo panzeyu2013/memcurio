@@ -1271,7 +1271,8 @@ export function apply(ctx, config = {}) {
         await awaitRuntime(runtime);
         // Codex parity: memory is a CONTEXT-WINDOW snapshot, not a per-turn
         // recall step. The summary is injected once when a window opens (a
-        // session's first step, and again after a compaction rewrites the log);
+        // session's first step), again on the first step after a fresh store's
+        // INIT summary lands, and again after a compaction rewrites the log;
         // steady-state turns inject nothing and the model reaches the store
         // through the memory tools only. The per-turn dynamic retrieval of
         // v1.9–v2.0 is removed.
@@ -1288,12 +1289,18 @@ export function apply(ctx, config = {}) {
             ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
             return decision;
         }
-        // Latch after a successful read, empty or not: an empty store injects
-        // nothing in THIS window (codex reads memory_summary.md once, when the
-        // window opens), so a summary written later waits for the next window.
-        runtime.staticInjected = true;
+        // Latch only a REAL injection. A fresh store has no summary yet and
+        // Phase 2's INIT summary lands after the first turn — inside this same
+        // window. Latching the empty read would strand that summary until the
+        // next window while the prompt-side guide (which keys off the same
+        // file) appeared immediately, leaving the model with the guide but
+        // without the MEMORY_SUMMARY block the guide promises. Leaving the
+        // window open lets guide and data arrive on the same step; a non-empty
+        // snapshot latches it as before, so steady-state steps never re-inject
+        // and only a compaction opens the next window.
         if (!staticPiece)
             return decision;
+        runtime.staticInjected = true;
         bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
         return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
     }, { global: true });

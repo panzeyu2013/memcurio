@@ -816,10 +816,10 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     await disposeFibers(fibers);
   });
 
-  test("latches an empty store for the context window", async () => {
+  test("injects a summary that lands after the window opened (fresh store INIT)", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
-    const session = ctx.sessions.prepare(SessionId("prestep-empty-latch"), { meta: { cwd: join(root, "workspace") } });
+    const session = ctx.sessions.prepare(SessionId("prestep-late-summary"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
     const pluginFiber = await ctx.plugin(plugin, {
@@ -845,14 +845,30 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     };
     const textOf = (message: { content: readonly { type: string; text?: string }[] }): string =>
       message.content.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
+    const guideOf = async (): Promise<string> => {
+      const assembly = await ctx.systemPrompt.assemble({ agent: { session }, scope: { session } } as never);
+      return assembly.sections.find((entry) => entry.name === "memcurio-read-path")?.text ?? "";
+    };
 
     // The window opens while the store has no summary: nothing is injected and
-    // the window latches, so a summary written later waits for the next window.
+    // the window must NOT latch, because Phase 2's INIT summary lands later in
+    // this same window and its prompt-side guide must not arrive alone.
     expect(await step("hello")).toHaveLength(1);
-    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- late summary\n");
-    expect(await step("again")).toHaveLength(1);
+    expect(await guideOf()).toBe("");
 
-    // A compaction opens a new window: the now-present summary is injected.
+    // INIT lands mid-window: the very next step injects the summary, and the
+    // system prompt carries the guide in that same step.
+    writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- late summary\n");
+    const afterInit = await step("again");
+    expect(afterInit).toHaveLength(2);
+    expect(textOf(afterInit[1] as never)).toContain("late summary");
+    expect(await guideOf()).toContain("## memory");
+
+    // The non-empty snapshot latches the window: steady-state steps inject
+    // nothing until a compaction opens the next one.
+    expect(await step("third")).toHaveLength(1);
+
+    // A compaction opens a new window: the summary is injected once more.
     ctx.emit("session/event", session, {
       type: "compaction/end",
       seq: SessionSeq(5),

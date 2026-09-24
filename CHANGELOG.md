@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next host event; the rule provider still runs when no model route is
   available, and a structurally unusable channel (no `agent` method) keeps the
   audited `consolidate.fallback` capability path.
+- **A fresh store's guide and summary now arrive together**: the pre-step
+  window latch is set only by a non-empty injection, so the `## memory` guide
+  no longer appears alone on the step after Phase 2 writes the store's INIT
+  `memory_summary.md` while the `MEMORY_SUMMARY` block it promises waits for
+  the next context window. The freshly written summary is injected on the next
+  step, and a non-empty snapshot still latches the window (one snapshot per
+  window).
 
 ### Changed
 

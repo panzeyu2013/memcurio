@@ -240,7 +240,7 @@ host 半侧已订阅全量 session 事件。Services 投影器把事件转成脱
 
 node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开，无配置项）：
 - **store 注册表**：会话解析的 store root → workdir 标签与 session 映射（ensureSession 注入），快照与浏览列表据此命名（no-cwd 标 isolated）；
-- **事件打标点**：pre-step 注入（static/budget；窗口快照每窗口至多一次，投影器仅置 duplicate 标记——实际去重在插件 pre-step 的 staticInjected 闩）、user/assistant 证据（机器来源消息排除，沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
+- **事件打标点**：pre-step 注入（static/budget；窗口快照每窗口至多一次，投影器仅置 duplicate 标记——实际去重在插件 pre-step 的 staticInjected 闩，该闩仅由非空注入置位：空库不闩，等 INIT 摘要落地后与指南同一步注入）、user/assistant 证据（机器来源消息排除，沿用 partId 方案）、引用收成后 citation（键经引擎侧校验）、compaction prune、读工具命中记忆工作区（`<store>/memory/` 内才计，相对路径为 tick 键）；
 - **refresh diff**（delta 路径）：审计尾（rowid 递增，首次播种静默）→ **写路径前缀**（extract./adhoc./consolidate./prune./purge.）才产生收据（warn.* 与 adapter./integration. 同属 lifecycle noise，不出 delta）；extract.staged/backfill/noop → rollout、adhoc.note/adopt → note、consolidate.auto → consolidation（memory-list-updated）；抽取任务行 diff → **单 job queue-updated**（含消失即 completed 终态）；
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置）；字段名与客户端词汇对齐；delta 过滤与快照标记映射由 `src/plugin/ui-transport.ts` 落实（帧带 root、按 session/store root 过滤、`?after=` 重放）；
 - 客户端模型：shipped store 只折叠 inject-updated 与 receipt（其余 delta 由快照面覆盖）；queue-updated 为**单 job 语义**（jobId/status/attempts），completed 即终态（工作台状态面按 jobs 列表重算 counts）。

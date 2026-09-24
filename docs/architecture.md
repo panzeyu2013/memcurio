@@ -127,7 +127,7 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
 SYSTEM PROMPT（与工具 schema 同区，order 2950）：read_path 指南的**契约版**（标题 `## memory`；决策边界 / verify 防漂移与披露 / 条件式 citation 遥测：只对真正 search/read 过的文件调用 memory_cite，仅靠注入摘要不计 / 写入门槛：仅用户显式要求，只写 note / 用户优先序）——检索机制（布局、quick pass 步骤与预算）已下沉到 memory_* 工具 description，system 段不再常驻；全文无文件系统路径；**仅当该会话 store 的 memory_summary.md 非空且通过注入扫描（可注入）、且本进程确实注册了记忆工具（registerTools 的 apply 期快照，改设置需重启）时才注册**（codex 同款：空摘要 → None → 什么都不发）
 注入的 user message：只放记忆内容本体 —— memory_summary.md 非空时以摘要区块注入（脱敏 + 注入扫描 + 预算裁剪）；空库什么都不发（无占位符、无指南、无 system prompt 段）
 模型自检索：按需调用 memory_* 工具（各自 schema 自带说明，不经文件系统）
-注入（对齐 codex）：上下文窗口打开时注入一次整份 memory_summary.md（2500 token 预算；超预算按 codex 式中间截断保头尾），会话首轮与 compaction/end 之后各一次，稳态轮次不注入；检索由模型经 memory_search 主动发起（引擎仍保留 buildDynamicContext 与模拟器 API）
+注入（对齐 codex）：每个上下文窗口至多注入一次整份 memory_summary.md（2500 token 预算；超预算按 codex 式中间截断保头尾），时机为会话首轮、空库的 INIT 摘要落地后的第一步与 compaction/end 之后（窗口闩只由非空注入置位：空库不闩，保证 `## memory` 指南与摘要同一步出现），稳态轮次不注入；检索由模型经 memory_search 主动发起（引擎仍保留 buildDynamicContext 与模拟器 API）
 注入线格式（引擎与 simulator 共用）：摘要块 = 一行标签 + <<<MEMORY_SUMMARY / >>>MEMORY_SUMMARY 短分隔；动态块（一行 "Memory hits:" + 每行 "rel:line content"，空白折叠、220 字符截断）只服务注入模拟器，不再进入会话上下文
 使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用 + search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）

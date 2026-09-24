@@ -131,9 +131,12 @@ interface SessionRuntime {
   failure?: unknown;
   /** Last worker-lane failure; surfaced at the dispose drain. */
   workerFailure?: unknown;
-  /** Whether this context window already received the summary snapshot.
-   *  Codex parity: one injection per window — the session's first step, and
-   *  then only after compaction/end opens a new window. */
+  /** Whether this context window already received a summary snapshot. One
+   *  injection per window: the session's first step, the first step after a
+   *  fresh store's INIT summary lands, and again only after compaction/end
+   *  opens a new window. Set exclusively by a NON-EMPTY injection, so a store
+   *  that was empty when the window opened stays open until its summary
+   *  exists instead of stranding the summary (and its prompt-side guide). */
   staticInjected: boolean;
   route?: { provider: string; model: string };
   /** Paired compaction state: the summary text plus the seqs of the messages
@@ -1383,7 +1386,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       await awaitRuntime(runtime);
       // Codex parity: memory is a CONTEXT-WINDOW snapshot, not a per-turn
       // recall step. The summary is injected once when a window opens (a
-      // session's first step, and again after a compaction rewrites the log);
+      // session's first step), again on the first step after a fresh store's
+      // INIT summary lands, and again after a compaction rewrites the log;
       // steady-state turns inject nothing and the model reaches the store
       // through the memory tools only. The per-turn dynamic retrieval of
       // v1.9–v2.0 is removed.
@@ -1398,11 +1402,17 @@ export function apply(ctx: Context, config: Config = {}): void {
         ctx.logger.warn("memcurio: pre-step injection failed: %s", String(err));
         return decision;
       }
-      // Latch after a successful read, empty or not: an empty store injects
-      // nothing in THIS window (codex reads memory_summary.md once, when the
-      // window opens), so a summary written later waits for the next window.
-      runtime.staticInjected = true;
+      // Latch only a REAL injection. A fresh store has no summary yet and
+      // Phase 2's INIT summary lands after the first turn — inside this same
+      // window. Latching the empty read would strand that summary until the
+      // next window while the prompt-side guide (which keys off the same
+      // file) appeared immediately, leaving the model with the guide but
+      // without the MEMORY_SUMMARY block the guide promises. Leaving the
+      // window open lets guide and data arrive on the same step; a non-empty
+      // snapshot latches it as before, so steady-state steps never re-inject
+      // and only a compaction opens the next window.
       if (!staticPiece) return decision;
+      runtime.staticInjected = true;
       bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
     return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
   }, { global: true });

@@ -1140,8 +1140,9 @@ export class MemcurioAdapter {
         // summary only, and an empty store injects nothing at all.
         const context = renderStaticContext(root, budget);
         // Audit only a real injection: with the guide prompt-side (v1.9) an empty
-        // store legitimately injects nothing, and the pre-step reads the store once
-        // per context window — a "skipped" audit row per step would just be noise.
+        // store legitimately injects nothing, and the pre-step retries the read
+        // until the window has a snapshot to latch — a "skipped" audit row per
+        // attempt would just be noise.
         if (context !== "") {
             const idx = await Index.create(indexDb(root));
             try {

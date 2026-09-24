@@ -23,7 +23,7 @@
 
 插件注册 `session/created`、`session/event`、`session/flush`、`session/disposed` 监听、带 scope 的 `agent/pre-step` 注入钩子与 `tools/result` 遥测监听；compaction 与会话退役驱动持久 worker：
 
-- **注入（pre-step）** —— 记忆摘要在每个上下文窗口打开时注入一次（会话首步 + compaction 后），稳态轮次不注入，模型经记忆工具主动检索。抽取证据只收用户消息与 assistant 回合，注入内容与机器消息永远不会反馈进自身。
+- **注入（pre-step）** —— 记忆摘要每个上下文窗口至多注入一次（会话首步；空库的 INIT 摘要落地后的第一步；compaction 后），稳态轮次不注入，模型经记忆工具主动检索。抽取证据只收用户消息与 assistant 回合，注入内容与机器消息永远不会反馈进自身。
 - **抽取（Phase 1）** —— 消息、工具调用与 compaction 摘要成为有界证据快照；检查点进入 durable SQLite 队列，由分离的 worker 经会话模型路由排空（绝不阻塞模型步或 flush 边界）。
 - **整合（Phase 2）** —— `turn/end` 后自动运行；没有活跃会话的 store 由有界的休眠 store 清扫触发。整合是 store 级的（会话退役的 abort 不会取消在飞整合），输入先落盘再交给模型。模型运行失败零提交、按失败退避重试；确定性 rule provider 只在没有模型路由时使用。
 - **七个原生工具** —— `memory_search` / `memory_list` / `memory_read` / `memory_remember` / `memory_status` / `memory_context` / `memory_cite`，与注入共用同一读写门禁。
@@ -46,7 +46,7 @@ bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，�
 ## 记忆模型
 
 - **写入：`memory_remember` / ad-hoc notes** —— `extensions/ad_hoc/notes/` 只追加（文件 + SQLite 同事务，≤20,000 字符）；仅当用户明确要求记住/忘记/更新某件事时触发（kind 可选 remember/forget/update）。写入即脱敏；注入 payload 在入口被拒并审计。会话内模型从不直接改记忆文件；错误/过期内容直接编辑 `MEMORY.md` 或由整合 agent 的 diff 清理。
-- **读取：检索 + 渐进式注入** —— 跨 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`、`skills/` 的行级词法检索（未应用的 ad-hoc note 也即时可搜，命中标注 `pending`，避免"刚写下就查不到"），读时再脱敏 + 注入过滤。摘要只在上下文窗口打开时注入一次（会话首轮 / compaction 后；2500 token 预算、超预算中间截断保头尾）；不做每轮自动检索注入，模型经 `memory_search` 主动检索。读路径指引只讲何时调用记忆工具、以及用过后调用原生 `memory_cite` 工具（与记忆文件读取一起计入用量）；绝不解析 assistant 文本。
+- **读取：检索 + 渐进式注入** —— 跨 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`、`skills/` 的行级词法检索（未应用的 ad-hoc note 也即时可搜，命中标注 `pending`，避免"刚写下就查不到"），读时再脱敏 + 注入过滤。摘要每个上下文窗口至多注入一次（会话首轮；空库 INIT 摘要落地后的第一步；compaction 后；2500 token 预算、超预算中间截断保头尾）；不做每轮自动检索注入，模型经 `memory_search` 主动检索。读路径指引只讲何时调用记忆工具、以及用过后调用原生 `memory_cite` 工具（与记忆文件读取一起计入用量）；绝不解析 assistant 文本。
 - **整合** —— Phase 2 把 `MEMORY.md` 重写为带 `rollout_summary_files` 引用的 Task Groups，应用 pending notes，重建 `memory_summary.md`（首行必须恰为 `v1`）。输入（`raw_memories.md` + rollout_summaries）先同步落盘，模型与 provenance 校验看到同一份文件。有路由时跑有界 agent loop，写入仅限 `MEMORY.md` / `memory_summary.md` / `skills/*/SKILL.md`，逐条校验工作区围栏、大小上限、密钥/注入扫描与出处；LLM 运行失败零提交（不降级 rule、不消耗批次），保留 workspace diff 与 pending 状态下一轮重试。无模型路由（无路由 / `MEMCURIO_LLM_PROVIDER=none` / 通道结构性不可用即无 `agent()`）时才跑确定性 rule provider（绝不杜撰、绝无机删）。
 - **遗忘** —— 选择窗口（默认 30 天未用）淘汰 stage-1 输出：删摘要文件 + 基线 diff 摘除仅引用它们的 `MEMORY.md` 区块。检索当前为词法；语义/向量后端保持可选未来项。
 - **膨胀控制** —— Phase 1 no-op 门、使用窗口、每轮整合的新增输入上限（`maxInputs` 默认 256）、有界证据快照与注入预算（默认 2500 token）、保留清理与整合模型自身的策展指令，让 `MEMORY.md` 保持手册而非流水账。
