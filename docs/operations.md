@@ -41,8 +41,8 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         registerTools: true
         # injectBudgetTokens: 2500  # 注入预算下限 128
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
-        # 可选固定 worker 路由；省略两者则跟随会话自身路由（model/selection 意图
-        # → 最近一次已应用的 request/header；AgentOptions 只是创建期默认，不参与）：
+        # 可选固定 worker 路由；省略两者则跟随会话自身路由（按日志顺序取最后一个
+        # 路由事件：model/selection 或已应用的 request/header；AgentOptions 只是创建期默认）：
         # provider: deepseek
         # model: deepseek-v4
 ```
@@ -72,7 +72,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 - 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单。
 - 生效：`injectContext`/预算/路由即时；`scope` 对新会话生效；`registerTools` 重启生效。
-- UI 写入热生效（volatile 原地提交）；手改 YAML 走普通路径、下次启动生效；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
+- UI 写入热生效（volatile 原地提交）；手改 YAML 默认也热生效（默认 base 启用 `dsh-hmr`，监视两份用户 patch 并即时 reconcile；禁用/无 HMR 才需要下次启动）；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
 
 面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；唯一运行期 require 为平台 seed 的 `react`，`pack:check` 会校验 require 纯度）。被显式覆盖的字段显示"已覆盖"徽标，可单个或整体恢复默认；写入未落地（host 拒绝或 schema 拒绝）时面板报错而非静默成功。
 
@@ -130,7 +130,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 ### Known limitations
 
 - DSH exposes no compaction-prompt injection seam, so DSH compaction summaries are produced without memcurio context; the plugin consumes the summary as evidence instead.
-- The worker model route follows the session's own selection (`model/selection`, then the last applied `request/header`) or the pinned `provider`/`model`; `AgentOptions` only seed a route when the session has none yet, so the deployment default (`deepseek-official`) never overrides the model the session actually runs. In multi-tenant gateway deployments the session owner can steer the worker's model route (evidence is redacted before it leaves).
+- The worker model route follows the session's own log — the last route event in order (`model/selection`, or the last applied `request/header`) — or the pinned `provider`/`model`; `AgentOptions` only seed a route when the session has none yet, so the deployment default (`deepseek-official`) never overrides the model the session actually runs. In multi-tenant gateway deployments the session owner can steer the worker's model route (evidence is redacted before it leaves).
 
 ### Settings integration
 

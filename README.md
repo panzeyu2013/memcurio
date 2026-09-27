@@ -78,7 +78,7 @@ The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and
 | `MEMCURIO_ROOT` | Legacy/override data base (defaults to the memcurio namespace under the DSH home) |
 | `MEMCURIO_LLM_PROVIDER=none` | Disables LLM consolidation (rule provider fallback); Phase-1 extraction inside DSH is unaffected — the plugin embeds the host channel directly |
 
-Besides the profile entry's config (editable from the Settings page, which writes the active profile patch), there are no other runtime knobs: model routes, budgets and isolation are DSH profile / per-store `config.json` settings.
+Besides the profile entry's config (keys, page and write target: [docs/settings.md](docs/settings.md)), there are no other runtime knobs: model routes, budgets and isolation are DSH profile / per-store `config.json` settings.
 
 ## Documentation
 
