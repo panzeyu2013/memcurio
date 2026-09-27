@@ -20,8 +20,8 @@ git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.1.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.2.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.2.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -235,10 +235,9 @@ All must be green and `git status --short` empty except the release commit.
    (`docs(release): prepare vX.Y.Z` style).
    The section must describe what actually ships: fold the `[Unreleased]`
    block into it (and leave `[Unreleased]` empty) rather than tagging a stale
-   snapshot. Nothing has been published yet — no git tag, no GitHub Release, no
-   npm package — so the first release is `v0.0.1`; its in-tree section is dated
-   2026-09-16, and later `[Unreleased]` work still has to be folded in during
-   this prep (the notes gate warns when it has not been).
+   snapshot. `v0.0.1` (in-tree section dated 2026-09-16) is already tagged and
+   published; later `[Unreleased]` work is folded in during this prep (the
+   notes gate warns when it has not been).
 2. Run the local pre-flight above.
 3. Push `main` (CI runs the full chain), then tag:
    `git tag vX.Y.Z && git push origin vX.Y.Z`.

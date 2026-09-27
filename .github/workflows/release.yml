@@ -23,7 +23,7 @@ name: Release
 # `memcurio-dsh-plugin-<version>.tgz` as the GitHub Release asset; users
 # install it directly, e.g.:
 #   dsh plugin --profile <profile> add \
-#     https://github.com/<owner>/memcurio/releases/download/v0.0.1/memcurio-dsh-plugin-0.0.1.tgz
+#     https://github.com/<owner>/memcurio/releases/download/v0.0.2/memcurio-dsh-plugin-0.0.2.tgz
 # To re-enable npm publishing later: uncomment the "Publish to npm" step,
 # add the repository secret NPM_TOKEN, and restore `id-token: write` in
 # `permissions` when using `--provenance`.

@@ -1,6 +1,6 @@
 {
   "name": "@memcurio/dsh-plugin",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Memory and context management plugin for the DeepSeek Harness (DSH)",
   "license": "MIT",
   "author": "memcurio contributors",
