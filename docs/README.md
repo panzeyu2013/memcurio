@@ -9,6 +9,7 @@
 | [README_cn.md](README_cn.md) | 中文用户入口：定位、能力、快速开始 | 使用者 |
 | [architecture.md](architecture.md) | 分层架构、存储布局、模块地图、数据流 | 贡献者 |
 | [contract.md](contract.md) | 实现契约：模块职责、导出签名、数据格式（schema v11）、行为规则、测试契约 | 贡献者（改代码前必读） |
+| [settings.md](settings.md) | 设置契约：上游 DSH 0.1.7 规范、插件落点、本仓库约定、验证矩阵 | 插件/客户端贡献者、运维 |
 | [ui.md](ui.md) | 记忆 UI 契约：入口与面、host 服务层、写语义铁律、实时性通道、安全与非功能要求 | 客户端/插件贡献者 |
 | [operations.md](operations.md) | 安装、配置、DSH 集成面、发布流程、FAQ、源码开发 | 运维/部署 |
 | [todo.md](todo.md) | 未完成待办（Release Gate R1）、集成/UI 遗留、开放决策 | 所有人（开放工作唯一入口） |
@@ -20,6 +21,7 @@
 - **只是想用**：根 README → [operations.md](operations.md) 的「安装与配置」。
 - **要改引擎/管线**：[architecture.md](architecture.md) → [contract.md](contract.md) → [todo.md](todo.md) 的未完成项。
 - **要改 UI/客户端**：[ui.md](ui.md) → [contract.md](contract.md) 的模块契约 → [todo.md](todo.md)。
+- **要改设置面/表单**：[settings.md](settings.md) → [ui.md](ui.md) 的「入口」与 Settings 面 → [contract.md](contract.md)。
 - **要发版**：[operations.md](operations.md) 的「发布流程」→ [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 文档纪律

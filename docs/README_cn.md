@@ -37,11 +37,11 @@
 ```bash
 bun install --frozen-lockfile
 bun run build            # dist/ 提交制；新鲜构建不得漂移（CI 校验）
-bun pm pack              # → memcurio-dsh-plugin-0.0.1.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
+bun pm pack              # → memcurio-dsh-plugin-0.0.2.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.2.tgz
 ```
 
-bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`——附属 DSH 数据根（配置路径 → `$DSH_HOME` → `~/.dsh`），不单独创建顶层数据位置；每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT`/插件 `root` 仍可覆盖；`scope: global` 显式共享）。可在 DSH **Settings 页**（随包发布的 "记忆/Memory" 分区）配置 `memcurio` 命名空间（DSH 0.1.7：插件自身 `Config` schema 即该命名空间，键为 profile 条目 id；可编辑字段为 volatile，写入原地更新运行中插件；profile 配置为默认层、active profile patch 为覆盖层）；store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定；记忆工作台 host 桥（事件打标、refresh diff、快照装配，`src/plugin/bridge.ts`）**恒开，不是配置项**。
+bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`——附属 DSH 数据根（配置路径 → `$DSH_HOME` → `~/.dsh`），不单独创建顶层数据位置；每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT`/插件 `root` 仍可覆盖；`scope: global` 显式共享）。可在 DSH **Settings 页**（随包发布的 "记忆/Memory" 分区）配置 `memcurio` 命名空间（设置契约见 [settings.md](settings.md)）；store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定；记忆工作台 host 桥（事件打标、refresh diff、快照装配，`src/plugin/bridge.ts`）**恒开，不是配置项**。
 
 ## 记忆模型
 

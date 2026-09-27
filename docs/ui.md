@@ -57,7 +57,7 @@ DSH Web（浏览器）
 
 ### 入口（标题栏单按钮 + 配置面）
 
-**配置入口（host + client 双侧）**：host 侧以插件自身的 `Config` schema 作为 `memcurio` 设置命名空间（DSH 0.1.7 按 profile 条目 id 取 schema，`src/plugin/settings.ts`；可编辑字段 `.volatile()`，写入原地更新运行中插件的引用），client 侧注册 `settings.section` 槽位（`client/entry.ts` + `client/settings/*`，面板标签 "记忆/Memory"），用户在 DSH Settings 页配置 scope / injectContext / registerTools / injectBudgetTokens / provider / model；profile `cordis.patch.yml` 为默认层，active profile patch 中的显式值为用户覆盖层。`root`（数据位置）属部署级、不进此面板表单；`hostBridge`（记忆界面数据面）**不是配置项**：桥恒开（默认常开、无必须关闭的用户场景）。生效语义：injectContext/budget/provider/model **即时生效**；scope 对新会话生效；registerTools 重启生效。浏览器面板经 `dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一运行期 require = `react`）随包发布；渲染与槽位治理待 S0 实机确认。面板导航行由设置外壳投影 `settings.section` 账本生成，行图标归外壳（`SettingsRoot.navIcon` 按 id 映射，第三方 section 落到 General 齿轮，选项无 icon 字段）：memcurio 用一个渲染 null 的 `settings.action` 探针（外壳打开面板时必然渲染）给本行打 `data-memcurio-nav`，样式以书页 mask 绘制标记；该适配器只加/删一个属性、不插入或移动外壳节点，随 fiber 撤销，上游提供 section icon 能力后删除。
+**配置入口（host + client 双侧）**：设置契约（命名空间、volatile 字段、持久化目标、逐键生效语义）见 [settings.md](settings.md)。本文件只固定呈现面：client 侧注册 `settings.section` 槽位（`client/entry.ts` + `client/settings/*`，面板标签 "记忆/Memory"）；`root`（数据位置）属部署级、不进此面板表单；`hostBridge`（记忆界面数据面）**不是配置项**：桥恒开（默认常开、无必须关闭的用户场景）。浏览器面板经 `dsh.client` 声明 + `lib/client.js`（esbuild loader 产物，唯一运行期 require = `react`）随包发布；渲染与槽位治理待 S0 实机确认。面板导航行由设置外壳投影 `settings.section` 账本生成，行图标归外壳（`SettingsRoot.navIcon` 按 id 映射，第三方 section 落到 General 齿轮，选项无 icon 字段）：memcurio 用一个渲染 null 的 `settings.action` 探针（外壳打开面板时必然渲染）给本行打 `data-memcurio-nav`，样式以书页 mask 绘制标记；该适配器只加/删一个属性、不插入或移动外壳节点，随 fiber 撤销，上游提供 section icon 能力后删除。
 
 **记忆面入口**：标题栏单按钮唤起记忆界面（下述，工作台 M0 落地后启用）。当前会话头部没有任何 memcurio 图标：配置与开关只在 Settings 面板，反馈只经插件注入行、Toast 与工具行。
 
@@ -245,7 +245,7 @@ node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开，无
 - **快照**：`buildSnapshot`（store 列表/注入预览/持久条目=rollout+manual 层并 join usage/队列/整合雷达/近 60 审计尾（携带 writePath 标记，含生命周期行）/设置）；字段名与客户端词汇对齐；delta 过滤与快照标记映射由 `src/plugin/ui-transport.ts` 落实（帧带 root、按 session/store root 过滤、`?after=` 重放）；
 - 客户端模型：shipped store 只折叠 inject-updated 与 receipt（其余 delta 由快照面覆盖）；queue-updated 为**单 job 语义**（jobId/status/attempts），completed 即终态（工作台状态面按 jobs 列表重算 counts）。
 - 按 store 根的桥注册表（`hostBridgeForRoot`）；usage-tick 源含 memory_read 与 shell 精确文件操作数（保守子集）；`attachEvidenceSource`（evidence.session 面）；快照雷达候选（usage 启发式 + pipeline.maxInputs）与收据合成字段（id/ok/error/target/sessionId/workspaceKey）；快照 settings 携带 injectBudgetTokens/version；桥插件级集成测试落地；
-- **配置面（host + client 双侧）**：插件自身 `Config` schema 即 `memcurio` 设置命名空间（DSH 0.1.7 按 profile 条目 id 取 schema；可编辑字段 volatile，写入不重挂插件；profile config 为 base、active profile patch 为覆盖层）+ `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，字段 scope/injectContext/registerTools/injectBudgetTokens/provider/model，含覆盖徽标/恢复默认/跨字段校验与写后校验）；`settings` 服务可选（无则仅少配置页），有则 `configure({ auto: false })` 让随包面板替代自动页；root 非 volatile、不进表单；M0 工作台将在 `client/ui/*` 上重建记忆内容面（UI 永不静默写）。
+- **配置面（host + client 双侧）**：设置契约见 [settings.md](settings.md)；本侧落点为 `settings.section` 浏览器面板（`dsh.client` + `lib/client.js`，含覆盖徽标/恢复默认/跨字段校验与写后校验），root 非 volatile、不进表单；M0 工作台将在 `client/ui/*` 上重建记忆内容面（UI 永不静默写）。
 
 ### 传输与记忆可见性
 
