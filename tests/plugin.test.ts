@@ -1809,6 +1809,108 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     }
   });
 
+
+  test("an adopted session folds the route from its seeded log", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    // Adoption replays the log instead of the live listener, so the seed fold
+    // needs its own regression: dropping the selection branch here is silent.
+    const session = ctx.sessions.prepare(SessionId("route-adopted"), {
+      meta: { cwd: join(root, "workspace") },
+      seed: [
+        { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" },
+        {
+          type: "request/header",
+          seq: SessionSeq(1),
+          time: Date.now(),
+          data: { header: { config: { provider: "seed-old", model: "seed-old-model" } }, reason: "initial" },
+        },
+        {
+          type: "model/selection",
+          seq: SessionSeq(2),
+          time: Date.now(),
+          data: { provider: "seed-picked", model: "seed-picked-model" },
+        },
+      ],
+    } as never);
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: true });
+    await ctx.sessions.flush(session);
+
+    const agent = { session, options: { provider: "deepseek-official", model: "deepseek-flash" } } as never;
+    const payload = { agent, messages: [msg], turn: 1, step: 1, signal: new AbortController().signal } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const defaultNext = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [msg] });
+    const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
+    expect(decision.kind).toBe("enter");
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const errors = index.extractionList().map((job) => job.lastError ?? "").join(" | ");
+      expect(errors).toContain("seed-picked");
+      expect(errors).not.toContain("seed-old");
+      expect(errors).not.toContain("deepseek-official");
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("a malformed route payload never throws inside the session listener", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("route-malformed"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: false });
+    await ctx.sessions.flush(session);
+
+    const headerGarbage: readonly unknown[] = [
+      null,
+      42,
+      "nope",
+      {},
+      { header: null },
+      { header: 7 },
+      { header: { config: { provider: 7, model: null } } },
+      { header: { config: { provider: "", model: "" } } },
+    ];
+    for (const [i, data] of headerGarbage.entries()) {
+      expect(() =>
+        ctx.emit("session/event", session, { type: "request/header", seq: SessionSeq(i), time: Date.now(), data } as never),
+      ).not.toThrow();
+    }
+    const selectionGarbage: readonly unknown[] = ["nope", 42, {}, { provider: 1 }, { provider: "" }, { provider: "x" }];
+    for (const [i, data] of selectionGarbage.entries()) {
+      expect(() =>
+        ctx.emit("session/event", session, { type: "model/selection", seq: SessionSeq(20 + i), time: Date.now(), data } as never),
+      ).not.toThrow();
+    }
+    // A well-formed header after the garbage is still read (the listener kept
+    // its own route state rather than bailing out of the whole handler).
+    expect(() =>
+      ctx.emit("session/event", session, {
+        type: "request/header",
+        seq: SessionSeq(99),
+        time: Date.now(),
+        data: { header: { config: { provider: "ok-provider", model: "ok-model" } } },
+      } as never),
+    ).not.toThrow();
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
   test("validates provider/model pairing and injection budget at apply", async () => {
     // The pair rule is a runtime check on the resolved document.
     expect(() => plugin.apply({} as never, { provider: "x" } as never)).toThrow(/together/);

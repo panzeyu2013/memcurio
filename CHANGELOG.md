@@ -15,10 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile `deepseek-official`) — it overwrote the route learned from the
   session's `request/header` on every step, so extraction asked for a
   provider the session never used and failed with `no adapter registered for
-  provider "deepseek-official"`. The session's logged route now wins:
-  `model/selection` (the route the next request will run under) and
-  `request/header` (the last applied one) outrank the agent options, which
-  only seed a route while the session has none.
+  provider "deepseek-official"`. The session's logged route now wins — the
+  last route event in log order, `model/selection` (the route the next
+  request will run under) or `request/header` (the last applied one) — and
+  the agent options only seed a route while the session has none.
 
 ## [0.0.2] - 2026-09-27
 

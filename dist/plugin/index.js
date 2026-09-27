@@ -235,15 +235,30 @@ function pruneShadowedEvidence(adapter, sessionId, shadowedSeqs) {
         adapter.messageRemoved(sessionId, partIdFor("assistant/message", seq));
     }
 }
+/** Accept only a complete route pair: a lone or empty half is not a route
+ *  (the rule the config-resolution guard enforces on the plugin side too). */
+function routePair(provider, model) {
+    if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "")
+        return undefined;
+    return { provider, model };
+}
+/** The route one `request/header` runs under. Structural reads: this runs
+ *  synchronously inside the session/event listener, where a malformed
+ *  payload or a future DSH shape change must not throw. */
 function routeFromEvent(event) {
     if (event.type !== "request/header")
         return undefined;
-    // Optional chaining: this runs synchronously inside the session/event
-    // listener, and a future DSH shape change must not throw there.
-    const config = event.data.header.config;
-    if (!config?.provider || !config.model)
+    const data = event.data;
+    if (data === null || typeof data !== "object")
         return undefined;
-    return { provider: config.provider, model: config.model };
+    const header = data.header;
+    if (header === null || typeof header !== "object")
+        return undefined;
+    const config = header.config;
+    if (config === null || typeof config !== "object")
+        return undefined;
+    const { provider, model } = config;
+    return routePair(provider, model);
 }
 /** The user's per-session model selection (`model/selection`, appended by
  *  `dsh-api-session-controller` before the next request). The session event map
@@ -258,9 +273,7 @@ function routeFromSelection(event) {
     if (data === null || typeof data !== "object")
         return undefined;
     const { provider, model } = data;
-    if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "")
-        return undefined;
-    return { provider, model };
+    return routePair(provider, model);
 }
 /** Latest route in log order: a later selection supersedes the header it will
  *  be applied under, and a later header supersedes the selection it consumed. */

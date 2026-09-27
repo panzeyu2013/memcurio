@@ -338,13 +338,26 @@ function pruneShadowedEvidence(adapter: MemcurioAdapter, sessionId: string, shad
   }
 }
 
+/** Accept only a complete route pair: a lone or empty half is not a route
+ *  (the rule the config-resolution guard enforces on the plugin side too). */
+function routePair(provider: unknown, model: unknown): { provider: string; model: string } | undefined {
+  if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "") return undefined;
+  return { provider, model };
+}
+
+/** The route one `request/header` runs under. Structural reads: this runs
+ *  synchronously inside the session/event listener, where a malformed
+ *  payload or a future DSH shape change must not throw. */
 function routeFromEvent(event: SessionEvent): { provider: string; model: string } | undefined {
   if (event.type !== "request/header") return undefined;
-  // Optional chaining: this runs synchronously inside the session/event
-  // listener, and a future DSH shape change must not throw there.
-  const config = event.data.header.config;
-  if (!config?.provider || !config.model) return undefined;
-  return { provider: config.provider, model: config.model };
+  const data = (event as { readonly data?: unknown }).data;
+  if (data === null || typeof data !== "object") return undefined;
+  const header = (data as { readonly header?: unknown }).header;
+  if (header === null || typeof header !== "object") return undefined;
+  const config = (header as { readonly config?: unknown }).config;
+  if (config === null || typeof config !== "object") return undefined;
+  const { provider, model } = config as { readonly provider?: unknown; readonly model?: unknown };
+  return routePair(provider, model);
 }
 
 /** The user's per-session model selection (`model/selection`, appended by
@@ -358,8 +371,7 @@ function routeFromSelection(event: SessionEvent): { provider: string; model: str
   const data = (event as { readonly data?: unknown }).data;
   if (data === null || typeof data !== "object") return undefined;
   const { provider, model } = data as { readonly provider?: unknown; readonly model?: unknown };
-  if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "") return undefined;
-  return { provider, model };
+  return routePair(provider, model);
 }
 
 /** Latest route in log order: a later selection supersedes the header it will
