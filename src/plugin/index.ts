@@ -347,9 +347,26 @@ function routeFromEvent(event: SessionEvent): { provider: string; model: string 
   return { provider: config.provider, model: config.model };
 }
 
+/** The user's per-session model selection (`model/selection`, appended by
+ *  `dsh-api-session-controller` before the next request). The session event map
+ *  is merge-extensible and the event only exists when that plugin is mounted,
+ *  so it is read structurally. A selection is the route the NEXT request will
+ *  be assembled under; it must outrank `AgentOptions`, which carry only the
+ *  deployment default the agent was created with. */
+function routeFromSelection(event: SessionEvent): { provider: string; model: string } | undefined {
+  if ((event.type as string) !== "model/selection") return undefined;
+  const data = (event as { readonly data?: unknown }).data;
+  if (data === null || typeof data !== "object") return undefined;
+  const { provider, model } = data as { readonly provider?: unknown; readonly model?: unknown };
+  if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "") return undefined;
+  return { provider, model };
+}
+
+/** Latest route in log order: a later selection supersedes the header it will
+ *  be applied under, and a later header supersedes the selection it consumed. */
 function latestRoute(events: readonly SessionEvent[]): { provider: string; model: string } | undefined {
   let latest: { provider: string; model: string } | undefined;
-  for (const event of events) latest = routeFromEvent(event) ?? latest;
+  for (const event of events) latest = routeFromEvent(event) ?? routeFromSelection(event) ?? latest;
   return latest;
 }
 
@@ -1207,7 +1224,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
 
   ctx.on("session/event", (session, event) => {
     const runtime = ensureSession(session);
-    const route = routeFromEvent(event);
+    const route = routeFromEvent(event) ?? routeFromSelection(event);
     if (route) {
       runtime.route = route;
       lastKnownRoute = route;
@@ -1367,9 +1384,17 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       const agentRoute = payload.agent.options?.provider && payload.agent.options.model
         ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
         : undefined;
+      // AgentOptions hold the creation-time default (`dsh-agent-default-model`
+      // supplies e.g. `deepseek-official` in the web profile), while the route
+      // this session actually uses arrives as a `model/selection` or
+      // `request/header` event. Only seed when nothing better was observed:
+      // overwriting here made the worker call a provider the session never
+      // used (and left no adapter registered for it).
       if (agentRoute && fixedRoute() === undefined) {
-        runtime.route = agentRoute;
-        lastKnownRoute = agentRoute;
+        if (runtime.route === undefined) {
+          runtime.route = agentRoute;
+          if (lastKnownRoute === undefined) lastKnownRoute = agentRoute;
+        }
         sweepDormantStores("pre-step route");
       }
       await awaitRuntime(runtime);

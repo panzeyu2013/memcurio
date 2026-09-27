@@ -41,7 +41,8 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         registerTools: true
         # injectBudgetTokens: 2500  # 注入预算下限 128
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
-        # 可选固定 worker 路由；省略两者则跟随会话 request/header 路由：
+        # 可选固定 worker 路由；省略两者则跟随会话自身路由（model/selection 意图
+        # → 最近一次已应用的 request/header；AgentOptions 只是创建期默认，不参与）：
         # provider: deepseek
         # model: deepseek-v4
 ```
@@ -75,7 +76,7 @@ DSH 0.1.7 起，插件自己的 `Config` schema 就是设置命名空间（键�
 | `injectContext` | pre-step 记忆注入开关 | 即时（volatile 引用原地更新，不重挂插件） |
 | `registerTools` | 是否注册七个原生记忆工具 | 重启生效（volatile 写入不会重跑 apply） |
 | `injectBudgetTokens` | 注入预算（>=128，schema 校验） | 即时 |
-| `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由） | 即时 |
+| `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由：`model/selection` → 最近 `request/header`） | 即时 |
 
 `root`（数据位置）不是 volatile 字段，因此不出现在表单里（部署数据位置，避免误改数据根）。profile 的 `cordis.patch.yml` config 是默认层（composition base），active profile patch 中的显式值为覆盖层；清空即回到部署默认。
 
@@ -87,6 +88,7 @@ DSH 0.1.7 起，插件自己的 `Config` schema 就是设置命名空间（键�
 - **数据在哪、怎么手动查看/编辑？** `＜DSH home＞/memcurio/dsh/<key>/memory/` 下：`MEMORY.md` 是整合后的手册（可直接编辑，下次整合的 baseline diff 会把它当作输入）、`memory_summary.md`（首行必须是 `v1`）、`rollout_summaries/`、`extensions/ad_hoc/notes/`；SQLite 在 store 根 `＜DSH home＞/memcurio/dsh/<key>/index.sqlite`（`state/` 只放事务日志与锁）。编辑 `MEMORY.md` 后下一次自动整合会把改动折入（编辑本身即"工作"）。
 - **记忆没有被注入？** 检查 store 是否为空、`injectContext` 是否开启、注入是否因内容未变化被去重（决策消息已持久化时不会重复注入）；DSH 会话无 `header.cwd` 时会告警并使用 no-cwd store。
 - **为什么模型说"没有权限/没有路由"？** 会话尚无 `request/header` 路由且插件未固定 `provider`/`model` 时，worker 调用不可用；durable job 会保持 pending 等待路由，不会烧重试预算。
+- **为什么 worker 报 `no adapter registered for provider "deepseek-official"`？** `deepseek-official` 是 DSH web 的部署默认（`dsh-agent-default-model` 填进 `AgentOptions`），不一定是你为会话选的模型。memcurio 只把 `AgentOptions` 当作"会话还没有任何路由"时的种子；一旦会话有 `model/selection` 或 `request/header`，worker 就跟随它。若这条错误仍出现，说明该会话确实没有可用的选择/头（例如从未发过请求），或 profile 缺少对应适配器。
 - **提示词注入/泄密怎么防？** 记忆写入面做注入扫描与脱敏；读出路径（注入与 `memory_read`）再脱敏 + 注入过滤；证据自污染（插件注入消息进入抽取）被排除；所有写操作有审计记录。
 
 ### 从源码开发
@@ -134,7 +136,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 ### Known limitations
 
 - DSH exposes no compaction-prompt injection seam, so DSH compaction summaries are produced without memcurio context; the plugin consumes the summary as evidence instead.
-- The worker model route follows the session `request/header` (or the pinned `provider`/`model`); in multi-tenant gateway deployments the session owner can steer the worker's model route (evidence is redacted before it leaves).
+- The worker model route follows the session's own selection (`model/selection`, then the last applied `request/header`) or the pinned `provider`/`model`; `AgentOptions` only seed a route when the session has none yet, so the deployment default (`deepseek-official`) never overrides the model the session actually runs. In multi-tenant gateway deployments the session owner can steer the worker's model route (evidence is redacted before it leaves).
 
 ### Settings integration
 

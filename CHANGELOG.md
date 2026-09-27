@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The worker follows the session's own model route**: `agent/pre-step`
+  seeded the worker route from `AgentOptions`, which
+  `dsh-agent-default-model` fills with the deployment default (in the web
+  profile `deepseek-official`) — it overwrote the route learned from the
+  session's `request/header` on every step, so extraction asked for a
+  provider the session never used and failed with `no adapter registered for
+  provider "deepseek-official"`. The session's logged route now wins:
+  `model/selection` (the route the next request will run under) and
+  `request/header` (the last applied one) outrank the agent options, which
+  only seed a route while the session has none.
+
 ## [0.0.2] - 2026-09-27
 
 ### Removed

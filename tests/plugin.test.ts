@@ -1717,6 +1717,98 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     }
   });
 
+  test("never lets the agent's creation-time route override the session route", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("route-precedence"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    // No pinned route: the worker must follow the session, not AgentOptions.
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: true });
+    await ctx.sessions.flush(session);
+
+    const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });
+    // The route this session actually runs: the last applied request header.
+    ctx.emit("session/event", session, {
+      type: "request/header",
+      seq: SessionSeq(1),
+      time: Date.now(),
+      data: { header: { config: { provider: "session-provider", model: "session-model" } }, reason: "initial" },
+    });
+
+    // A pre-step carrying the agent's creation-time default (what
+    // `dsh-agent-default-model` puts in AgentOptions in a web profile).
+    const agent = { session, options: { provider: "deepseek-official", model: "deepseek-flash" } } as never;
+    const payload = { agent, messages: [msg], turn: 1, step: 1, signal: new AbortController().signal } as never;
+    const carrier = { [Context.filter]: () => false } as never;
+    const defaultNext = async (): Promise<PreStepDecision> => ({ kind: "enter", messages: [msg] });
+    const decision = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
+    expect(decision.kind).toBe("enter");
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const errors = index.extractionList().map((job) => job.lastError ?? "").join(" | ");
+      expect(errors).toContain("session-provider");
+      expect(errors).not.toContain("deepseek-official");
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
+  test("a later model/selection supersedes the header route it will run under", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("route-selection"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: false });
+    await ctx.sessions.flush(session);
+
+    const msg = createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } });
+    ctx.emit("session/event", session, { type: "user/message", seq: SessionSeq(0), time: Date.now(), data: msg, surfaceOp: "append" });
+    ctx.emit("session/event", session, {
+      type: "request/header",
+      seq: SessionSeq(1),
+      time: Date.now(),
+      data: { header: { config: { provider: "old-provider", model: "old-model" } }, reason: "initial" },
+    });
+    // The user picked another model; the next request will use it.
+    ctx.emit("session/event", session, {
+      type: "model/selection",
+      seq: SessionSeq(2),
+      time: Date.now(),
+      data: { provider: "picked-provider", model: "picked-model", reasoningEffort: "high" },
+    } as never);
+
+    const originalConsoleWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      console.warn = originalConsoleWarn;
+    }
+    const index = await Index.create(indexDb(root));
+    try {
+      const errors = index.extractionList().map((job) => job.lastError ?? "").join(" | ");
+      expect(errors).toContain("picked-provider");
+      expect(errors).not.toContain("old-provider");
+    } finally {
+      index.close();
+      await disposeFibers(fibers);
+    }
+  });
+
   test("validates provider/model pairing and injection budget at apply", async () => {
     // The pair rule is a runtime check on the resolved document.
     expect(() => plugin.apply({} as never, { provider: "x" } as never)).toThrow(/together/);
