@@ -65,6 +65,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 | 回滚 | 重新打包旧提交（`git checkout <旧tag/commit>`）后同路径替换 |
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
 | 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.7-rc.2`，peer 范围 `^0.1.7-rc.2` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
+| peer 为何全标 optional | 7 个 `@deepseek-ai/*` peer 一律标 optional：运行期 value import 的 `dsh-tools`/`dsh-llm` 在真实 profile 里由 `dsh-base` 保证存在，标 optional 只为让开发组合（以及 `bun install`）不因缺 peer 失败或装出重复副本。这不代表缺服务可用：`tools`/`llm`/`sessions` 缺失时插件按既有契约等待注入（见 [contract.md](contract.md)） |
 
 ### 从 DSH Settings 页配置（推荐）
 
