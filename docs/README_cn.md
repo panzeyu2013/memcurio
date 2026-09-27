@@ -4,7 +4,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D22.13-green?logo=node.js)](https://nodejs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
-**memcurio** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的记忆与上下文管理插件。本仓库即唯一交付物 `@memcurio/dsh-plugin`：一个 Cordis 插件（node 半侧）把宿主自身的会话生命周期转成持久、按工作区隔离的记忆，再注入回 agent loop，并注册七个原生记忆工具。包的**客户端半侧**随本版本发布（`dsh.client` + `lib/client.js`）：Settings 面板、会话转录里的**记忆注入行**（插件注入的记忆消息渲染为「记忆注入 / Memory injection」；平台通用「上下文注入」不再出现在 memcurio 注入上，其余插件的 context 行原样转发）、**注入/写入 Toast**、7 个记忆工具的自定义工具行（v1.7 起会话头部不承载 memcurio 面，注入指示器保留为工作台状态面）；数据经同源 `/memcurio` snapshot + SSE 路由提供，断流自动降级轮询。完整的记忆工作台仍是下一个里程碑，见 [todo.md](todo.md)。
+**memcurio** 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的记忆与上下文管理插件。本仓库即唯一交付物 `@memcurio/dsh-plugin`：一个 Cordis 插件（node 半侧）把宿主自身的会话生命周期转成持久、按工作区隔离的记忆，再注入回 agent loop，并注册七个原生记忆工具。包的**客户端半侧**随本版本发布（`dsh.client` + `lib/client.js`）：Settings 面板、会话转录里的**记忆注入行**（插件注入的记忆消息渲染为「记忆注入 / Memory injection」；0.1.7 平台会过滤普通 context 节点，该行因此以自定义 chat node kind 注册，平台通用「上下文注入」不会出现在 memcurio 注入上）、**注入/写入 Toast**、7 个记忆工具的自定义工具行（v1.7 起会话头部不承载 memcurio 面，注入指示器保留为工作台状态面）；数据经同源 `/memcurio` snapshot + SSE 路由提供，断流自动降级轮询。完整的记忆工作台仍是下一个里程碑，见 [todo.md](todo.md)。
 
 引擎是 DSH 原生形态：模型访问完全走宿主自己的 `ctx.llm` 路由——**没有 API key、没有 HTTP provider、没有额外 daemon**。引擎核心零运行时依赖（`node:sqlite`）；唯一运行时依赖是插件配置面使用的 schemastery。
 
@@ -41,7 +41,7 @@ bun pm pack              # → memcurio-dsh-plugin-0.0.1.tgz
 dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.1.tgz
 ```
 
-bundle 清单自动插入插件（`inject: [tools, llm, sessions, settings]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`——附属 DSH 数据根（配置路径 → `$DSH_HOME` → `~/.dsh`），不单独创建顶层数据位置；每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT`/插件 `root` 仍可覆盖；`scope: global` 显式共享）。可在 DSH **Settings 页**（随包发布的 "记忆/Memory" 分区）配置 `memcurio` 命名空间（`scope`/`injectContext`/`registerTools`/`injectBudgetTokens`/`provider`/`model`；profile 配置为默认层、settings 文档覆盖）；store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定；记忆工作台 host 桥（事件打标、refresh diff、快照装配，`src/plugin/bridge.ts`）**恒开，不是配置项**。
+bundle 清单自动插入插件（`inject: [tools, llm, sessions]`，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`）。记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`——附属 DSH 数据根（配置路径 → `$DSH_HOME` → `~/.dsh`），不单独创建顶层数据位置；每个绝对工作区路径一个隔离 store（`MEMCURIO_ROOT`/插件 `root` 仍可覆盖；`scope: global` 显式共享）。可在 DSH **Settings 页**（随包发布的 "记忆/Memory" 分区）配置 `memcurio` 命名空间（DSH 0.1.7：插件自身 `Config` schema 即该命名空间，键为 profile 条目 id；可编辑字段为 volatile，写入原地更新运行中插件；profile 配置为默认层、active profile patch 为覆盖层）；store 的 `config.json` 调 `budget.*` 与 `pipeline.*`；worker 路由可用插件 `provider`/`model` 固定；记忆工作台 host 桥（事件打标、refresh diff、快照装配，`src/plugin/bridge.ts`）**恒开，不是配置项**。
 
 ## 记忆模型
 

@@ -3,6 +3,9 @@
 // third-party browser bundle may require at runtime, and therefore the esbuild
 // externals list. Shared by scripts/build-client.ts (build) and
 // scripts/pack-check.ts (gate) so the two can never drift apart.
+//
+// Seed table re-read on the DSH 0.1.7-rc.2 upgrade: unchanged except for the
+// added `@deepseek-ai/dsh-client-ui-dockkit` seed.
 export const PLATFORM_EXTERNALS: readonly string[] = [
   "react",
   "react/jsx-runtime",
@@ -12,4 +15,5 @@ export const PLATFORM_EXTERNALS: readonly string[] = [
   "@deepseek-ai/dsh-client-store",
   "@deepseek-ai/dsh-client-ui-slots",
   "@deepseek-ai/dsh-client-ui-primitives",
+  "@deepseek-ai/dsh-client-ui-dockkit",
 ];

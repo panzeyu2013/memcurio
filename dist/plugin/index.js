@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import Schema from "@deepseek-ai/schemastery";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
 import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
@@ -12,8 +11,10 @@ import { sanitizeForInjection } from "../core/sanitize.js";
 import { memoryWorkspace } from "../core/paths.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
-import { installMemcurioSettings, pinnedRoute, settingsBase } from "./settings.js";
+import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
 import { installUiTransport } from "./ui-transport.js";
+/** Durable source kind stamped on every message this plugin injects. */
+export const MEMCURIO_MESSAGE_KIND = "memcurio";
 export const name = "memcurio";
 /** Bridge registry keyed by the memcurio base root: plugin apply() receives
  *  a Cordis plugin context that is not identity-equal to the outer context,
@@ -57,19 +58,14 @@ const uiTransportRegistry = new UiTransportRegistry();
 export function hostBridgeForRoot(root) {
     return bridgesByRoot.get(root);
 }
-export const inject = ["tools", "llm", "sessions", "settings"];
-export const Config = Schema.object({
-    root: Schema.string(),
-    scope: Schema.union(["workspace", "global"]).default("workspace"),
-    injectContext: Schema.boolean().default(true),
-    registerTools: Schema.boolean().default(true),
-    injectBudgetTokens: Schema.number().step(1).min(128),
-    provider: Schema.string(),
-    model: Schema.string(),
-});
+export const inject = ["tools", "llm", "sessions"];
+// The plugin config IS the settings surface (0.1.7): the schema and its
+// volatile references live in settings.ts. Re-exported here because the
+// Loader reads `Config` from the plugin module.
+export { Config } from "./settings.js";
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.2-rc.1). Only these names may
+ *  dsh-tool-pwsh; verified against DSH 0.1.7-rc.2). Only these names may
  *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 /** Exact existing memory-workspace files named by a shell command (simple
  *  whitespace/quote tokenizer; conservative on purpose — never speculative
@@ -126,41 +122,17 @@ export const MEMCURIO_READ_PATH_ORDER = 2_950;
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+/** Deployment-owned composition checks. The Loader schema already validated
+ *  every settings field (types, budget floor, scope union) before apply; this
+ *  keeps the two rules the schema cannot express loud: `root` names a real
+ *  data location, and the pinned worker route is a pair. */
 function resolveConfig(config = {}) {
     if (config.root !== undefined && (typeof config.root !== "string" || config.root.trim() === "")) {
         throw new TypeError("memcurio: root must be a non-empty string");
     }
-    if (config.scope !== undefined && config.scope !== "workspace" && config.scope !== "global") {
-        throw new TypeError("memcurio: scope must be 'workspace' or 'global'");
-    }
-    if (config.injectContext !== undefined && typeof config.injectContext !== "boolean") {
-        throw new TypeError("memcurio: injectContext must be a boolean");
-    }
-    if (config.registerTools !== undefined && typeof config.registerTools !== "boolean") {
-        throw new TypeError("memcurio: registerTools must be a boolean");
-    }
-    if (config.injectBudgetTokens !== undefined &&
-        (!Number.isSafeInteger(config.injectBudgetTokens) || config.injectBudgetTokens < 128)) {
-        throw new TypeError("memcurio: injectBudgetTokens must be an integer >= 128");
-    }
-    if ((config.provider === undefined) !== (config.model === undefined)) {
-        throw new TypeError("memcurio: provider and model must be configured together");
-    }
-    if (config.provider !== undefined && (typeof config.provider !== "string" || config.provider.trim() === "")) {
-        throw new TypeError("memcurio: provider must be a non-empty string");
-    }
-    if (config.model !== undefined && (typeof config.model !== "string" || config.model.trim() === "")) {
-        throw new TypeError("memcurio: model must be a non-empty string");
-    }
-    return {
-        root: config.root,
-        scope: config.scope ?? "workspace",
-        injectContext: config.injectContext ?? true,
-        registerTools: config.registerTools ?? true,
-        injectBudgetTokens: config.injectBudgetTokens,
-        provider: config.provider,
-        model: config.model,
-    };
+    const settings = settingsView(config);
+    assertRoutePair(settings);
+    return settings;
 }
 function textFromContent(content) {
     return content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
@@ -204,7 +176,29 @@ function isConversationMessage(message) {
  *  sessions (resume/fork, process restart) replay it, so the window must count
  *  as injected — otherwise the first pre-step appends a second copy. */
 function isMemcurioInjectionMessage(message) {
-    return message.source.kind === "plugin" && message.source.plugin === "@memcurio/dsh-plugin";
+    if (message.source.kind === MEMCURIO_MESSAGE_KIND)
+        return true;
+    // Durable logs written before 0.1.7 carry the retired shared kind; a resumed
+    // session replays them, and without this arm the window would re-inject.
+    const legacy = message.source;
+    return legacy.kind === "plugin" && legacy.plugin === "@memcurio/dsh-plugin";
+}
+/** Tool-call id of one tool result message: 0.1.7 carries it on the message
+ *  itself, while 0.1.5-era durable logs kept it in the `tool-result` content
+ *  block (a resumed session used to lose those telemetry/evidence rows). */
+function toolCallIdOf(message) {
+    if (typeof message.toolCallId === "string" && message.toolCallId !== "")
+        return message.toolCallId;
+    if (!Array.isArray(message.content))
+        return "";
+    for (const block of message.content) {
+        if (typeof block !== "object" || block === null)
+            continue;
+        const record = block;
+        if (record.type === "tool-result" && typeof record.toolCallId === "string")
+            return record.toolCallId;
+    }
+    return "";
 }
 /** The evidence partId the plugin assigns to one session event. */
 function partIdFor(eventType, seq) {
@@ -264,8 +258,8 @@ function memoryMessage(text) {
         // summary, not a session-transcript recall. A `form: "recall"` source
         // only renders a recall body when it also carries `references`
         // (label/retainedMessages/omittedMessages/truncated), which a summary
-        // cannot supply — the dedicated memcurio row renders on the plugin id.
-        source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+        // cannot supply — the dedicated memcurio row renders on this source kind.
+        source: { kind: MEMCURIO_MESSAGE_KIND },
     });
 }
 /** Map one native-loop transcript entry onto DSH's message vocabulary:
@@ -275,7 +269,7 @@ export function dshWorkerMessage(message, route) {
     if (message.role === "user") {
         return createUserMessage({
             content: [{ type: "text", text: message.text }],
-            source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+            source: { kind: MEMCURIO_MESSAGE_KIND },
         });
     }
     if (message.role === "assistant") {
@@ -638,11 +632,15 @@ injectBudget) {
 }
 /** Register Memcurio lifecycle hooks and native DSH tools. */
 export function apply(ctx, config = {}) {
-    const resolved = resolveConfig(config);
+    // Loud composition checks fire before anything mounts (see resolveConfig);
+    // the resolution guard then covers every later resolution (Settings write,
+    // profile reload) before the Loader commits it.
+    const initial = resolveConfig(config);
+    guardConfigResolution(ctx);
     // Default data root lives INSIDE the DSH home (see scope.ts dshHome):
     // no separate top-level data location. Explicit plugin root and the
     // MEMCURIO_ROOT env keep overriding for legacy/dev/test isolation.
-    const baseRoot = resolved.root ?? process.env.MEMCURIO_ROOT ?? memcurioBaseRoot();
+    const baseRoot = config.root ?? process.env.MEMCURIO_ROOT ?? memcurioBaseRoot();
     const sessions = new Map();
     // Host bridge for the memory workbench (design §5/§8): tags events and
     // diffs store changes. Always on (product decision 2026-09-16: no user case
@@ -650,24 +648,26 @@ export function apply(ctx, config = {}) {
     // server simply never mounts the transport on top of it.
     const bridge = new HostBridge({
         baseRoot,
-        scope: resolved.scope,
-        version: "rc.1 contract",
-        injectBudgetTokens: resolved.injectBudgetTokens,
+        scope: initial.scope,
+        version: "rc.2 contract",
+        injectBudgetTokens: initial.injectBudgetTokens,
     });
     bridge.attachEvidenceSource((sessionId) => {
         const runtime = sessions.get(sessionId);
         return runtime ? runtime.adapter.memoryEvidenceSnapshot(sessionId) : [];
     });
-    // Configuration surface (design v1.5): profile config is the composition
-    // base; the `memcurio` settings namespace (Settings page) overrides it.
-    // NOTE: installSection calls the hooks synchronously during install, so the
-    // callback body may not touch bindings declared after it (live/fixedRoute).
-    const lastWarned = { scope: resolved.scope, registerTools: resolved.registerTools };
-    const settings = installMemcurioSettings(ctx, {
-        base: settingsBase(resolved),
+    /** Live settings read over the Loader's volatile references (never cached
+     *  across operations): a volatile write from the Settings page is observed
+     *  here without a plugin remount. */
+    const live = () => settingsView(config);
+    // Configuration surface (0.1.7): the profile config is the composition
+    // base; an entry in the active profile patch is the user override the
+    // Settings page writes. The shipped panel replaces the generated page.
+    const lastWarned = { scope: live().scope, registerTools: live().registerTools };
+    installMemcurioSettings(ctx, config, {
         onChange: (next) => {
             bridge.configure({ scope: next.scope, injectBudgetTokens: next.injectBudgetTokens });
-            // Warn once per changed behaviour (the settings document commits on
+            // Warn once per changed behaviour (the settings service commits on
             // every write, even for unrelated fields).
             if (next.scope !== lastWarned.scope) {
                 lastWarned.scope = next.scope;
@@ -679,13 +679,7 @@ export function apply(ctx, config = {}) {
             }
         },
     });
-    /** Live settings read (never cached across operations). */
-    const live = () => settings.current();
-    // Diagnostics must compare against the value APPLIED on this apply, not the
-    // composition base: a differing settings.yaml is in force right now.
-    lastWarned.scope = live().scope;
-    lastWarned.registerTools = live().registerTools;
-    /** Pinned worker route from the settings document, when one is set. */
+    /** Pinned worker route from the live entry config, when one is set. */
     const fixedRoute = () => pinnedRoute(live());
     bridgesByRoot.set(baseRoot, bridge);
     const warn = (error) => ctx.logger.warn("memcurio: %s", String(error));
@@ -936,7 +930,7 @@ export function apply(ctx, config = {}) {
                 else if (event.type === "tool/result") {
                     // Rebuild tool telemetry + tool evidence for pre-restart activity.
                     if (event.data.error === undefined) {
-                        const call = toolCalls.get(event.data.message.content[0]?.toolCallId ?? "");
+                        const call = toolCalls.get(toolCallIdOf(event.data.message));
                         if (call) {
                             const details = toolDetails(call.arguments);
                             if (details?.filePath && !isAbsolute(details.filePath))
@@ -1304,9 +1298,9 @@ export function apply(ctx, config = {}) {
         bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
         return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
     }, { global: true });
-    // The resolved settings document is authoritative (the profile config is
-    // only the composition base), and a hard `settings` inject guarantees the
-    // section resolved before apply.
+    // The resolved entry config is authoritative (the profile patch is only the
+    // composition base), and every read below goes through `live()` so volatile
+    // Settings edits are honored.
     if (live().registerTools) {
         registerMemoryTools(ctx, sessions, bridge, () => live().injectBudgetTokens);
         memoryToolsRegistered = true;

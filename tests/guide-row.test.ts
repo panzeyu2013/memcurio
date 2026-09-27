@@ -177,7 +177,10 @@ describe("guide row registration", () => {
       effect: (callback) => {
         calls.push("effect");
         const dispose = callback();
-        if (typeof dispose === "function") calls.push("effect-disposer");
+        if (typeof dispose === "function") {
+          calls.push("effect-disposer");
+          dispose();
+        }
         return undefined;
       },
       slots: {
@@ -211,6 +214,7 @@ describe("guide row registration", () => {
       "slots.inject:conversation.chat.node",
       `slots.register:${GUIDE_NODE_KIND}`,
       "effect-disposer",
+      "definition-disposed",
     ]);
     expect((registered as { kind?: string } | undefined)?.kind).toBe(GUIDE_NODE_KIND);
   });

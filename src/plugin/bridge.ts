@@ -108,7 +108,7 @@ function rolloutKeyFromDetail(detail: string, action: string): string | undefine
 
 export class HostBridge {
   private readonly baseRoot: string;
-  /** Mutable: the settings document can change them live (configure()). */
+  /** Mutable: a settings commit can change them live (volatile refs). */
   private scope: "workspace" | "global";
   private readonly version?: string;
   private injectBudgetTokens?: number;

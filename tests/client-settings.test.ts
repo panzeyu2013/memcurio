@@ -17,14 +17,14 @@ import {
   type MemcurioSettingsView,
   type SettingsField,
   type SettingsPathOp,
-  type SettingsScopePort,
-  type SettingsScopeSnapshotLike,
+  type ConfigFormPort,
+  type ConfigFormSnapshotLike,
 } from "../client/settings/controller.js";
 
 const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
-class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
-  snapshot: SettingsScopeSnapshotLike<MemcurioSettingsView> = {
+class FakeScope implements ConfigFormPort<MemcurioSettingsView> {
+  snapshot: ConfigFormSnapshotLike<MemcurioSettingsView> = {
     status: "ready",
     value: BASE,
     base: BASE,
@@ -37,11 +37,14 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
   readonly unsets: string[] = [];
   readonly mutations: Array<readonly SettingsPathOp[]> = [];
   scopeListeners = 0;
-  /** When false writes resolve but never land (host refusal). */
+  /** When false writes resolve without landing (host refusal). */
   landing = true;
+  /** When false the port answers `true` even for an unlanded write: only
+   *  the controller's own snapshot verification can catch that transport. */
+  honest = true;
   private readonly listeners = new Set<() => void>();
 
-  getSnapshot(): SettingsScopeSnapshotLike<MemcurioSettingsView> {
+  getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
     return this.snapshot;
   }
 
@@ -73,26 +76,28 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
     };
   }
 
-  async set(field: string, value: unknown): Promise<void> {
+  async set(field: string, value: unknown): Promise<boolean> {
     this.sets.push({ field, value });
-    if (!this.landing) return;
+    if (!this.landing) return !this.honest;
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: value };
     this.publish(user);
+    return true;
   }
 
-  async unset(field: string): Promise<void> {
+  async unset(field: string): Promise<boolean> {
     this.unsets.push(field);
-    if (!this.landing) return;
+    if (!this.landing) return !this.honest;
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
     delete user[field];
     this.publish(user);
+    return true;
   }
 
   /** Atomic ops: the host reduces them and validates once (a lone route half
    *  therefore never lands, while a pair or a full clear does). */
-  async mutate(ops: readonly SettingsPathOp[]): Promise<void> {
+  async mutate(ops: readonly SettingsPathOp[]): Promise<boolean> {
     this.mutations.push(ops);
-    if (!this.landing) return;
+    if (!this.landing) return !this.honest;
     const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
     for (const op of ops) {
       const field = op.path[0] as SettingsField;
@@ -100,6 +105,7 @@ class FakeScope implements SettingsScopePort<MemcurioSettingsView> {
       else delete user[field];
     }
     this.publish(user);
+    return true;
   }
 }
 
@@ -247,6 +253,9 @@ describe("MemcurioSettingsController", () => {
   test("a write that never lands reports a locale-key failure (host refusal)", async () => {
     const scope = new FakeScope();
     scope.landing = false;
+    // The transport answers success anyway: the controller's own read-back
+    // is the only thing that can catch this state.
+    scope.honest = false;
     const controller = new MemcurioSettingsController(scope);
     const outcome = await controller.save("injectContext", false);
     expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.notLanded });
@@ -258,14 +267,23 @@ describe("MemcurioSettingsController", () => {
     expect(controller.face().errorCode).toBeUndefined();
   });
 
+  test("the form's false answer is a refusal even when the snapshot still looks ready", async () => {
+    const scope = new FakeScope();
+    scope.landing = false; // honest default: the port answers false
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.save("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.notLanded });
+    expect(controller.face().busy).toBeUndefined();
+  });
+
   test("a ready state lost before the read-back reports 'could not verify', not a refusal", async () => {
     const scope = new FakeScope();
     const controller = new MemcurioSettingsController(scope);
     const originalSet = scope.set.bind(scope);
-    scope.set = async (field: string, value: unknown) => {
+    scope.set = async (field: string, value: unknown): Promise<boolean> => {
       await originalSet(field, value);
       // The transport leaves ready between the write and the verification.
       scope.snapshot = { ...scope.snapshot, status: "loading", value: undefined };
+      return true;
     };
     expect(await controller.save("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.notReady });
     expect(controller.face().errorCode).toBe(ERROR_KEYS.notReady);
@@ -477,9 +495,10 @@ describe("MemcurioSettingsController", () => {
     await controller.save("injectContext", false);
     // A host that stores the base value back instead of clearing the entry
     // leaves exactly the state the panel must not present as resolved.
-    scope.unset = async (field: string) => {
+    scope.unset = async (field: string): Promise<boolean> => {
       const user = { ...((scope.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: true };
       scope.snapshot = { ...scope.snapshot, user };
+      return true; // the write "landed" as a pinned equal value
     };
     const outcome = await controller.save("injectContext", true);
     expect(outcome).toEqual({ ok: false, code: ERROR_KEYS.notLanded });

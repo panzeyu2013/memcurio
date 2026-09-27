@@ -1,9 +1,22 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Message } from "@deepseek-ai/dsh-llm";
-import Schema from "@deepseek-ai/schemastery";
 import type { AgentTurnMessage } from "../api.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { HostBridge } from "./bridge.js";
+import type { Config } from "./settings.js";
+declare module "@deepseek-ai/dsh-llm" {
+    /** DSH is a merge-extensible source vocabulary with no shared catch-all
+     *  `plugin` kind (0.1.7): a producer declares its own durable source kind.
+     *  `memcurio` marks this plugin's injected cross-session snapshot; the
+     *  browser row keys off it (client/ui/context-row.ts). */
+    interface MessageSourceMap {
+        memcurio: {
+            kind: "memcurio";
+        };
+    }
+}
+/** Durable source kind stamped on every message this plugin injects. */
+export declare const MEMCURIO_MESSAGE_KIND: "memcurio";
 export declare const name = "memcurio";
 /** One browser route table per process: the web server rejects a duplicate
  *  prefix, so exactly one plugin instance may mount the transport at a time.
@@ -25,16 +38,7 @@ export declare class UiTransportRegistry {
  *  bridge is always on — it is not configurable). */
 export declare function hostBridgeForRoot(root: string): HostBridge | undefined;
 export declare const inject: string[];
-export interface Config {
-    root?: string;
-    scope?: "workspace" | "global";
-    injectContext?: boolean;
-    registerTools?: boolean;
-    injectBudgetTokens?: number;
-    provider?: string;
-    model?: string;
-}
-export declare const Config: Schema<Config>;
+export { Config } from "./settings.js";
 export declare const DSH_TOOL_PRESET: {
     readTools: string[];
     shellTools: string[];

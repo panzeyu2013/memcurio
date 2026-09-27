@@ -66,7 +66,7 @@ function rolloutKeyFromDetail(detail, action) {
 }
 export class HostBridge {
     baseRoot;
-    /** Mutable: the settings document can change them live (configure()). */
+    /** Mutable: a settings commit can change them live (volatile refs). */
     scope;
     version;
     injectBudgetTokens;

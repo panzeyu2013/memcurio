@@ -137,7 +137,7 @@ export interface AdapterOptions {
   durableQueue?: boolean;               // 插件开启；事件请求不执行模型
 }
 export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见「宿主集成契约」） */ }
-// 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions, settings]；
+// 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions]；
 //   事件接线 + 记忆注入 + ctx.tools.register 7 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
 // 删除：HarnessAdapter 接口、capabilities/hostModel/createChannel 抽象——DSH 为唯一宿主，无需再抽象。
 ```
@@ -497,9 +497,9 @@ export class MemcurioAdapter {
 
 ### src/plugin/index.ts + scope.ts（DSH Cordis 插件）
 
-- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions, settings]`；config 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 不是配置项，桥恒开）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；用户层配置经 `memcurio` settings 命名空间（Settings 页 / settings.yaml）覆盖 composition base；
+- Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions]`；导出的 `Config` schema 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 不是配置项，桥恒开）。DSH 0.1.7 起该 schema 即 `memcurio` 设置命名空间（键为 profile 条目 id）：可编辑字段标 `.volatile()`，Loader 以稳定 `Volatile` 引用交给 `apply`，设置页写入原地更新引用、不重挂插件；profile config 为 composition base，active profile patch 中的显式值为用户覆盖层（`settings` 服务可选：有则 `configure({ auto: false }, ctx.fiber)` 让随包面板替代自动页，无则仅少一个配置页）。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
-- 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮、空库 INIT 摘要落地后的第一步与 `compaction/end` 之后各一次（`staticInjected` 闩只由非空注入置位，空库不闩，避免指南先于摘要出现）；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `plugin` 等机器消息不进用户证据（防回注 feed-back）；
+- 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮、空库 INIT 摘要落地后的第一步与 `compaction/end` 之后各一次（`staticInjected` 闩只由非空注入置位，空库不闩，避免指南先于摘要出现）；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `memcurio` 等机器消息不进用户证据（防回注 feed-back）；本插件注入消息的 source kind 为合并声明的 `memcurio`，旧日志的 `plugin` kind 仍被识别；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；跟随会话 request/header，或 config.provider/model 固定）；封装带 120s per-call cap，抽取通道透传会话 abort，Phase 2 另用 store 级 `consolidateChannel`（插件生命周期 abort）；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；无可用通道（或结构性无 agent）时整合用 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 触发 worker drain + maybeConsolidate；会话退休只在 30s 预算内 drain 抽取（超时 abort 在飞抽取调用后 dispose，queue 稍后重试），Phase 2 由 store 级通道继续，退役 store 重新进入休眠清扫范围；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。
@@ -510,3 +510,4 @@ export class MemcurioAdapter {
 - workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + LlmLoop 用 mock channel）/ search.test.ts / read.test.ts（list/read 语义、分页/转义拒绝、截断、脱敏、遥测）/ inject.test.ts
 - db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
 - plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule 等）
+- settings.test.ts（0.1.7 设置面：Config schema 默认值与校验、volatile 实时视图、settings 服务页策略与 document-updated 通知、注入开关/registerTools/路由半对拒绝/桥快照）

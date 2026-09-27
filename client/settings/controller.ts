@@ -3,9 +3,10 @@
  *
  * No React, no DSH imports at runtime: the panel component and the entry's
  * cordis wiring consume this controller, and the pure field/edit logic is
- * unit-testable directly. The scope port is the narrow slice of the DSH
- * settings transport this panel needs (`getSnapshot`/`subscribe`/`set`/
- * `unset`), so tests drive it with a fake.
+ * unit-testable directly. The form port is the narrow slice of the DSH
+ * configuration transport this panel needs
+ * (`getSnapshot`/`subscribe`/`set`/`unset`/`mutate`), so tests drive it with
+ * a fake.
  *
  * React binding contract: the renderer memoizes a registration's inject
  * factory result once per entry, so the panel MUST NOT receive a value
@@ -14,11 +15,15 @@
  * reserved `hooks` compartment; `face()` is identity-stable between
  * notifications, which is exactly what the framework's selector hooks expect.
  *
- * Write verification: this runtime's scope mutations resolve even when the
- * Host refuses a write (the refusal reloads the mirror silently). A resolved
- * promise therefore never reports success — every save/reset re-reads the
- * snapshot and compares the landed user layer against the intent.
+ * Write verification: the form's boolean answer is authoritative (0.1.7),
+ * but the resolved view can still lag a refusal, so every save/reset ALSO
+ * re-reads the snapshot and compares the landed user layer against the intent
+ * before reporting success.
  */
+
+/** Settings namespace: the profile entry id this package's patch installs.
+ *  DSH 0.1.7 keys a plugin's configuration form by its entry id, so the
+ *  constant MUST stay in step with `cordis.patch.yml` (`id: memcurio`). */
 export const NAMESPACE = "memcurio";
 
 /** Fields the panel owns (root is deployment-level and read-only). */
@@ -43,8 +48,9 @@ export interface MemcurioSettingsView {
   model?: string;
 }
 
-/** One snapshot of the settings transport for one namespace. */
-export interface SettingsScopeSnapshotLike<T> {
+/** One snapshot of the configuration form for one namespace (mirrors
+ *  dsh-client-ui-settings' ConfigFormSnapshot). */
+export interface ConfigFormSnapshotLike<T> {
   status: "loading" | "ready" | "unavailable";
   value: T | undefined;
   base: unknown;
@@ -59,14 +65,16 @@ export type SettingsPathOp =
   | { op: "set"; path: string[]; value: unknown }
   | { op: "unset"; path: string[] };
 
-/** Narrow transport port (the real binder satisfies it structurally). */
-export interface SettingsScopePort<T> {
-  getSnapshot(): SettingsScopeSnapshotLike<T>;
+/** Narrow configuration-form port: `ctx.configForms.get(entryId)` satisfies it
+ *  structurally. A resolved `false` means the Host refused (or skipped) the
+ *  write; the controller still verifies against the snapshot afterwards. */
+export interface ConfigFormPort<T> {
+  getSnapshot(): ConfigFormSnapshotLike<T>;
   subscribe(listener: () => void): () => void;
-  set(field: string, value: unknown): Promise<void>;
-  unset(field: string): Promise<void>;
+  set(field: string, value: unknown): Promise<boolean>;
+  unset(field: string): Promise<boolean>;
   /** One atomic namespace mutation; the host reduces and validates ONCE. */
-  mutate(ops: readonly SettingsPathOp[]): Promise<void>;
+  mutate(ops: readonly SettingsPathOp[]): Promise<boolean>;
 }
 
 /** Observable seat consumed by the panel through the `hooks` compartment. */
@@ -135,6 +143,16 @@ export function overriddenFields(user: unknown): SettingsField[] {
   return SETTINGS_FIELDS.filter((field) => Object.hasOwn(layer, field));
 }
 
+/** Pair rule over two raw halves: both present or neither (a present half
+ *  must be non-blank). ONE rule body for the field guard and the atomic
+ *  route save; the host validates the resolved section and stays the
+ *  authority. */
+function routePairProblem(provider: unknown, model: unknown): SettingsErrorCode | undefined {
+  const hasProvider = typeof provider === "string" && provider.trim().length > 0;
+  const hasModel = typeof model === "string" && model.trim().length > 0;
+  return hasProvider === hasModel ? undefined : ERROR_KEYS.routePair;
+}
+
 /** Client-side cross-field guard mirroring the host validate hook (the host
  *  remains the authority; this only avoids a known-bad round trip). Applies
  *  to writes AND resets: the host validates the RESOLVED section, so clearing
@@ -145,12 +163,10 @@ export function routeProblem(
   view: MemcurioSettingsView,
 ): SettingsErrorCode | undefined {
   if (field !== "provider" && field !== "model") return undefined;
-  const nextProvider = field === "provider" ? value : view.provider;
-  const nextModel = field === "model" ? value : view.model;
-  const hasProvider = typeof nextProvider === "string" && nextProvider.trim().length > 0;
-  const hasModel = typeof nextModel === "string" && nextModel.trim().length > 0;
-  if (hasProvider !== hasModel) return ERROR_KEYS.routePair;
-  return undefined;
+  return routePairProblem(
+    field === "provider" ? value : view.provider,
+    field === "model" ? value : view.model,
+  );
 }
 
 /** Budget guard shared by the panel and the controller. */
@@ -161,7 +177,7 @@ export function budgetProblem(value: unknown): SettingsErrorCode | undefined {
 
 /** Settings-panel controller over one namespace scope port. */
 export class MemcurioSettingsController {
-  private readonly scope: SettingsScopePort<MemcurioSettingsView>;
+  private readonly scope: ConfigFormPort<MemcurioSettingsView>;
   private faceCache: SettingsFace | null = null;
   private readonly listeners = new Set<() => void>();
   private errorCode: SettingsErrorCode | undefined;
@@ -171,7 +187,7 @@ export class MemcurioSettingsController {
   /** Refcount so a redundant start()/dispose pair cannot kill the seat. */
   private starters = 0;
 
-  constructor(scope: SettingsScopePort<MemcurioSettingsView>) {
+  constructor(scope: ConfigFormPort<MemcurioSettingsView>) {
     this.scope = scope;
   }
 
@@ -240,13 +256,13 @@ export class MemcurioSettingsController {
     const reverts = Object.is(value, face.base[field]);
     this.busy = field;
     this.notify();
+    let accepted: boolean;
     try {
-      if (reverts) await this.scope.unset(field);
-      else await this.scope.set(field, value);
+      accepted = reverts ? await this.scope.unset(field) : await this.scope.set(field, value);
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (!this.verifyField(field, value, reverts)) {
+    if (!accepted || !this.verifyField(field, value, reverts)) {
       // Resolved but not landed (host refusal) — or the transport left the
       // ready state between the write and the read-back, which is a different
       // fact and reports a different key.
@@ -267,12 +283,13 @@ export class MemcurioSettingsController {
     if (problem) return this.fail(problem);
     this.busy = field;
     this.notify();
+    let accepted: boolean;
     try {
-      await this.scope.unset(field);
+      accepted = await this.scope.unset(field);
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (overriddenFields(this.scope.getSnapshot().user).includes(field)) {
+    if (!accepted || overriddenFields(this.scope.getSnapshot().user).includes(field)) {
       return this.fail(ERROR_KEYS.resetNotLanded);
     }
     this.errorCode = undefined;
@@ -290,12 +307,13 @@ export class MemcurioSettingsController {
     if (pending.length === 0) return this.settleCleared();
     this.busy = "all";
     this.notify();
+    let accepted: boolean;
     try {
-      await this.scope.mutate(pending.map((field) => ({ op: "unset", path: [field] }) as const));
+      accepted = await this.scope.mutate(pending.map((field) => ({ op: "unset", path: [field] }) as const));
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (overriddenFields(this.scope.getSnapshot().user).length > 0) {
+    if (!accepted || overriddenFields(this.scope.getSnapshot().user).length > 0) {
       return this.fail(ERROR_KEYS.resetNotLanded);
     }
     return this.settleCleared();
@@ -307,7 +325,7 @@ export class MemcurioSettingsController {
   async saveRoute(provider: string, model: string): Promise<SaveOutcome> {
     const nextProvider = provider.trim();
     const nextModel = model.trim();
-    if ((nextProvider === "") !== (nextModel === "")) return this.fail(ERROR_KEYS.routePair);
+    if (routePairProblem(nextProvider, nextModel) !== undefined) return this.fail(ERROR_KEYS.routePair);
     // Both an empty pair (follow the session route) and a pair equal to the
     // composition base are reverts: clear the user halves so a route typed
     // back to the default stops counting as overridden.
@@ -325,12 +343,13 @@ export class MemcurioSettingsController {
           { op: "set", path: ["provider"], value: nextProvider },
           { op: "set", path: ["model"], value: nextModel },
         ];
+    let accepted: boolean;
     try {
-      await this.scope.mutate(ops);
+      accepted = await this.scope.mutate(ops);
     } catch {
       return this.fail(ERROR_KEYS.hostRejected);
     }
-    if (!this.verifyRoute(reverts ? "" : nextProvider, reverts ? "" : nextModel)) {
+    if (!accepted || !this.verifyRoute(reverts ? "" : nextProvider, reverts ? "" : nextModel)) {
       return this.fail(this.refusalKey());
     }
     return this.settleCleared();

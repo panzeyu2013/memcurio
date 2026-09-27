@@ -1,53 +1,47 @@
 /**
- * memcurio's own row for an injected memory message (v1.8 product instruction,
- * 2026-09-16): it reads "记忆注入 / Memory injection", never the platform's
- * generic "上下文注入 / Context injection".
+ * memcurio's own transcript row for an injected memory message (v1.8 product
+ * instruction, 2026-09-16): it reads "记忆注入 / Memory injection", never the
+ * platform's generic "上下文注入 / Context injection".
  *
- * The platform renders EVERY injected `user/message` through one generic
- * context row whose title is fixed by the message SOURCE KIND — the durable
- * source carries no producer-owned title (or icon). The only seam is the keyed
- * `conversation.chat.node` cell: the shipped row owns key `context` at the
- * default priority 0, and a lower-priority registration shadows it. This
- * adapter registers at {@link CONTEXT_ROW_PRIORITY} (-1) and renders memcurio's
- * row only when `source.kind === "plugin"` and `source.plugin` is
- * {@link MEMCURIO_PLUGIN_ID}.
+ * DSH 0.1.7 classifies every injected `user/message` as a `context` Chat node
+ * and then drops ordinary context nodes from the transcript: the shipped
+ * `isVisibleChatNode` predicate keeps only context nodes that carry a
+ * tool-addition/tool-removal block, so shadowing the shipped `context` cell
+ * (the 0.1.5-era seam) can never render. The working seam is the one the
+ * system-prompt guide row already uses, and `dsh-chamber-mcp` uses for its
+ * registered-tools row: a producer-owned node definition
+ * (`uiConversation.events.register`) with a CUSTOM kind, plus a keyed
+ * `conversation.chat.node` cell for that kind. Custom kinds bypass the context
+ * visibility gate.
  *
- * Every OTHER context node — the runtime snapshot, agent instructions, a skill
- * catalog, a notice, a relay, a cross-session recall — is handed back to the
- * shipped renderer this adapter shadowed, resolved from the slot ledger, so
- * those rows keep the platform chrome exactly. A ledger probe that throws or
- * finds no shipped entry falls back to a minimal opaque row instead of
- * dropping the node.
- *
- * The row keeps the shipped disclosure geometry (24px line, 16px leading box,
- * 13px secondary title, hover/open chevron, 141px code-block body) against the
- * same `--dsw-*` tokens; no shipped component is imported (the built client
- * may require nothing but react). The leading glyph is memcurio's own book
- * mark (`MemoryMarkIcon`, inlined in `icons.ts`); the generic fallback row
- * keeps the platform's context-injection glyph.
- *
- * Delete this adapter when the platform exposes a producer-owned title/icon on
- * the injected context source.
+ * The definition matches this package's own durable source kind
+ * ({@link MEMCURIO_MESSAGE_KIND}; pre-0.1.7 logs carry the retired shared
+ * `plugin` kind and stay recognized) and emits a VISIBLE node built exactly
+ * like the shipped one (`{key, kind, id, target, anchorSeq, location,
+ * visibility, data}`), so the row keeps the message's own position and turn
+ * grouping. The row keeps the shipped disclosure geometry (24px line, 16px
+ * leading box, 13px secondary title, hover/open chevron, 141px code-block body)
+ * against the same `--dsw-*` tokens; no shipped component is imported (the
+ * built client may require nothing but react). The leading glyph is memcurio's
+ * own book mark (`MemoryMarkIcon`, inlined in `icons.ts`).
  *
  * @module
  */
 import { createElement, useState } from "react";
 import type { ReactElement } from "react";
 
-import { ChevronDownIcon, ContextInjectionIcon, MemoryMarkIcon } from "./icons.js";
-import type { UiKey } from "./locales.js";
+import { registerChatNodeRow, type ChatNodeRegistrationHost } from "./chat-node-registration.js";
+import { ChevronDownIcon, MemoryMarkIcon } from "./icons.js";
+import { NS, type UiKey } from "./locales.js";
 
-/** Plugin id memcurio stamps on its injected messages. */
+/** Plugin id memcurio stamps on its injected messages (legacy source arm). */
 export const MEMCURIO_PLUGIN_ID = "@memcurio/dsh-plugin";
 
-/** Shadowing rank of this adapter's registration (the shipped row sits at 0). */
-export const CONTEXT_ROW_PRIORITY = -1;
+/** Durable source kind memcurio stamps on its injected messages (0.1.7). */
+export const MEMCURIO_MESSAGE_KIND = "memcurio";
 
-/** The keyed chat-node seat this adapter shadows. */
-export const CONTEXT_ROW_SEAT = "conversation.chat.node";
-
-/** The shipped context row's cell key. */
-export const CONTEXT_ROW_KEY = "context";
+/** Custom Chat node kind of this row; also the keyed chat-node cell key. */
+export const INJECTION_NODE_KIND = "memcurio-injection";
 
 /** Structural slice of one chat context node payload (no package import). */
 export interface ContextRowDataLike {
@@ -68,30 +62,46 @@ export interface ContextRowProps {
   readonly t?: ((key: UiKey, params?: Record<string, unknown>) => string) | undefined;
 }
 
-/** One slot-ledger entry, as read by the adapter (structural). */
-export interface ContextRowEntryLike {
-  readonly component?: unknown;
-  readonly options?: { readonly key?: unknown; readonly priority?: unknown } | undefined;
+/** Structurally narrowed persisted `user/message` event (no session import). */
+export interface InjectionEventLike {
+  readonly type?: unknown;
+  readonly seq?: unknown;
+  readonly surfaceOp?: unknown;
+  readonly data?: ContextRowDataLike | undefined;
 }
 
-/** Ledger slice the adapter probes for the row it shadowed. */
-export interface ContextRowSlotsLike {
-  entries(seat: string): readonly ContextRowEntryLike[];
+/** One accepted match; the engine reads identity from the event only. */
+export interface InjectionMatchLike {
+  readonly event: InjectionEventLike;
 }
 
-/** Host wiring: the ledger probe plus the platform's own chat translator. */
-export interface ContextRowHost {
-  readonly slots?: ContextRowSlotsLike | undefined;
-  /** Translate function bound to the platform chat namespace. */
-  readonly chatT: (key: string, params?: Record<string, unknown>) => string;
+/** State one injected message Context carries (the row's payload). */
+export interface InjectionState {
+  readonly seq: number;
+  readonly content?: unknown;
+  readonly source?: unknown;
+}
+
+/** Context handed to `buildViewNode` (location slice of the engine Context). */
+export interface InjectionNodeContextLike {
+  readonly state?: InjectionState | undefined;
+  readonly key?: unknown;
+  readonly id?: unknown;
+  readonly start?: { readonly location?: unknown } | undefined;
+  readonly matches?: readonly { readonly location?: unknown }[] | undefined;
+}
+
+/** Conversation Node Definition registered for the chat target. */
+export interface InjectionNodeDefinition {
+  readonly kind: string;
+  readonly target: string;
+  match(event: InjectionEventLike): { readonly id: string; readonly role: "start" } | null;
+  start(context: unknown, match: InjectionMatchLike): InjectionState;
+  update(context: { readonly state: InjectionState }): InjectionState;
+  buildViewNode(context: InjectionNodeContextLike): Record<string, unknown> | null;
 }
 
 const h = createElement;
-
-/** Whether a ledger component value can be rendered (plain function or memo object). */
-function isRenderable(value: unknown): boolean {
-  return typeof value === "function" || (typeof value === "object" && value !== null);
-}
 
 /** Text of one context payload: text parts joined, other shapes as JSON. */
 export function contextTextOf(content: unknown): string {
@@ -118,34 +128,75 @@ export function contextLabelOf(source: unknown): string {
   return MEMCURIO_PLUGIN_ID;
 }
 
-/** Whether one context payload is a memcurio injection (never another plugin's). */
+/** Whether one context payload is a memcurio injection (never another plugin's).
+ *  Both the 0.1.7 source kind and the retired shared `plugin` kind (durable
+ *  sessions resumed across the upgrade) are recognized. */
 export function isMemcurioInjection(data: ContextRowDataLike | undefined): boolean {
   if (data === undefined) return false;
   const source = data.source;
   if (typeof source !== "object" || source === null) return false;
   const record = source as { readonly kind?: unknown; readonly plugin?: unknown };
+  if (record.kind === MEMCURIO_MESSAGE_KIND) return true;
   return record.kind === "plugin" && record.plugin === MEMCURIO_PLUGIN_ID;
 }
 
-/** The next registration to render when this adapter declines a node: the row
- *  it shadowed (shipped rows sit above {@link CONTEXT_ROW_PRIORITY}). */
-export function nextContextRow(host: ContextRowHost): unknown {
-  const slots = host.slots;
-  if (slots === undefined) return undefined;
-  try {
-    for (const entry of slots.entries(CONTEXT_ROW_SEAT)) {
-      const options = entry.options;
-      if (options?.key !== CONTEXT_ROW_KEY) continue;
-      // Entries sort ascending by priority: anything at or below this
-      // adapter's rank is this adapter itself (or a row that already lost).
-      const priority = typeof options.priority === "number" ? options.priority : 0;
-      if (priority <= CONTEXT_ROW_PRIORITY) continue;
-      if (isRenderable(entry.component)) return entry.component;
-    }
-  } catch {
-    // A ledger probe must never take a transcript row down.
-  }
-  return undefined;
+function seqOf(event: InjectionEventLike): number {
+  return typeof event.seq === "number" && Number.isFinite(event.seq) ? event.seq : 0;
+}
+
+function matchIdOf(event: InjectionEventLike): string {
+  const id = (event.data as { readonly id?: unknown } | undefined)?.id;
+  return typeof id === "string" && id !== "" ? id : String(seqOf(event));
+}
+
+/** Node definition of the injected-memory row. The platform's own classifier
+ *  still builds an (invisible) `context` node for the same event; this
+ *  definition adds the visible, producer-owned one without touching it.
+ *
+ *  Double-row risk: the shipped node stays invisible today because a plugin
+ *  pre-step injection never enters the inbox claim set (the agent loop claims
+ *  before the hook and appends the hook messages as plain `user/message`
+ *  events), so the shipped `context` node never takes its `waking`
+ *  turn-trigger presentation. If upstream ever routes injected context
+ *  through the inbox, the shipped row would become visible next to this one
+ *  and this lane must be removed instead of extended. */
+export function createInjectionNodeDefinition(): InjectionNodeDefinition {
+  return {
+    kind: INJECTION_NODE_KIND,
+    target: "chat",
+    match(event: InjectionEventLike): { readonly id: string; readonly role: "start" } | null {
+      if (event === null || typeof event !== "object") return null;
+      if (event.type !== "user/message") return null;
+      // Mirror the shipped `isAppendSurfaceEvent` gate: only an appended
+      // surface event is a transcript message (a replacement copy is not).
+      if (event.surfaceOp !== "append") return null;
+      if (!isMemcurioInjection(event.data)) return null;
+      return { id: matchIdOf(event), role: "start" };
+    },
+    start(_context, match): InjectionState {
+      const data = match.event.data;
+      return { seq: seqOf(match.event), content: data?.content, source: data?.source };
+    },
+    update(context): InjectionState {
+      return context.state;
+    },
+    buildViewNode(context): Record<string, unknown> | null {
+      const state = context.state;
+      if (state === undefined) return null;
+      return {
+        key: context.key,
+        kind: INJECTION_NODE_KIND,
+        id: context.id,
+        target: "chat",
+        // The message's own position; `location` stays the engine-resolved one
+        // so the row groups into its turn exactly like the shipped node.
+        anchorSeq: state.seq,
+        location: context.start?.location ?? context.matches?.[0]?.location ?? { kind: "unresolved" },
+        visibility: "visible",
+        data: state,
+      };
+    },
+  };
 }
 
 /** One collapsed disclosure line that opens into the shipped 141px code body. */
@@ -192,37 +243,22 @@ export function MemcurioInjectionRow(props: {
   });
 }
 
-/** Safety net for an exotic composition without the shipped context row: the
- *  node stays readable under the platform's generic title. */
-function FallbackContextRow(props: {
-  t: (key: string, params?: Record<string, unknown>) => string;
-  data: ContextRowDataLike | undefined;
-}): ReactElement {
-  return h(DisclosureLine, {
-    title: props.t("message.contextInjection"),
-    label: contextLabelOf(props.data?.source),
-    text: contextTextOf(props.data?.content),
-    // The generic fallback is not memcurio's row: it keeps the platform glyph.
-    icon: h(ContextInjectionIcon, {}),
-  });
+/** The keyed chat-node view of this row (the node's `data` is the state). */
+export function MemcurioInjectionNodeRow(props: ContextRowProps): ReactElement {
+  const t = props.t ?? ((key: UiKey): string => key);
+  return h(MemcurioInjectionRow, { t, data: props.node?.data });
 }
 
-/**
- * Build the chat-node component registered for the `context` cell.
- *
- * @param host - ledger probe and the platform chat translator.
- * @returns the component the keyed seat renders for every context node.
- */
-export function createContextRow(host: ContextRowHost): (props: ContextRowProps) => ReactElement {
-  const component = function MemcurioContextRow(props: ContextRowProps): ReactElement {
-    const t = props.t ?? ((key: UiKey): string => key);
-    const data = props.node?.data;
-    if (isMemcurioInjection(data)) return h(MemcurioInjectionRow, { t, data });
-    const shipped = nextContextRow(host);
-    if (shipped !== undefined) {
-      return h(shipped as (forwarded: ContextRowProps) => ReactElement, { ...props, t: host.chatT });
-    }
-    return h(FallbackContextRow, { t: host.chatT, data });
-  };
-  return component;
+/** Host slice the registration needs (optional by construction). */
+export type InjectionRegistrationHost = ChatNodeRegistrationHost;
+
+/** Register the injected-memory row in the optional conversation lane. */
+export function registerInjectionRow(ctx: InjectionRegistrationHost): void {
+  registerChatNodeRow(ctx, {
+    createDefinition: createInjectionNodeDefinition,
+    kind: INJECTION_NODE_KIND,
+    component: MemcurioInjectionNodeRow,
+    locale: NS,
+    label: "memcurio: injected-memory row",
+  });
 }

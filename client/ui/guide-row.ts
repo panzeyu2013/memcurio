@@ -8,7 +8,7 @@
  * `dsh-chamber-mcp` closes the equivalent one for MCP tools — with ONE derived
  * disclosure row in the conversation lane, and NOTHING written into the session.
  *
- * A private session event is not an option on 0.1.5: the stored envelope's
+ * A private session event is not an option on 0.1.7: the stored envelope's
  * `ignorable?: true` marker is the only way a reader may skip an unknown event
  * type, no public append path can set it, and a log carrying a foreign REQUIRED
  * type stops opening altogether — out-of-repo types are outside the build's
@@ -29,6 +29,7 @@
 import { createElement, useState } from "react";
 import type { ReactElement } from "react";
 
+import { registerChatNodeRow, type ChatNodeRegistrationHost, type ChatNodeScope } from "./chat-node-registration.js";
 import { ChevronDownIcon, MemoryMarkIcon } from "./icons.js";
 import { NS, type UiKey } from "./locales.js";
 
@@ -322,21 +323,10 @@ export function MemcurioGuideRow(props: GuideRowProps): ReactElement | null {
 /* ----------------------------------------------------------- registration --- */
 
 /** Scope of the optional `uiConversation` injection. */
-export interface GuideScope {
-  effect(callback: () => (() => void) | undefined, label?: string): void;
-  slots: {
-    inject(seat: string, callback: () => (() => void) | undefined): void;
-    register(options: Record<string, unknown>, view: unknown): (() => void) | undefined;
-  };
-  uiConversation: {
-    events: { register(definition: unknown): (() => void) | undefined };
-  };
-}
+export type GuideScope = ChatNodeScope;
 
 /** Host slice the registration needs (optional by construction). */
-export interface GuideRegistrationHost {
-  inject?(names: readonly string[], apply: (scope: GuideScope) => void): void;
-}
+export type GuideRegistrationHost = ChatNodeRegistrationHost;
 
 /**
  * Register the definition and the keyed chat-node view. A host without the
@@ -345,28 +335,11 @@ export interface GuideRegistrationHost {
  * degrades the ROW, never the plugin's own apply.
  */
 export function registerGuideRow(ctx: GuideRegistrationHost): void {
-  if (typeof ctx.inject !== "function") return;
-  try {
-    ctx.inject(["uiConversation"], (scope) => {
-      try {
-        scope.effect(() => {
-          const disposeDefinition = scope.uiConversation.events.register(createGuideNodeDefinition());
-          scope.slots.inject("conversation.chat.node", () => {
-            scope.slots.register(
-              { name: "conversation.chat.node", key: GUIDE_NODE_KIND, locale: NS },
-              MemcurioGuideRow,
-            );
-            return undefined;
-          });
-          return () => {
-            if (typeof disposeDefinition === "function") disposeDefinition();
-          };
-        }, "memcurio: system-prompt guide row");
-      } catch {
-        // The row degrades; plugin apply must never fail on a UI contribution.
-      }
-    });
-  } catch {
-    // A context without the optional-service inject keeps everything else.
-  }
+  registerChatNodeRow(ctx, {
+    createDefinition: createGuideNodeDefinition,
+    kind: GUIDE_NODE_KIND,
+    component: MemcurioGuideRow,
+    locale: NS,
+    label: "memcurio: system-prompt guide row",
+  });
 }

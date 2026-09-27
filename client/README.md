@@ -24,7 +24,7 @@ runtime* constraints and the module map.
 - Runtime purity: the bundle may require only platform seed modules
   (`react`, `react/jsx-runtime`). Every `@deepseek-ai/*` import is
   type-only; live services arrive through cordis
-  (`ctx.slots`, `ctx.locale`, `ctx.settingsScope`, `ctx.sessions`, see
+  (`ctx.slots`, `ctx.locale`, `ctx.configForms`, `ctx.uiSession`, see
   `inject` in `client/entry.ts`), and all icons are inline SVG. `pack:check`
   enforces the rule.
 
@@ -39,7 +39,8 @@ runtime* constraints and the module map.
 | `ui/model.ts` | Observable memory UI store (injection preview, write receipts, unread, realtime mode) plus the pure derivations the surfaces read. |
 | `ui/transport.ts` | Same-origin snapshot + SSE client: one stream per page, snapshot-before-subscribe, `?after=` replay, polling fallback, session rebind. |
 | `ui/wire.ts` | Wire vocabulary mirrored from `src/services/projector.ts` / `src/services/snapshot.ts`, with boundary validators (`isUiDelta`, `isUiEventFrame`, `isUiSnapshotResponse`). |
-| `ui/context-row.ts` | The "记忆注入 / Memory injection" transcript row; shadows the shipped `conversation.chat.node` `context` cell at priority −1 and forwards every non-memcurio context node back to it. |
+| `ui/context-row.ts` | The "记忆注入 / Memory injection" transcript row; a custom `memcurio-injection` chat node kind (0.1.7 filters ordinary `context` nodes out of the transcript) plus its keyed cell. |
+| `ui/chat-node-registration.ts` | The shared optional-`uiConversation` lane: node definition + keyed `conversation.chat.node` cell, used by the guide and injection rows. |
 | `ui/guide-row.ts` | The "记忆指南 / Memory guide" row derived from the harness's own `system/message` events (the read-path guide lives in the system prompt). |
 | `ui/tool-rows.ts` | One keyed `tool.call.toolview` row per native memory tool. |
 | `ui/toast.ts` | Transient injection/write notifications. |

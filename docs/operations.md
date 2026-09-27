@@ -34,7 +34,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 - insert:
     - id: memcurio
       name: '@memcurio/dsh-plugin'
-      inject: [tools, llm, sessions, settings]
+      inject: [tools, llm, sessions]
       config:
         scope: workspace          # workspace | global
         injectContext: true
@@ -63,23 +63,23 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 | 升级 | 拉取新代码 → `bun install --frozen-lockfile && bun run build && bun pm pack` → 用 `dsh` 的插件管理命令以新 tarball 替换旧版本 |
 | 回滚 | 重新打包旧提交（`git checkout <旧tag/commit>`）后同路径替换 |
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
-| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.5-rc.1`，peer 范围 `^0.1.5-rc.1` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
+| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.7-rc.2`，peer 范围 `^0.1.7-rc.2` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
 
 ### 从 DSH Settings 页配置（推荐）
 
-插件向 DSH 设置域注册 `memcurio` 命名空间（`<DSH home>/settings.yaml` 的 `memcurio:` 段），可在 Settings 页直接调整：
+DSH 0.1.7 起，插件自己的 `Config` schema 就是设置命名空间（键为 profile 条目 id `memcurio`）：Settings 页读 schema、校验写入并把改动写回 active profile patch（config editor），不再有独立的 `settings.yaml` 文档。可调整项：
 
 | 键 | 作用 | 生效 |
 |---|---|---|
 | `scope` | `workspace`（按工作区隔离）/ `global`（共享 store） | 新会话生效 |
-| `injectContext` | pre-step 记忆注入开关 | 即时 |
-| `registerTools` | 是否注册七个原生记忆工具 | 重启生效 |
-| `injectBudgetTokens` | 注入预算（>=128） | 即时 |
+| `injectContext` | pre-step 记忆注入开关 | 即时（volatile 引用原地更新，不重挂插件） |
+| `registerTools` | 是否注册七个原生记忆工具 | 重启生效（volatile 写入不会重跑 apply） |
+| `injectBudgetTokens` | 注入预算（>=128，schema 校验） | 即时 |
 | `provider` / `model` | 固定 worker 路由（须成对；省略则跟随会话路由） | 即时 |
 
-`root`（数据位置）在面板只读说明，避免误改数据根。profile 的 `cordis.patch.yml` config 是默认层（composition base），settings 文档为覆盖层；清空用户层即回到 profile 默认。
+`root`（数据位置）不是 volatile 字段，因此不出现在表单里（部署数据位置，避免误改数据根）。profile 的 `cordis.patch.yml` config 是默认层（composition base），active profile patch 中的显式值为覆盖层；清空即回到部署默认。
 
-面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；唯一运行期 require 为平台 seed 的 `react`，`pack:check` 会校验 require 纯度）。`settings` 是宿主必需服务（dsh-base 及其上的 profile 均提供）：在该服务不可用的极简 profile（如 `dsh-sdk-minimal`）中插件不会激活；卸载/重载 settings provider 会随之重启本插件。字段改动即时写回 `settings.yaml`；被覆盖字段显示"已覆盖"徽标，可单个或整体恢复默认；写入未落地（host 拒绝）时面板报错而非静默成功。
+面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；唯一运行期 require 为平台 seed 的 `react`，`pack:check` 会校验 require 纯度）。插件自身不再硬注入 `settings`：有该服务时注册 `configure({ auto: false }, ctx.fiber)` 让随包面板替代自动生成页，并订阅本命名空间的 `settings/document-updated` 刷新 host bridge 与提示延迟生效项；没有该服务的极简 profile（如 `dsh-sdk-minimal`）中记忆功能照常运行，只是没有配置页，卸载/重载 settings 服务也不再重启本插件。被显式覆盖的字段显示"已覆盖"徽标，可单个或整体恢复默认；写入未落地（host 拒绝或 schema 拒绝）时面板报错而非静默成功。
 
 ### 常见问题
 
@@ -115,7 +115,7 @@ DSH plugins are Cordis modules with a package manifest and profile patch. Since 
 - Successful compactions (and model-free `compaction/prune` events) prune the evidence parts their `shadowedSeqs` cover, keeping the bounded evidence window focused on the live surface.
 - `tools/result` records successful filesystem and shell reads as usage telemetry (relative operands are resolved against the session workdir first); the native `memory_cite` call registers the memory entries and rollout ids a reply relied on (audited as `integration.cite`), so rollouts the model cites without searching still count. Assistant text is never parsed for telemetry.
 - Seven native tools are registered: `memory_search`, `memory_list`, `memory_read`, `memory_remember`, `memory_status`, `memory_context`, and `memory_cite`.
-- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. Phase 1 is one **native tool-calling** turn: the model calls `save_extraction` (payload) or `skip_extraction` (no-op), and no text protocol is parsed. Phase 2 is a **native tool-calling** agent loop: `list_files` / `read_file` / `write_file` / `finish` schemas are forwarded through the provider's tools field, tool results travel back as correlated tool-result messages, and the provider's reasoning content is replayed on each assistant turn (thinking-mode APIs reject a tool-call message that lost its reasoning_content). A host channel without a native tool-calling turn reports the run as incomplete and the deterministic rule provider takes over — there is no JSON-in-prose fallback. The latest `request/header` route is used unless `provider` and `model` are pinned in the plugin config base or the `memcurio` settings document (resolved live).
+- Phase-1 extraction and Phase-2 consolidation reuse DSH's `ctx.llm` route. Phase 1 is one **native tool-calling** turn: the model calls `save_extraction` (payload) or `skip_extraction` (no-op), and no text protocol is parsed. Phase 2 is a **native tool-calling** agent loop: `list_files` / `read_file` / `write_file` / `finish` schemas are forwarded through the provider's tools field, tool results travel back as correlated tool-result messages, and the provider's reasoning content is replayed on each assistant turn (thinking-mode APIs reject a tool-call message that lost its reasoning_content). A host channel without a native tool-calling turn reports the run as incomplete and the deterministic rule provider takes over — there is no JSON-in-prose fallback. The latest `request/header` route is used unless `provider` and `model` are pinned in the `memcurio` entry config (resolved live from its volatile references).
 - Automatic Phase-2 consolidation (codex-style) runs after `turn/end` and from the bounded dormant-store sweep for stores with no live session. It is store-scoped: neither the session-retire abort nor the 30s retire budget schedules or cancels it. Its inputs (`raw_memories.md` + rollout summaries) are synced to disk before the provider runs, so the agent and provenance validation share one view; a failed model run commits nothing and retries under the failure backoff, and the deterministic rule provider runs only when no model route is available. Worker model calls carry a 120s per-call cap.
 - Per-store recovery drains run for the first live session of a store and, independently, a bounded periodic sweep drains dormant stores once a worker route is known — so crash recovery covers every workspace, not only the one that happens to open a session. Sessions restored from disk replay their event log — including `tool/call` + `tool/result` telemetry — so pre-restart activity is not lost.
 
@@ -138,14 +138,14 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 
 ### Settings integration
 
-The host half hard-injects the DSH `settings` service (official plugin pattern) and registers the `memcurio` namespace through `ctx.settings.installSection`:
-`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `provider`, `model`. The profile config is the composition base; the user layer lives in `<DSH home>/settings.yaml` (file-backed provider) and overrides it. `injectContext`/budget/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart. `root` stays read-only (deployment data location). The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`), together with the memory visibility surfaces (the memory-injection transcript row, the system-prompt guide row, injection/write toasts, seven keyed `memory_*` tool rows) served over the same-origin `/memcurio` snapshot/SSE route. The session header deliberately carries no memcurio surface: the injection-indicator component stays unregistered for the future workbench status surface. Real-Web rendering, slot governance and the route's token/session binding are still S0 verification items.
+DSH 0.1.7 moved the settings surface onto the Loader config: this plugin's exported `Config` schema IS the `memcurio` settings namespace (keyed by the profile entry id), and its editable fields are schema-marked `volatile` so a Settings write updates the running plugin's `Volatile` references without a remount. The editable set is
+`scope`, `injectContext`, `registerTools`, `injectBudgetTokens`, `provider`, `model`. The profile config is the composition base; an explicit value in the active profile patch is the user override the panel badges. `injectContext`/budget/route changes apply live; `scope` applies to new sessions; `registerTools` needs a restart (a volatile write never re-runs `apply`). `root` is deployment-owned and non-volatile, so the form never exposes it. The browser-side Settings panel (settings.section slot) **ships with this package** (`dsh.client` + `lib/client.js`), together with the memory visibility surfaces (the memory-injection transcript row, the system-prompt guide row, injection/write toasts, seven keyed `memory_*` tool rows) served over the same-origin `/memcurio` snapshot/SSE route. The session header deliberately carries no memcurio surface: the injection-indicator component stays unregistered for the future workbench status surface. Real-Web rendering, slot governance and the route's token/session binding are still S0 verification items.
 
 ### Settings coupling and profile requirements
 
-An INVALID stored section (hand-edited `settings.yaml` with a malformed route, budget or scope) makes `apply` throw, so the plugin does not mount at all — a loud boot failure, unlike the silent inertness of a settings-less profile. Fix the document (or clear the user layer) and reload.
+A hand-edited profile patch with a malformed route, budget or scope fails config resolution, so the plugin does not mount at all — a loud boot failure, unlike a settings-less profile, which simply has no configuration page. Fix the patch (or clear the entry's config) and reload. A lone provider/model half is refused by the resolution guard before the config editor persists it.
 
-`settings` is a hard injection (the service is guaranteed by dsh-base and every profile layered on it, and a hard inject makes the namespace resolve synchronously before apply). Two consequences, both verified in review: a profile without any settings provider leaves the plugin inert (`dsh-sdk-minimal` is such a tree), and unloading/remounting the settings provider unloads and re-applies memcurio.
+Settings integration is optional (the upstream 0.1.7 pattern): the plugin does not inject `settings`, so a profile without the service (`dsh-sdk-minimal`) keeps the full memory runtime, and unloading/remounting the settings provider no longer restarts memcurio. When the service resolves, the plugin calls `ctx.settings.configure({ auto: false }, ctx.fiber)` so its shipped panel replaces the auto-generated page, and listens for `settings/document-updated` on its own namespace to refresh the bridge and warn about the two delayed knobs.
 
 ### Profile smoke probe
 
@@ -153,11 +153,13 @@ An INVALID stored section (hand-edited `settings.yaml` with a malformed route, b
 
 ### Profile-plane facts
 
-In a composed `web`-family profile the root plane provides the services this plugin injects — `llm` (`@deepseek-ai/dsh-llm`), `tools` (`@deepseek-ai/dsh-tools`), `session` (`@deepseek-ai/dsh-session`) and `settings` (`@deepseek-ai/dsh-settings-file`) — while the web-app layer merely disables concrete entries (`tool-bash`, `tool-pwsh`, `tool-jobs`, `tool-fs`, `tool-fs-search`, `agent-instructions`, `skill-*`). Consequences: a root-plane insert row (this package's `cordis.patch.yml`) is the right mounting point, and because the built-in fs tools are disabled in the web profile, read-hit telemetry comes from this plugin's own `memory_read`/`memory_search` tools.
+In a composed `web`-family profile the root plane provides the services this plugin injects — `llm` (`@deepseek-ai/dsh-llm`), `tools` (`@deepseek-ai/dsh-tools`) and `session` (`@deepseek-ai/dsh-session`), plus the optional settings surface (`@deepseek-ai/dsh-settings` with its config editor), while the web-app layer merely disables concrete entries (`tool-bash`, `tool-pwsh`, `tool-jobs`, `tool-fs`, `tool-fs-search`, `agent-instructions`, `skill-*`). Consequences: a root-plane insert row (this package's `cordis.patch.yml`) is the right mounting point, and because the built-in fs tools are disabled in the web profile, read-hit telemetry comes from this plugin's own `memory_read`/`memory_search` tools.
 
 ### Validation boundary
 
-Local suites cover strict TypeScript compilation against the published DSH `0.1.5-rc.1` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+Local suites cover strict TypeScript compilation against the published DSH `0.1.7-rc.2` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered as an automated suite: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+
+The 0.1.7-rc.2 alignment was additionally smoke-checked by hand against the installed rc.2 tree: `dsh --dump-config` composed the `memcurio` row with `inject: [tools, llm, sessions]` and resolved the new `Config` schema (scope/injectContext/registerTools defaults) in an isolated profile, and a Node boot of that profile served the page with the client row in `__DSH_BOOT__` plus this plugin's `webserver/index-inject` payload (`globalThis.__MEMCURIO_UI__ = { basePath, token }`). The `/memcurio` route answered 403 without the plugin token and 404 (`no-store`) with it in a session-less environment, i.e. mounted and guarded.
 
 ## 发布流程
 

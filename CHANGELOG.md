@@ -44,9 +44,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the next context window. The freshly written summary is injected on the next
   step, and a non-empty snapshot still latches the window (one snapshot per
   window).
+- **The rc.2 alignment is enforced by the dev tree too**: the exact rc.2 peers
+  the dev dependencies require (`dsh-attachment`, `dsh-commands`,
+  `dsh-home-paths`, `dsh-scope`, `dsh-session-projection`, `dsh-user-approval`)
+  and the Loader used by the new volatile-commit integration test are declared
+  explicitly, so `bun test`/`tsc` run against the rc.2 graph instead of
+  silently resolving pre-rc.2 copies under hoisting.
+- **Resumed pre-0.1.7 sessions keep their tool telemetry**: the seed replay
+  reads the call id from the `tool-result` content block when the tool-role
+  message carries none, matching the legacy message-source arm that already
+  recognizes those durable logs.
 
 ### Changed
 
+- **Aligned to DSH `0.1.7-rc.2`** (peer range `^0.1.7-rc.2`, cordis `^4.0.4`).
+  Upstream replaced the settings-namespace registry: the plugin's own `Config`
+  schema is now the `memcurio` settings namespace (keyed by the profile entry
+  id), its editable fields are schema-marked `volatile` so a Settings write
+  updates the running plugin's references without a remount, and writes land
+  in the active profile patch instead of `<DSH home>/settings.yaml`. The
+  browser half binds `ctx.configForms.get("memcurio")` instead of
+  `ctx.settingsScope.bind`, suppresses the auto-generated page when the
+  settings service resolves, and the plugin no longer hard-injects `settings`
+  (a settings-less profile keeps the full memory runtime). Injected memory
+  messages carry this package's own merged `memcurio` message-source kind
+  (legacy `plugin`-kind durable logs stay recognized), tool results use the
+  0.1.7 tool-role message shape, and the cross-field provider/model rule moved
+  to a config-resolution guard. The browser half now reads the viewed session
+  from the `uiSession` session-scope adapter (`adapter.current.key`) — the
+  0.1.7 seam that owns the main conversation binding — instead of the retired
+  `sessions.list.current` field, so the memory transport follows session
+  switches again. The injected-memory transcript row ships as a custom
+  chat-node kind (`memcurio-injection`: a conversation-node definition plus a
+  keyed `conversation.chat.node` cell) because 0.1.7 filters ordinary
+  `context` nodes out of the transcript; the client declares
+  `@deepseek-ai/dsh-client-ui-session` in `dsh.client.inject`, and the
+  platform seed table mirrored by the bundle build gained
+  `@deepseek-ai/dsh-client-ui-dockkit`.
 - **Automatic Phase 2 is store-scoped**: it runs after `turn/end` and from the
   bounded dormant-store sweep instead of inside the 30s session-retire budget.
   A plugin-lifetime abort (not the session's) keeps a run alive across session

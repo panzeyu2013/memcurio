@@ -1,30 +1,29 @@
 /**
- * Settings-namespace integration tests (the configuration surface): the REAL
- * `memcurio` namespace registered through a REAL file-backed settings provider
- * (`@deepseek-ai/dsh-settings-file`), exactly the way the plugin entry mounts
- * it via `ctx.settings.installSection`.
+ * Settings-surface tests for the DSH 0.1.7 model: the plugin's own `Config`
+ * schema IS the settings namespace, its editable fields are volatile
+ * references the Settings page can update without a remount, and the optional
+ * settings service receives the page policy plus post-commit change events.
  *
- * Asserts: namespace registration + composition base; live application of
- * injectContext / budget / scope; the cross-field provider+model validation;
- * and persistence into the settings document.
+ * The write path itself (schema validation → profile-patch persistence →
+ * Loader reconcile) belongs to the upstream config editor; these tests cover
+ * the plugin's side of the contract plus the behavior an activation honors.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
-import type { Fiber } from "@deepseek-ai/cordis";
+import type { Fiber, Volatile } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import LlmRuntime, { ToolCallId, createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SessionId } from "@deepseek-ai/dsh-session";
-import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
-import { pinnedRoute } from "../src/plugin/settings.js";
+import { installMemcurioSettings, pinnedRoute, settingsView } from "../src/plugin/settings.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -44,80 +43,133 @@ function temporaryRoot(): string {
 interface Harness {
   ctx: Context;
   fibers: Fiber[];
-  settingsPath: string;
 }
 
-async function harness(seedSettingsYaml?: string): Promise<Harness> {
-  const home = temporaryRoot();
-  const settingsPath = join(home, "settings.yaml");
-  if (seedSettingsYaml !== undefined) writeFileSync(settingsPath, seedSettingsYaml, "utf8");
+/** Real host services, no settings provider: the plugin config IS the
+ *  settings surface, so a test composition only needs the data services. */
+async function harness(): Promise<Harness> {
   const ctx = new Context();
   const fibers = [
     await ctx.plugin(SystemPrompt),
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
-    await ctx.plugin(FileSettingsProvider, { path: settingsPath, watch: false }),
   ];
-  return { ctx, fibers, settingsPath };
+  return { ctx, fibers };
 }
 
 async function disposeFibers(fibers: Fiber[]): Promise<void> {
   for (const fiber of fibers.reverse()) await fiber.dispose();
 }
 
-describe("memcurio settings namespace", () => {
-  test("registers the namespace with the profile config as composition base", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, {
-      root,
-      scope: "global",
-      provider: "profile-provider",
-      model: "profile-model",
+describe("memcurio config schema", () => {
+  test("provides the composition defaults and validates every field", () => {
+    expect(settingsView(plugin.Config({}) as never)).toEqual({
+      scope: "workspace",
+      injectContext: true,
+      registerTools: true,
     });
-    const descriptor = ctx.settings.describe().find((entry) => entry.ns === "memcurio");
-    expect(descriptor).toBeDefined();
-    expect(descriptor?.base).toMatchObject({
+    expect(() => plugin.Config({ injectContext: "false" } as never)).toThrow();
+    expect(() => plugin.Config({ scope: "elsewhere" } as never)).toThrow();
+    expect(() => plugin.Config({ injectBudgetTokens: 10 })).toThrow(/128/);
+  });
+});
+
+describe("live settings view", () => {
+  test("reads volatile references fresh, so a committed write needs no remount", () => {
+    let scope: "workspace" | "global" = "workspace";
+    let budget: number | undefined;
+    let route: { provider?: string; model?: string } = {};
+    const config = {
+      root: "/tmp/live",
+      scope: { get: () => scope },
+      injectContext: { get: () => true },
+      registerTools: { get: () => true },
+      injectBudgetTokens: { get: () => budget },
+      provider: { get: () => route.provider },
+      model: { get: () => route.model },
+    };
+    expect(settingsView(config)).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
+    scope = "global";
+    budget = 900;
+    route = { provider: "p", model: "m" };
+    expect(settingsView(config)).toMatchObject({
       scope: "global",
-      provider: "profile-provider",
-      model: "profile-model",
+      injectBudgetTokens: 900,
+      provider: "p",
+      model: "m",
     });
-    // No user layer yet: the resolved value is the composition base.
-    expect(descriptor?.user ?? {}).toEqual({});
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
   });
 
-  test("rejects a lone provider without model (cross-field validation)", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
-    await expect(ctx.settings.update("memcurio", { provider: "only-provider" })).rejects.toThrow(
-      /provider and model must be set together/,
-    );
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
+  test("plain values and absent fields fall back exactly like the Loader defaults", () => {
+    expect(settingsView({ scope: "global", injectContext: false, registerTools: false })).toEqual({
+      scope: "global",
+      injectContext: false,
+      registerTools: false,
+    });
+    expect(settingsView({})).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
+    // The schema accepts `null` for an absent optional half; the view treats
+    // it as absent, while falsy scalars remain real values.
+    expect(
+      settingsView({
+        scope: { get: () => null } as unknown as Volatile<"workspace">,
+        provider: { get: () => "" },
+        injectBudgetTokens: { get: () => 0 },
+      }),
+    ).toEqual({
+      scope: "workspace",
+      injectContext: true,
+      registerTools: true,
+      injectBudgetTokens: 0,
+      provider: "",
+    });
   });
+});
 
-  test("rejects schema-invalid values before persisting", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
-    await expect(ctx.settings.update("memcurio", { injectBudgetTokens: 10 })).rejects.toThrow();
-    await expect(ctx.settings.update("memcurio", { scope: "elsewhere" as never })).rejects.toThrow();
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
+describe("settings service wiring", () => {
+  test("suppresses the generated page and reports post-commit changes for memcurio only", async () => {
+    const ctx = new Context();
+    const configureCalls: Array<{ presentation: { auto?: boolean }; owner: unknown }> = [];
+    const reflect = (ctx as unknown as { reflect: { provide(name: string, value: unknown): void } }).reflect;
+    reflect.provide("settings", {
+      configure(presentation: { auto?: boolean }, owner?: unknown) {
+        configureCalls.push({ presentation, owner });
+        return () => undefined;
+      },
+    });
+    let scope: "workspace" | "global" = "workspace";
+    const config = {
+      scope: { get: () => scope },
+      injectContext: { get: () => true },
+      registerTools: { get: () => true },
+    };
+    const seen: unknown[] = [];
+    installMemcurioSettings(ctx, config, { onChange: (next) => seen.push(next) });
+    await ctx.fiber.await();
+    // The shipped panel replaces the auto-generated page, and the policy is
+    // registered on THIS plugin's fiber.
+    expect(configureCalls).toHaveLength(1);
+    expect(configureCalls[0]?.presentation).toEqual({ auto: false });
+    expect(configureCalls[0]?.owner).toBe(ctx.fiber);
+    // Another namespace's document change is ignored.
+    ctx.emit("settings/document-updated", "other-plugin" as never, 1);
+    expect(seen).toHaveLength(0);
+    // Ours reports the freshly read value.
+    scope = "global";
+    ctx.emit("settings/document-updated", "memcurio" as never, 2);
+    expect(seen).toEqual([{ scope: "global", injectContext: true, registerTools: true }]);
   });
+});
 
-  test("injection toggle applies live to agent/pre-step", async () => {
+describe("resolved settings behaviour", () => {
+  test("the injection toggle is honored on activation and after a settings update", async () => {
     const root = temporaryRoot();
     const workdir = join(root, "workspace");
     const { ctx, fibers } = await harness();
     const session = ctx.sessions.prepare(SessionId("settings-prestep"), { meta: { cwd: workdir } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: true });
+    const fiber = await ctx.plugin(plugin, { root, scope: "global", injectContext: true });
     await ctx.sessions.flush(session);
     // v1.9: only memory DATA is injected, so the store needs a summary.
     writeWorkspaceText(root, "memory_summary.md", "v1\n\n## Prefs\n\n- keep it short\n");
@@ -138,74 +190,74 @@ describe("memcurio settings namespace", () => {
     if (injected.kind !== "enter") throw new Error("expected enter");
     expect(injected.messages).toHaveLength(2); // user message + memory context
 
-    await ctx.settings.update("memcurio", { injectContext: false });
+    // The Settings page commits the new value; the Loader re-activates with it.
+    fiber.update({ root, scope: "global", injectContext: false });
+    await fiber.await();
     const skipped = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
     if (skipped.kind !== "enter") throw new Error("expected enter");
-    expect(skipped.messages).toHaveLength(1); // live toggle short-circuits
+    expect(skipped.messages).toHaveLength(1);
 
     detach();
-    await pluginFiber.dispose();
+    await fiber.dispose();
     await disposeFibers(fibers);
   });
 
-  test("persists the user layer into the settings document", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers, settingsPath } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
-    await ctx.settings.update("memcurio", { injectBudgetTokens: 900 });
-    const text = readFileSync(settingsPath, "utf8");
-    expect(text).toContain("memcurio:");
-    expect(text).toContain("injectBudgetTokens: 900");
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
-  });
-});
-
-/** Apply the plugin through a harness context with a given composition config. */
-async function ctx_plugin(h: Harness, root: string, config: Record<string, unknown>): Promise<Fiber> {
-  return h.ctx.plugin(plugin, { root, scope: "global", ...config });
-}
-
-
-describe("pinned worker route rule", () => {
-  test("a pinned route requires both non-empty halves", () => {
-    const base = { scope: "workspace" as const, injectContext: true, registerTools: true };
-    expect(pinnedRoute(base)).toBeUndefined();
-    expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
-    expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();
-    expect(pinnedRoute({ ...base, provider: "p", model: "m" })).toEqual({ provider: "p", model: "m" });
-  });
-});
-
-describe("resolved settings behaviour (acceptance-round fixes)", () => {
-  test("registerTools follows the resolved document in both directions", async () => {
-    // Document false + composition true: tools must stay unregistered.
+  test("registerTools registers the native tools only when enabled", async () => {
     const offRoot = temporaryRoot();
-    const off = await harness("memcurio:\n  registerTools: false\n");
-    const offFiber = await ctx_plugin(off, offRoot, { registerTools: true });
+    const off = await harness();
+    const offFiber = await off.ctx.plugin(plugin, { root: offRoot, scope: "global", registerTools: false });
     expect(off.ctx.tools.get("memory_search")).toBeUndefined();
     await offFiber.dispose();
     await disposeFibers(off.fibers);
 
-    // Document true + composition false: tools must be registered.
     const onRoot = temporaryRoot();
-    const on = await harness("memcurio:\n  registerTools: true\n");
-    const onFiber = await ctx_plugin(on, onRoot, { registerTools: false });
+    const on = await harness();
+    const onFiber = await on.ctx.plugin(plugin, { root: onRoot, scope: "global", registerTools: true });
     expect(on.ctx.tools.get("memory_search")).toBeDefined();
     await onFiber.dispose();
     await disposeFibers(on.fibers);
   });
 
-  test("empty provider/model is refused by the namespace validation", async () => {
+  test("a lone route half is refused at resolution time (cross-field guard)", async () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await harness();
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
-    await expect(ctx.settings.update("memcurio", { provider: "", model: "" })).rejects.toThrow(/non-empty/);
-    await pluginFiber.dispose();
+    const fiber = await ctx.plugin(plugin, { root, scope: "global" });
+    expect(() => fiber.update({ root, scope: "global", provider: "only-provider" })).toThrow(/together/);
+    expect(() => fiber.update({ root, scope: "global", model: "only-model" })).toThrow(/together/);
+    await fiber.dispose();
     await disposeFibers(fibers);
   });
 
-  test("the startup refresh seeds the audit baseline, tags read hits, and reports live scope/budget", async () => {
+  test("empty provider/model is refused by the resolution guard", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const fiber = await ctx.plugin(plugin, { root, scope: "global" });
+    expect(() => fiber.update({ root, scope: "global", provider: "", model: "" })).toThrow(/non-empty/);
+    await fiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("the guard claims only this entry and leaves with the plugin fiber", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const fiber = await ctx.plugin(plugin, { root, scope: "global" });
+    const half = { provider: "only" };
+    const next = (): unknown => half;
+    // Another owner resolves through the same waterfall untouched (the guard
+    // compares the dispatch owner with this plugin's own fiber).
+    expect(await fiber.ctx.waterfall(ctx.fiber, "internal/config", half, next)).toMatchObject(half);
+    // This entry's own resolution is refused before the Loader commits it,
+    // and a reference-shaped candidate is unwrapped before the rule runs.
+    expect(() => fiber.ctx.waterfall(fiber, "internal/config", half, next)).toThrow(/together/);
+    const refHalf = { provider: { get: () => "only" } };
+    expect(() => fiber.ctx.waterfall(fiber, "internal/config", refHalf, next)).toThrow(/together/);
+    await fiber.dispose();
+    // Disposal removes the listener: the same dispatch resolves again.
+    expect(await fiber.ctx.waterfall(fiber, "internal/config", half, next)).toMatchObject(half);
+    await disposeFibers(fibers);
+  });
+
+  test("the startup refresh seeds the audit baseline, tags read hits, and reports the resolved scope/budget", async () => {
     const root = temporaryRoot();
     writeWorkspaceText(root, "MEMORY.md", "# heading\nfact line\n");
     const { ctx, fibers } = await harness();
@@ -222,7 +274,7 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     const session = ctx.sessions.prepare(SessionId("settings-live"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
+    const fiber = await ctx.plugin(plugin, { root, scope: "global", injectBudgetTokens: 900 });
     await ctx.sessions.flush(session);
 
     const bridge = hostBridgeForRoot(root);
@@ -230,7 +282,6 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     const sink: Array<{ kind: string }> = [];
     bridge.attachSink({ deliver: (deltas) => sink.push(...deltas.map((delta) => ({ kind: delta.kind }))) });
 
-    await ctx.settings.update("memcurio", { scope: "global", injectBudgetTokens: 900 });
     await bridge.refresh(root);
     expect(sink.filter((delta) => delta.kind === "receipt")).toHaveLength(0);
     expect(JSON.stringify(sink)).not.toContain("pre-existing note");
@@ -260,7 +311,7 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     expect(snapshot?.settings.injectBudgetTokens).toBe(900);
 
     detach();
-    await pluginFiber.dispose();
+    await fiber.dispose();
     await disposeFibers(fibers);
   });
 
@@ -278,7 +329,7 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     const session = ctx.sessions.prepare(SessionId("settings-seed-tail"), { meta: { cwd: join(root, "workspace") } });
     const detach = ctx.sessions.enter(session);
     ctx.sessions.announce(session);
-    const pluginFiber = await ctx.plugin(plugin, { root, scope: "global" });
+    const fiber = await ctx.plugin(plugin, { root, scope: "global" });
     const attached = hostBridgeForRoot(root);
     if (!attached) throw new Error("host bridge missing for root");
     const sink: Array<{ kind: string }> = [];
@@ -301,26 +352,17 @@ describe("resolved settings behaviour (acceptance-round fixes)", () => {
     expect(receipts).toHaveLength(1);
 
     detach();
-    await pluginFiber.dispose();
-    await disposeFibers(fibers);
-  });
-
-  test("a duplicate activation fails loud (namespace already registered)", async () => {
-    const root = temporaryRoot();
-    const { ctx, fibers } = await harness();
-    const first = await ctx.plugin(plugin, { root, scope: "global" });
-    // Cordis de-duplicates the SAME plugin object, so a genuine duplicate
-    // activation is a second module identity carrying the same apply.
-    const clone = { name: "memcurio-clone", inject: plugin.inject, apply: plugin.apply };
-    let message = "";
-    try {
-      await ctx.plugin(clone as never, { root, scope: "global" } as never);
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    expect(message).toMatch(/already registered/);
-    await first.dispose();
+    await fiber.dispose();
     await disposeFibers(fibers);
   });
 });
 
+describe("pinned worker route rule", () => {
+  test("a pinned route requires both non-empty halves", () => {
+    const base = { scope: "workspace" as const, injectContext: true, registerTools: true };
+    expect(pinnedRoute(base)).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();
+    expect(pinnedRoute({ ...base, provider: "p", model: "m" })).toEqual({ provider: "p", model: "m" });
+  });
+});

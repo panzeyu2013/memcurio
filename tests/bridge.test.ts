@@ -372,11 +372,11 @@ describe("round-19 additions (rel hits, evidence source, snapshot enrichment)", 
 
   test("snapshot reports the injection budget and version once provided", async () => {
     const root = makeStore("dyn");
-    const bridge = new HostBridge({ baseRoot: dir, scope: "workspace", version: "rc.1 contract", injectBudgetTokens: 900 });
+    const bridge = new HostBridge({ baseRoot: dir, scope: "workspace", version: "rc.2 contract", injectBudgetTokens: 900 });
     bridge.registerSession({ sessionId: "session-1", workdir: "/work/dyn", root });
     const snapshot = await bridge.snapshot(root, "session-1");
     expect(snapshot.settings.injectBudgetTokens).toBe(900);
-    expect(snapshot.settings.version).toBe("rc.1 contract");
+    expect(snapshot.settings.version).toBe("rc.2 contract");
     expect(snapshot.settings.dataRoot).toBe(dir);
   });
 });

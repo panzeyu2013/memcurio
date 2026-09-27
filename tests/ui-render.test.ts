@@ -10,10 +10,11 @@ import { JSDOM } from "jsdom";
 
 import type { MemorySettingsFaceLike, MemorySettingsHook, MemoryToolBlockLike } from "../client/ui/contracts.js";
 import {
-  CONTEXT_ROW_PRIORITY,
-  createContextRow,
+  createInjectionNodeDefinition,
+  INJECTION_NODE_KIND,
+  MemcurioInjectionNodeRow,
   MemcurioInjectionRow,
-  type ContextRowProps,
+  registerInjectionRow,
 } from "../client/ui/context-row.js";
 import { extractGuideSection, guideDetailOf, MemcurioGuideRow } from "../client/ui/guide-row.js";
 import { apply } from "../client/entry.js";
@@ -321,112 +322,139 @@ describe("memory tool row", () => {
     }
   });
 });
-
 describe("memory injection context row", () => {
+  const MEMORY_TEXT = "[memcurio] MEMORY.md:3 remember this";
   const MEMORY_DATA = {
-    content: [{ type: "text", text: "[memcurio] MEMORY.md:3 remember this" }],
+    content: [{ type: "text", text: MEMORY_TEXT }],
+    source: { kind: "memcurio" },
+  };
+  const LEGACY_DATA = {
+    content: [{ type: "text", text: MEMORY_TEXT }],
     source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
   };
 
   test("titles a memcurio injection 记忆注入 and expands the model-facing text", async () => {
+    for (const [arm, data] of [["memcurio", MEMORY_DATA], ["plugin", LEGACY_DATA]] as const) {
+      const { container, root } = mount();
+      await act(async () => {
+        root.render(React.createElement(MemcurioInjectionRow, { t, data }));
+      });
+      // The platform's generic "上下文注入 / Context injection" title is replaced.
+      expect(`${arm}: ${container.querySelector(".memcurio-context-title")?.textContent}`).toBe(`${arm}: contextRowTitle`);
+      expect(container.querySelector(".memcurio-context-source")?.textContent).toBe("@memcurio/dsh-plugin");
+      expect(container.querySelector(".memcurio-context-body")).toBeNull();
+      // The row leads with memcurio's own book mark, not the platform glyph.
+      const iconPath = container.querySelector(".memcurio-context-icon svg path")?.getAttribute("d") ?? "";
+      expect(iconPath.startsWith("M5 6a3 3 0 0 1 3-3h11v18")).toBe(true);
+
+      const head = container.querySelector(".memcurio-context-head");
+      if (!head) throw new Error("no context row head");
+      await act(async () => {
+        head.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+      });
+      expect(head.getAttribute("aria-expanded")).toBe("true");
+      expect(container.querySelector(".memcurio-context-body")?.textContent).toContain("remember this");
+
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  test("builds a VISIBLE custom-kind node for both durable source arms", () => {
+    const definition = createInjectionNodeDefinition();
+    for (const [arm, data] of [["memcurio", MEMORY_DATA], ["plugin", LEGACY_DATA]] as const) {
+      const event = { type: "user/message", seq: 42, surfaceOp: "append", data: { id: "m1", ...data } };
+      expect(definition.match(event)).toEqual({ id: "m1", role: "start" });
+      const state = definition.start({}, { event });
+      const node = definition.buildViewNode({ state, key: "ctx", id: "m1", start: { location: { kind: "step" } } });
+      // The platform drops ordinary `context` nodes; a custom kind stays visible.
+      expect(`${arm}: ${String(node?.kind)}`).toBe(`${arm}: ${INJECTION_NODE_KIND}`);
+      expect(node?.visibility).toBe("visible");
+      expect(node?.anchorSeq).toBe(42);
+      expect(node?.location).toEqual({ kind: "step" });
+      expect(node?.target).toBe("chat");
+      // The engine rejects a node whose key/id drift from its Context.
+      expect(node?.key).toBe("ctx");
+      expect(node?.id).toBe("m1");
+      expect(node?.data).toEqual(state);
+    }
+  });
+
+  test("never claims another producer, another event type, or a replacement copy", () => {
+    const definition = createInjectionNodeDefinition();
+    const foreign = { type: "user/message", seq: 1, surfaceOp: "append", data: { source: { kind: "user" } } };
+    expect(definition.match(foreign)).toBeNull();
+    const replaced = { type: "user/message", seq: 2, surfaceOp: "replace", data: MEMORY_DATA };
+    expect(definition.match(replaced)).toBeNull();
+    const other = { type: "system/message", seq: 3, surfaceOp: "append", data: MEMORY_DATA };
+    expect(definition.match(other)).toBeNull();
+    expect(definition.buildViewNode({ state: undefined })).toBeNull();
+  });
+
+  test("renders the node payload through the keyed view component", async () => {
     const { container, root } = mount();
     await act(async () => {
-      root.render(React.createElement(MemcurioInjectionRow, { t, data: MEMORY_DATA }));
+      root.render(
+        React.createElement(MemcurioInjectionNodeRow, {
+          node: { kind: INJECTION_NODE_KIND, data: MEMORY_DATA },
+          t,
+        }),
+      );
     });
-    // The platform's generic "上下文注入 / Context injection" title is replaced.
     expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("contextRowTitle");
-    expect(container.querySelector(".memcurio-context-source")?.textContent).toBe("@memcurio/dsh-plugin");
     expect(container.querySelector(".memcurio-context-body")).toBeNull();
-    // The row leads with memcurio's own book mark, not the platform glyph.
-    const iconPath = container.querySelector(".memcurio-context-icon svg path")?.getAttribute("d") ?? "";
-    expect(iconPath.startsWith("M5 6a3 3 0 0 1 3-3h11v18")).toBe(true);
-
-    const head = container.querySelector(".memcurio-context-head");
-    if (!head) throw new Error("no context row head");
-    await act(async () => {
-      head.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
-    });
-    expect(head.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector(".memcurio-context-body")?.textContent).toContain("remember this");
-
     await act(async () => {
       root.unmount();
     });
   });
 
-  test("shadows the shipped context cell and delegates every other node to it", async () => {
-    const shipped = (props: ContextRowProps): ReturnType<typeof React.createElement> =>
-      React.createElement(
-        "div",
-        { className: "shipped-context-row" },
-        String((props.node?.data?.source as { plugin?: string } | undefined)?.plugin ?? ""),
-      );
-    const row = createContextRow({
-      slots: {
-        entries: () => [
-          { component: row, options: { key: "context", priority: CONTEXT_ROW_PRIORITY } },
-          { component: shipped, options: { key: "context", priority: 0 } },
-        ],
+  test("registers the definition and the keyed cell in the conversation lane", () => {
+    const calls: string[] = [];
+    let effectDisposer: (() => void) | undefined;
+    registerInjectionRow({
+      inject: (names, applyScope) => {
+        calls.push(`inject:${names.join(",")}`);
+        let effectBody: (() => (() => void) | undefined) | undefined;
+        applyScope({
+          effect: (callback) => {
+            effectBody = callback;
+          },
+          slots: {
+            inject: (seat, callback) => {
+              calls.push(`slots.inject:${seat}`);
+              callback();
+            },
+            register: (options) => {
+              calls.push(`slots.register:${String((options as { key?: unknown }).key)}`);
+              return undefined;
+            },
+          },
+          uiConversation: {
+            events: {
+              register: (definition) => {
+                calls.push(`events.register:${String((definition as { kind?: unknown }).kind)}`);
+                return () => {
+                  calls.push("events.disposed");
+                };
+              },
+            },
+          },
+        });
+        // The lane callback runs inside the platform effect and returns its
+        // disposer, which releases the definition.
+        effectDisposer = effectBody?.();
       },
-      chatT: (key) => key,
     });
-    const { container, root } = mount();
-    await act(async () => {
-      root.render(
-        React.createElement(row, {
-          node: {
-            kind: "context",
-            data: { content: [{ type: "text", text: "runtime fact" }], source: { kind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt" } },
-          },
-          t,
-        }),
-      );
-    });
-    // A foreign producer keeps the shipped row, never the memcurio title.
-    expect(container.querySelector(".shipped-context-row")?.textContent).toBe("@deepseek-ai/dsh-system-prompt");
-    expect(container.querySelector(".memcurio-context-title")).toBeNull();
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  test("renders memcurio nodes itself, not through the shipped row", async () => {
-    const shipped = (): ReturnType<typeof React.createElement> => React.createElement("div", { className: "shipped-context-row" });
-    const row = createContextRow({
-      slots: { entries: () => [{ component: shipped, options: { key: "context", priority: 0 } }] },
-      chatT: (key) => key,
-    });
-    const { container, root } = mount();
-    await act(async () => {
-      root.render(React.createElement(row, { node: { kind: "context", data: MEMORY_DATA }, t }));
-    });
-    expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("contextRowTitle");
-    expect(container.querySelector(".shipped-context-row")).toBeNull();
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  test("keeps the platform glyph on the fallback row when no shipped row exists", async () => {
-    const row = createContextRow({ slots: { entries: () => [] }, chatT: (key) => key });
-    const { container, root } = mount();
-    await act(async () => {
-      root.render(
-        React.createElement(row, {
-          node: {
-            kind: "context",
-            data: { content: [{ type: "text", text: "orphan fact" }], source: { kind: "plugin", plugin: "@other/plugin" } },
-          },
-          t,
-        }),
-      );
-    });
-    expect(container.querySelector(".memcurio-context-title")?.textContent).toBe("message.contextInjection");
-    const iconPath = container.querySelector(".memcurio-context-icon svg path")?.getAttribute("d") ?? "";
-    expect(iconPath.startsWith("M11.9512")).toBe(true);
-    await act(async () => {
-      root.unmount();
-    });
+    expect(calls).toEqual([
+      "inject:uiConversation",
+      "events.register:memcurio-injection",
+      "slots.inject:conversation.chat.node",
+      "slots.register:memcurio-injection",
+    ]);
+    expect(typeof effectDisposer).toBe("function");
+    effectDisposer?.();
+    expect(calls.at(-1)).toBe("events.disposed");
   });
 });
 
@@ -498,8 +526,8 @@ describe("entry transport rebind on session switch", () => {
         register: () => () => undefined,
         bind: () => (key: string) => key,
       },
-      settingsScope: {
-        bind: () => ({
+      configForms: {
+        get: () => ({
           getSnapshot: () => ({
             status: "unavailable",
             value: undefined,
@@ -510,21 +538,23 @@ describe("entry transport rebind on session switch", () => {
             mode: "memory",
           }),
           subscribe: () => () => undefined,
-          set: async () => undefined,
-          unset: async () => undefined,
-          mutate: async () => undefined,
+          set: async () => false,
+          unset: async () => false,
+          mutate: async () => false,
         }),
       },
       slots: {
         inject: () => () => undefined,
         register: () => () => undefined,
       },
-      sessions: {
-        list: {
-          getSnapshot: () => ({ current }),
-          subscribe(listener: () => void) {
-            listeners.add(listener);
-            return () => listeners.delete(listener);
+      uiSession: {
+        adapter: {
+          current: {
+            getSnapshot: () => ({ key: current }),
+            subscribe(listener: () => void) {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
           },
         },
       },
@@ -550,6 +580,64 @@ describe("entry transport rebind on session switch", () => {
           // already released by the abort
         }
       }
+      globalThis.fetch = originalFetch;
+      if (originalBoot === undefined) delete globals[UI_BOOT_GLOBAL];
+      else globals[UI_BOOT_GLOBAL] = originalBoot;
+    }
+  });
+  test("stays usable when the session-scope service carries no adapter", async () => {
+    const globals = globalThis as unknown as Record<string, unknown>;
+    const originalFetch = globalThis.fetch;
+    const originalBoot = globals[UI_BOOT_GLOBAL];
+    const calls: string[] = [];
+    const disposers: Array<() => void> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(
+        JSON.stringify({
+          seq: 1,
+          snapshot: { at: "x", store: { id: "w1", root: "/root/w1", isolated: false }, injection: {}, receipts: [] },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+    globals[UI_BOOT_GLOBAL] = { basePath: "/memcurio", token: "secret" };
+    const ctx = {
+      effect(callback: () => (() => void) | undefined) {
+        const dispose = callback();
+        disposers.push(() => dispose?.());
+        return () => undefined;
+      },
+      locale: { register: () => () => undefined, bind: () => (key: string) => key },
+      configForms: {
+        get: () => ({
+          getSnapshot: () => ({
+            status: "unavailable",
+            value: undefined,
+            base: undefined,
+            user: undefined,
+            revision: undefined,
+            writable: false,
+            mode: "memory",
+          }),
+          subscribe: () => () => undefined,
+          set: async () => false,
+          unset: async () => false,
+          mutate: async () => false,
+        }),
+      },
+      slots: { inject: () => () => undefined, register: () => () => undefined },
+      // The service exists but exposes no session-scope adapter (a partial
+      // composition): the entry must degrade, not fail to activate.
+      uiSession: {},
+    };
+    try {
+      apply(ctx as never);
+      await waitFor(() => calls.length >= 1);
+      // No binding: the transport reads the snapshot without naming a session.
+      expect(calls.every((call) => !call.includes("session="))).toBe(true);
+    } finally {
+      for (const dispose of disposers.reverse()) dispose();
       globalThis.fetch = originalFetch;
       if (originalBoot === undefined) delete globals[UI_BOOT_GLOBAL];
       else globals[UI_BOOT_GLOBAL] = originalBoot;

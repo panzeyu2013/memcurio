@@ -16,7 +16,6 @@ import LlmRuntime, { createUserMessage } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
-import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 
 import { memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -45,12 +44,8 @@ async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
-    // The plugin hard-injects the settings service (official dsh pattern):
-    // the file-backed provider is the real composition surface.
-    await ctx.plugin(FileSettingsProvider, {
-      path: join(temporaryRoot(), "settings.yaml"),
-      watch: false,
-    }),
+    // 0.1.7: the settings surface is the plugin config itself (volatile
+    // fields), so a test composition needs no settings provider.
   ];
   return { ctx, fibers };
 }
@@ -199,7 +194,7 @@ describe("hostBridge plugin wiring (real ctx)", () => {
 
     const snapshot = await bridge?.snapshot(root, session.id);
     expect(snapshot?.injection.staticSummary).toContain("<<<MEMORY_SUMMARY");
-    expect(snapshot?.settings.version).toBe("rc.1 contract");
+    expect(snapshot?.settings.version).toBe("rc.2 contract");
 
     detach();
     await pluginFiber.dispose();

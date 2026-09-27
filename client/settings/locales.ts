@@ -15,7 +15,7 @@ export const en = {
   injectContext: "Memory",
   registerTools: "Register the memory tools",
   registerToolsNote:
-    "On: the six memory_* tools are registered for the agent (write / read / curate memory). Off: the model has no such tools; stored memory and automatic injection are unaffected. Changes apply after a restart.",
+    "On: the seven memory_* tools are registered for the agent (write / read / curate memory). Off: the model has no such tools; stored memory and automatic injection are unaffected. Changes apply after a restart.",
   injectBudgetTokens: "Injection budget (tokens)",
   routeLabel: "Worker route",
   provider: "Worker provider",
@@ -35,7 +35,7 @@ export const en = {
   readOnly: "This client is read-only for settings (process-local settings mode).",
   unavailable: "The memcurio settings namespace is not exposed by this host.",
   loading: "Loading settings…",
-  scopeNote: "Scope applies to new sessions; the data root is deployment-level (read-only here).",
+  scopeNote: "Scope applies to new sessions; the data root is deployment-level and not part of this form.",
   save: "Save",
   routeNote: "provider / model are saved as one pair; leave both empty to follow the session route.",
 } as const;
@@ -50,7 +50,7 @@ export const zh = {
   injectContext: "记忆",
   registerTools: "注册记忆工具",
   registerToolsNote:
-    "开启：把 6 个 memory_* 工具注册给 agent（记忆写入 / 检索 / 整理）。关闭：模型没有这些工具，已存记忆与自动注入不受影响。变更需重启生效。",
+    "开启：把 7 个 memory_* 工具注册给 agent（记忆写入 / 检索 / 整理）。关闭：模型没有这些工具，已存记忆与自动注入不受影响。变更需重启生效。",
   injectBudgetTokens: "注入预算（token）",
   routeLabel: "Worker 路由",
   provider: "Worker provider",
@@ -70,7 +70,7 @@ export const zh = {
   readOnly: "当前客户端为只读设置模式（进程内设置）。",
   unavailable: "该宿主未暴露 memcurio 设置命名空间。",
   loading: "正在加载设置…",
-  scopeNote: "作用域变更对新会话生效；数据根属部署级配置（此处只读）。",
+  scopeNote: "作用域变更对新会话生效；数据根属部署级配置，不经此面板。",
   save: "保存",
   routeNote: "provider / model 成对保存；都留空则跟随会话路由。",
 } as const;

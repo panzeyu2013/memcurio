@@ -33,8 +33,8 @@ import {
   type SettingsField,
   type MemcurioSettingsView,
   type SettingsPathOp,
-  type SettingsScopePort,
-  type SettingsScopeSnapshotLike,
+  type ConfigFormPort,
+  type ConfigFormSnapshotLike,
 } from "../client/settings/controller.js";
 import { MemcurioSettingsSection } from "../client/settings/section.js";
 import type { SettingsKey } from "../client/settings/locales.js";
@@ -66,8 +66,8 @@ afterEach(() => {
 
 /* --------------------------------------------------------- scope port --- */
 
-class PanelScope implements SettingsScopePort<MemcurioSettingsView> {
-  snapshot: SettingsScopeSnapshotLike<MemcurioSettingsView> = {
+class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
+  snapshot: ConfigFormSnapshotLike<MemcurioSettingsView> = {
     status: "ready",
     value: BASE,
     base: BASE,
@@ -79,7 +79,7 @@ class PanelScope implements SettingsScopePort<MemcurioSettingsView> {
   readonly mutations: Array<readonly SettingsPathOp[]> = [];
   private readonly listeners = new Set<() => void>();
 
-  getSnapshot(): SettingsScopeSnapshotLike<MemcurioSettingsView> {
+  getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
     return this.snapshot;
   }
 
@@ -111,17 +111,20 @@ class PanelScope implements SettingsScopePort<MemcurioSettingsView> {
     };
   }
 
-  async set(field: string, value: unknown): Promise<void> {
+  async set(field: string, value: unknown): Promise<boolean> {
     this.fold([{ op: "set", path: [field], value }]);
+    return true;
   }
 
-  async unset(field: string): Promise<void> {
+  async unset(field: string): Promise<boolean> {
     this.fold([{ op: "unset", path: [field] }]);
+    return true;
   }
 
-  async mutate(ops: readonly SettingsPathOp[]): Promise<void> {
+  async mutate(ops: readonly SettingsPathOp[]): Promise<boolean> {
     this.mutations.push(ops);
     this.fold(ops);
+    return true;
   }
 }
 
@@ -187,7 +190,7 @@ describe("shipped browser bundle", () => {
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.id).toBe("@memcurio/dsh-plugin");
     expect(typeof loaded[0]?.exports.apply).toBe("function");
-    expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "settingsScope", "sessions"]);
+    expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "configForms", "uiSession"]);
   });
 
   test("registers the settings section with a hook seat the renderer maps to useFace", async () => {
@@ -196,6 +199,7 @@ describe("shipped browser bundle", () => {
     if (!bundle) throw new Error("bundle did not register");
 
     const registrations: Array<Record<string, unknown>> = [];
+    const definitions: Array<Record<string, unknown>> = [];
     const localeRegistrations: Array<{ ns: string; dicts: unknown }> = [];
     const bindings: Array<{ namespace: string }> = [];
     const scope = new PanelScope();
@@ -217,18 +221,30 @@ describe("shipped browser bundle", () => {
       },
       bind: () => (key: string) => key,
     });
-    services.reflect.provide("settingsScope", {
-      bind(spec: { namespace: string }) {
-        bindings.push(spec);
+    services.reflect.provide("configForms", {
+      get(entryId: string) {
+        bindings.push({ namespace: entryId });
         return scope;
       },
     });
-    // The browser half hard-injects the client session service (official
-    // conversation-plugin pattern); a stub is enough for activation.
-    services.reflect.provide("sessions", {
-      list: {
-        getSnapshot: () => ({ current: undefined }),
-        subscribe: () => () => undefined,
+    // Custom chat rows register through the optional conversation lane; the
+    // definitions are captured to pin their kinds.
+    services.reflect.provide("uiConversation", {
+      events: {
+        register(definition: Record<string, unknown>) {
+          definitions.push(definition);
+          return () => undefined;
+        },
+      },
+    });
+    // The browser half hard-injects the session-scope adapter (ui-session);
+    // the absent binding (key: undefined) is enough for activation.
+    services.reflect.provide("uiSession", {
+      adapter: {
+        current: {
+          getSnapshot: () => ({ key: undefined }),
+          subscribe: () => () => undefined,
+        },
       },
     });
 
@@ -309,14 +325,13 @@ describe("shipped browser bundle", () => {
     const toolRows = registrations.filter((entry) => entry.name === "tool.call.toolview");
     expect(toolRows.map((entry) => entry.key)).toEqual([...MEMORY_TOOL_NAMES]);
 
-    // The injected-memory row shadows the shipped chat context cell so the
-    // transcript reads "记忆注入 / Memory injection" instead of the platform's
-    // generic context title (the adapter delegates every other node back).
+    // Custom chat rows (the system-prompt guide and the injected-memory row)
+    // register both a node definition and a keyed cell: 0.1.7 drops ordinary
+    // `context` nodes from the transcript, so the rows own their kinds.
     const contextRows = registrations.filter((entry) => entry.name === "conversation.chat.node");
-    expect(contextRows).toHaveLength(1);
-    expect(contextRows[0]?.key).toBe("context");
-    expect(contextRows[0]?.priority).toBe(-1);
-    expect(contextRows[0]?.locale).toBe("memcurio.ui");
+    expect(contextRows.map((entry) => entry.key).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
+    expect(contextRows.every((entry) => entry.locale === "memcurio.ui")).toBe(true);
+    expect(definitions.map((definition) => definition.kind).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
 
     // Bundle purity: only the platform seed may be required at runtime.
     expect([...new Set(requiredSpecifiers)]).toEqual(["react"]);
@@ -499,9 +514,9 @@ describe("settings panel in jsdom (real react-dom)", () => {
       release = resolve;
     });
     const originalSet = panel.scope.set.bind(panel.scope);
-    panel.scope.set = async (field: string, value: unknown) => {
+    panel.scope.set = async (field: string, value: unknown): Promise<boolean> => {
       await slow;
-      await originalSet(field, value);
+      return originalSet(field, value);
     };
     const pending = panel.controller.save("registerTools", false);
     await panel.repaint();

@@ -12,10 +12,10 @@ import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@de
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
-import FileSettingsProvider from "@deepseek-ai/dsh-settings-file";
 
 import { Index } from "../src/core/db.js";
 import { indexDb, memoryWorkspace } from "../src/core/paths.js";
+import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
 import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
@@ -42,12 +42,8 @@ async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
-    // The plugin hard-injects the settings service (official dsh pattern):
-    // the file-backed provider is the real composition surface.
-    await ctx.plugin(FileSettingsProvider, {
-      path: join(temporaryRoot(), "settings.yaml"),
-      watch: false,
-    }),
+    // 0.1.7: the settings surface is the plugin config itself (volatile
+    // fields), so a test composition needs no settings provider.
   ];
   return { ctx, fibers };
 }
@@ -120,16 +116,12 @@ describe("dshWorkerMessage", () => {
       { role: "tool", toolCallId: "call-1", name: "read_file", content: "body", isError: false },
       route,
     );
-    expect(tool.role).toBe("user");
-    // The provider-issued call id correlates the result with the call block.
-    expect(tool.content).toEqual([
-      {
-        type: "tool-result",
-        toolCallId: ToolCallId("call-1"),
-        content: [{ type: "text", text: "body" }],
-        isError: false,
-      },
-    ]);
+    // 0.1.7: a tool result is a first-class tool-role message; the provider
+    // call id lives on the message and the content stays plain blocks.
+    if (tool.role !== "tool") throw new Error(`expected a tool-role message, got ${tool.role}`);
+    expect(tool.toolCallId).toBe(ToolCallId("call-1"));
+    expect(tool.content).toEqual([{ type: "text", text: "body" }]);
+    expect(tool.isError).toBe(false);
   });
 });
 
@@ -163,9 +155,9 @@ describe("DSH plugin contract", () => {
     expect(manifest.dsh?.bundle?.patch).toBe("./cordis.patch.yml");
     // Peer contracts must track the DSH release this package is validated
     // against (bumped together with the root devDependencies).
-    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.2");
+    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.4");
     for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools", "dsh-settings"]) {
-      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.5-rc.1");
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.7-rc.2");
     }
   });
 
@@ -180,9 +172,16 @@ describe("DSH plugin contract", () => {
   });
 
   test("exports a runtime config schema with defaults and validation", () => {
-    expect(plugin.Config({})).toMatchObject({ scope: "workspace", injectContext: true, registerTools: true });
+    // 0.1.7: the schema output wraps every editable field in a volatile
+    // reference the settings page can update without a plugin remount, and
+    // the live-view helper reads it back as plain settings.
+    expect(settingsView(plugin.Config({}) as never)).toMatchObject({
+      scope: "workspace",
+      injectContext: true,
+      registerTools: true,
+    });
     expect(() => plugin.Config({ injectContext: "false" } as never)).toThrow();
-    expect(() => plugin.apply({} as never, { root: "" })).toThrow("root must be a non-empty string");
+    expect(() => plugin.apply({} as never, { root: "" } as never)).toThrow("root must be a non-empty string");
   });
 
   test("adopts live sessions, pairs compaction summaries, and drains on dispose", async () => {
@@ -398,7 +397,7 @@ describe("DSH plugin contract", () => {
     // user's own text may become extraction evidence.
     const injected = createUserMessage({
       content: [{ type: "text", text: "INJECTED MEMORY CONTENT that must not be remembered" }],
-      source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+      source: { kind: plugin.MEMCURIO_MESSAGE_KIND },
     });
     const settlement = createUserMessage({
       content: [{ type: "text", text: "SUBAGENT SETTLEMENT that must not be remembered" }],
@@ -945,7 +944,9 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
         time: Date.now(),
         data: createUserMessage({
           content: [{ type: "text", text: "Cross-session memory summary (untrusted):\n<<<MEMORY_SUMMARY\nv1\n\n## Prefs\n\n- old\n>>>MEMORY_SUMMARY" }],
-          source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" },
+          // Pre-0.1.7 durable log: the retired shared `plugin` source kind.
+          // A resumed session must still latch the window (no second copy).
+          source: { kind: "plugin", plugin: "@memcurio/dsh-plugin" } as never,
         }),
         surfaceOp: "append",
       },
@@ -1304,7 +1305,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
           content: [{ type: "text", text: citationText }],
           source: { provider: "test", model: "test" },
         }),
-        // DSH 0.1.5-rc.1: assistant/message events carry the stream record.
+        // DSH 0.1.7-rc.2: assistant/message events carry the stream record.
         stream: [],
       },
       surfaceOp: "append",
@@ -1334,6 +1335,9 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
   });
 
   test("replays tool/call + tool/result telemetry from seed events", async () => {
+    // Both durable shapes: 0.1.7 carries the call id on the tool-role message;
+    // pre-0.1.7 logs kept it inside the `tool-result` content block.
+    for (const arm of ["message", "content-block"] as const) {
     const root = temporaryRoot();
     const { ctx, fibers } = await runtime();
     const pluginFiber = await ctx.plugin(plugin, {
@@ -1380,11 +1384,19 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
         data: {
           turn: 1,
           step: 1,
-          message: createToolResultMessage({
-            callId,
-            content: [{ type: "text", text: "ok" }],
-            isError: false,
-          }),
+          message:
+            arm === "message"
+              ? createToolResultMessage({
+                  callId,
+                  content: [{ type: "text", text: "ok" }],
+                  isError: false,
+                })
+              : // The pre-0.1.7 shape: no top-level call id, one content block.
+                ({
+                  id: "legacy-tool-result",
+                  role: "tool",
+                  content: [{ type: "tool-result", toolCallId: callId, content: [{ type: "text", text: "ok" }] }],
+                } as unknown as ReturnType<typeof createToolResultMessage>),
         },
         surfaceOp: "append",
       },
@@ -1393,7 +1405,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       id: SessionId("seed-tool-session"),
       header: { version: SESSION_FORMAT_VERSION, id: SessionId("seed-tool-session"), createdAt: Date.now(), cwd: join(root, "workspace") },
       snapshotEvents() {
-        // rc.1 snapshots are frozen and stay stable after later appends.
+        // Pre-0.1.7 snapshots are frozen and stay stable after later appends.
         return Object.freeze([...events]);
       },
     } as unknown as Session;
@@ -1415,9 +1427,10 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       check.close();
       await disposeFibers(fibers);
     }
+    }
   });
 
-  test("adopts a real rc.1 seeded session (frozen seed + end-seed marker replayed once)", async () => {
+  test("adopts a real pre-0.1.7 seeded session (frozen seed + end-seed marker replayed once)", async () => {
     const root = temporaryRoot();
     const workdir = join(root, "workspace");
     const rolloutKey = "dsh|real-seed";
@@ -1439,7 +1452,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     writeWorkspaceText(root, `rollout_summaries/${filename}`, "summary content");
     const summaryPath = join(root, "memory", "rollout_summaries", filename);
 
-    // A resumed/forked rc.1 session carries its prior log as constructor
+    // A resumed/forked pre-0.1.7 session carries its prior log as constructor
     // seeds: validated, deep-frozen, never re-published on the live path, and
     // terminated by the store's own `session/end-seed` marker (the adoption
     // replay must tolerate that marker and still rebuild evidence once).
@@ -1470,7 +1483,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       },
     ];
     const session = ctx.sessions.prepare(SessionId("real-seed-adoption"), { meta: { cwd: workdir }, seed });
-    // rc.1 seals constructor seeds with an unpublished session/end-seed
+    // Pre-0.1.7 seals constructor seeds with an unpublished session/end-seed
     // marker at the first live seq; the adoption replay must tolerate it.
     {
       const seededSnapshot = session.snapshotEvents();
@@ -1705,9 +1718,12 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
   });
 
   test("validates provider/model pairing and injection budget at apply", async () => {
-    expect(() => plugin.apply({} as never, { provider: "x" })).toThrow(/together/);
-    expect(() => plugin.apply({} as never, { model: "y" })).toThrow(/together/);
-    expect(() => plugin.apply({} as never, { injectBudgetTokens: 12 })).toThrow(/128/);
+    // The pair rule is a runtime check on the resolved document.
+    expect(() => plugin.apply({} as never, { provider: "x" } as never)).toThrow(/together/);
+    expect(() => plugin.apply({} as never, { model: "y" } as never)).toThrow(/together/);
+    // The budget floor is schema-level now: the Loader refuses the write
+    // before apply ever sees it (see tests/settings.test.ts).
+    expect(() => plugin.Config({ injectBudgetTokens: 12 })).toThrow(/128/);
   });
 
   test("adopts sessions that exist before the plugin loads", async () => {

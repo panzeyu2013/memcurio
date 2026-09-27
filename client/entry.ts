@@ -5,8 +5,9 @@
  *
  * 1. the `memcurio` Settings section (configuration);
  * 2. the memory visibility UI (G5/G6): the "记忆注入 / Memory injection"
- *    transcript row for injected memory (ui/context-row.ts), transient toasts
- *    for injections and memory writes, and custom transcript rows for the six
+ *    transcript row for injected memory (ui/context-row.ts), a disclosure row
+ *    for the system-prompt guide (ui/guide-row.ts), transient toasts for
+ *    injections and memory writes, and custom transcript rows for the seven
  *    native memory tools. The session-header indicator is kept unregistered
  *    (v1.7 product instruction).
  *
@@ -15,7 +16,7 @@
  * import must be a frozen-platform seed module (`react` only here) — the
  * `@deepseek-ai/dsh-client-*` imports below are TYPE-ONLY, and the actual
  * services arrive through cordis (`ctx.slots` / `ctx.locale` /
- * `ctx.settingsScope`). The UI modules import no icon package either: the
+ * `ctx.configForms`). The UI modules import no icon package either: the
  * marks are inline SVG, and the toast host is plain DOM.
  *
  * Discovery: `package.json` declares `dsh.client` (`platform: "web"`,
@@ -23,6 +24,7 @@
  * in `cordis.patch.yml`.
  */
 import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
@@ -30,7 +32,6 @@ import type {} from "@deepseek-ai/dsh-client-locale/client";
 import {
   MemcurioSettingsController,
   NAMESPACE,
-  decodeSettings,
   type MemcurioSettingsView,
   type SettingsField,
 } from "./settings/controller.js";
@@ -39,7 +40,7 @@ import { MemcurioSettingsSection } from "./settings/section.js";
 import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.js";
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
-import { CONTEXT_ROW_PRIORITY, createContextRow } from "./ui/context-row.js";
+import { registerInjectionRow, type InjectionRegistrationHost } from "./ui/context-row.js";
 import { registerGuideRow, type GuideRegistrationHost } from "./ui/guide-row.js";
 import { NS as UI_NS, en as uiEn, zh as uiZh, type UiKey } from "./ui/locales.js";
 import { actionCategory, createMemoryUiStore, shouldAnnounceInjection, type MemoryUiEvent } from "./ui/model.js";
@@ -55,42 +56,30 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
   }
 }
 
-/** Cordis services this browser half calls (activation edges). `sessions`
- *  binds the indicator to the current session and is hard-injected like every
- *  official conversation plugin (a composition without it has no header slot
- *  for this entry either). */
-export const inject = ["slots", "locale", "settingsScope", "sessions"];
+/** Cordis services this browser half calls (activation edges). `uiSession`
+ *  supplies the session-scope adapter whose main binding names the session the
+ *  conversation panel shows (DSH 0.1.7): the memory UI follows that selection,
+ *  and a composition without the session scope has no session-scoped seat for
+ *  this entry's transcript rows either. */
+export const inject = ["slots", "locale", "configForms", "uiSession"];
 
-/** Current-session slice of the client session service (structural). */
-interface SessionsLike {
-  list: {
-    getSnapshot(): { current?: unknown };
-    subscribe(listener: () => void): () => void;
-  };
-}
-
-/** Structural slice of the client locale service: the platform chat row's
- *  dictionary namespace ("chat") belongs to ui-chat and is not merged into
- *  this package's LocaleNamespaceMap, so the binding goes through the narrow
- *  structural face here. A locale service that refuses the namespace degrades
- *  to identity translation (the fallback row only ever uses it for the
- *  platform's own generic title). */
-type TranslateLike = (key: string, params?: Record<string, unknown>) => string;
-
-function chatTranslate(ctx: Context): TranslateLike {
+/** The session-scope adapter, when the session UI is composed. Its type is
+ *  the ui-session client declaration's (`import type` above; the runtime
+ *  import is erased, the bundle stays react-only), and the guard only covers
+ *  a partial composition whose service carries no adapter. */
+function sessionScopeAdapter(ctx: Context) {
   try {
-    const locale = (ctx as unknown as { locale?: { bind(ns: string): TranslateLike } }).locale;
-    return locale === undefined ? (key) => key : locale.bind("chat");
+    return ctx.uiSession?.adapter;
   } catch {
-    return (key) => key;
+    return undefined;
   }
 }
 
+
 function currentSessionId(ctx: Context): string | undefined {
   try {
-    const sessions = (ctx as unknown as { sessions?: SessionsLike }).sessions;
-    const current = sessions?.list.getSnapshot().current;
-    return typeof current === "string" && current !== "" ? current : undefined;
+    const key = sessionScopeAdapter(ctx)?.current.getSnapshot().key;
+    return typeof key === "string" && key !== "" ? key : undefined;
   } catch {
     return undefined;
   }
@@ -135,14 +124,14 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), "memcurio: settings dictionaries");
   const t = ctx.locale.bind(SETTINGS_NS);
 
-  const scope = ctx.settingsScope.bind<MemcurioSettingsView>({
-    namespace: NAMESPACE,
-    decode: decodeSettings,
-  });
+  // The Host configuration form for this package's profile entry (0.1.7):
+  // reads derive from the shared describe mirror, writes carry the entry's
+  // revision fence, and a refusal re-reads Host state before answering.
+  const scope = ctx.configForms.get<MemcurioSettingsView>(NAMESPACE);
   const controller = new MemcurioSettingsController(scope);
 
-  // External edits (settings.yaml touched on disk) already reload the shared
-  // settings mirror inside ui-settings; the bound scope derives from that
+  // External edits (the profile patch touched on disk) already reload the
+  // shared settings mirror inside ui-settings; the form derives from that
   // mirror, so the controller's single subscription observes them without a
   // second remote listener here.
   ctx.effect(() => controller.start(), "memcurio: settings scope subscription");
@@ -245,10 +234,10 @@ export function apply(ctx: Context): void {
   // A session switch must not keep the previous session's injection on screen:
   // clear the preview and re-read the new session's snapshot.
   ctx.effect(() => {
-    const sessions = (ctx as unknown as { sessions?: SessionsLike }).sessions;
-    if (sessions === undefined) return () => undefined;
+    const adapter = sessionScopeAdapter(ctx);
+    if (adapter === undefined) return () => undefined;
     let current = currentSessionId(ctx);
-    return sessions.list.subscribe(() => {
+    return adapter.current.subscribe(() => {
       const next = currentSessionId(ctx);
       if (next === current) return;
       current = next;
@@ -274,15 +263,10 @@ export function apply(ctx: Context): void {
   // this comment replaced.
 
   // The injected memory row reads "记忆注入 / Memory injection" instead of the
-  // platform's generic "上下文注入 / Context injection". The adapter shadows the
-  // shipped `context` cell (priority -1) and delegates every other context
-  // node back to it — see client/ui/context-row.ts.
-  ctx.slots.inject("conversation.chat.node", () =>
-    ctx.slots.register(
-      { name: "conversation.chat.node", key: "context", priority: CONTEXT_ROW_PRIORITY, locale: UI_NS },
-      createContextRow({ slots: ctx.slots, chatT: chatTranslate(ctx) }),
-    ),
-  );
+  // platform's generic "上下文注入 / Context injection". 0.1.7 filters ordinary
+  // `context` nodes out of the transcript, so this row ships as a custom chat
+  // node kind (the guide-row seam) — see client/ui/context-row.ts.
+  registerInjectionRow(ctx as unknown as InjectionRegistrationHost);
 
   // The read-path guide lives in the SYSTEM PROMPT (v1.9), so the injected
   // message row never covered it and its injection was invisible. This lane

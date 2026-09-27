@@ -7,8 +7,10 @@
  * (upstream `SettingsRoot.navIcon`), and the section options carry no icon
  * field (`{ id, order, label, priority }`). A third-party section therefore
  * cannot declare its mark through the contract. Evidence version:
- * `@deepseek-ai/dsh-client-ui-settings-general@0.1.5-rc.2` (the gateway
- * runtime); rc.1 is not re-checked here.
+ * `@deepseek-ai/dsh-client-ui-settings-general@0.1.7-rc.2` (the gateway
+ * runtime): its nav row is still `button` > `navIcon` svg + `navLabel`
+ * span, and section options still carry no icon field. Re-checked against
+ * that shipped client, not re-run in a live browser.
  *
  * This adapter tags the one row of the settings dialog that carries our own
  * label — the shell renders exactly `<button><svg/><span>{label}</span></button>`

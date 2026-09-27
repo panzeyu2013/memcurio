@@ -35,7 +35,7 @@ export interface BridgeSessionInfo {
 }
 export declare class HostBridge {
     private readonly baseRoot;
-    /** Mutable: the settings document can change them live (configure()). */
+    /** Mutable: a settings commit can change them live (volatile refs). */
     private scope;
     private readonly version?;
     private injectBudgetTokens?;

@@ -375,10 +375,10 @@ describe("round-19 enrichment (receipt synthesis, radar candidates, settings pre
       root,
       baseRoot: dir,
       injectBudgetTokens: 900,
-      version: "rc.1 contract",
+      version: "rc.2 contract",
     });
     expect(snapshot.settings.injectBudgetTokens).toBe(900);
-    expect(snapshot.settings.version).toBe("rc.1 contract");
+    expect(snapshot.settings.version).toBe("rc.2 contract");
   });
 });
 

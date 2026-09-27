@@ -85,7 +85,7 @@ src/
 ├── plugin/
 │   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、7 个原生工具（含 memory_cite）、ctx.llm 通道封装、settings live 读取）
 │   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；恒开 + live configure）
-│   ├── settings.ts     `memcurio` settings 命名空间（schema、composition base、live 句柄、跨字段校验）
+│   ├── settings.ts     插件 entry 配置 schema（= `memcurio` 设置命名空间：volatile live 视图、路由成对校验、可选 settings 服务接线）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
 client/                浏览器半侧：entry.ts + settings/*（Settings 面板）+ ui/*（注入/写入可见性、wire 词汇、传输客户端），`dsh.client` + `lib/client.js`（记忆工作台 M0 见 docs/todo.md）
 docs/
