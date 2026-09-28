@@ -38,13 +38,13 @@ Requires [node](https://nodejs.org) >= 22.13 (`node:sqlite`, no flag; the 22.5�
 # 1. Build (dist/ is committed; a fresh build must not drift — CI checks it)
 bun install --frozen-lockfile
 bun run build
-bun pm pack            # → memcurio-dsh-plugin-0.0.3.tgz
+bun pm pack            # → memcurio-dsh-plugin-0.0.4.tgz
 # Releases: tag-driven GitHub Release shipping the packed tarball (asset URL
 # install); npm publish is prepared but disabled — see docs/operations.md and
 # CHANGELOG.md for the full mechanics.
 
 # 2. Install into a DSH profile (activates cordis.patch.yml automatically)
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.3.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.4.tgz
 ```
 
 The bundle manifest inserts the plugin with `inject: [tools, llm, sessions]` and default config (`scope: workspace`, `injectContext: true`, `registerTools: true`). Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`) — one isolated store per absolute workspace path, no separate top-level data location (`MEMCURIO_ROOT`/plugin `root` still override for dev and legacy isolation; `scope: global` opts into one shared store). Configure from the DSH **Settings** page (a "Memory" section ships with the browser half); the settings contract — namespace, editable keys, persistence target and per-key apply timing — is documented in [docs/settings.md](docs/settings.md). Tune the per-store `config.json` (`budget.*`, `pipeline.maxUnusedDays`/`maxInputs`/`retentionDays`/`resourceRetentionDays`/`maxAgentSteps`) or pin the worker route via the plugin's `provider`/`model` config keys. The memory-workbench host bridge (event tags, refresh diffs, snapshots — `src/plugin/bridge.ts`) is always on and deliberately **not** a config key (v1.7 product decision: no supported scenario needs it off).

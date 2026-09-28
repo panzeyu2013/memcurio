@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-09-28
+
+First release since `v0.0.2`: it also carries the changes documented under
+`0.0.3` below, which were prepared but never tagged (that section records the
+post-`0.0.2` fixes already in this tree).
+
 ### Changed
 
 - **Aligned to DSH `0.2.0-rc.1`**: peer ranges moved from `^0.1.7-rc.2` to
