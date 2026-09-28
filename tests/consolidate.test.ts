@@ -1325,6 +1325,35 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(prompts[1]?.user ?? "").toContain("Do not answer with prose only");
   });
 
+  test("the prose nudge replays the host-native turn as well", async () => {
+    const native = { marker: "prose-native" };
+    const transcripts: AgentTurnMessage[][] = [];
+    let step = 0;
+    const channel: LlmChannel = {
+      name: "prose-native",
+      async agent(_system, messages) {
+        transcripts.push([...messages]);
+        step += 1;
+        if (step === 1) {
+          return { text: "I will inspect the files first.", toolCalls: [], finish: "stop" as const, native };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "call-2", name: "finish", arguments: JSON.stringify({ report: "after nudge" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const provider = new LlmLoopConsolidateProvider(4, channel);
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    const second = transcripts[1] ?? [];
+    const assistant = second.find(
+      (message): message is Extract<AgentTurnMessage, { role: "assistant" }> => message.role === "assistant",
+    );
+    expect(assistant?.native).toBe(native);
+  });
+
   test("invalid tool arguments come back as a tool error the model can correct", async () => {
     const prompts: Array<{ system: string; user: string }> = [];
     const provider = new LlmLoopConsolidateProvider(
@@ -1391,6 +1420,40 @@ describe("LlmLoopConsolidateProvider", () => {
     // that lost its reasoning_content (live 400 invalid_request_error), so the
     // transcript sent on turn two must carry it.
     expect(prompts[1]?.user ?? "").toContain("REASONING: inspect first");
+  });
+
+  test("replays the host-native assistant message on the next tool turn", async () => {
+    const native = { marker: "host-native-assistant" };
+    const transcripts: AgentTurnMessage[][] = [];
+    let step = 0;
+    const channel: LlmChannel = {
+      name: "native-replay",
+      async agent(_system, messages) {
+        transcripts.push([...messages]);
+        step += 1;
+        if (step === 1) {
+          return {
+            text: "",
+            toolCalls: [{ id: "call-1", name: "list_files", arguments: "{}" }],
+            finish: "tool-calls" as const,
+            native,
+          };
+        }
+        return {
+          text: "",
+          toolCalls: [{ id: "call-2", name: "finish", arguments: JSON.stringify({ report: "replayed" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const provider = new LlmLoopConsolidateProvider(3, channel);
+    const result = await provider.consolidate({ workspace: { "MEMORY.md": "x" }, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    const second = transcripts[1] ?? [];
+    const assistant = second.find(
+      (message): message is Extract<AgentTurnMessage, { role: "assistant" }> => message.role === "assistant",
+    );
+    expect(assistant?.native).toBe(native);
   });
 });
 

@@ -7,7 +7,8 @@ import { Context } from "@deepseek-ai/cordis";
 import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import { CompactionId } from "@deepseek-ai/dsh-compaction";
-import LlmRuntime, { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import LlmRuntime, { LlmAdapter, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import type { AssistantMessage, GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
@@ -18,6 +19,7 @@ import { indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
+import type { LlmChannel } from "../src/core/channel.js";
 import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
@@ -125,6 +127,187 @@ describe("dshWorkerMessage", () => {
   });
 });
 
+describe("dshChannel", () => {
+  const route = (): { provider: string; model: string } => ({ provider: "deepseek-clh", model: "deepseek-v4.1-flash-oai" });
+
+  function channelFrom(chunks: StreamChunk[]): LlmChannel {
+    const ctx = {
+      llm: {
+        async *stream() {
+          for (const chunk of chunks) yield chunk;
+        },
+      },
+    } as unknown as Context;
+    return plugin.dshChannel(ctx, route, () => undefined);
+  }
+
+  test("assembles the host message verbatim, replay envelope and empty blocks included", async () => {
+    const replayState = {
+      response: {
+        kind: "pi-ai",
+        version: 2,
+        api: "openai-completions",
+        provider: "deepseek-clh",
+        model: "deepseek-v4.1-flash-oai",
+        stopReason: "toolUse",
+      },
+      blocks: [{ type: "reasoning" }, { type: "text" }, { type: "tool-call" }],
+    };
+    const chunks: StreamChunk[] = [
+      { type: "block-start", index: 0, blockType: "reasoning" },
+      { type: "reasoning-delta", index: 0, text: "think" },
+      { type: "block-end", index: 0, block: { type: "reasoning", text: "think" } },
+      { type: "block-start", index: 1, blockType: "text" },
+      { type: "text-delta", index: 1, text: "checking" },
+      { type: "block-end", index: 1, block: { type: "text", text: "checking" } },
+      { type: "block-start", index: 2, blockType: "tool-call" },
+      { type: "tool-call-delta", index: 2, id: ToolCallId("call-1"), name: "read_file", argumentsDelta: '{"rel":"MEMORY.md"}' },
+      {
+        type: "block-end",
+        index: 2,
+        block: { type: "tool-call", id: ToolCallId("call-1"), name: "read_file", arguments: '{"rel":"MEMORY.md"}' },
+      },
+      { type: "finish", reason: { kind: "tool-calls" }, replayState: replayState as never },
+    ];
+    const reply = await channelFrom(chunks).agent("system", [{ role: "user", text: "go" }], []);
+    expect(reply.finish).toBe("tool-calls");
+    expect(reply.reasoning).toBe("think");
+    expect(reply.toolCalls).toEqual([{ id: "call-1", name: "read_file", arguments: '{"rel":"MEMORY.md"}' }]);
+
+    const native = reply.native as AssistantMessage;
+    // Assembly is the host's own: block order preserved, nothing rebuilt.
+    expect(native.content).toEqual([
+      { type: "reasoning", text: "think" },
+      { type: "text", text: "checking" },
+      { type: "tool-call", id: ToolCallId("call-1"), name: "read_file", arguments: '{"rel":"MEMORY.md"}' },
+    ]);
+    expect(native.source).toMatchObject({
+      provider: "deepseek-clh",
+      model: "deepseek-v4.1-flash-oai",
+      replayState,
+    });
+    // The next turn replays that exact message object, never a rebuild.
+    const replayed = plugin.dshWorkerMessage(
+      { role: "assistant", text: reply.text, reasoning: reply.reasoning, toolCalls: reply.toolCalls, native: reply.native },
+      route(),
+    );
+    expect(replayed).toBe(native);
+  });
+
+  test("keeps the assembled message when the host carries no replay metadata", async () => {
+    const chunks: StreamChunk[] = [
+      { type: "block-start", index: 0, blockType: "reasoning" },
+      { type: "reasoning-delta", index: 0, text: "   " },
+      { type: "block-end", index: 0, block: { type: "reasoning", text: "   " } },
+      { type: "block-start", index: 1, blockType: "text" },
+      { type: "text-delta", index: 1, text: "done" },
+      { type: "finish", reason: { kind: "stop" } },
+    ];
+    const reply = await channelFrom(chunks).agent("system", [{ role: "user", text: "go" }], []);
+    const native = reply.native as AssistantMessage;
+    expect(native.source.replayState).toBeUndefined();
+    // Whitespace-only reasoning stays in the host message (no fabrication).
+    expect(native.content).toEqual([{ type: "reasoning", text: "   " }, { type: "text", text: "done" }]);
+    expect(reply.reasoning).toBeUndefined();
+  });
+
+  test("refuses a nameless tool call instead of replaying an unanswerable turn", async () => {
+    const chunks: StreamChunk[] = [
+      { type: "block-end", index: 0, block: { type: "tool-call", id: ToolCallId("call-1"), name: "", arguments: "{}" } },
+      { type: "finish", reason: { kind: "tool-calls" } },
+    ];
+    await expect(channelFrom(chunks).agent("system", [{ role: "user", text: "go" }], [])).rejects.toThrow("without a name");
+  });
+
+  test("replay metadata survives a real DSH LlmRuntime round trip", async () => {
+    const { ctx, fibers } = await runtime();
+    const seen: GenerateOptions[] = [];
+    const replayState = {
+      response: {
+        kind: "pi-ai",
+        version: 2,
+        api: "openai-completions",
+        provider: "fake-provider",
+        model: "fake-model",
+        stopReason: "toolUse",
+      },
+      blocks: [{ type: "reasoning" }, { type: "tool-call" }],
+    };
+    class FakeAdapter extends LlmAdapter {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        seen.push(options);
+        if (seen.length === 1) {
+          yield { type: "block-start", index: 0, blockType: "reasoning" };
+          yield { type: "reasoning-delta", index: 0, text: "think" };
+          yield { type: "block-end", index: 0, block: { type: "reasoning", text: "think" } };
+          yield { type: "block-start", index: 1, blockType: "tool-call" };
+          yield { type: "tool-call-delta", index: 1, id: ToolCallId("call-1"), name: "read_file", argumentsDelta: "{}" };
+          yield {
+            type: "block-end",
+            index: 1,
+            block: { type: "tool-call", id: ToolCallId("call-1"), name: "read_file", arguments: "{}" },
+          };
+          yield { type: "finish", reason: { kind: "tool-calls" }, replayState: replayState as never };
+          return;
+        }
+        yield { type: "block-start", index: 0, blockType: "text" };
+        yield { type: "text-delta", index: 0, text: "ok" };
+        yield { type: "finish", reason: { kind: "stop" } };
+      }
+    }
+    ctx.llm.registerAdapter(["fake-provider"], new FakeAdapter());
+    const channel = plugin.dshChannel(ctx, () => ({ provider: "fake-provider", model: "fake-model" }), () => undefined);
+    const first = await channel.agent("system", [{ role: "user", text: "go" }], []);
+    expect(first.native).toBeDefined();
+    await channel.agent(
+      "system",
+      [
+        { role: "user", text: "go" },
+        { role: "assistant", text: first.text, reasoning: first.reasoning, toolCalls: first.toolCalls, native: first.native },
+        { role: "tool", toolCallId: "call-1", name: "read_file", content: "content" },
+      ],
+      [],
+    );
+    const sent = seen[1]?.messages ?? [];
+    const assistant = sent.find((message) => message.role === "assistant");
+    // The runtime keeps replay metadata only for the adapter that owns the
+    // historical provider; on that path the very message object is replayed.
+    expect(assistant).toBe(first.native as AssistantMessage);
+    expect(assistant?.source).toMatchObject({ provider: "fake-provider", model: "fake-model", replayState });
+    await disposeFibers(fibers);
+  });
+
+  test("promotes a stop finish that still carries a tool call", async () => {
+    const chunks: StreamChunk[] = [
+      { type: "block-start", index: 0, blockType: "tool-call" },
+      { type: "tool-call-delta", index: 0, id: ToolCallId("call-1"), name: "finish", argumentsDelta: "{}" },
+      {
+        type: "block-end",
+        index: 0,
+        block: { type: "tool-call", id: ToolCallId("call-1"), name: "finish", arguments: "{}" },
+      },
+      { type: "finish", reason: { kind: "stop" } },
+    ];
+    const reply = await channelFrom(chunks).agent("system", [{ role: "user", text: "go" }], []);
+    expect(reply.finish).toBe("tool-calls");
+    expect(reply.toolCalls).toEqual([{ id: "call-1", name: "finish", arguments: "{}" }]);
+  });
+
+  test("surfaces an aborted finish instead of returning a partial turn", async () => {
+    const chunks: StreamChunk[] = [
+      { type: "block-start", index: 0, blockType: "text" },
+      { type: "text-delta", index: 0, text: "half" },
+      {
+        type: "finish",
+        reason: { kind: "aborted", failure: { code: "ABORTED", message: "pi-ai request aborted by caller" } },
+      },
+    ];
+    await expect(channelFrom(chunks).agent("system", [{ role: "user", text: "go" }], [])).rejects.toThrow(
+      "aborted by caller",
+    );
+  });
+});
+
 describe("workspaceStoreRoot", () => {
   test("isolates workspaces deterministically", () => {
     const first = workspaceStoreRoot("/tmp/memcurio", "/work/one", "workspace");
@@ -157,10 +340,33 @@ describe("DSH plugin contract", () => {
     // against (bumped together with the root devDependencies).
     expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.4");
     for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools", "dsh-settings"]) {
-      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.1.7-rc.2");
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.2.0-rc.1");
     }
   });
 
+  test("the published peers pass the runtime compatibility gate", async () => {
+    const { evaluatePluginCompatibility } = await import("@deepseek-ai/dsh-app-boot");
+    const artifact = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as object;
+    // dsh-app-boot compares every @deepseek-ai/dsh* peer against the single
+    // running dsh version (prereleases included); `dsh plugin add` rejects a
+    // mismatch and the boot preflight disables the bundle. The gate is what
+    // makes "peer range" an installability contract, not just a type hint.
+    for (const runtime of ["0.2.0-rc.1", "0.2.0-rc.2", "0.2.0", "0.2.1"]) {
+      expect(evaluatePluginCompatibility(artifact, {}, runtime)).toBeUndefined();
+    }
+    // The floor is deliberate and one-way: a 0.2.x build is not installable on
+    // 0.1.x (and vice versa), so the runtime upgrade and the plugin swap have to
+    // happen as one pair. cordis is not a dsh* peer and must not be judged.
+    const issue = evaluatePluginCompatibility(artifact, {}, "0.1.7-rc.2");
+    expect(issue?.peers).toEqual({
+      "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-compaction": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-session": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-settings": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+    });
+  });
   test("telemetry preset matches DSH's built-in read and shell tool names", () => {
     // DSH registers `read` (arg `file_path`), `grep`/`glob` (arg `path`) and
     // `bash`/`pwsh` (arg `command`). A stale name here silently disables

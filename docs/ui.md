@@ -272,7 +272,7 @@ node 半侧（`src/plugin/bridge.ts` + `src/services/snapshot.ts`；恒开，无
 - **测试策略**：Services 层单测复用引擎测试基建（`tests/engine.test.ts` 模式）：每个读服务（脱敏/截断/注入过滤断言）+ 意图草稿（措辞模板/引用转义）+ 投影器（事件→delta 映射 + 脱敏）；门禁回归并入 `bun test`；客户端 bundle 测试按 DSH 客户端约定。
 - **浏览器半侧打包**：`dsh.client`（platform web + inject 官方 client 包）+ `exports["./client"]` → `lib/client.js`；`scripts/build-client.ts`（esbuild，CJS + `window.__ModuleLoader__.load({id, factory})` 包裹，external = 平台 seed 表）；产物提交入 git，CI/release 做 drift 校验（`dist/` 与 `lib/`）。
 - **打包**：单包新增 `dsh.client` 声明（`platform: web`、`./client` bundle）；若 bundle 只依赖 9 个 seed 模块（react、react/jsx-runtime、react-dom、react-dom/client、@deepseek-ai/cordis、dsh-client-store、dsh-client-ui-slots、dsh-client-ui-primitives、@deepseek-ai/dsh-client-ui-dockkit），则**无需 `dsh.client.external`**，服务一律经 ctx.* 注入；`files` 增加客户端产物；构建需为 loader 产物（`factory(require)` Lazy-CJS + revisioned /plugins 服务）增加打包步骤（dist/ 纯 ESM tsc 产物不满足 loader 契约）；dist 提交制纪律不变。
-- **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 0.1.7-rc.2）。
+- **版本契约**：沿用"每次 DSH 升级重核 peer/client 契约"纪律（当前 0.2.0-rc.1）。
 - **性能**：读服务分页/截断沿用既有上限；推送增量合并节流（如 usage 跳动按 500ms 合并）；工作台打开时惰性加载（客户端模块惰性语义）。
 - **i18n**：UI 文案跟随 DSH 客户端语言约定；记忆内容原样展示（不翻译）。
 

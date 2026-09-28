@@ -1,9 +1,9 @@
-# memcurio 设置契约（DSH 0.1.7-rc.2）
+# memcurio 设置契约（DSH 0.2.0-rc.1）
 
 > 本文件是**设置面**的唯一真源：上游规范 → 本插件落点 → 本仓库自己的约定 → 验证矩阵 → 运维要点。
 > 安装/升级步骤见 [operations.md](operations.md)；面板的 UI 呈现（几何、文案、状态）见 [ui.md](ui.md)；模块导出签名见 [contract.md](contract.md)。
 
-## 1. 上游规范（DSH 0.1.7-rc.2）
+## 1. 上游规范（DSH 0.2.0-rc.1）
 
 权威来源是 DSH 安装树里随包发布的 README（`node_modules/@deepseek-ai/...`）。完整文档在 DSH 源码仓（`docs/subsystems/settings.md`、`vendor/loader/README.md`、`boot/config-editor/README.md`），本仓库不复制全文，只固定"对第三方插件成立"的部分：
 

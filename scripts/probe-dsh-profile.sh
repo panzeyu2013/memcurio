@@ -19,12 +19,12 @@
 # Usage:
 #   scripts/probe-dsh-profile.sh                 # dump-config only (safe)
 #   BOOT=1 scripts/probe-dsh-profile.sh          # also try to boot the web app
-#   DSH_VERSION=0.1.7-rc.2 WORK=/tmp/probe scripts/probe-dsh-profile.sh
+#   DSH_VERSION=0.2.0-rc.1 WORK=/tmp/probe scripts/probe-dsh-profile.sh
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DSH_VERSION="${DSH_VERSION:-0.1.7-rc.2}"
+DSH_VERSION="${DSH_VERSION:-0.2.0-rc.1}"
 PROFILE="${PROFILE:-memcurio-probe}"
 PORT="${PORT:-30999}"
 RUNNER="${RUNNER:-bun}"

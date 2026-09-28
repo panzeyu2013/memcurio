@@ -17,3 +17,6 @@ coverage/
 
 # Scratch verification dir (live store copies, cookies, probe payloads).
 .dsh-tmp/
+
+# Scratch upgrade/API-delta workspace (pinned tarballs + probe installs).
+.scratch/

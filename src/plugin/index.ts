@@ -4,7 +4,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import type {} from "@deepseek-ai/dsh-compaction/types";
-import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { BlockAssembler, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { ContentBlock, Message, UserMessage } from "@deepseek-ai/dsh-llm";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -151,7 +151,7 @@ interface SessionRuntime {
 
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.7-rc.2). Only these names may
+ *  dsh-tool-pwsh; verified against DSH 0.1.7-rc.2, unchanged in 0.2.0-rc.1). Only these names may
  *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 /** Exact existing memory-workspace files named by a shell command (simple
  *  whitespace/quote tokenizer; conservative on purpose — never speculative
@@ -405,6 +405,14 @@ export function dshWorkerMessage(message: AgentTurnMessage, route: { provider: s
     });
   }
   if (message.role === "assistant") {
+    // A turn the worker channel assembled from the raw host stream is already a
+    // real DSH message carrying the adapter's replay metadata (provider
+    // thinking signatures). Rebuilding it from the neutral fields would drop
+    // that metadata and make the next request invalid for thinking-mode
+    // providers, so the host message is replayed verbatim.
+    if (message.native !== undefined) {
+      return message.native as Message;
+    }
     const content: ContentBlock[] = [];
     // Reasoning precedes visible text. The provider adapter replays it as
     // reasoning_content, which thinking-mode APIs require on any assistant
@@ -424,7 +432,7 @@ export function dshWorkerMessage(message: AgentTurnMessage, route: { provider: s
   });
 }
 
-function dshChannel(
+export function dshChannel(
   ctx: Context,
   route: () => { provider: string; model: string } | undefined,
   abortSignal: () => AbortSignal | undefined,
@@ -443,12 +451,16 @@ function dshChannel(
       if (runtimeSignal) signals.push(runtimeSignal);
       if (signal) signals.push(signal);
       const combined = AbortSignal.any(signals);
+      // The turn is replayed as the host's own message, so the route snapshot
+      // taken here is also the attribution written onto that message: the
+      // adapter validates its replay envelope against it on the next request.
       const wire = messages.map((message) => dshWorkerMessage(message, selected));
-      let text = "";
-      let reasoning = "";
-      let finish: AgentFinish = "stop";
-      let failure: string | undefined;
-      const calls = new Map<number, { id: string; name: string; args: string }>();
+      // The host's chunk-to-message assembler is the canonical assembly
+      // algorithm (the agent loop uses the same one). Feeding it the raw stream
+      // is what keeps a replayed assistant turn structured exactly like the
+      // host's own — block order, empty blocks, and the adapter replay envelope
+      // included — so nothing has to be reconstructed by hand.
+      const assembler = new BlockAssembler();
       for await (const chunk of ctx.llm.stream({
         ...selected,
         system,
@@ -456,47 +468,48 @@ function dshChannel(
         tools: [...tools],
         signal: combined,
       })) {
-        if (chunk.type === "text-delta" && typeof chunk.text === "string") {
-          text += chunk.text;
-        } else if (chunk.type === "reasoning-delta") {
-          if (typeof chunk.text === "string") reasoning += chunk.text;
-        } else if (chunk.type === "block-end" && chunk.block.type === "reasoning") {
-          // The completed block is authoritative over its streamed deltas.
-          reasoning = chunk.block.text;
-        } else if (chunk.type === "tool-call-delta") {
-          const current = calls.get(chunk.index) ?? { id: String(chunk.id), name: "", args: "" };
-          if (typeof chunk.name === "string" && chunk.name) current.name = chunk.name;
-          if (chunk.id) current.id = String(chunk.id);
-          current.args += chunk.argumentsDelta;
-          calls.set(chunk.index, current);
-        } else if (chunk.type === "block-end" && chunk.block.type === "tool-call") {
-          const block = chunk.block;
-          calls.set(chunk.index, { id: String(block.id), name: block.name, args: block.arguments });
-        } else if (chunk.type === "finish") {
-          const reason = chunk.reason;
-          if (reason.kind === "error" || reason.kind === "aborted") {
-            finish = reason.kind;
-            failure = reason.failure.message;
-          } else {
-            finish = reason.kind;
+        assembler.push(chunk);
+      }
+      const reason = assembler.finish;
+      if (reason.kind === "error" || reason.kind === "aborted") {
+        throw new Error(reason.failure.message || `DSH model call ${reason.kind}`);
+      }
+      let text = "";
+      let reasoning = "";
+      const toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
+      for (const block of assembler.blocks()) {
+        if (block.type === "text") {
+          text += block.text;
+        } else if (block.type === "reasoning") {
+          reasoning += block.text;
+        } else if (block.type === "tool-call") {
+          if (block.name === "") {
+            // A nameless call cannot be dispatched and cannot be answered with
+            // a tool result: replaying the turn would declare a tool call the
+            // provider never gets a result for. Fail the step loudly instead.
+            throw new Error("DSH model call returned a tool call without a name");
           }
+          toolCalls.push({ id: String(block.id), name: block.name, arguments: block.arguments });
         }
       }
-      if (finish === "error") throw new Error(failure || "DSH model call failed");
-      if (finish === "aborted") throw new Error(failure || "DSH model call aborted");
-      const toolCalls = [...calls.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([, call]) => ({ id: call.id, name: call.name, arguments: call.args }))
-        .filter((call) => call.name !== "");
       // Some adapters end a tool turn as "stop"; the presence of calls is the
       // authoritative signal for the loop.
-      if (finish === "stop" && toolCalls.length > 0) finish = "tool-calls";
+      const finish: AgentFinish = reason.kind === "stop" && toolCalls.length > 0 ? "tool-calls" : reason.kind;
+      const replayState = assembler.replayState;
       return {
         text: text.trim(),
         toolCalls,
         finish,
         ...(reasoning.trim() ? { reasoning: reasoning.trim() } : {}),
-        ...(failure === undefined ? {} : { failure }),
+        // The lossless half of the reply: the host message itself, carrying the
+        // adapter's replay metadata when it has any. Rebuilding the turn
+        // instead would drop thinking signatures and break thinking-mode
+        // replays (live 400 "reasoning_content must be passed back").
+        native: assembler.message({
+          provider: selected.provider,
+          model: selected.model,
+          ...(replayState === undefined ? {} : { replayState }),
+        }),
       };
     },
   };

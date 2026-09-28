@@ -117,6 +117,14 @@ export interface LlmChannel { readonly name: string; agent(system, messages, too
 // 宿主注入的模型通道：DSH 把 ctx.llm 路由封装成 LlmChannel 注入插件（src/plugin/index.ts → engine 的
 // channel 选项）；引擎从不自行连接任何 provider。
 // 无 chat/文本协议：Phase-1 抽取与 Phase-2 整合都只走 agent() 原生工具调用。
+// native 回放（宿主元数据不丢）：宿主通道用 dsh-llm 的 BlockAssembler 组装 chunk 流，并把 agent() 回复的
+//           native 设为组装出的 assistant Message（provider/model + adapter replayState 一并保留）；core 只把
+//           assistant 轮的 native 原样搬运（AgentTurnMessage.native → 下一次 agent() 的 messages），宿主通道
+//           必须原样返回该消息、不得重建——重建会丢 thinking signature，thinking-mode 的下一条工具轮请求
+//           直接 400（reasoning_content must be passed back）。native 缺席时按 text/reasoning/toolCalls 重建（旧行为）。
+//           trust boundary：native 是不透明的宿主消息，core 不校验、不序列化、不落盘；唯一生产者是本插件自己的
+//           dshChannel。归属由 DSH 的 forAdapter 按 adapter 实例判定（历史 provider 与目标 provider 同 adapter 才保留
+//           replayState），因此 native.source 必须写成"产生该回合的 route"——回放前重写 source 会静默丢签名。
 // 无通道时：LlmExtractProvider.availability() → unconfigured（durable job 进 blocked，不计 attempts）；
 //           整合使用 RuleConsolidateProvider；有通道但无 agent()（结构性无 tool calling）时审计 consolidate.fallback 后同样降级 Rule；
 //           有可用通道的运行失败（abort/编辑非法/无 tool call）零提交并按失败退避重试，不降级 Rule。
@@ -139,6 +147,7 @@ export interface AdapterOptions {
 export class MemcurioAdapter { /* 会话记账/证据/队列/注入/自动整合（方法清单见「宿主集成契约」） */ }
 // 插件（src/plugin/index.ts + scope.ts）：Cordis apply(ctx, config)，inject [tools, llm, sessions]；
 //   事件接线 + 记忆注入 + ctx.tools.register 7 个 memory_* 原生工具 + ctx.llm → LlmChannel 封装。
+//   公共导出：dshChannel(ctx, route, abortSignal): LlmChannel 与 dshWorkerMessage(message, route)（组合与测试用）。
 // 删除：HarnessAdapter 接口、capabilities/hostModel/createChannel 抽象——DSH 为唯一宿主，无需再抽象。
 ```
 

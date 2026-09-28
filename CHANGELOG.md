@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Aligned to DSH `0.2.0-rc.1`**: peer ranges moved from `^0.1.7-rc.2` to
+  `^0.2.0-rc.1` and every direct `@deepseek-ai/dsh-*` devDependency pin moved
+  to `0.2.0-rc.1` together, plus explicit pins for the six packages that only
+  arrive through peer closure (`dsh-app-boot`, `dsh-launch-environment`,
+  `dsh-package-manifest`, `dsh-ptc-runtime`, `dsh-sandbox`,
+  `dsh-sandbox-policy`) — bun's incremental lock update otherwise keeps the
+  old versions and `--frozen-lockfile` freezes that stale closure. Every
+  `@deepseek-ai/dsh-*` in the lock is now `0.2.0-rc.1`. The runtime's
+  compatibility gate compares each `@deepseek-ai/dsh*` peer against the single
+  running dsh version, so the runtime and this plugin now move as one pair:
+  a `^0.2.0-rc.1` build is rejected on 0.1.7 and a `^0.1.7-rc.2` build is
+  rejected (and boot-disabled) on 0.2.x. The DSH release itself is a version
+  alignment plus a `dsh-session` crash-recovery refactor: every audited
+  package is byte-identical in `lib/` to `0.1.7-rc.2` except `dsh-session`
+  (five files) and `dsh-commands` (an event-map member reorder with no
+  semantic change); every client bundle is byte-identical; and the only public
+  export change is the new `dsh-session` `ToolCallRecovery`; no memcurio
+  source change was required. `cordis` stays at `^4.0.4`.
+
+### Fixed
+
+- **The worker replays the host's own assistant message**: the DSH channel
+  assembled each reply from individual stream chunks and rebuilt the assistant
+  turn from text/reasoning/tool calls alone, dropping the adapter replay
+  metadata (`finish.replayState`, which carries the provider thinking
+  signature). On a thinking-mode provider the next tool turn then had no
+  `reasoning_content` and the upstream rejected it with `400 … The
+  reasoning_content in the thinking mode must be passed back to the API`,
+  which is why automatic Phase 2 had been failing since 2026-09-24. The
+  channel now feeds the raw stream into DSH's own `BlockAssembler` and
+  returns the assembled message as an opaque `native` payload
+  (`AgentToolReply.native` / `AgentTurnMessage.native`); the core carries it
+  back verbatim and `dshWorkerMessage` returns it unchanged, so the adapter
+  can restore the real thinking signature. A tool call without a name now
+  fails the step loudly instead of being dropped from an otherwise replayed
+  turn. Assembly through the host's own assembler also changes a few edge
+  behaviors deliberately: text/reasoning follow the closing block rather than
+  the delta sum, multiple reasoning blocks are merged, tool calls keep stream
+  order, a missing call id becomes `call-<index>`, and a `max-tokens` stop
+  drops tool calls (a length-truncated Phase-1 extraction is retried instead
+  of dispatching a partial `save_extraction`). Known residual: when an
+  adapter's replay envelope does not align with the emitted blocks, DSH's
+  assembler drops the whole envelope (no thinking signature, no diagnostic) —
+  upstream behavior, not something to paper over with a compat fallback here.
+
+## [0.0.3] - 2026-09-27
+
 ### Fixed
 
 - **The worker follows the session's own model route**: `agent/pre-step`
@@ -19,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last route event in log order, `model/selection` (the route the next
   request will run under) or `request/header` (the last applied one) — and
   the agent options only seed a route while the session has none.
+- **Malformed session events no longer throw inside the plugin**: both route
+  readers now take a complete provider/model pair structurally — a
+  `request/header` payload that is null, scalar, or missing `header.config`,
+  and a `model/selection` without two non-empty strings, are ignored instead
+  of raising a TypeError in the synchronous `session/event` listener; the
+  adopted-session (seed) route fold gained the regression test it lacked.
 
 ## [0.0.2] - 2026-09-27
 

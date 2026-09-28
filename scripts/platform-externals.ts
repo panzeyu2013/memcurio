@@ -5,7 +5,8 @@
 // scripts/pack-check.ts (gate) so the two can never drift apart.
 //
 // Seed table re-read on the DSH 0.1.7-rc.2 upgrade: unchanged except for the
-// added `@deepseek-ai/dsh-client-ui-dockkit` seed.
+// added `@deepseek-ai/dsh-client-ui-dockkit` seed. Re-confirmed against the
+// published 0.2.0-rc.1 frontend bundle: the same nine specifiers.
 export const PLATFORM_EXTERNALS: readonly string[] = [
   "react",
   "react/jsx-runtime",

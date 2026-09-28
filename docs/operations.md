@@ -20,8 +20,8 @@ git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.2.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.2.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.3.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.3.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -61,10 +61,10 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 | 操作 | 步骤 |
 |---|---|
-| 升级 | 拉取新代码 → `bun install --frozen-lockfile && bun run build && bun pm pack` → 用 `dsh` 的插件管理命令以新 tarball 替换旧版本 |
+| 升级 | 拉取新代码 → `bun install --frozen-lockfile && bun run build && bun pm pack` → 用 `dsh` 的插件管理命令以新 tarball 替换旧版本。**运行时兼容门**：`dsh-app-boot` 的 `evaluatePluginCompatibility` 把包内每个 `@deepseek-ai/dsh*` peer 按**运行时版本**（prerelease 参与）判定；不满足时 `dsh plugin add` 直接 `installation rejected` 退出 1，boot 前置检查把该 bundle 标 disabled/skipped（stderr 警告，插件不加载）。因此 **DSH 运行时与插件必须成对升级**：0.0.3（peer `^0.1.7-rc.2`）装不进 0.2.x 运行时，本次对齐后的 peer `^0.2.0-rc.1` 也装不进 0.1.7 运行时。确需混用时用 `dsh plugin allow-version` 授予精确版本豁免（写入 profile 的 `compatibility.json`，等于显式接受风险） |
 | 回滚 | 重新打包旧提交（`git checkout <旧tag/commit>`）后同路径替换 |
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
-| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.1.7-rc.2`，peer 范围 `^0.1.7-rc.2` 是下限）。不匹配时插件加载会失败，回滚 DSH 或等待 memcurio 对齐 |
+| 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（当前对齐 `0.2.0-rc.1`，peer 范围 `^0.2.0-rc.1` 是下限）。不匹配时 `dsh plugin add` 拒绝安装、boot 时该 bundle 被 disabled/skipped（见“升级”行），此时必须成对升级或回滚。另注意 **bun 的增量 lock 更新不会重解析陈旧的 peer 闭包**（0.2.0-rc.1 升级时实测：只改直接依赖后，`dsh-sandbox` 等 7 个经 peer 引入的包仍停在旧版，`--frozen-lockfile` 会把它固化进 CI）；升级后请核对 lock/node_modules 里所有 `@deepseek-ai/dsh-*` 同版，必要时为这些包补精确 devDependencies pin（当前 6 个：app-boot / launch-environment / package-manifest / ptc-runtime / sandbox / sandbox-policy） |
 | peer 为何全标 optional | 7 个 `@deepseek-ai/*` peer 一律标 optional：运行期 value import 的 `dsh-tools`/`dsh-llm` 在真实 profile 里由 `dsh-base` 保证存在，标 optional 只为让开发组合（以及 `bun install`）不因缺 peer 失败或装出重复副本。这不代表缺服务可用：`tools`/`llm`/`sessions` 缺失时插件按既有契约等待注入（见 [contract.md](contract.md)） |
 
 ### 从 DSH Settings 页配置（推荐）
@@ -153,7 +153,9 @@ In a composed `web`-family profile the root plane provides the services this plu
 
 ### Validation boundary
 
-Local suites cover strict TypeScript compilation against the published DSH `0.1.7-rc.2` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered as an automated suite: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+Local suites cover strict TypeScript compilation against the published DSH `0.2.0-rc.1` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). Not covered as an automated suite: a full application smoke test. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+
+The `0.2.0-rc.1` alignment was verified statically against the published packages and the frontend bundle: every audited `lib/` file is byte-identical to `0.1.7-rc.2` except the `dsh-session` repair refactor and a `dsh-commands` event-map member reorder, the client bundles are byte-identical, the platform seed table is unchanged, and the runtime compatibility gate accepts the aligned `^0.2.0-rc.1` peers on 0.2.x while rejecting them on 0.1.x. A real-profile smoke test on a 0.2.0 host is still pending (see [todo.md](todo.md)).
 
 The 0.1.7-rc.2 alignment was additionally smoke-checked by hand against the installed rc.2 tree: `dsh --dump-config` composed the `memcurio` row with `inject: [tools, llm, sessions]` and resolved the new `Config` schema (scope/injectContext/registerTools defaults) in an isolated profile, and a Node boot of that profile served the page with the client row in `__DSH_BOOT__` plus this plugin's `webserver/index-inject` payload (`globalThis.__MEMCURIO_UI__ = { basePath, token }`). The `/memcurio` route answered 403 without the plugin token and 404 (`no-store`) with it in a session-less environment, i.e. mounted and guarded.
 

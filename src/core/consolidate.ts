@@ -939,7 +939,13 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         // corrective nudge; a prose reply is NEVER parsed as an imitation tool
         // call (that was the old JSON-in-text protocol this loop replaced).
         if (reply.text.trim() && !messages.some((m) => m.role === "user" && m.text === AGENT_NUDGE)) {
-          messages.push({ role: "assistant", text: reply.text, reasoning: reply.reasoning, toolCalls: [] });
+          messages.push({
+            role: "assistant",
+            text: reply.text,
+            reasoning: reply.reasoning,
+            toolCalls: [],
+            ...(reply.native === undefined ? {} : { native: reply.native }),
+          });
           messages.push({ role: "user", text: AGENT_NUDGE });
           continue;
         }
@@ -958,6 +964,10 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         // that lost its reasoning; the reply must echo it forward verbatim.
         reasoning: reply.reasoning,
         toolCalls: reply.toolCalls,
+        // The host's own message (replay metadata included) wins over the
+        // rebuilt fields: replaying it verbatim is what keeps thinking-mode
+        // tool turns valid.
+        ...(reply.native === undefined ? {} : { native: reply.native }),
       });
       let finished = false;
       for (const call of reply.toolCalls) {

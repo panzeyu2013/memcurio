@@ -52,6 +52,13 @@ export type AgentTurnMessage =
        *  every follow-up request into a 400 invalid_request_error. */
       readonly reasoning?: string;
       readonly toolCalls: readonly ToolCallRequest[];
+      /** Opaque host-native form of this turn (DSH: the assembled assistant
+       *  message carrying adapter replay metadata — provider thinking
+       *  signatures included). A host channel returns it on the reply and must
+       *  receive it back unchanged; the core never inspects or rewrites it.
+       *  Without it a rebuilt turn loses exactly the metadata thinking-mode
+       *  providers require, which surfaces as a 400 on the next tool turn. */
+      readonly native?: unknown;
     }
   | {
       readonly role: "tool";
@@ -76,4 +83,9 @@ export interface AgentToolReply {
   readonly finish: AgentFinish;
   /** Failure message for finish = error | aborted. */
   readonly failure?: string;
+  /** Opaque host-native assistant message for this reply (see
+   *  {@link AgentTurnMessage.native}); hosts that assemble it should pass it
+   *  back verbatim on the next turn instead of rebuilding from the neutral
+   *  fields. */
+  readonly native?: unknown;
 }

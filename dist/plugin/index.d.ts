@@ -1,6 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Message } from "@deepseek-ai/dsh-llm";
-import type { AgentTurnMessage } from "../api.js";
+import type { AgentTurnMessage, LlmChannel } from "../api.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { HostBridge } from "./bridge.js";
 import type { Config } from "./settings.js";
@@ -54,5 +54,9 @@ export declare function dshWorkerMessage(message: AgentTurnMessage, route: {
     provider: string;
     model: string;
 }): Message;
+export declare function dshChannel(ctx: Context, route: () => {
+    provider: string;
+    model: string;
+} | undefined, abortSignal: () => AbortSignal | undefined): LlmChannel;
 /** Register Memcurio lifecycle hooks and native DSH tools. */
 export declare function apply(ctx: Context, config?: Config): void;

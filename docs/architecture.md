@@ -56,7 +56,8 @@ src/
 │   ├── adhoc.ts        ad-hoc notes（add/list/pending/markApplied + 脱敏）
 │   ├── consolidate.ts  Phase 2 整合（planConsolidation / syncArtifacts / Rule + LlmLoop（name=llm-loop）provider / runConsolidation）
 │   ├── artifacts.ts    rollout key → stable artifact id/filename
-│   ├── channel.ts      LlmChannel 契约（宿主 ctx.llm 注入的模型通道；引擎不直连任何 provider）
+│   ├── channel.ts      LlmChannel 契约（宿主 ctx.llm 注入的模型通道；引擎不直连任何 provider；
+│   │                   assistant 轮的 native/opaque 回放字段承载宿主 replayState，core 只原样搬运）
 │   ├── db.ts           stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 │   ├── events.ts       事件模型（host/event 校验，不变）
 │   ├── extract.ts      Phase 1 抽取（EvidenceSnapshot/队列 → Stage1Output；save_extraction/skip_extraction 原生工具回合 + 校验/脱敏）
@@ -83,7 +84,7 @@ src/
 │   ├── snapshot.ts      buildSnapshot 全量装配（store 列表/注入预览/条目+usage/队列/雷达/近 60 收据/设置）
 │   └── write-path.ts    审计动作的写路径判定（bridge 与 snapshot 共用；客户端在 ui/model.ts 保有同语义副本，tests/write-path.test.ts 钉住一致性）
 ├── plugin/
-│   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、7 个原生工具（含 memory_cite）、ctx.llm 通道封装、settings live 读取）
+│   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、7 个原生工具（含 memory_cite）、ctx.llm 通道封装（BlockAssembler 组装 + native 原样回放）、settings live 读取）
 │   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；恒开 + live configure）
 │   ├── settings.ts     插件 entry 配置 schema（= `memcurio` 设置命名空间：volatile live 视图、路由成对校验、可选 settings 服务接线）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
