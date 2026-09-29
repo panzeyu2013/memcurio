@@ -96,7 +96,7 @@ docs/
 ├── ui.md            记忆 UI 契约：面、槽位、传输、写语义、非功能要求
 ├── operations.md    运维手册：安装、配置、DSH 集成、发布
 ├── todo.md          未完成待办与开放决策
-└── README_cn.md     中文用户入口
+└── README.en.md     英文用户入口
 ```
 
 层例外（文档化）：`services/context.ts` 复用 `plugin/scope.ts` 的 `workspaceStoreRoot`——scope.ts 只依赖 node 内建（纯叶子、无 DSH 依赖、无环）；向 scope.ts 新增任何导入前须重新评估此例外。
@@ -142,6 +142,21 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
   → 规则整合清理 MEMORY.md 中引用已剪除摘要的块（diff 外科删除）
   → stagePruneRetention 物理回收 deleted 行 + pruneExtensionResources 清理过期扩展资源（保留期）
 ```
+
+## 与 Codex 记忆管线的对齐与差异
+
+管线结构、prompt 分节与读路径契约对齐 OpenAI Codex 的 memories 设计（`read_path.md` / `stage_one_system.md` / `consolidation.md`），并按 memcurio 的接缝适配。已知差异：
+
+- **检索** —— 带排序的词法检索（IDF + 短语奖励、CJK bigram），不是 Codex 的子串匹配；没有 `match_mode`/`context_lines`/`normalized` 参数。
+- **引用** —— 原生 `memory_cite` 工具，不是 `<oai-mem-citation>` 文本块。
+- **注入面** —— 插件来源 user message + system prompt 指南（DSH 没有 developer 角色注入缝）；Codex 把两部分渲染进同一个 developer 片段。两边都在 store 无摘要时什么都不发。
+- **Token 估算** —— CJK 感知 estimator（CJK 1 token/字、ASCII 0.25），不是 Codex 的固定 4 bytes/token。
+- **工具参数越界** —— 直接报错，不 clamp 到上限。
+- **整合输入** —— `maxInputs` 限每批新增输入；Codex 的 `max_raw_memories_for_consolidation` 限整批重选窗口。
+- **默认开启** —— 插件默认注入；Codex 的 `memories` feature 默认关闭。
+- **无模型时的整合** —— Codex 没有无模型整合器；memcurio 为无路由部署（`MEMCURIO_LLM_PROVIDER=none`）与结构性不可用通道保留确定性 rule provider，但绝不用它做失败时的静默降级。
+- **note 载荷** —— 写入门槛与 Codex 一致（仅用户显式要求），形状不同：memcurio 的 `memory_remember` 收 `content` + 可选 `kind`（remember|forget|update），文件名由服务端生成；Codex 的 `ad_hoc_note` 由模型提供文件名 + note 原文。
+- **prompt 构成** —— 一处刻意拆分：Codex 把布局与 quick-pass 机制留在提示词里，memcurio 的 system 段只放契约，检索机制下沉到工具 description。
 
 ## 里程碑状态
 
