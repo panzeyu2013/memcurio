@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `attempts`, `retryAt` and `lastErrorKind`; dead-lettered extraction jobs can
   be revived through the exported `@memcurio/dsh-plugin/api` entry
   (`integrationRequeueDeadExtractions`, audited as `extract.requeued`).
+- **Review hardening (round 3)**: the virtual diff is now an *index* for
+  artifact bodies (raw memories and rollout summaries stay on disk and are read
+  through the budgeted pager) while editable documents keep their inline diff —
+  so a megabyte backlog produces a small, fully readable change list instead of
+  a truncated one, and the read budget keeps a reserved share for the files the
+  agent must rewrite. The diff header states the paging habit that fits
+  `maxAgentSteps`; SQLite-style timestamps are normalized to UTC before note
+  freshness comparison; workspace-lease contention is typed like all other
+  contention.
 - **Review hardening (round 2)**: the virtual diff is capped to what one run's
   read budget can actually read (with a truncation marker and disk-file
   fallback guidance); the request ceiling now counts tool-call arguments and

@@ -6,6 +6,9 @@
  * from the other silently.
  */
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   NON_WRITE_EXTRACT_ACTIONS as CLIENT_NON_WRITE,
@@ -48,6 +51,36 @@ const KNOWN_NO_WRITE_ACTIONS = [
   "consolidate.auto_contended",
 ] as const;
 
+/** Every write-path-prefixed action the sources emit, extracted below. A new
+ *  action under these prefixes fails the extraction test until it is added
+ *  here, which forces a conscious classification decision. */
+const PINNED_PREFIX_ACTIONS = [
+  "adhoc.adopt",
+  "adhoc.adopt_limit",
+  "adhoc.adopt_skip",
+  "adhoc.note",
+  "adhoc.skip",
+  "consolidate.auto",
+  "consolidate.auto_aborted",
+  "consolidate.auto_contended",
+  "consolidate.auto_failed",
+  "consolidate.auto_unavailable",
+  "consolidate.done",
+  "consolidate.fallback",
+  "consolidate.rejected",
+  "extract.backfill",
+  "extract.noop",
+  "extract.queue_blocked",
+  "extract.queue_complete",
+  "extract.queued",
+  "extract.queue_released",
+  "extract.queue_unblocked",
+  "extract.repaired",
+  "extract.requeued",
+  "prune.retention",
+  "purge.hard",
+] as const;
+
 describe("write-path filter parity (host vs client copy)", () => {
   test("every known no-op action is excluded by both copies", () => {
     for (const action of KNOWN_NO_WRITE_ACTIONS) {
@@ -66,6 +99,21 @@ describe("write-path filter parity (host vs client copy)", () => {
     for (const action of SAMPLES) {
       expect(clientIsWritePathAction(action)).toBe(hostIsWritePathAction(action));
     }
+  });
+
+  test("every write-path-prefixed audit action in the sources is deliberately classified", () => {
+    const srcDir = fileURLToPath(new URL("../src/", import.meta.url));
+    const found = new Set<string>();
+    for (const rel of readdirSync(srcDir, { recursive: true }) as string[]) {
+      if (!rel.endsWith(".ts")) {
+        continue;
+      }
+      const text = readFileSync(join(srcDir, rel), "utf8");
+      for (const match of text.matchAll(/audit\(\s*"((?:extract|adhoc|consolidate|prune|purge)\.[A-Za-z0-9_.]+)"/g)) {
+        found.add(match[1] ?? "");
+      }
+    }
+    expect([...found].sort()).toEqual([...PINNED_PREFIX_ACTIONS].sort());
   });
 
   test("every non-write extract action is excluded even though its prefix matches", () => {

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MemcurioAdapter } from "../src/engine.js";
+import { MemcurioAdapter, parseConsolidationTimestamp } from "../src/engine.js";
 import { LlmExtractProvider, ProviderNotConfiguredError } from "../src/core/extract.js";
 import type { ExtractProvider, RolloutSnapshot } from "../src/core/extract.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../src/core/channel.js";
@@ -321,6 +321,18 @@ describe("automatic consolidation failure handling", () => {
     } finally {
       idx.close();
     }
+  });
+
+  test("SQLite-style timestamps are normalized to UTC", () => {
+    // "YYYY-MM-DD HH:MM:SS" is UTC without a zone designator; parsing it in the
+    // gateway's local timezone would shift note freshness by the UTC offset
+    // (round-3 review P2-1).
+    expect(parseConsolidationTimestamp("2026-10-11 09:00:00")).toBe(Date.parse("2026-10-11T09:00:00Z"));
+    expect(parseConsolidationTimestamp("2026-10-11T09:00:00.000Z")).toBe(
+      Date.parse("2026-10-11T09:00:00.000Z"),
+    );
+    expect(Number.isNaN(parseConsolidationTimestamp("not-a-date"))).toBe(true);
+    expect(Number.isNaN(parseConsolidationTimestamp(undefined))).toBe(true);
   });
 
   test("an unparseable last timestamp never suppresses a pending note", async () => {

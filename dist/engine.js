@@ -68,6 +68,21 @@ const CONSOLIDATION_IN_FLIGHT = new Map();
 /** One hour: comfortably above the default 30-minute run budget, below any
  *  permanent occupation of a store entry. */
 const CONSOLIDATE_IN_FLIGHT_TTL_MS = 60 * 60_000;
+/** Parse a consolidation timestamp. SQLite's CURRENT_TIMESTAMP format
+ *  ("YYYY-MM-DD HH:MM:SS", UTC without a zone designator) must not be
+ *  reinterpreted in the gateway's local timezone: normalize it to UTC before
+ *  parsing (round-3 review P2-1). Unparseable values return NaN and the caller
+ *  treats them conservatively. */
+export function parseConsolidationTimestamp(value) {
+    if (value === undefined) {
+        return Number.NaN;
+    }
+    const trimmed = value.trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+        return Date.parse(`${trimmed.replace(" ", "T")}Z`);
+    }
+    return Date.parse(trimmed);
+}
 /** Slow probe for a provider parked in the blocked state. Configuration
  *  changes normally reactivate it, but a restart can leave a job blocked in a
  *  process whose route never materializes; the probe (no LLM call, one DB
@@ -959,7 +974,8 @@ export class MemcurioAdapter {
         // Safety valve: the run budget aborts a wedged provider loop, but if the
         // host stream never settles at all the entry must not occupy this store
         // forever. Expiring the entry degrades to the pre-single-flight behaviour
-        // (the durable workspace lease still serializes the actual run).
+        // (the durable workspace lease still serializes the actual run; a second
+        // run may briefly start after the TTL and loses the lease instead).
         const ttl = setTimeout(() => {
             if (CONSOLIDATION_IN_FLIGHT.get(this.root) === run) {
                 CONSOLIDATION_IN_FLIGHT.delete(this.root);
@@ -1055,7 +1071,7 @@ export class MemcurioAdapter {
                 // into a full Phase-2 run (review P1-5). Timestamps are compared as
                 // parsed dates, and an unparseable value counts as NEW (conservative:
                 // the user's explicit remember must not be silently ignored).
-                const lastMs = last === undefined ? Number.NaN : Date.parse(last);
+                const lastMs = parseConsolidationTimestamp(last);
                 const urgent = idx.noteList().some((note) => {
                     if (!actionableNote(note)) {
                         return false;
@@ -1063,7 +1079,7 @@ export class MemcurioAdapter {
                     if (!Number.isFinite(lastMs)) {
                         return true;
                     }
-                    const createdMs = Date.parse(note.createdAt);
+                    const createdMs = parseConsolidationTimestamp(note.createdAt);
                     return !Number.isFinite(createdMs) || createdMs > lastMs;
                 });
                 if (last !== undefined && !urgent) {

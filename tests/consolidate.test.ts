@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 
 import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
-import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, PHASE2_DIFF_READABLE_BYTES, READ_FILE_TOTAL_BYTES_PER_RUN, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, readFilePage, removeBlocksCitingOnly, renderPhase2DiffFile, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, PHASE2_DIFF_READABLE_BYTES, READ_FILE_RESERVED_BYTES, READ_FILE_TOTAL_BYTES_PER_RUN, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, readFilePage, removeBlocksCitingOnly, renderPhase2DiffFile, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
 import type { AgentTurnMessage, LlmChannel, ToolSpec } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
@@ -620,11 +620,76 @@ describe("runConsolidation", () => {
     };
     await runConsolidation(dir, provider, { execute: true });
     const diffFile = seen?.workspace[PHASE2_DIFF_FILENAME] ?? "";
-    // The agent must be able to read the whole authoritative diff within one
-    // run's read budget; beyond that the file carries an explicit marker.
+    // Artifact bodies are indexed, so a megabyte of raw memory yields a small
+    // authoritative change list the agent can always read in full…
+    expect(diffFile).toContain("[artifact not inlined:");
     expect(Buffer.byteLength(diffFile, "utf-8")).toBeLessThanOrEqual(PHASE2_DIFF_READABLE_BYTES);
-    expect(diffFile).toContain("workspace diff truncated at");
-    expect(PHASE2_DIFF_READABLE_BYTES).toBeLessThanOrEqual(READ_FILE_TOTAL_BYTES_PER_RUN - 64_000);
+    // …and the cap leaves the reserved share of the read budget free so the
+    // agent can still read the documents it must rewrite (round-2 review N2).
+    expect(PHASE2_DIFF_READABLE_BYTES + READ_FILE_RESERVED_BYTES).toBeLessThanOrEqual(
+      READ_FILE_TOTAL_BYTES_PER_RUN,
+    );
+  });
+
+  test("reading the whole diff still leaves budget for MEMORY.md", async () => {
+    const diffText = "d".repeat(PHASE2_DIFF_READABLE_BYTES);
+    const memoryText = "m".repeat(100_000);
+    let memoryRead = "";
+    let calls = 0;
+    const provider = new LlmLoopConsolidateProvider(
+      12,
+      {
+        name: "reader",
+        async agent(_system, messages) {
+          calls += 1;
+          const last = messages[messages.length - 1];
+          if (last !== undefined && last.role === "tool") {
+            if (last.content.startsWith("mmm")) {
+              memoryRead = last.content;
+              return {
+                text: "",
+                toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
+                finish: "tool-calls" as const,
+              };
+            }
+            const next = /offset=(\d+)\]/.exec(last.content);
+            if (next !== null) {
+              return {
+                text: "",
+                toolCalls: [
+                  {
+                    id: "r",
+                    name: "read_file",
+                    arguments: JSON.stringify({ rel: PHASE2_DIFF_FILENAME, offset: Number(next[1]), limit: 200_000 }),
+                  },
+                ],
+                finish: "tool-calls" as const,
+              };
+            }
+            return {
+              text: "",
+              toolCalls: [{ id: "m", name: "read_file", arguments: JSON.stringify({ rel: "MEMORY.md", offset: 0, limit: 200_000 }) }],
+              finish: "tool-calls" as const,
+            };
+          }
+          return {
+            text: "",
+            toolCalls: [{ id: "r0", name: "read_file", arguments: JSON.stringify({ rel: PHASE2_DIFF_FILENAME, offset: 0, limit: 200_000 }) }],
+            finish: "tool-calls" as const,
+          };
+        },
+      },
+      60_000,
+    );
+    await provider.consolidate({
+      workspace: { [PHASE2_DIFF_FILENAME]: diffText, "MEMORY.md": memoryText },
+      diff: [],
+      notes: [],
+      memoryRoot: dir,
+    });
+    expect(memoryRead).not.toContain("read budget exhausted");
+    expect(memoryRead.length).toBe(100_000);
+    expect(calls).toBeLessThan(12);
   });
 
   test("the provider receives the rendered virtual diff file, not inline diff text", async () => {
@@ -1366,11 +1431,34 @@ describe("LlmLoopConsolidateProvider", () => {
   });
 
   test("the virtual diff file is byte-capped with an explicit truncation marker", () => {
+    // A non-artifact doc is still inlined and therefore still truncatable.
     const body = "y".repeat(50_000);
-    const file = renderPhase2DiffFile([{ rel: "raw_memories.md", hunks: [{ kind: "add", text: body }], text: body }], 5_000);
+    const file = renderPhase2DiffFile([{ rel: "MEMORY.md", hunks: [{ kind: "add", text: body }], text: body }], 5_000);
     expect(file).toContain("Memory Workspace Diff");
     expect(file).toContain("[workspace diff truncated at 5000 bytes]");
     expect(Buffer.byteLength(file, "utf-8")).toBeLessThan(6_000);
+  });
+
+  test("artifact bodies are indexed instead of inlined", () => {
+    const artifactBody = "a".repeat(200_000);
+    const file = renderPhase2DiffFile(
+      [
+        { rel: "raw_memories.md", hunks: [{ kind: "add", text: artifactBody }], text: artifactBody },
+        { rel: "rollout_summaries/rollout-x.md", hunks: [{ kind: "add", text: artifactBody }], text: artifactBody },
+        { rel: "MEMORY.md", hunks: [{ kind: "add", text: "handbook change" }], text: "+ handbook change" },
+      ],
+      PHASE2_DIFF_READABLE_BYTES,
+    );
+    // Complete status list, artifact bodies replaced by an index line…
+    expect(file).toContain("- raw_memories.md");
+    expect(file).toContain("- rollout_summaries/rollout-x.md");
+    expect(file).toContain("- MEMORY.md");
+    expect(file).toContain("[artifact not inlined:");
+    expect(file).not.toContain("a".repeat(1_000));
+    // …while the doc the agent edits keeps its diff body, and the whole file
+    // stays tiny no matter how large the artifact inputs are.
+    expect(file).toContain("+ handbook change");
+    expect(Buffer.byteLength(file, "utf-8")).toBeLessThan(20_000);
   });
 
   test("read_file clamps an oversized page request to the hard cap", async () => {

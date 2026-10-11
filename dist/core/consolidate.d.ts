@@ -47,11 +47,16 @@ export declare const MAX_CONSOLIDATION_PROMPT_BYTES: number;
  *  message history. Together with the system-prompt ceiling this bounds the
  *  whole request, not just its first message (review P1-2). */
 export declare const READ_FILE_TOTAL_BYTES_PER_RUN = 1000000;
+/** Share of the per-run read budget reserved for the documents the agent must
+ *  actually rewrite (MEMORY.md / memory_summary.md) and the raw content behind
+ *  the diff. Without it, a capped diff would consume the whole budget and the
+ *  agent could see the change list but not the files it edits. */
+export declare const READ_FILE_RESERVED_BYTES = 256000;
 /** Cap actually used when rendering the virtual diff: the diff must fit inside
- *  one run's read budget (minus page-marker overhead), otherwise the agent
- *  could never read the authoritative change list it is told to read first and
- *  would silently consolidate a partial view. The 4 MiB codex-parity cap stays
- *  as the absolute upper bound for future larger budgets. */
+ *  one run's read budget WITH the reserved share left over, otherwise the agent
+ *  could never read the authoritative change list it is told to read first —
+ *  or could read it and have nothing left for MEMORY.md. The 4 MiB
+ *  codex-parity cap stays as the absolute upper bound for larger budgets. */
 export declare const PHASE2_DIFF_READABLE_BYTES: number;
 /** Hard ceiling for one model request (system + full transcript), derived from
  *  the prompt budget plus the per-run read budget with headroom for assistant
@@ -63,9 +68,6 @@ export declare const MAX_AGENT_HISTORY_BYTES = 2500000;
 export declare class ConsolidationContentionError extends Error {
     constructor(message: string);
 }
-/** Render the codex-style diff file the Phase-2 agent reads first. The body is
- *  byte-bounded with an explicit truncation marker (codex parity) and the
- *  status list stays complete so the agent always sees WHICH files changed. */
 export declare function renderPhase2DiffFile(diff: ReadonlyArray<WorkspaceDiff>, maxBytes?: number): string;
 export interface ReadFilePage {
     content: string;

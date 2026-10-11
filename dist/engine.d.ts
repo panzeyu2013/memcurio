@@ -46,6 +46,12 @@ export interface BackfillEvidenceItem {
 /** Automatic Phase-2 cooldown after a successful consolidation (exported so
  *  the workbench snapshot reports the deployed value, not a guess). */
 export declare const AUTO_CONSOLIDATE_COOLDOWN_MS: number;
+/** Parse a consolidation timestamp. SQLite's CURRENT_TIMESTAMP format
+ *  ("YYYY-MM-DD HH:MM:SS", UTC without a zone designator) must not be
+ *  reinterpreted in the gateway's local timezone: normalize it to UTC before
+ *  parsing (round-3 review P2-1). Unparseable values return NaN and the caller
+ *  treats them conservatively. */
+export declare function parseConsolidationTimestamp(value: string | undefined): number;
 export interface AdapterOptions {
     log?: AdapterLog;
     /** Fixed store root for this adapter instance. Capturing it once prevents
