@@ -47,6 +47,11 @@ export interface PipelineConfig {
    *  a wedged agent loop cannot hold the store lease for hours, and closes the
    *  gap the removed per-call 120s cap used to cover. */
   consolidateRunBudgetMs: number;
+  /** Hard ceiling for the assembled Phase-2 system prompt. The dynamic inputs
+   *  are already externalized (diff) or byte-capped (notes/instructions); this
+   *  is the invariant guard that fails the run if a future inline channel
+   *  arrives without a budget. */
+  consolidatePromptBudgetBytes: number;
 }
 
 export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
@@ -61,6 +66,7 @@ export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   resourceRetentionDays: 7,
   maxAgentSteps: 25,
   consolidateRunBudgetMs: 30 * 60 * 1000,
+  consolidatePromptBudgetBytes: 512 * 1024,
 };
 
 // ------------------------------------- phase-2 input externalization & budgets
@@ -83,7 +89,7 @@ export const READ_FILE_MAX_BYTES = 200_000;
  *  either externalized (the diff) or byte-capped (notes, extension
  *  instructions); exceeding this ceiling means a new inline channel was added
  *  without a budget and the run must fail before the provider is called. */
-export const MAX_CONSOLIDATION_PROMPT_BYTES = 512 * 1024;
+export const MAX_CONSOLIDATION_PROMPT_BYTES = DEFAULT_PIPELINE_CONFIG.consolidatePromptBudgetBytes;
 /** Per-section caps for the remaining inline dynamic inputs. */
 const NOTES_INLINE_MAX_BYTES = 64 * 1024;
 const ADHOC_INSTRUCTIONS_MAX_BYTES = 64 * 1024;
@@ -985,6 +991,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     private readonly steps: number = DEFAULT_PIPELINE_CONFIG.maxAgentSteps,
     private readonly channel?: LlmChannel,
     private readonly runBudgetMs: number = DEFAULT_PIPELINE_CONFIG.consolidateRunBudgetMs,
+    private readonly promptBudgetBytes: number = DEFAULT_PIPELINE_CONFIG.consolidatePromptBudgetBytes,
   ) {}
 
   async consolidate(input: ConsolidateInput): Promise<ConsolidateResult> {
@@ -999,7 +1006,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     const rejected: Array<{ rel: string; reason: string }> = [];
     const safeInput = sanitizeConsolidateInput(input);
     const pendingNoteNames = new Set(safeInput.notes.map((note) => note.filename));
-    const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? []);
+    const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? [], this.promptBudgetBytes);
     const messages: AgentTurnMessage[] = [{ role: "user", text: AGENT_BEGIN }];
     let report = "";
     let completed = false;
@@ -1256,7 +1263,11 @@ function toolResultMessage(call: ToolCallRequest, content: string, isError: bool
   return { role: "tool", toolCallId: call.id, name: call.name, content, isError };
 }
 
-function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources: string[] = []): string {
+function buildConsolidationSystemPrompt(
+  input: ConsolidateInput,
+  prunedResources: string[] = [],
+  promptBudgetBytes: number = MAX_CONSOLIDATION_PROMPT_BYTES,
+): string {
   const notesText = cappedInline(
     input.notes.length ? input.notes.map((n) => `[${n.kind}] ${n.filename}:\n${n.content}`).join("\n\n") : "(none)",
     NOTES_INLINE_MAX_BYTES,
@@ -1379,9 +1390,9 @@ function buildConsolidationSystemPrompt(input: ConsolidateInput, prunedResources
     ...sections,
   ].join("\n");
   const promptBytes = Buffer.byteLength(prompt, "utf-8");
-  if (promptBytes > MAX_CONSOLIDATION_PROMPT_BYTES) {
+  if (promptBytes > promptBudgetBytes) {
     throw new WorkerProviderError(
-      `consolidation prompt exceeds the ${String(MAX_CONSOLIDATION_PROMPT_BYTES)} byte ceiling (${String(promptBytes)} bytes)`,
+      `consolidation prompt exceeds the ${String(promptBudgetBytes)} byte ceiling (${String(promptBytes)} bytes)`,
       { code: "INPUT_BUDGET_EXCEEDED" },
     );
   }

@@ -338,7 +338,7 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
   //    存在且 v1 且无 note 无 raw 变更 → 不改（churn 最小化）；
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
-  // name = "llm-loop"；constructor(steps?, channel?, runBudgetMs?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无 agent（结构性无 tool calling）→ engine 预判并直接使用 Rule（审计 consolidate.fallback）；其余失败 → completed=false 零提交、退避重试
+  // name = "llm-loop"；constructor(steps?, channel?, runBudgetMs?, promptBudgetBytes?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无 agent（结构性无 tool calling）→ engine 预判并直接使用 Rule（审计 consolidate.fallback）；其余失败 → completed=false 零提交、退避重试
   // 工具循环：channel.agent(system, transcript, tools, signal) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel,offset?,limit?} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
   // 输入外置（codex 同构）：workspace diff 渲染为虚拟文件 phase2_workspace_diff.md（4 MiB 截断 + 截断标记），
   // 只存在于 provider 可见 workspace（不落盘、不进 baseline/generation、write_file 不在编辑白名单）；system prompt 只含
@@ -361,6 +361,7 @@ export interface PipelineConfig {
   resourceRetentionDays: number; // 默认 7（对齐 codex RETENTION_DAYS）：extensions/<name>/resources 清理窗口；与 retentionDays 解耦
   maxAgentSteps: number;         // 默认 25
   consolidateRunBudgetMs: number; // 默认 30 分钟：单次自动 Phase-2 的墙钟预算（移除 120s per-call 墙钟后的 run 级边界；宿主 idle watchdog 负责卡死检测）
+  consolidatePromptBudgetBytes: number; // 默认 512KB：Phase-2 system prompt 硬顶；动态输入已外置/分节截断，超出即抛 WorkerProviderError(code=INPUT_BUDGET_EXCEEDED) 零提交（防未来新增内联通道无预算）
 }
 export function loadPipelineConfig(root: string): PipelineConfig          // 从 config.json pipeline 节读取，宽松回退默认
 export function pruneExtensionResources(root: string, retentionDays: number): string[]

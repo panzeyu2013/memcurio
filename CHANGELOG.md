@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker) that the agent reads through `read_file` — which is now paged
   (`offset`/`limit`, 20 KB default, 200 KB cap). Pending notes and extension
   instructions stay inline but are byte-capped, and the assembled prompt has a
-  hard ceiling. This removes the deterministic "1.55 MB prompt / 120 s timeout"
+  hard ceiling (`pipeline.consolidatePromptBudgetBytes`, default 512 KB; a run
+  that exceeds it fails with `INPUT_BUDGET_EXCEEDED` instead of sending the
+  prompt). This removes the deterministic "1.55 MB prompt / 120 s timeout"
   livelock for stores with large backlogs.
 - **Phase-2 scheduling is demand-driven**: the dormant-store sweep and the
   detached 1 h retry timer no longer run consolidation. `turn/end` and the first

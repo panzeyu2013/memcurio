@@ -17,6 +17,11 @@ export interface PipelineConfig {
      *  a wedged agent loop cannot hold the store lease for hours, and closes the
      *  gap the removed per-call 120s cap used to cover. */
     consolidateRunBudgetMs: number;
+    /** Hard ceiling for the assembled Phase-2 system prompt. The dynamic inputs
+     *  are already externalized (diff) or byte-capped (notes/instructions); this
+     *  is the invariant guard that fails the run if a future inline channel
+     *  arrives without a budget. */
+    consolidatePromptBudgetBytes: number;
 }
 export declare const DEFAULT_PIPELINE_CONFIG: PipelineConfig;
 /** Virtual provider-visible file carrying the bounded workspace diff. The diff
@@ -186,8 +191,9 @@ export declare class LlmLoopConsolidateProvider implements ConsolidateProvider {
     private readonly steps;
     private readonly channel?;
     private readonly runBudgetMs;
+    private readonly promptBudgetBytes;
     readonly name = "llm-loop";
-    constructor(steps?: number, channel?: LlmChannel | undefined, runBudgetMs?: number);
+    constructor(steps?: number, channel?: LlmChannel | undefined, runBudgetMs?: number, promptBudgetBytes?: number);
     consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
 }
 export interface ConsolidationRunResult {

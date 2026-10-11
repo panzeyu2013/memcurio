@@ -29,6 +29,7 @@ const PIPELINE_BOUNDS: Record<keyof PipelineConfig, { min: number; max: number }
   resourceRetentionDays: { min: 1, max: 36_500 },
   maxAgentSteps: { min: 1, max: 1000 },
   consolidateRunBudgetMs: { min: 1_000, max: 24 * 60 * 60 * 1000 },
+  consolidatePromptBudgetBytes: { min: 4_096, max: 64 * 1024 * 1024 },
 };
 
 function clampPipeline<K extends keyof PipelineConfig>(value: unknown, key: K): number {
@@ -70,6 +71,7 @@ function normalizeConfig(value: unknown, strict: boolean): Config {
       resourceRetentionDays: clampPipeline(pl.resourceRetentionDays, "resourceRetentionDays"),
       maxAgentSteps: clampPipeline(pl.maxAgentSteps, "maxAgentSteps"),
       consolidateRunBudgetMs: clampPipeline(pl.consolidateRunBudgetMs, "consolidateRunBudgetMs"),
+      consolidatePromptBudgetBytes: clampPipeline(pl.consolidatePromptBudgetBytes, "consolidatePromptBudgetBytes"),
     },
   };
 }

@@ -1335,6 +1335,21 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(Buffer.byteLength(system, "utf-8")).toBeLessThan(MAX_CONSOLIDATION_PROMPT_BYTES);
   });
 
+  test("the prompt ceiling fails the run instead of sending an oversized prompt", async () => {
+    // The ceiling is an invariant guard: the production default is unreachable
+    // through the per-section caps, so the test drives it through the provider
+    // budget directly (a mutation that drops the guard must go red here).
+    const provider = new LlmLoopConsolidateProvider(
+      1,
+      scriptedChannel([{ calls: [{ name: "finish", args: { report: "ok" } }] }]),
+      60_000,
+      1_000,
+    );
+    await expect(
+      provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir }),
+    ).rejects.toMatchObject({ code: "INPUT_BUDGET_EXCEEDED" });
+  });
+
   test("read_file pages a large virtual file instead of returning it whole", async () => {
     const prompts: Array<{ system: string; user: string }> = [];
     const longDiff = "abcdefghij".repeat(5_000);

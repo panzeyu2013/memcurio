@@ -20,6 +20,7 @@ export const DEFAULT_PIPELINE_CONFIG = {
     resourceRetentionDays: 7,
     maxAgentSteps: 25,
     consolidateRunBudgetMs: 30 * 60 * 1000,
+    consolidatePromptBudgetBytes: 512 * 1024,
 };
 // ------------------------------------- phase-2 input externalization & budgets
 /** Virtual provider-visible file carrying the bounded workspace diff. The diff
@@ -40,7 +41,7 @@ export const READ_FILE_MAX_BYTES = 200_000;
  *  either externalized (the diff) or byte-capped (notes, extension
  *  instructions); exceeding this ceiling means a new inline channel was added
  *  without a budget and the run must fail before the provider is called. */
-export const MAX_CONSOLIDATION_PROMPT_BYTES = 512 * 1024;
+export const MAX_CONSOLIDATION_PROMPT_BYTES = DEFAULT_PIPELINE_CONFIG.consolidatePromptBudgetBytes;
 /** Per-section caps for the remaining inline dynamic inputs. */
 const NOTES_INLINE_MAX_BYTES = 64 * 1024;
 const ADHOC_INSTRUCTIONS_MAX_BYTES = 64 * 1024;
@@ -804,11 +805,13 @@ export class LlmLoopConsolidateProvider {
     steps;
     channel;
     runBudgetMs;
+    promptBudgetBytes;
     name = "llm-loop";
-    constructor(steps = DEFAULT_PIPELINE_CONFIG.maxAgentSteps, channel, runBudgetMs = DEFAULT_PIPELINE_CONFIG.consolidateRunBudgetMs) {
+    constructor(steps = DEFAULT_PIPELINE_CONFIG.maxAgentSteps, channel, runBudgetMs = DEFAULT_PIPELINE_CONFIG.consolidateRunBudgetMs, promptBudgetBytes = DEFAULT_PIPELINE_CONFIG.consolidatePromptBudgetBytes) {
         this.steps = steps;
         this.channel = channel;
         this.runBudgetMs = runBudgetMs;
+        this.promptBudgetBytes = promptBudgetBytes;
     }
     async consolidate(input) {
         const channel = this.channel;
@@ -822,7 +825,7 @@ export class LlmLoopConsolidateProvider {
         const rejected = [];
         const safeInput = sanitizeConsolidateInput(input);
         const pendingNoteNames = new Set(safeInput.notes.map((note) => note.filename));
-        const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? []);
+        const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? [], this.promptBudgetBytes);
         const messages = [{ role: "user", text: AGENT_BEGIN }];
         let report = "";
         let completed = false;
@@ -1071,7 +1074,7 @@ function parseToolArguments(raw) {
 function toolResultMessage(call, content, isError) {
     return { role: "tool", toolCallId: call.id, name: call.name, content, isError };
 }
-function buildConsolidationSystemPrompt(input, prunedResources = []) {
+function buildConsolidationSystemPrompt(input, prunedResources = [], promptBudgetBytes = MAX_CONSOLIDATION_PROMPT_BYTES) {
     const notesText = cappedInline(input.notes.length ? input.notes.map((n) => `[${n.kind}] ${n.filename}:\n${n.content}`).join("\n\n") : "(none)", NOTES_INLINE_MAX_BYTES, "the files under extensions/ad_hoc/notes/");
     // The ad-hoc extension's instructions file (when present) documents the note
     // contract. It is workspace-bounded data like any note: framed as untrusted
@@ -1164,8 +1167,8 @@ function buildConsolidationSystemPrompt(input, prunedResources = []) {
         ...sections,
     ].join("\n");
     const promptBytes = Buffer.byteLength(prompt, "utf-8");
-    if (promptBytes > MAX_CONSOLIDATION_PROMPT_BYTES) {
-        throw new WorkerProviderError(`consolidation prompt exceeds the ${String(MAX_CONSOLIDATION_PROMPT_BYTES)} byte ceiling (${String(promptBytes)} bytes)`, { code: "INPUT_BUDGET_EXCEEDED" });
+    if (promptBytes > promptBudgetBytes) {
+        throw new WorkerProviderError(`consolidation prompt exceeds the ${String(promptBudgetBytes)} byte ceiling (${String(promptBytes)} bytes)`, { code: "INPUT_BUDGET_EXCEEDED" });
     }
     return prompt;
 }

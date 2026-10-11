@@ -49,7 +49,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 #### 每 store 级配置（data root 的 config.json，首用时自动创建 `0600`）
 
-`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps` / `consolidateRunBudgetMs`（单次自动整合的墙钟预算，默认 30 分钟）。memcurio 不单独创建顶层数据位置：store 附属 DSH 数据根下 `＜DSH home＞/memcurio/dsh/<16 位 workspace 密钥>/`（DSH home 源为配置路径 → `$DSH_HOME` → `~/.dsh`；`MEMCURIO_ROOT`/插件 `root` 为可选覆盖）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
+`budget.maxInjectTokens`；`pipeline.maxUnusedDays` / `maxInputs` / `retentionDays` / `resourceRetentionDays` / `maxAgentSteps` / `consolidateRunBudgetMs`（单次自动整合的墙钟预算，默认 30 分钟）/ `consolidatePromptBudgetBytes`（system prompt 硬顶，默认 512KB）。memcurio 不单独创建顶层数据位置：store 附属 DSH 数据根下 `＜DSH home＞/memcurio/dsh/<16 位 workspace 密钥>/`（DSH home 源为配置路径 → `$DSH_HOME` → `~/.dsh`；`MEMCURIO_ROOT`/插件 `root` 为可选覆盖）。会话缺少 `header.cwd` 时落到共享的 `no-cwd` store 并告警——不会悄悄回退到进程 cwd。
 
 ### 安装后验证
 

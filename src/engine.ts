@@ -1208,7 +1208,7 @@ export class MemcurioAdapter {
         }
       }
       const provider = usableChannel
-        ? new LlmLoopConsolidateProvider(undefined, usableChannel, cfg.consolidateRunBudgetMs)
+        ? new LlmLoopConsolidateProvider(undefined, usableChannel, cfg.consolidateRunBudgetMs, cfg.consolidatePromptBudgetBytes)
         : new RuleConsolidateProvider();
       // Codex parity: a failed run leaves selection, notes and the baseline
       // untouched (no rule-provider commit), so the materialized workspace diff
