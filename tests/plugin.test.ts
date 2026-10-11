@@ -19,6 +19,7 @@ import { indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
+import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
 import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
@@ -140,6 +141,68 @@ describe("dshChannel", () => {
     } as unknown as Context;
     return plugin.dshChannel(ctx, route, () => undefined);
   }
+
+  test("a transient transport failure retries with a fresh assembler", async () => {
+    let calls = 0;
+    const ctx = {
+      llm: {
+        async *stream() {
+          calls += 1;
+          if (calls === 1) {
+            // Partial output from the failed attempt must never leak into the
+            // retried reply.
+            yield { type: "text-delta", index: 0, text: "stale partial" } as StreamChunk;
+            throw Object.assign(new Error("upstream 500"), { status: 500 });
+          }
+          yield { type: "text-delta", index: 0, text: "fresh" } as StreamChunk;
+          yield { type: "finish", reason: { kind: "stop" } } as StreamChunk;
+        },
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined);
+    const reply = await channel.agent("system", [{ role: "user", text: "go" }], []);
+    expect(calls).toBe(2);
+    expect(reply.text).toBe("fresh");
+    expect(reply.text).not.toContain("stale");
+  });
+
+  test("a caller abort is typed and never retried", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const ctx = {
+      llm: {
+        // A transport that throws before the first chunk; not a generator, so
+        // biome's useYield rule stays satisfied.
+        stream: (() => {
+          calls += 1;
+          controller.abort("session retired");
+          throw Object.assign(new Error("Request was aborted"), { code: "ABORTED" });
+        }) as unknown as () => AsyncGenerator<StreamChunk>,
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => controller.signal);
+    await expect(channel.agent("system", [{ role: "user", text: "go" }], [])).rejects.toBeInstanceOf(
+      WorkerAbortedError,
+    );
+    expect(calls).toBe(1);
+  });
+
+  test("provider failures retry at most twice", async () => {
+    let calls = 0;
+    const ctx = {
+      llm: {
+        stream: (() => {
+          calls += 1;
+          throw Object.assign(new Error("upstream 502"), { status: 502 });
+        }) as unknown as () => AsyncGenerator<StreamChunk>,
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined);
+    await expect(channel.agent("system", [{ role: "user", text: "go" }], [])).rejects.toBeInstanceOf(
+      WorkerProviderError,
+    );
+    expect(calls).toBe(3);
+  });
 
   test("assembles the host message verbatim, replay envelope and empty blocks included", async () => {
     const replayState = {

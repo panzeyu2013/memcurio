@@ -108,8 +108,8 @@ const WORKER_RETRY_JITTER_MS = 500;
 function workerFailure(signal, err, failure) {
     const message = failure?.message ??
         (err instanceof Error ? err.message : err === undefined ? "DSH model call failed" : String(err));
-    const code = failure?.code;
-    const status = failure?.status;
+    const code = failure?.code ?? errorCodeOf(err);
+    const status = failure?.status ?? errorStatusOf(err);
     if (signal?.aborted === true) {
         return new WorkerAbortedError(message, code ?? hostAbortReason(signal));
     }
@@ -120,6 +120,26 @@ function workerFailure(signal, err, failure) {
         return new WorkerAbortedError(message, code);
     }
     return new WorkerProviderError(message, { code, status, cause: err });
+}
+/** A thrown host failure carries its routing code/status on the error object
+ *  (the host normalizes provider failures into `code` + optional `status`). */
+function errorCodeOf(err) {
+    if (err !== null && typeof err === "object") {
+        const code = err.code;
+        if (typeof code === "string" && code.length > 0) {
+            return code;
+        }
+    }
+    return undefined;
+}
+function errorStatusOf(err) {
+    if (err !== null && typeof err === "object") {
+        const status = err.status;
+        if (typeof status === "number") {
+            return status;
+        }
+    }
+    return undefined;
 }
 function hostAbortReason(signal) {
     const reason = signal.reason;
@@ -405,8 +425,12 @@ export function dshChannel(ctx, route, abortSignal) {
             const wire = messages.map((message) => dshWorkerMessage(message, selected));
             const attempts = 1 + WORKER_TRANSPORT_RETRIES;
             let reason = { kind: "stop" };
-            const assembler = new BlockAssembler();
+            let assembler = new BlockAssembler();
             for (let attempt = 0;; attempt += 1) {
+                // A transport retry must assemble from a clean slate: the failed
+                // attempt may already have pushed partial blocks into the previous
+                // assembler, and replaying those into the reply would corrupt it.
+                assembler = new BlockAssembler();
                 // The host's chunk-to-message assembler is the canonical assembly
                 // algorithm (the agent loop uses the same one). Feeding it the raw
                 // stream is what keeps a replayed assistant turn structured exactly
