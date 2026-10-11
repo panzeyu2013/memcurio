@@ -326,13 +326,20 @@ describe("automatic consolidation failure handling", () => {
   test("SQLite-style timestamps are normalized to UTC", () => {
     // "YYYY-MM-DD HH:MM:SS" is UTC without a zone designator; parsing it in the
     // gateway's local timezone would shift note freshness by the UTC offset
-    // (round-3 review P2-1).
-    expect(parseConsolidationTimestamp("2026-10-11 09:00:00")).toBe(Date.parse("2026-10-11T09:00:00Z"));
-    expect(parseConsolidationTimestamp("2026-10-11T09:00:00.000Z")).toBe(
-      Date.parse("2026-10-11T09:00:00.000Z"),
-    );
-    expect(Number.isNaN(parseConsolidationTimestamp("not-a-date"))).toBe(true);
-    expect(Number.isNaN(parseConsolidationTimestamp(undefined))).toBe(true);
+    // (round-3 review P2-1). Pin a non-UTC zone so dropping the normalization
+    // is caught even on a UTC host.
+    const previousTz = process.env.TZ;
+    try {
+      process.env.TZ = "Asia/Shanghai";
+      expect(parseConsolidationTimestamp("2026-10-11 09:00:00")).toBe(Date.parse("2026-10-11T09:00:00Z"));
+      expect(parseConsolidationTimestamp("2026-10-11T09:00:00.000Z")).toBe(
+        Date.parse("2026-10-11T09:00:00.000Z"),
+      );
+      expect(Number.isNaN(parseConsolidationTimestamp("not-a-date"))).toBe(true);
+      expect(Number.isNaN(parseConsolidationTimestamp(undefined))).toBe(true);
+    } finally {
+      process.env.TZ = previousTz;
+    }
   });
 
   test("an unparseable last timestamp never suppresses a pending note", async () => {
