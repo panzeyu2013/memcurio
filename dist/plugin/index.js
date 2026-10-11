@@ -3,6 +3,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import { BlockAssembler, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../core/channel.js";
+import { pipelineConfig } from "../core/config.js";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
 import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
@@ -103,13 +104,24 @@ export const DSH_TOOL_PRESET = {
  *  imposes a wall-clock cap that would preempt it. */
 const WORKER_TRANSPORT_RETRIES = 2;
 const WORKER_RETRY_JITTER_MS = 500;
+/** Default hard cap for one worker call (retries included). The host idle
+ *  watchdog bounds a stalled stream; this bounds a stream that keeps trickling
+ *  forever, which would otherwise hold an extraction job lease indefinitely
+ *  (the lease is renewed while the call runs). Per-store configurable through
+ *  `pipeline.workerCallHardCapMs`. */
+const WORKER_CALL_HARD_CAP_DEFAULT_MS = 15 * 60_000;
 /** Map a stream error / finish failure to a typed worker error. A caller or
  *  host abort is never a provider failure: it must not burn retry budget. */
-function workerFailure(signal, err, failure) {
+function workerFailure(signal, err, failure, hardCapFired = false) {
     const message = failure?.message ??
         (err instanceof Error ? err.message : err === undefined ? "DSH model call failed" : String(err));
     const code = failure?.code ?? errorCodeOf(err);
     const status = failure?.status ?? errorStatusOf(err);
+    if (hardCapFired) {
+        // Our own generous cap: a timeout (retryable under the cap), never a
+        // caller abort.
+        return new WorkerTimeoutError(message, code ?? "HARD_CAP");
+    }
     if (signal?.aborted === true) {
         return new WorkerAbortedError(message, code ?? hostAbortReason(signal));
     }
@@ -402,7 +414,7 @@ export function dshWorkerMessage(message, route) {
         isError: message.isError === true,
     });
 }
-export function dshChannel(ctx, route, abortSignal) {
+export function dshChannel(ctx, route, abortSignal, hardCapMs = WORKER_CALL_HARD_CAP_DEFAULT_MS) {
     return {
         name: "dsh",
         // Native tool-calling turn: provider tool schemas go out, real tool-call
@@ -413,13 +425,23 @@ export function dshChannel(ctx, route, abortSignal) {
             const selected = route();
             if (!selected)
                 throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
+            const hardCapCtrl = new AbortController();
+            let hardCapFired = false;
+            const hardCapTimer = Number.isFinite(hardCapMs) && hardCapMs > 0
+                ? setTimeout(() => {
+                    hardCapFired = true;
+                    hardCapCtrl.abort(new Error("memcurio: worker call hard cap exceeded"));
+                }, hardCapMs)
+                : undefined;
+            hardCapTimer?.unref?.();
             const runtimeSignal = abortSignal();
             const signals = [];
             if (runtimeSignal)
                 signals.push(runtimeSignal);
             if (signal)
                 signals.push(signal);
-            const combined = signals.length > 0 ? AbortSignal.any(signals) : undefined;
+            signals.push(hardCapCtrl.signal);
+            const combined = AbortSignal.any(signals);
             // The turn is replayed as the host's own message, so the route snapshot
             // taken here is also the attribution written onto that message: the
             // adapter validates its replay envelope against it on the next request.
@@ -427,46 +449,53 @@ export function dshChannel(ctx, route, abortSignal) {
             const attempts = 1 + WORKER_TRANSPORT_RETRIES;
             let reason = { kind: "stop" };
             let assembler = new BlockAssembler();
-            for (let attempt = 0;; attempt += 1) {
-                // A transport retry must assemble from a clean slate: the failed
-                // attempt may already have pushed partial blocks into the previous
-                // assembler, and replaying those into the reply would corrupt it.
-                assembler = new BlockAssembler();
-                // The host's chunk-to-message assembler is the canonical assembly
-                // algorithm (the agent loop uses the same one). Feeding it the raw
-                // stream is what keeps a replayed assistant turn structured exactly
-                // like the host's own — block order, empty blocks, and the adapter
-                // replay envelope included — so nothing is reconstructed by hand.
-                try {
-                    const stream = ctx.llm.stream({
-                        ...selected,
-                        system,
-                        messages: wire,
-                        tools: [...tools],
-                        ...(combined === undefined ? {} : { signal: combined }),
-                    });
-                    for await (const chunk of stream) {
-                        assembler.push(chunk);
+            try {
+                for (let attempt = 0;; attempt += 1) {
+                    // A transport retry must assemble from a clean slate: the failed
+                    // attempt may already have pushed partial blocks into the previous
+                    // assembler, and replaying those into the reply would corrupt it.
+                    assembler = new BlockAssembler();
+                    // The host's chunk-to-message assembler is the canonical assembly
+                    // algorithm (the agent loop uses the same one). Feeding it the raw
+                    // stream is what keeps a replayed assistant turn structured exactly
+                    // like the host's own — block order, empty blocks, and the adapter
+                    // replay envelope included — so nothing is reconstructed by hand.
+                    try {
+                        const stream = ctx.llm.stream({
+                            ...selected,
+                            system,
+                            messages: wire,
+                            tools: [...tools],
+                            ...(combined === undefined ? {} : { signal: combined }),
+                        });
+                        for await (const chunk of stream) {
+                            assembler.push(chunk);
+                        }
                     }
-                }
-                catch (err) {
-                    const failure = workerFailure(combined, err);
-                    if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
-                        await workerRetryDelay(attempt);
-                        continue;
+                    catch (err) {
+                        const failure = workerFailure(combined, err, undefined, hardCapFired);
+                        if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
+                            await workerRetryDelay(attempt);
+                            continue;
+                        }
+                        throw failure;
                     }
-                    throw failure;
-                }
-                reason = assembler.finish;
-                if (reason.kind === "error" || reason.kind === "aborted") {
-                    const failure = workerFailure(combined, undefined, reason.failure);
-                    if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
-                        await workerRetryDelay(attempt);
-                        continue;
+                    reason = assembler.finish;
+                    if (reason.kind === "error" || reason.kind === "aborted") {
+                        const failure = workerFailure(combined, undefined, reason.failure, hardCapFired);
+                        if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
+                            await workerRetryDelay(attempt);
+                            continue;
+                        }
+                        throw failure;
                     }
-                    throw failure;
+                    break;
                 }
-                break;
+            }
+            finally {
+                if (hardCapTimer !== undefined) {
+                    clearTimeout(hardCapTimer);
+                }
             }
             let text = "";
             let reasoning = "";
@@ -919,8 +948,8 @@ export function apply(ctx, config = {}) {
                     durableQueue: true,
                     injectBudgetTokens: () => live().injectBudgetTokens,
                     toolPreset: DSH_TOOL_PRESET,
-                    channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal),
-                    consolidateChannel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal),
+                    channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal, pipelineConfig(root).workerCallHardCapMs),
+                    consolidateChannel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal, pipelineConfig(root).workerCallHardCapMs),
                     log: (level, message, details) => {
                         if (level === "warn" || level === "error") {
                             ctx.logger[level](`memcurio[${level}]: ${message}`, details);
@@ -995,10 +1024,10 @@ export function apply(ctx, config = {}) {
             durableQueue: true,
             injectBudgetTokens: () => live().injectBudgetTokens,
             toolPreset: DSH_TOOL_PRESET,
-            channel: dshChannel(ctx, () => fixedRoute() ?? runtime.route ?? lastKnownRoute, () => runtime.abort.signal),
+            channel: dshChannel(ctx, () => fixedRoute() ?? runtime.route ?? lastKnownRoute, () => runtime.abort.signal, pipelineConfig(root).workerCallHardCapMs),
             // Phase 2 is store-scoped: the plugin-lifetime abort (not the session's)
             // keeps a consolidation alive across session retirement.
-            consolidateChannel: dshChannel(ctx, () => fixedRoute() ?? runtime.route ?? lastKnownRoute, () => storeAbort.signal),
+            consolidateChannel: dshChannel(ctx, () => fixedRoute() ?? runtime.route ?? lastKnownRoute, () => storeAbort.signal, pipelineConfig(root).workerCallHardCapMs),
             // Preserve warn/error levels: flattening them to debug would hide real
             // failures ("staging failed", "consolidation skipped", "retry failed")
             // under debug-filtered host logging. info stays at debug to keep the

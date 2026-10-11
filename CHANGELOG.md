@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `attempts`, `retryAt` and `lastErrorKind`; dead-lettered extraction jobs can
   be revived through the exported `@memcurio/dsh-plugin/api` entry
   (`integrationRequeueDeadExtractions`, audited as `extract.requeued`).
+- **Residual hardening**: a run with changes rejects a `finish` that never read
+  the workspace diff (bounded corrective loop), so a blind no-op can no longer
+  mark inputs as consumed silently; unconsumed notes keep their urgency on an
+  hourly retry gate instead of being stranded for the 6 h cooldown; and a
+  per-store `pipeline.workerCallHardCapMs` (default 15 min, retries included)
+  bounds a worker stream that keeps trickling without ever going idle.
 - **Review hardening (round 3)**: the virtual diff is now an *index* for
   artifact bodies (raw memories and rollout summaries stay on disk and are read
   through the budgeted pager) while editable documents keep their inline diff —

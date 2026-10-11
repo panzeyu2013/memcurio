@@ -57,6 +57,6 @@ export declare function dshWorkerMessage(message: AgentTurnMessage, route: {
 export declare function dshChannel(ctx: Context, route: () => {
     provider: string;
     model: string;
-} | undefined, abortSignal: () => AbortSignal | undefined): LlmChannel;
+} | undefined, abortSignal: () => AbortSignal | undefined, hardCapMs?: number): LlmChannel;
 /** Register Memcurio lifecycle hooks and native DSH tools. */
 export declare function apply(ctx: Context, config?: Config): void;

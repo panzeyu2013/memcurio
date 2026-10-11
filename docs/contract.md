@@ -349,6 +349,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // run 预算 cfg.consolidateRunBudgetMs（默认 30 分钟）经 AbortSignal 传入每次 agent 调用，超时抛 WorkerTimeoutError（kind=timeout，不降级 Rule）；
   // 请求上界：每步前校验 system+messages 总量（MAX_AGENT_HISTORY_BYTES=2.5MB，超限抛 INPUT_BUDGET_EXCEEDED）；单 run 累计 read_file 结果上限
   // READ_FILE_TOTAL_BYTES_PER_RUN=1MB（超出返回 "read budget exhausted" 工具结果，逼模型收敛）；read_file 页首/页尾均对齐 UTF-8 码点边界；
+  // 变更非空时 finish 前必须已 read_file 过 phase2_workspace_diff.md：盲 finish 被拒绝并提示，防止"该更新却 no-op 静默跳过"；
   // 竞争：planning/provider 期间输入变化抛 ConsolidationContentionError（engine 记 consolidate.auto_contended，不计失败/不排退避）；
   // 无路由：ProviderNotConfiguredError → engine 记 consolidate.auto_unavailable 并等待下一次用户活动（不写 failed/attempts/retry_at）；
   // 宿主/调用方 abort → WorkerAbortedError（kind=aborted）：engine 不写失败、不排退避、不烧抽取 attempt；
@@ -369,6 +370,7 @@ export interface PipelineConfig {
   maxAgentSteps: number;         // 默认 25
   consolidateRunBudgetMs: number; // 默认 30 分钟：单次自动 Phase-2 的墙钟预算（移除 120s per-call 墙钟后的 run 级边界；宿主 idle watchdog 负责卡死检测）
   consolidatePromptBudgetBytes: number; // 默认 512KB：Phase-2 system prompt 硬顶；动态输入已外置/分节截断，超出即抛 WorkerProviderError(code=INPUT_BUDGET_EXCEEDED) 零提交（防未来新增内联通道无预算）
+  workerCallHardCapMs: number;   // 默认 15 分钟（边界 10s..2h）：单次 worker 模型调用硬上限（含传输重试）；宿主 idle watchdog 管卡死，此上限管"持续缓慢吐字"的流，避免无限期占用抽取 job lease
 }
 export function loadPipelineConfig(root: string): PipelineConfig          // 从 config.json pipeline 节读取，宽松回退默认
 export function pruneExtensionResources(root: string, retentionDays: number): string[]
@@ -514,8 +516,9 @@ export class MemcurioAdapter {
                                                              // 宿主/调用方 abort（WorkerAbortedError）审计 consolidate.auto_aborted：不计失败、不排退避；
                                                              // 无路由（consolidate.auto_unavailable）与竞争/租约（ConsolidationContentionError → consolidate.auto_contended）
                                                              // 均为等待态：不写 failed/attempts/retry_at；
-                                                             // pending 积压不绕过 6h 成功冷却；note 触发的偏离是有界的——仅"晚于上次成功（按解析时间比较，
-                                                             // 无法解析的时间戳按新处理）"的 actionable note 可绕冷却；入口由 workspace lease 串行化；
+                                                             // pending 积压不绕过 6h 成功冷却；note 触发的偏离是有界的——"晚于上次成功（按解析时间比较，
+                                                             // 无法解析的时间戳按新处理）"的 actionable note 立即绕冷却；被上一轮成功遗留未消费的 note
+                                                             // 走 consolidation_note_retry_at 门（+1h，最多每小时重试一次），消费后清除；入口由 workspace lease 串行化；
                                                              // 进程内为 store 级 single-flight（按 root 共享同一 promise，1h TTL 安全阀）；
                                                              // store 级通道（consolidateChannel）不随会话退役 abort
   buildStaticContext(workdir, budgetTokens?): Promise<string>  // 仅摘要区块（renderMemoryContext；read_path 指南是 system prompt section；空库返回空串）

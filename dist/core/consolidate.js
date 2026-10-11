@@ -21,6 +21,7 @@ export const DEFAULT_PIPELINE_CONFIG = {
     maxAgentSteps: 25,
     consolidateRunBudgetMs: 30 * 60 * 1000,
     consolidatePromptBudgetBytes: 512 * 1024,
+    workerCallHardCapMs: 15 * 60_000,
 };
 // ------------------------------------- phase-2 input externalization & budgets
 /** Virtual provider-visible file carrying the bounded workspace diff. The diff
@@ -941,6 +942,7 @@ export class LlmLoopConsolidateProvider {
         const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? [], this.promptBudgetBytes);
         const messages = [{ role: "user", text: AGENT_BEGIN }];
         let readBytes = 0;
+        let readDiffFile = false;
         let report = "";
         let completed = false;
         let consumedNoteFilenames = [];
@@ -1037,6 +1039,14 @@ export class LlmLoopConsolidateProvider {
                             messages.push(toolResultMessage(call, `rejected: invalid finish arguments (${parsed.error})`, true));
                             continue;
                         }
+                        // A run with changes must have looked at the change list it is told
+                        // to read first: finishing blind used to be accepted and would commit
+                        // a no-op while the pending inputs are marked selected, which is a
+                        // silent skip rather than a reviewed no-op.
+                        if (safeInput.diff.length > 0 && !readDiffFile) {
+                            messages.push(toolResultMessage(call, `rejected: read ${PHASE2_DIFF_FILENAME} with read_file first — it is the authoritative list of changed inputs`, true));
+                            continue;
+                        }
                         report = typeof parsed.args.report === "string" ? parsed.args.report : "consolidation finished";
                         const appliedNotes = Array.isArray(parsed.args.applied_notes) ? parsed.args.applied_notes : [];
                         // A note can only be settled by an actual MEMORY.md rewrite: claiming
@@ -1056,6 +1066,10 @@ export class LlmLoopConsolidateProvider {
                     }
                     let outcome = this.#executeTool(call.name, call.arguments, safeInput, edits, rejected);
                     if (call.name === "read_file" && !outcome.isError) {
+                        const parsedCall = parseToolArguments(call.arguments);
+                        if (parsedCall.ok && String(parsedCall.args.rel ?? "") === PHASE2_DIFF_FILENAME) {
+                            readDiffFile = true;
+                        }
                         // Per-run read budget: page-by-page reading must stay bounded, or a
                         // 1MB+ raw_memories could rebuild the megabyte request F1 removed.
                         const remaining = Math.max(0, READ_FILE_TOTAL_BYTES_PER_RUN - readBytes);

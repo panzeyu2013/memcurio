@@ -20,6 +20,7 @@ const PIPELINE_BOUNDS = {
     maxAgentSteps: { min: 1, max: 1000 },
     consolidateRunBudgetMs: { min: 1_000, max: 24 * 60 * 60 * 1000 },
     consolidatePromptBudgetBytes: { min: 4_096, max: 64 * 1024 * 1024 },
+    workerCallHardCapMs: { min: 10_000, max: 2 * 60 * 60 * 1000 },
 };
 function clampPipeline(value, key) {
     const bounds = PIPELINE_BOUNDS[key];
@@ -62,6 +63,7 @@ function normalizeConfig(value, strict) {
             maxAgentSteps: clampPipeline(pl.maxAgentSteps, "maxAgentSteps"),
             consolidateRunBudgetMs: clampPipeline(pl.consolidateRunBudgetMs, "consolidateRunBudgetMs"),
             consolidatePromptBudgetBytes: clampPipeline(pl.consolidatePromptBudgetBytes, "consolidatePromptBudgetBytes"),
+            workerCallHardCapMs: clampPipeline(pl.workerCallHardCapMs, "workerCallHardCapMs"),
         },
     };
 }

@@ -20,6 +20,36 @@ let prevRoot: string | undefined;
 let prevProvider: string | undefined;
 const PROJ = "/tmp/MyProject";
 
+/** A worker channel that follows the loop contract (read the workspace diff
+ *  before finishing) and then completes. `onFinish` counts completed runs, not
+ *  transport reads. */
+function finishingChannel(onFinish: () => void = () => undefined, delayMs = 0): LlmChannel {
+  return {
+    name: "dsh",
+    async agent(_system, messages) {
+      const read = messages.some((message) => message.role === "tool" && message.name === "read_file");
+      if (!read) {
+        return {
+          text: "",
+          toolCalls: [
+            { id: "read-diff", name: "read_file", arguments: JSON.stringify({ rel: "phase2_workspace_diff.md" }) },
+          ],
+          finish: "tool-calls" as const,
+        };
+      }
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      onFinish();
+      return {
+        text: "",
+        toolCalls: [{ id: "finish", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
+        finish: "tool-calls" as const,
+      };
+    },
+  };
+}
+
 /** Selection windows are measured against the wall clock, so fixtures use
  *  relative timestamps — a hard-coded date silently ages out of the window. */
 const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -344,17 +374,9 @@ describe("automatic consolidation failure handling", () => {
 
   test("an unparseable last timestamp never suppresses a pending note", async () => {
     let calls = 0;
-    const channel: LlmChannel = {
-      name: "dsh",
-      agent: async () => {
-        calls += 1;
-        return {
-          text: "",
-          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
-          finish: "tool-calls" as const,
-        };
-      },
-    };
+    const channel = finishingChannel(() => {
+      calls += 1;
+    });
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
     await addAdHocNote(dir, "malformed-last note", "remember");
     const seed = await Index.create(indexDb(dir));
@@ -373,17 +395,9 @@ describe("automatic consolidation failure handling", () => {
 
   test("a legacy store with only consolidation_auto_failed is gated for one hour", async () => {
     let calls = 0;
-    const channel: LlmChannel = {
-      name: "dsh",
-      agent: async () => {
-        calls += 1;
-        return {
-          text: "",
-          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
-          finish: "tool-calls" as const,
-        };
-      },
-    };
+    const channel = finishingChannel(() => {
+      calls += 1;
+    });
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
     await addAdHocNote(dir, "legacy note", "remember");
     const seed = await Index.create(indexDb(dir));
@@ -451,20 +465,9 @@ describe("automatic consolidation failure handling", () => {
 
   test("concurrent triggers share one consolidation run", async () => {
     let calls = 0;
-    const channel: LlmChannel = {
-      name: "dsh",
-      agent: async () => {
-        calls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        // Finish in one turn: the prose-nudge path would legitimately call the
-        // channel a second time and hide a single-flight regression.
-        return {
-          text: "",
-          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
-          finish: "tool-calls" as const,
-        };
-      },
-    };
+    const channel = finishingChannel(() => {
+      calls += 1;
+    }, 20);
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
     await addAdHocNote(dir, "concurrent note", "remember");
     await Promise.all([adapter.maybeConsolidate(), adapter.maybeConsolidate(), adapter.maybeConsolidate()]);
@@ -474,18 +477,9 @@ describe("automatic consolidation failure handling", () => {
 
   test("two adapters for the same store share one consolidation run", async () => {
     let calls = 0;
-    const channel: LlmChannel = {
-      name: "dsh",
-      agent: async () => {
-        calls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return {
-          text: "",
-          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
-          finish: "tool-calls" as const,
-        };
-      },
-    };
+    const channel = finishingChannel(() => {
+      calls += 1;
+    }, 20);
     const a = new MemcurioAdapter({ root: dir, durableQueue: true, channel });
     const b = new MemcurioAdapter({ root: dir, durableQueue: true, channel });
     await addAdHocNote(dir, "cross adapter note", "remember");
@@ -503,18 +497,10 @@ describe("automatic consolidation failure handling", () => {
 
   test("a stuck note stops bypassing the cooldown after a successful run", async () => {
     let calls = 0;
-    const channel: LlmChannel = {
-      name: "dsh",
-      agent: async () => {
-        calls += 1;
-        // Completes without applying the note: it stays pending.
-        return {
-          text: "",
-          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "nothing to change" }) }],
-          finish: "tool-calls" as const,
-        };
-      },
-    };
+    // Completes without applying the note: it stays pending.
+    const channel = finishingChannel(() => {
+      calls += 1;
+    });
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
     await addAdHocNote(dir, "stuck note", "remember");
     await adapter.maybeConsolidate();
@@ -526,9 +512,20 @@ describe("automatic consolidation failure handling", () => {
     } finally {
       idx.close();
     }
-    // The note predates the success, so it no longer bypasses the 6h cooldown.
+    // The note predates the success, so it no longer bypasses the 6h cooldown…
     await adapter.maybeConsolidate();
     expect(calls).toBe(1);
+    // …but the unconsumed note is retried on an hourly gate rather than being
+    // stranded for the full success cooldown.
+    const gate = await Index.create(indexDb(dir));
+    try {
+      expect(gate.metaGet("consolidation_note_retry_at")).toBeDefined();
+      gate.metaSet("consolidation_note_retry_at", new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
+    } finally {
+      gate.close();
+    }
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(2);
     adapter.dispose();
   });
 

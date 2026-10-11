@@ -204,6 +204,28 @@ describe("dshChannel", () => {
     expect(calls).toBe(1);
   });
 
+  test("a worker call is hard-capped even when the stream keeps trickling", async () => {
+    let calls = 0;
+    const ctx = {
+      llm: {
+        stream: (async function* (options: { signal?: AbortSignal }) {
+          calls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          if (options.signal?.aborted === true) {
+            throw new Error("aborted by the hard cap");
+          }
+          yield { type: "finish", reason: { kind: "stop" } } as StreamChunk;
+        }) as unknown,
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined, 20);
+    await expect(channel.agent("system", [{ role: "user", text: "go" }], [])).rejects.toMatchObject({
+      name: "WorkerTimeoutError",
+      code: "HARD_CAP",
+    });
+    expect(calls).toBe(3);
+  });
+
   test("429 is transient and retries like a 5xx", async () => {
     let calls = 0;
     const ctx = {

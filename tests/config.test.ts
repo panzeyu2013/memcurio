@@ -35,14 +35,18 @@ describe("loadConfig", () => {
     expect(legacy.pipeline.consolidatePromptBudgetBytes).toBe(
       DEFAULT_CONFIG.pipeline.consolidatePromptBudgetBytes,
     );
+    expect(legacy.pipeline.workerCallHardCapMs).toBe(DEFAULT_CONFIG.pipeline.workerCallHardCapMs);
     // Out-of-range values clamp instead of disabling the guards.
     writeFileSync(
       join(dir, "config.json"),
-      JSON.stringify({ pipeline: { consolidateRunBudgetMs: 1, consolidatePromptBudgetBytes: 1 } }),
+      JSON.stringify({
+        pipeline: { consolidateRunBudgetMs: 1, consolidatePromptBudgetBytes: 1, workerCallHardCapMs: 1 },
+      }),
     );
     const clamped = loadConfig(dir);
     expect(clamped.pipeline.consolidateRunBudgetMs).toBeGreaterThanOrEqual(1_000);
     expect(clamped.pipeline.consolidatePromptBudgetBytes).toBeGreaterThanOrEqual(4_096);
+    expect(clamped.pipeline.workerCallHardCapMs).toBeGreaterThanOrEqual(10_000);
   });
 
   test("falls back to defaults on corrupt JSON", () => {

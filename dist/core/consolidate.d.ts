@@ -22,6 +22,11 @@ export interface PipelineConfig {
      *  is the invariant guard that fails the run if a future inline channel
      *  arrives without a budget. */
     consolidatePromptBudgetBytes: number;
+    /** Hard cap for one worker model call (transport retries included). The host
+     *  idle watchdog bounds a stalled stream; this bounds a stream that keeps
+     *  trickling forever, which would otherwise hold a worker call (and the
+     *  extraction job lease it renews) indefinitely. */
+    workerCallHardCapMs: number;
 }
 export declare const DEFAULT_PIPELINE_CONFIG: PipelineConfig;
 /** Virtual provider-visible file carrying the bounded workspace diff. The diff

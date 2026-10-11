@@ -110,6 +110,11 @@ const AUTO_CONSOLIDATE_INTERNAL_RETRY_MS = 6 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
 const AUTO_CONSOLIDATE_RETRY_AT_KEY = "consolidation_auto_retry_at";
 const AUTO_CONSOLIDATE_KIND_KEY = "consolidation_auto_kind";
+const AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY = "consolidation_note_retry_at";
+/** After a note-urgent run leaves actionable notes unconsumed, the next note
+ *  bypass is gated for one hour: a bounded retry instead of re-running on
+ *  every turn (the old behaviour) or waiting out the full 6h success cooldown. */
+const AUTO_CONSOLIDATE_NOTE_RETRY_COOLDOWN_MS = 60 * 60 * 1000;
 /** Process-wide single-flight for automatic consolidation, keyed by store root:
  *  every adapter serving a store shares one in-flight run. */
 const CONSOLIDATION_IN_FLIGHT = new Map<string, Promise<void>>();
@@ -1208,7 +1213,14 @@ export class MemcurioAdapter {
         // parsed dates, and an unparseable value counts as NEW (conservative:
         // the user's explicit remember must not be silently ignored).
         const lastMs = parseConsolidationTimestamp(last);
-        const urgent = idx.noteList().some((note) => {
+        const noteRetryAtMs = parseConsolidationTimestamp(idx.metaGet(AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY));
+        const noteRetryReady = !Number.isFinite(noteRetryAtMs) || now >= noteRetryAtMs;
+        const notes = idx.noteList();
+        // A note created after the last success is a fresh user request and
+        // bypasses the cooldown immediately. A note left unconsumed by a
+        // previous run is retried on the stored hourly gate instead
+        // (AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY), never on every turn.
+        const freshNote = notes.some((note) => {
           if (!actionableNote(note)) {
             return false;
           }
@@ -1218,6 +1230,9 @@ export class MemcurioAdapter {
           const createdMs = parseConsolidationTimestamp(note.createdAt);
           return !Number.isFinite(createdMs) || createdMs > lastMs;
         });
+        const unconsumedRetry =
+          Number.isFinite(noteRetryAtMs) && noteRetryReady && notes.some((note) => actionableNote(note));
+        const urgent = freshNote || unconsumedRetry;
         if (last !== undefined && !urgent) {
           const elapsed = now - Date.parse(last);
           if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
@@ -1299,6 +1314,16 @@ export class MemcurioAdapter {
         idx3.metaDelete(AUTO_CONSOLIDATE_ATTEMPTS_KEY);
         idx3.metaDelete(AUTO_CONSOLIDATE_RETRY_AT_KEY);
         idx3.metaDelete(AUTO_CONSOLIDATE_KIND_KEY);
+        // A note the run did not consume keeps its urgency but only at an
+        // hourly cadence; once consumed the gate is cleared.
+        if (idx3.noteList().some(actionableNote)) {
+          idx3.metaSet(
+            AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY,
+            new Date(Date.now() + AUTO_CONSOLIDATE_NOTE_RETRY_COOLDOWN_MS).toISOString(),
+          );
+        } else {
+          idx3.metaDelete(AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY);
+        }
         idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${usableChannel?.name ?? "rule"})`);
       } finally {
         idx3.close();

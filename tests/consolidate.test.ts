@@ -717,7 +717,10 @@ describe("runConsolidation", () => {
     await addAdHocNote(dir, "seed", "remember");
     const provider = new LlmLoopConsolidateProvider(
       2,
-      scriptedChannel([JSON.stringify({ tool: "finish", args: { report: "no memory changes" } })]),
+      scriptedChannel([
+        JSON.stringify({ tool: "read_file", args: { rel: PHASE2_DIFF_FILENAME } }),
+        JSON.stringify({ tool: "finish", args: { report: "no memory changes" } }),
+      ]),
     );
     const run = await runConsolidation(dir, provider, { execute: true });
     expect(run.applied).toBe(true);
@@ -731,8 +734,9 @@ describe("runConsolidation", () => {
     // wipe the very file the guide and the window injection key off.
     await addAdHocNote(dir, "seed", "remember");
     const provider = new LlmLoopConsolidateProvider(
-      2,
+      3,
       scriptedChannel([
+        JSON.stringify({ tool: "read_file", args: { rel: PHASE2_DIFF_FILENAME } }),
         JSON.stringify({ tool: "write_file", args: { rel: "memory_summary.md", content: "" } }),
         JSON.stringify({ tool: "finish", args: { report: "wrote an empty summary" } }),
       ]),
@@ -744,6 +748,22 @@ describe("runConsolidation", () => {
     expect(run.message).toContain("memory_summary.md initialized");
   });
 
+  test("a run with changes rejects a blind finish until the diff was read", async () => {
+    await addAdHocNote(dir, "blind finish", "remember");
+    const provider = new LlmLoopConsolidateProvider(
+      3,
+      scriptedChannel([
+        JSON.stringify({ tool: "finish", args: { report: "blind" } }),
+        JSON.stringify({ tool: "read_file", args: { rel: PHASE2_DIFF_FILENAME } }),
+        JSON.stringify({ tool: "finish", args: { report: "after reading" } }),
+      ]),
+    );
+    const run = await runConsolidation(dir, provider, { execute: true });
+    expect(run.result?.completed).toBe(true);
+    expect(run.result?.report).toBe("after reading");
+    expect(run.applied).toBe(true);
+  });
+
   test("a note claimed applied without a MEMORY.md edit stays pending", async () => {
     // finish.applied_notes is a claim, not evidence: with no MEMORY.md rewrite
     // in the run, swallowing the note would silently drop a forget/update.
@@ -751,6 +771,7 @@ describe("runConsolidation", () => {
     const provider = new LlmLoopConsolidateProvider(
       2,
       scriptedChannel([
+        JSON.stringify({ tool: "read_file", args: { rel: PHASE2_DIFF_FILENAME } }),
         JSON.stringify({ tool: "finish", args: { report: "nothing to do", applied_notes: [note.filename] } }),
       ]),
     );
@@ -1055,7 +1076,7 @@ describe("runConsolidation", () => {
     const prompts: Array<{ system: string; user: string }> = [];
     const provider = new LlmLoopConsolidateProvider(
       2,
-      scriptedChannel([JSON.stringify({ tool: "finish", args: { report: "pruned" } })], prompts),
+      scriptedChannel([JSON.stringify({ tool: "read_file", args: { rel: PHASE2_DIFF_FILENAME } }), JSON.stringify({ tool: "finish", args: { report: "pruned" } })], prompts),
     );
     const run = await runConsolidation(dir, provider, { execute: true, config: { resourceRetentionDays: 1 } });
     expect(run.result?.completed).toBe(true);

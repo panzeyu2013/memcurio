@@ -101,7 +101,7 @@ DSH Web（浏览器）
 
 - stage1 行状态：pending / selected / deleted（+ artifact filename）；
 - 抽取 job：pending / processing / blocked / completed（终态，不入列表）/ dead（attempts、next_attempt_at、last_error 脱敏）；
-- 整合：meta 键 `consolidation_auto_last` / `consolidation_auto_failed` / `consolidation_auto_attempts` / `consolidation_auto_retry_at` / `consolidation_auto_kind`（成功 6h 冷却；失败 1h retry_at 后才允许下一次用户活动重试，internal 类不变量失败退避 6h；kind = aborted|timeout|provider|internal|unknown；aborted/contended/unavailable 不记 failed）；
+- 整合：meta 键 `consolidation_auto_last` / `consolidation_auto_failed` / `consolidation_auto_attempts` / `consolidation_auto_retry_at` / `consolidation_auto_kind` / `consolidation_note_retry_at`（成功 6h 冷却；失败 1h retry_at 后才允许下一次用户活动重试，internal 类不变量失败退避 6h；kind = aborted|timeout|provider|internal|unknown；aborted/contended/unavailable 不记 failed）；
 - 会话：sessions 表（host/workdir/started/ended/summary）+ 抽取 job 关联；
 - 证据/剪除：adapter 内存态 + compaction 事件投影（shadowedSeqs）。
 
