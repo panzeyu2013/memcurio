@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-10-11
+
 ### Fixed
 
 - **Phase-2 input is bounded (no more megabyte prompts)**: the workspace diff is
