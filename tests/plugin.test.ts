@@ -15,7 +15,7 @@ import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
 import { Index } from "../src/core/db.js";
-import { indexDb, memoryWorkspace } from "../src/core/paths.js";
+import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
@@ -2310,6 +2310,112 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     expect(existsSync(indexDb(join(root, "dsh", "no-cwd")))).toBe(false);
 
     detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("the first live session bootstraps one Phase-2 attempt", async () => {
+    const root = temporaryRoot();
+    ensureLayout(root);
+    await api.integrationRemember(root, "bootstrap note");
+    const { ctx, fibers } = await runtime();
+    const session = ctx.sessions.prepare(SessionId("bootstrap-trigger"), { meta: { cwd: join(root, "workspace") } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "global",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    // Bootstrap work is detached: poll for the attempt audit (no model adapter
+    // is registered, so the attempt is what proves the trigger fired).
+    let attempts = 0;
+    for (let i = 0; i < 100 && attempts === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const idx = await Index.create(indexDb(root));
+      try {
+        attempts =
+          idx.rawAll<{ c: number }>(
+            "SELECT COUNT(*) AS c FROM audit WHERE action IN ('consolidate.auto','consolidate.auto_failed')",
+          )[0]?.c ?? 0;
+      } finally {
+        idx.close();
+      }
+    }
+    expect(attempts).toBeGreaterThan(0);
+    detach();
+    await pluginFiber.dispose();
+    await disposeFibers(fibers);
+  });
+
+  test("the dormant-store sweep drains phase 1 but never consolidates", async () => {
+    const root = temporaryRoot();
+    const workdir = join(root, "dormant-ws");
+    const store = workspaceStoreRoot(root, workdir, "workspace");
+    ensureLayout(store);
+    const seed = await Index.create(indexDb(store));
+    try {
+      seed.stageUpsert({
+        rolloutKey: "dsh|sweep-dormant",
+        rawMemory: "raw",
+        rolloutSummary: "summary",
+        rolloutSlug: "sweep-dormant",
+        sourceUpdatedAt: new Date().toISOString(),
+      });
+      // Positive control: the startup sweep must visit this root. A dead job
+      // the policy repair can revive proves it ran (audit extract.requeued).
+      seed.driver.run(
+        `INSERT INTO extraction_jobs(job_id, idempotency_key, host, provider, session_id,
+           source_event, workdir, evidence_ref, content_hash, snapshot_json, attempts,
+           next_attempt_at, status, last_error, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          "sweep-dead",
+          "sweep-dead",
+          "dsh",
+          "dsh",
+          "s-sweep",
+          "session_end",
+          workdir,
+          "sha256:sweep",
+          "sweep",
+          JSON.stringify({ sessionId: "s-sweep" }),
+          3,
+          new Date().toISOString(),
+          "dead",
+          "reply rejected by injection policy (pre-repair)",
+          new Date().toISOString(),
+        ],
+      );
+    } finally {
+      seed.close();
+    }
+    const { ctx, fibers } = await runtime();
+    // apply() runs the startup sweep with a pinned route; the store has a
+    // consolidation candidate but no live session.
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      scope: "workspace",
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const idx = await Index.create(indexDb(store));
+    try {
+      // The sweep really ran on this root (policy-rejected dead job revived)…
+      expect(idx.rawAll("SELECT action FROM audit WHERE action='extract.requeued'")).toHaveLength(1);
+      // …and it never drove Phase 2, even though a consolidation candidate
+      // exists and a route is pinned.
+      const attempts = idx.rawAll<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM audit WHERE action IN ('consolidate.auto','consolidate.auto_failed','consolidate.auto_aborted')",
+      )[0]?.c ?? 0;
+      expect(attempts).toBe(0);
+    } finally {
+      idx.close();
+    }
     await pluginFiber.dispose();
     await disposeFibers(fibers);
   });
