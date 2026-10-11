@@ -95,8 +95,32 @@ export async function integrationStatus(root: string) {
         blocked: jobs.filter((job) => job.status === "blocked").length,
         dead: jobs.filter((job) => job.status === "dead").length,
       },
+      consolidation: {
+        last: index.metaGet("consolidation_auto_last") ?? null,
+        failed: index.metaGet("consolidation_auto_failed") ?? null,
+        attempts: (() => {
+          const parsed = Number.parseInt(index.metaGet("consolidation_auto_attempts") ?? "0", 10);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        })(),
+        retryAt: index.metaGet("consolidation_auto_retry_at") ?? null,
+        lastErrorKind: index.metaGet("consolidation_auto_kind") ?? null,
+      },
       auditCount: index.auditCount(),
     };
+  });
+}
+
+/** Revive dead-lettered extraction jobs (operator action). The durable queue
+ *  has no automatic revival on purpose: a job that exhausted its retry budget
+ *  must be an explicit operator decision (codex has no revive surface either;
+ *  its `clear-memories` resets the whole store). */
+export async function integrationRequeueDeadExtractions(root: string, jobId?: string): Promise<number> {
+  return withIndex(root, (index) => {
+    const revived = index.extractionRequeueDead(jobId);
+    if (revived > 0) {
+      index.audit("extract.requeued", "-", `operator requeued ${String(revived)} dead extraction job(s)`);
+    }
+    return revived;
   });
 }
 

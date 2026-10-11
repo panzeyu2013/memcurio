@@ -655,8 +655,10 @@ export class Index {
         return (this.driver.get("SELECT changes() AS c")?.c ?? 0) > 0;
     }
     /** Mark a failed attempt. Attempts are counted when claimed, so reaching
-     *  maxAttempts moves the job to dead-letter instead of retrying forever. */
-    extractionFail(jobId, error, maxAttempts = 5, now = new Date().toISOString(), expectedClaimToken) {
+     *  maxAttempts moves the job to dead-letter instead of retrying forever.
+     *  Codex stage-1 parity: fixed 1h retry delay and a 3-attempt budget (codex
+     *  `retry_remaining = 3` + `JOB_RETRY_DELAY_SECONDS = 3600`). */
+    extractionFail(jobId, error, maxAttempts = 3, now = new Date().toISOString(), expectedClaimToken) {
         const row = expectedClaimToken === undefined
             ? this.driver.get("SELECT attempts FROM extraction_jobs WHERE job_id = ? AND status='processing'", [jobId])
             : this.driver.get("SELECT attempts FROM extraction_jobs WHERE job_id = ? AND status='processing' AND claim_token=? AND lease_until > ?", [jobId, expectedClaimToken, now]);
@@ -677,7 +679,7 @@ export class Index {
             this.extractionPruneDead(now);
             return { status: "dead", nextAttemptAt: null };
         }
-        const delayMs = Math.min(60 * 60_000, 1000 * 2 ** Math.max(0, row.attempts - 1));
+        const delayMs = 60 * 60_000;
         const nextAttemptAt = new Date(Date.parse(now) + delayMs).toISOString();
         if (expectedClaimToken === undefined) {
             this.driver.run(`UPDATE extraction_jobs
@@ -693,6 +695,18 @@ export class Index {
             }
         }
         return { status: "pending", nextAttemptAt };
+    }
+    /** Release a claimed job WITHOUT consuming a retry attempt: the failure was
+     *  caller/host-caused (session retire, plugin unload), not the work's fault.
+     *  The job returns to pending with a short delay so an aborted drain cannot
+     *  hot-loop the same claim; the next live drain or sweep retries it. */
+    extractionRelease(jobId, error, claimToken, now = new Date().toISOString()) {
+        const detail = error.slice(0, 2000);
+        const nextAttemptAt = new Date(Date.parse(now) + 60_000).toISOString();
+        this.driver.run(`UPDATE extraction_jobs
+       SET status='pending', lease_until=NULL, claim_token=NULL, last_error=?, next_attempt_at=?
+       WHERE job_id=? AND status='processing' AND claim_token=? AND lease_until > ?`, [detail, nextAttemptAt, jobId, claimToken, now]);
+        return (this.driver.get("SELECT changes() AS c")?.c ?? 0) > 0;
     }
     extractionList(status) {
         const rows = status

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Phase-2 input is bounded (no more megabyte prompts)**: the workspace diff is
+  no longer inlined into the consolidation system prompt. It is rendered into a
+  virtual `phase2_workspace_diff.md` (4 MiB cap with an explicit truncation
+  marker) that the agent reads through `read_file` — which is now paged
+  (`offset`/`limit`, 20 KB default, 200 KB cap). Pending notes and extension
+  instructions stay inline but are byte-capped, and the assembled prompt has a
+  hard ceiling. This removes the deterministic "1.55 MB prompt / 120 s timeout"
+  livelock for stores with large backlogs.
+- **Phase-2 scheduling is demand-driven**: the dormant-store sweep and the
+  detached 1 h retry timer no longer run consolidation. `turn/end` and the first
+  live session of a store are the only triggers, so an idle process issues zero
+  model calls; pending volume no longer bypasses the 6 h success cooldown
+  (`consolidation_auto_retry_at` gates the next attempt 1 h after a failure).
+- **Worker time and abort semantics**: the hardcoded 120 s per-call wall clock is
+  removed. The host idle watchdog bounds a stalled stream, a 30-minute
+  `consolidateRunBudgetMs` bounds one run, and transient provider failures get
+  two bounded transport retries with jitter. Failures are now classified
+  (aborted / timeout / provider / unknown) and caller or host aborts never arm
+  the failure backoff; the same classification keeps session-retire aborts from
+  consuming extraction attempts (released, not failed).
+- **Extraction retry budget aligned with Codex stage 1**: fixed 1 h retry delay
+  with a 3-attempt budget (was 1 s/2 s/4 s/8 s and dead after ~15 s).
+- **Operator surfaces**: `memory_status` / the snapshot now expose
+  `attempts`, `retryAt` and `lastErrorKind`, and dead-lettered extraction jobs
+  can be revived through `integrationRequeueDeadExtractions`.
+
 ## [0.0.4] - 2026-09-28
 
 First release since `v0.0.2`: it also carries the changes documented under

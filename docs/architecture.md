@@ -113,10 +113,15 @@ session 事件（DSH：session lifecycle + turn/end + compaction 摘要）
   → SQLite extraction_jobs（幂等键 + lease + retry/dead-letter；`blocked` 是配置等待态，路由/模型可用后自动复活，另有 5 分钟慢探兜底）
   → worker 执行 Phase 1 抽取：模型回合只调用 save_extraction（载荷字段格式在工具 schema）或 skip_extraction（no-op 门）→ 校验（redactSecrets + 注入扫描**按行修复**，修复后仍不安全或为空才拒绝）→ stage1_outputs（raw_memory / rollout_summary / slug）
   → stage1 DB（stageUpsert + audit）
-  → Phase 2 整合（consolidate.ts；turn/end 与无会话 store 的休眠清扫触发 maybeConsolidate，store 级 abort，不占用退役 30s 预算）：
+  → Phase 2 整合（consolidate.ts；**需求驱动**：turn/end 与 store 首个活会话 bootstrap 触发 maybeConsolidate，
+       休眠清扫与 detached 定时器都不再驱动 Phase 2，store 级 abort，不占用退役 30s 预算）：
        planConsolidation 选窗口内 stage1 → 渲染 artifacts（raw_memories 升序合并 / rollout_summaries）
        → syncArtifacts 先把 artifacts 落盘（baseline 只随成功提交推进，失败保留 diff 供重试）
-       → provider（有可用路由时 llm-loop；无路由或通道无 agent() 时 Rule 并审计 consolidate.fallback；LLM 运行失败零提交并按失败退避 + retry_at 定时重试；INIT：落盘前 workspace 无 v1 摘要时由 runConsolidation 兜底补最小 v1 摘要）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
+       → provider 输入**外置**：workspace diff 渲染成虚拟文件 phase2_workspace_diff.md（4 MiB 截断）放进
+         provider 可见 workspace，system prompt 只给路径/notes，diff 永不内联、read_file 分页读取
+       → provider（有可用路由时 llm-loop，run 预算默认 30 分钟；无路由或通道无 agent() 时 Rule 并审计 consolidate.fallback；
+         LLM 运行失败零提交并写 retry_at（1h 后才允许下一次用户活动重试）；宿主/退役 abort 不记失败、不烧抽取 attempt；
+         INIT：落盘前 workspace 无 v1 摘要时由 runConsolidation 兜底补最小 v1 摘要）仅改写白名单文档（MEMORY.md / memory_summary.md / 批准的 skill）
        → workspace lease + revision check → generation manifest 原子阶段/提交/恢复 + audit + note 标记 applied + noteSyncContent + saveBaseline
        → 剪枝行 stagePruneRetention 物理回收 + pruneExtensionResources（保留期清理）
   → MEMORY.md 改写完成（模型组织 Task Group，引擎只做校验/原子写/脱敏/注入扫描）
@@ -153,6 +158,9 @@ prune（引擎内自动执行，无 CLI）：选择窗口（maxUnusedDays / usag
 - **Token 估算** —— CJK 感知 estimator（CJK 1 token/字、ASCII 0.25），不是 Codex 的固定 4 bytes/token。
 - **工具参数越界** —— 直接报错，不 clamp 到上限。
 - **整合输入** —— `maxInputs` 限每批新增输入；Codex 的 `max_raw_memories_for_consolidation` 限整批重选窗口。
+- **Phase-2 prompt 构成** —— Codex 把 git diff 写成 `phase2_workspace_diff.md`（4 MiB 截断）并只给路径；memcurio 同构（虚拟文件 + 路径 + `read_file` 分页），但文件只在 provider workspace 内、不落盘，因此不进入 baseline/generation。
+- **Phase-2 触发与重试** —— Codex 在每个有输入的 turn 调用、由 claim 闸门（6h 成功冷却 / 1h retry_at / lease）限流，失败 1h 后由下一次用户活动重试；memcurio 对齐：只保留 turn/end 与 store bootstrap 两个触发，清除 sweep/detached timer；pending 积压不再绕过成功冷却（note 触发是显式产品偏离）。
+- **Worker 时间预算** —— Codex pipeline 无 per-call 超时（lease+心跳）；memcurio 同样移除 120s 墙钟，宿主 idle watchdog（默认 300s）负责卡死检测，另加一个 30 分钟/次的 Phase-2 run 预算与 2 次传输层重试（对齐 ModelClient 的 request_max_retries）。
 - **默认开启** —— 插件默认注入；Codex 的 `memories` feature 默认关闭。
 - **无模型时的整合** —— Codex 没有无模型整合器；memcurio 为无路由部署（`MEMCURIO_LLM_PROVIDER=none`）与结构性不可用通道保留确定性 rule provider，但绝不用它做失败时的静默降级。
 - **note 载荷** —— 写入门槛与 Codex 一致（仅用户显式要求），形状不同：memcurio 的 `memory_remember` 收 `content` + 可选 `kind`（remember|forget|update），文件名由服务端生成；Codex 的 `ad_hoc_note` 由模型提供文件名 + note 原文。

@@ -9,6 +9,8 @@ import type { ContentBlock, Message, UserMessage } from "@deepseek-ai/dsh-llm";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution, ToolExecutionResult, ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../core/channel.js";
+import type { WorkerModelError } from "../core/channel.js";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 
 import {
@@ -177,10 +179,68 @@ export const DSH_TOOL_PRESET = {
   shellTools: ["bash", "pwsh"],
 };
 
-/** Per-worker model-call cap. Mirrors the bounded-worker policy: a hung
- *  host model must not squat a bounded extraction slot forever. Kept below
- *  the extraction job lease so the job falls back to a normal retry. */
-const DSH_WORKER_CHAT_TIMEOUT_MS = 120_000;
+/** Transport-level retries for worker model calls (codex ModelClient parity:
+ *  request_max_retries with jitter). The host's retry extension only covers
+ *  interactive agent requests, so worker calls get their own small bounded
+ *  retry. Caller aborts are never retried; the host idle watchdog (default
+ *  300s, route-configurable) is the liveness bound — the plugin no longer
+ *  imposes a wall-clock cap that would preempt it. */
+const WORKER_TRANSPORT_RETRIES = 2;
+const WORKER_RETRY_JITTER_MS = 500;
+
+/** The subset of the host finish union this channel consults. */
+type WorkerFinish = {
+  kind: "stop" | "tool-calls" | "max-tokens" | "aborted" | "error";
+  failure?: { message: string; code?: string; status?: number };
+};
+
+/** Map a stream error / finish failure to a typed worker error. A caller or
+ *  host abort is never a provider failure: it must not burn retry budget. */
+function workerFailure(signal: AbortSignal | undefined, err?: unknown, failure?: WorkerFinish["failure"]): WorkerModelError {
+  const message =
+    failure?.message ??
+    (err instanceof Error ? err.message : err === undefined ? "DSH model call failed" : String(err));
+  const code = failure?.code;
+  const status = failure?.status;
+  if (signal?.aborted === true) {
+    return new WorkerAbortedError(message, code ?? hostAbortReason(signal));
+  }
+  if (code === "TIMEOUT") {
+    return new WorkerTimeoutError(message, code);
+  }
+  if (code === "ABORTED") {
+    return new WorkerAbortedError(message, code);
+  }
+  return new WorkerProviderError(message, { code, status, cause: err });
+}
+
+function hostAbortReason(signal: AbortSignal): string | undefined {
+  const reason = (signal as { reason?: unknown }).reason;
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return typeof reason === "string" ? reason : undefined;
+}
+
+/** codex ModelClient parity: retry only transient transport/provider failures. */
+function workerFailureIsTransient(failure: WorkerModelError): boolean {
+  if (failure.kind === "aborted") {
+    return false;
+  }
+  if (failure.kind === "timeout") {
+    return true;
+  }
+  if (typeof failure.status === "number" && failure.status >= 500) {
+    return true;
+  }
+  const code = failure.code ?? "";
+  return code === "TIMEOUT" || code === "RATE_LIMITED" || code === "OVERLOADED" || code === "INTERNAL";
+}
+
+async function workerRetryDelay(attempt: number): Promise<void> {
+  const jitter = Math.floor(Math.random() * WORKER_RETRY_JITTER_MS);
+  await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt + jitter));
+}
 
 /** Retire keeps a small margin below the budget so the final event-lane write
  *  and the adapter dispose settle before the runtime abort. Automatic Phase 2
@@ -446,33 +506,53 @@ export function dshChannel(
     async agent(system, messages, tools, signal) {
       const selected = route();
       if (!selected) throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
-      const signals: AbortSignal[] = [AbortSignal.timeout(DSH_WORKER_CHAT_TIMEOUT_MS)];
       const runtimeSignal = abortSignal();
+      const signals: AbortSignal[] = [];
       if (runtimeSignal) signals.push(runtimeSignal);
       if (signal) signals.push(signal);
-      const combined = AbortSignal.any(signals);
+      const combined = signals.length > 0 ? AbortSignal.any(signals) : undefined;
       // The turn is replayed as the host's own message, so the route snapshot
       // taken here is also the attribution written onto that message: the
       // adapter validates its replay envelope against it on the next request.
       const wire = messages.map((message) => dshWorkerMessage(message, selected));
-      // The host's chunk-to-message assembler is the canonical assembly
-      // algorithm (the agent loop uses the same one). Feeding it the raw stream
-      // is what keeps a replayed assistant turn structured exactly like the
-      // host's own — block order, empty blocks, and the adapter replay envelope
-      // included — so nothing has to be reconstructed by hand.
+      const attempts = 1 + WORKER_TRANSPORT_RETRIES;
+      let reason: WorkerFinish = { kind: "stop" };
       const assembler = new BlockAssembler();
-      for await (const chunk of ctx.llm.stream({
-        ...selected,
-        system,
-        messages: wire,
-        tools: [...tools],
-        signal: combined,
-      })) {
-        assembler.push(chunk);
-      }
-      const reason = assembler.finish;
-      if (reason.kind === "error" || reason.kind === "aborted") {
-        throw new Error(reason.failure.message || `DSH model call ${reason.kind}`);
+      for (let attempt = 0; ; attempt += 1) {
+        // The host's chunk-to-message assembler is the canonical assembly
+        // algorithm (the agent loop uses the same one). Feeding it the raw
+        // stream is what keeps a replayed assistant turn structured exactly
+        // like the host's own — block order, empty blocks, and the adapter
+        // replay envelope included — so nothing is reconstructed by hand.
+        try {
+          const stream = ctx.llm.stream({
+            ...selected,
+            system,
+            messages: wire,
+            tools: [...tools],
+            ...(combined === undefined ? {} : { signal: combined }),
+          });
+          for await (const chunk of stream) {
+            assembler.push(chunk);
+          }
+        } catch (err) {
+          const failure = workerFailure(combined, err);
+          if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
+            await workerRetryDelay(attempt);
+            continue;
+          }
+          throw failure;
+        }
+        reason = assembler.finish;
+        if (reason.kind === "error" || reason.kind === "aborted") {
+          const failure = workerFailure(combined, undefined, reason.failure);
+          if (attempt < attempts - 1 && workerFailureIsTransient(failure)) {
+            await workerRetryDelay(attempt);
+            continue;
+          }
+          throw failure;
+        }
+        break;
       }
       let text = "";
       let reasoning = "";
@@ -882,9 +962,10 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     if (bootstrappedRoots.has(runtime.root)) return;
     bootstrappedRoots.add(runtime.root);
     // Recover jobs a pre-repair policy false positive dead-lettered (the
-    // parser now repairs those lines), then drain pending work. Phase 2 is
-    // store-scoped and triggered by turn/end or the dormant-store sweep; it is
-    // never tied to this session's startup or retirement abort.
+    // parser now repairs those lines), then drain pending work and give Phase 2
+    // its first user-activity trigger for this store (codex parity: the
+    // pipeline is demand-driven, and a fresh session is demand). Phase 2 is
+    // store-scoped and never tied to this session's startup/retirement abort.
     void runtime.adapter
       .requeuePolicyRejectedExtractions()
       .then((revived) => {
@@ -893,6 +974,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         }
         return runtime.adapter.processPendingExtractions();
       })
+      .then(() => runtime.adapter.maybeConsolidate())
       .catch(warn);
     // Baseline seeding: one audit-tail + queue read per store, so historic
     // receipts can never replay once a browser attaches (the bridge is always
@@ -966,7 +1048,9 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
             ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
           }
           await adapter.processPendingExtractions(STORE_SWEEP_DRAIN_LIMIT);
-          await adapter.maybeConsolidate();
+          // Phase 2 is NOT driven from this sweep: codex parity means the only
+          // drivers are user-activity triggers (turn/end, store bootstrap).
+          // Dormant stores keep draining Phase-1 work only.
         } catch (error) {
           warn(error);
         } finally {

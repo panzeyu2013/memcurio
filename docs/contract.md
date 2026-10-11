@@ -338,8 +338,13 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
   //    存在且 v1 且无 note 无 raw 变更 → 不改（churn 最小化）；
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
-  // name = "llm-loop"；constructor(steps?, channel?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无 agent（结构性无 tool calling）→ engine 预判并直接使用 Rule（审计 consolidate.fallback）；其余失败 → completed=false 零提交、退避重试
-  // 工具循环：channel.agent(system, transcript, tools) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
+  // name = "llm-loop"；constructor(steps?, channel?, runBudgetMs?)：每步 channel.agent（**宿主原生 tool calling**：provider tools 字段 + tool-call/tool-result 消息）跑工具循环；无 agent（结构性无 tool calling）→ engine 预判并直接使用 Rule（审计 consolidate.fallback）；其余失败 → completed=false 零提交、退避重试
+  // 工具循环：channel.agent(system, transcript, tools, signal) → 真实 tool calls（read/list 即时执行，write 暂存 edits 待提交校验后应用，call id 关联结果消息）；工具 schema：read_file{rel,offset?,limit?} / write_file{rel,content} / list_files{} / finish{report,applied_notes}；文本里写 JSON 的模拟协议已移除；
+  // 输入外置（codex 同构）：workspace diff 渲染为虚拟文件 phase2_workspace_diff.md（4 MiB 截断 + 截断标记），
+  // 只存在于 provider 可见 workspace（不落盘、不进 baseline/generation、write_file 不在编辑白名单）；system prompt 只含
+  // 指令 + pending notes（64KB 截断）+ 工作区根/diff 文件路径；read_file 默认单次 20KB、上限 200KB，越界返回 offset 续读提示；
+  // run 预算 cfg.consolidateRunBudgetMs（默认 30 分钟）经 AbortSignal 传入每次 agent 调用，超时抛 WorkerTimeoutError（kind=timeout，不降级 Rule）；
+  // 宿主/调用方 abort → WorkerAbortedError（kind=aborted）：engine 不写失败、不排退避、不烧抽取 attempt；
   // INIT 兜底：runConsolidation 在 provider 返回后计算「本次运行后」的 memory_summary.md——
   // 首行不是 v1（缺失/空/被写成空串/schema 不符）时，丢弃 provider 的摘要 edit 并补一条最小 v1
   // 摘要（renderMinimalSummary；与 provider edits 一起过 validateEdits 的密钥/注入/大小/v1 头校验），
@@ -355,6 +360,7 @@ export interface PipelineConfig {
   retentionDays: number;         // 默认 90：completed extraction job 的保留天数（audit 表另有 20k 行自动裁剪）；配置最小 1（0 拒绝）
   resourceRetentionDays: number; // 默认 7（对齐 codex RETENTION_DAYS）：extensions/<name>/resources 清理窗口；与 retentionDays 解耦
   maxAgentSteps: number;         // 默认 25
+  consolidateRunBudgetMs: number; // 默认 30 分钟：单次自动 Phase-2 的墙钟预算（移除 120s per-call 墙钟后的 run 级边界；宿主 idle watchdog 负责卡死检测）
 }
 export function loadPipelineConfig(root: string): PipelineConfig          // 从 config.json pipeline 节读取，宽松回退默认
 export function pruneExtensionResources(root: string, retentionDays: number): string[]
@@ -486,7 +492,8 @@ export class MemcurioAdapter {
   sessionCompacted(id, summary?): Promise<void>             // 压缩摘要入 snapshot.summary + 证据
   sessionEnded(id): Promise<{staged; queued}>               // durable 模式原子入队 + 结束 sessions
   processPendingExtractions(limit?): Promise<QueueDrainResult[]> // worker drain；completed/retry/dead 结果
-  maybeConsolidate(): Promise<void>                         // 自动 Phase 2（codex 式后台任务对应物；turn/end + 无会话 store 的休眠清扫触发）：
+  maybeConsolidate(): Promise<void>                         // 自动 Phase 2（codex 式后台任务对应物；需求驱动：turn/end + store 首个活会话 bootstrap；
+                                                             // 休眠清扫与 detached 定时器都不调用它——空闲进程零模型调用）：
                                                              // 入口先无条件执行保留清理（stagePruneRetention 批次 200 + 审计 prune.retention，
                                                              // best-effort、不受冷却/退避影响；含 maxUnusedDays 年龄分支；keep-set 语义：
                                                              // 仅回收行删除其 rollout_summaries 工件文件，仍在库的行保留文件——下次整合的
@@ -494,8 +501,10 @@ export class MemcurioAdapter {
                                                              // 有 pending notes 或未 selected 的 pending stage1 则整合
                                                              // （可用 channel ? LlmLoopConsolidateProvider : RuleConsolidateProvider；
                                                              // 结构性无 agent 的 channel 审计 consolidate.fallback 后降级 Rule）；
-                                                             // 失败零提交：audit consolidate.auto_failed + 退避，并按 codex retry_at 语义由 engine 定时自唤醒重试
-                                                             // （unref 定时器；dispose 清除，工作留给下一会话或休眠清扫）；入口由 workspace lease 串行化；
+                                                             // 失败零提交：写 consolidation_auto_failed/_attempts/_retry_at/_kind（绝对 retry_at = now + 1h，
+                                                             // 下一次用户活动触发才允许重试；codex phase-2 claim 语义，无 detached 定时器）；
+                                                             // 宿主/调用方 abort（WorkerAbortedError）审计 consolidate.auto_aborted：不计失败、不排退避；
+                                                             // pending 积压不绕过 6h 成功冷却（note 触发保留为显式产品偏离）；入口由 workspace lease 串行化；
                                                              // store 级通道（consolidateChannel）不随会话退役 abort
   buildStaticContext(workdir, budgetTokens?): Promise<string>  // 仅摘要区块（renderMemoryContext；read_path 指南是 system prompt section；空库返回空串）
   buildDynamicContext(workdir, query, budgetTokens?): Promise<string>  // searchMemory 预算派生 4–8 命中拼接（MIN/MAX_DYNAMIC_HITS，sanitized）——引擎 API；插件不再每轮调用
@@ -509,8 +518,8 @@ export class MemcurioAdapter {
 - Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions]`；导出的 `Config` schema 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 不是配置项，桥恒开）。DSH 0.1.7 起该 schema 即 `memcurio` 设置命名空间（键为 profile 条目 id）；命名空间、volatile 字段、持久化目标与可选 `settings` 服务的完整契约见 [settings.md](settings.md)。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；
 - 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
 - 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮、空库 INIT 摘要落地后的第一步与 `compaction/end` 之后各一次（`staticInjected` 闩只由非空注入置位，空库不闩，避免指南先于摘要出现）；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `memcurio` 等机器消息不进用户证据（防回注 feed-back）；本插件注入消息的 source kind 为合并声明的 `memcurio`，旧日志的 `plugin` kind 仍被识别；
-- 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；优先 config.provider/model 固定，否则跟随会话自身路由——按日志顺序取最后一个路由事件：`model/selection`（下一次请求将使用的选择）或最近一次已应用的 `request/header`；`AgentOptions` 只在此前两者都缺失时作种子，避免部署默认 `deepseek-official` 覆盖会话实际使用的模型）；封装带 120s per-call cap，抽取通道透传会话 abort，Phase 2 另用 store 级 `consolidateChannel`（插件生命周期 abort）；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；无可用通道（或结构性无 agent）时整合用 Rule（见 engine.maybeConsolidate）；
-- 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 触发 worker drain + maybeConsolidate；会话退休只在 30s 预算内 drain 抽取（超时 abort 在飞抽取调用后 dispose，queue 稍后重试），Phase 2 由 store 级通道继续，退役 store 重新进入休眠清扫范围；
+- 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；优先 config.provider/model 固定，否则跟随会话自身路由——按日志顺序取最后一个路由事件：`model/selection`（下一次请求将使用的选择）或最近一次已应用的 `request/header`；`AgentOptions` 只在此前两者都缺失时作种子，避免部署默认 `deepseek-official` 覆盖会话实际使用的模型）；封装无自有墙钟（宿主 idle watchdog 负责卡死检测），带 2 次传输层重试（仅瞬态 5xx/timeout，abort 不重试），失败经 `failure.code`/`signal.reason` 归一为 WorkerAborted/Timeout/ProviderError；抽取通道透传会话 abort，Phase 2 另用 store 级 `consolidateChannel`（插件生命周期 abort）；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；无可用通道（或结构性无 agent）时整合用 Rule（见 engine.maybeConsolidate）；
+- 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与 store 首个活会话 bootstrap 触发 worker drain + maybeConsolidate（需求驱动，空闲零调用）；会话退休只在 30s 预算内 drain 抽取（超时 abort 在飞抽取调用后 dispose，queue 稍后重试），被 abort 的抽取 job 走 `extractionRelease`（不计 attempts），Phase 2 由 store 级通道继续，退役 store 仍进入休眠清扫范围（只 drain Phase-1，不再驱动 Phase 2）；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。
 
 ## 测试契约

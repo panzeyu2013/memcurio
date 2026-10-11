@@ -15,6 +15,7 @@ import {
   stageSession,
 } from "../src/core/extract.js";
 import type { ExtractProvider, ExtractionPolicyReport, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
+import { WorkerAbortedError } from "../src/core/channel.js";
 import type { AgentToolReply, LlmChannel } from "../src/core/channel.js";
 import { ensureLayout } from "../src/core/paths.js";
 import { Index } from "../src/core/db.js";
@@ -346,6 +347,33 @@ describe("durable extraction queue", () => {
       expect(dead.extractionList("dead")[0]?.lastError).toContain("temporary provider failure");
     } finally {
       dead.close();
+    }
+  });
+
+  test("caller aborts release the claim without consuming a retry attempt", async () => {
+    const queued = await queueExtraction(dir, {
+      ...snapshot,
+      evidence: createEvidenceSnapshot([{ kind: "user", text: "aborted work" }]),
+    }, "session_end", "aborting");
+    class AbortingProvider implements ExtractProvider {
+      readonly name = "aborting";
+      async extract(): Promise<Stage1Output | null> {
+        throw new WorkerAbortedError("memcurio: session retired", "session retired");
+      }
+    }
+    const result = await processExtractionQueue(dir, new AbortingProvider());
+    expect(result.status).toBe("retry");
+    const idx = await Index.create(indexDb(dir));
+    try {
+      const pending = idx.extractionList("pending")[0];
+      // One attempt was counted at claim time; the abort consumes none and the
+      // job stays pending for the next live drain.
+      expect(pending?.jobId).toBe(queued.jobId);
+      expect(pending?.attempts).toBe(1);
+      expect(idx.rawAll("SELECT action FROM audit WHERE action='extract.queue_released'")).toHaveLength(1);
+      expect(idx.extractionList("dead")).toHaveLength(0);
+    } finally {
+      idx.close();
     }
   });
 

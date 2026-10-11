@@ -12,8 +12,36 @@ export interface PipelineConfig {
      *  retentionDays (which governs completed extraction jobs). */
     resourceRetentionDays: number;
     maxAgentSteps: number;
+    /** Wall-clock budget for one automatic Phase-2 run. Codex has no such budget
+     *  in the pipeline (lease+heartbeat only); memcurio keeps a generous bound so
+     *  a wedged agent loop cannot hold the store lease for hours, and closes the
+     *  gap the removed per-call 120s cap used to cover. */
+    consolidateRunBudgetMs: number;
 }
 export declare const DEFAULT_PIPELINE_CONFIG: PipelineConfig;
+/** Virtual provider-visible file carrying the bounded workspace diff. The diff
+ *  is NEVER inlined into the system prompt (codex parity: codex writes
+ *  `phase2_workspace_diff.md` and points the consolidation agent at it). The
+ *  file lives in the provider's workspace map only — it never reaches disk, so
+ *  it cannot pollute the baseline, the generation protocol, or the retention
+ *  keep-set. */
+export declare const PHASE2_DIFF_FILENAME = "phase2_workspace_diff.md";
+/** Hard cap for the rendered diff file (codex `workspace_diff::MAX_BYTES`). */
+export declare const PHASE2_DIFF_MAX_BYTES: number;
+/** read_file paging defaults for the Phase-2 agent. Codex's memory read tool
+ *  caps a single read instead of returning whole files; the same discipline
+ *  keeps one tool result from poisoning every later turn of the loop. */
+export declare const READ_FILE_DEFAULT_BYTES = 20000;
+export declare const READ_FILE_MAX_BYTES = 200000;
+/** Hard ceiling for the assembled Phase-2 system prompt. Everything dynamic is
+ *  either externalized (the diff) or byte-capped (notes, extension
+ *  instructions); exceeding this ceiling means a new inline channel was added
+ *  without a budget and the run must fail before the provider is called. */
+export declare const MAX_CONSOLIDATION_PROMPT_BYTES: number;
+/** Render the codex-style diff file the Phase-2 agent reads first. The body is
+ *  byte-bounded with an explicit truncation marker (codex parity) and the
+ *  status list stays complete so the agent always sees WHICH files changed. */
+export declare function renderPhase2DiffFile(diff: ReadonlyArray<WorkspaceDiff>, maxBytes?: number): string;
 export interface StageSelection {
     rolloutKey: string;
     rolloutSlug: string;
@@ -157,8 +185,9 @@ export declare class LlmLoopConsolidateProvider implements ConsolidateProvider {
     #private;
     private readonly steps;
     private readonly channel?;
+    private readonly runBudgetMs;
     readonly name = "llm-loop";
-    constructor(steps?: number, channel?: LlmChannel | undefined);
+    constructor(steps?: number, channel?: LlmChannel | undefined, runBudgetMs?: number);
     consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
 }
 export interface ConsolidationRunResult {

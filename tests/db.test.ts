@@ -912,6 +912,68 @@ describe("extraction_jobs", () => {
     }
   });
 
+  test("extractionRelease returns a claimed job without consuming an attempt", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const queued = idx.extractionEnqueue({
+        idempotencyKey: "release-test",
+        host: "codex",
+        provider: "release-test",
+        sessionId: "s-release",
+        sourceEvent: "session_end",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:release",
+        contentHash: "release",
+        snapshotJson: JSON.stringify({ sessionId: "s-release" }),
+      });
+      const claimed = idx.extractionClaim("release-test", new Date().toISOString(), 10_000);
+      expect(claimed?.attempts).toBe(1);
+      expect(idx.extractionRelease(queued.jobId, "memcurio: session retired", claimed?.claimToken ?? "")).toBe(true);
+      const pending = idx.extractionList("pending")[0];
+      expect(pending?.status).toBe("pending");
+      // The claim already counted one attempt; the abort itself consumes none.
+      expect(pending?.attempts).toBe(1);
+      // The release re-arms with a short delay so an aborted drain cannot
+      // hot-loop the same claim.
+      expect(Date.parse(pending?.nextAttemptAt ?? "") - Date.now()).toBeGreaterThan(30_000);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("the default retry budget is three attempts one hour apart", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const queued = idx.extractionEnqueue({
+        idempotencyKey: "budget-test",
+        host: "codex",
+        provider: "budget-test",
+        sessionId: "s-budget",
+        sourceEvent: "session_end",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:budget",
+        contentHash: "budget",
+        snapshotJson: JSON.stringify({ sessionId: "s-budget" }),
+      });
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const now = new Date().toISOString();
+        const claimed = idx.extractionClaim("budget-test", now, 10_000);
+        expect(claimed?.attempts).toBe(attempt);
+        const result = idx.extractionFail(queued.jobId, "provider down", undefined, now, claimed?.claimToken);
+        if (attempt < 3) {
+          expect(result.status).toBe("pending");
+          expect(Date.parse(result.nextAttemptAt ?? "") - Date.parse(now)).toBe(60 * 60_000);
+          idx.driver.run("UPDATE extraction_jobs SET next_attempt_at = ? WHERE job_id = ?", [now, queued.jobId]);
+        } else {
+          expect(result.status).toBe("dead");
+        }
+      }
+      expect(idx.extractionList("dead")).toHaveLength(1);
+    } finally {
+      idx.close();
+    }
+  });
+
   test("dead-letter retention removes expired terminal failures", async () => {
     const idx = await Index.create(dbPath);
     try {

@@ -203,11 +203,18 @@ export declare class Index {
      * the claim's attempt increment while retaining normal lease fencing. */
     extractionBlockClaim(jobId: string, claimToken: string, error: string, now?: string): boolean;
     /** Mark a failed attempt. Attempts are counted when claimed, so reaching
-     *  maxAttempts moves the job to dead-letter instead of retrying forever. */
+     *  maxAttempts moves the job to dead-letter instead of retrying forever.
+     *  Codex stage-1 parity: fixed 1h retry delay and a 3-attempt budget (codex
+     *  `retry_remaining = 3` + `JOB_RETRY_DELAY_SECONDS = 3600`). */
     extractionFail(jobId: string, error: string, maxAttempts?: number, now?: string, expectedClaimToken?: string | null): {
         status: ExtractionJobStatus | "fenced";
         nextAttemptAt: string | null;
     };
+    /** Release a claimed job WITHOUT consuming a retry attempt: the failure was
+     *  caller/host-caused (session retire, plugin unload), not the work's fault.
+     *  The job returns to pending with a short delay so an aborted drain cannot
+     *  hot-loop the same claim; the next live drain or sweep retries it. */
+    extractionRelease(jobId: string, error: string, claimToken: string, now?: string): boolean;
     extractionList(status?: ExtractionJobStatus): ExtractionJobRow[];
     /** Check the fencing token and unexpired lease immediately before a worker
      * writes a model result. This is intentionally separate from completion so

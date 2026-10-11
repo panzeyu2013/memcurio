@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 
 import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
-import { LlmLoopConsolidateProvider, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
 import type { AgentTurnMessage, LlmChannel } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
@@ -597,6 +597,23 @@ describe("RuleConsolidateProvider", () => {
 });
 
 describe("runConsolidation", () => {
+  test("the provider receives the rendered virtual diff file, not inline diff text", async () => {
+    await addAdHocNote(dir, "seed the diff file", "remember");
+    let seen: ConsolidateInput | undefined;
+    const provider: ConsolidateProvider = {
+      name: "capture",
+      async consolidate(input) {
+        seen = input;
+        return { edits: [], report: "captured", rejected: [], consumedNoteFilenames: [], completed: true };
+      },
+    };
+    await runConsolidation(dir, provider, { execute: true });
+    const diffFile = seen?.workspace[PHASE2_DIFF_FILENAME];
+    expect(diffFile).toBeDefined();
+    expect(diffFile).toContain("Memory Workspace Diff");
+    expect(diffFile).toContain("## Status");
+  });
+
   test("INIT: a run without a schema-valid summary leaves one behind", async () => {
     // Codex init mode: the store has no memory_summary.md and the provider
     // finishes without writing one. The run must still INIT it — the read-path
@@ -1292,6 +1309,76 @@ describe("LlmLoopConsolidateProvider", () => {
     const egress = prompts.map((p) => `${p.system}\n${p.user}`).join("\n");
     expect(egress).not.toContain(secret);
     expect(egress).toContain("[REDACTED]");
+  });
+
+  test("the workspace diff is a virtual file, never inlined into the system prompt", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const bigDiff = "D".repeat(200_000);
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel([{ calls: [{ name: "finish", args: { report: "ok" } }] }], prompts),
+    );
+    await provider.consolidate({
+      workspace: { "MEMORY.md": "# Task Group: x\n", [PHASE2_DIFF_FILENAME]: bigDiff },
+      diff: [{ rel: "raw_memories.md", hunks: [{ kind: "add", text: bigDiff }], text: bigDiff }],
+      notes: [{ kind: "remember", filename: "note.md", content: "n".repeat(100_000) }],
+      memoryRoot: dir,
+    });
+    const system = prompts[0]?.system ?? "";
+    // The agent is pointed at the virtual file…
+    expect(system).toContain(`Workspace diff (READ THIS FIRST): ${PHASE2_DIFF_FILENAME}`);
+    // …and the diff body never reaches the prompt, no matter how large it is.
+    expect(system).not.toContain("D".repeat(1_000));
+    // Notes stay inline but byte-capped with an explicit marker.
+    expect(system).toContain("truncated to");
+    // Structural bound: the prompt cannot grow with the backlog.
+    expect(Buffer.byteLength(system, "utf-8")).toBeLessThan(MAX_CONSOLIDATION_PROMPT_BYTES);
+  });
+
+  test("read_file pages a large virtual file instead of returning it whole", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const longDiff = "abcdefghij".repeat(5_000);
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel(
+        [
+          { calls: [{ name: "read_file", args: { rel: PHASE2_DIFF_FILENAME, offset: 0, limit: 100 } }] },
+          { calls: [{ name: "finish", args: { report: "ok" } }] },
+        ],
+        prompts,
+      ),
+    );
+    await provider.consolidate({
+      workspace: { [PHASE2_DIFF_FILENAME]: longDiff },
+      diff: [],
+      notes: [],
+      memoryRoot: dir,
+    });
+    const secondTurn = prompts[1]?.user ?? "";
+    expect(secondTurn).toContain("TOOL read_file:");
+    expect(secondTurn).toContain("…[truncated: 49900 more bytes; call read_file with offset=100]");
+  });
+
+  test("the virtual diff file is read-only for the agent", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel(
+        [
+          { calls: [{ name: "write_file", args: { rel: PHASE2_DIFF_FILENAME, content: "overwrite" } }] },
+          { calls: [{ name: "finish", args: { report: "ok" } }] },
+        ],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({
+      workspace: { [PHASE2_DIFF_FILENAME]: "diff" },
+      diff: [],
+      notes: [],
+      memoryRoot: dir,
+    });
+    expect(prompts[1]?.user ?? "").toContain("rejected: target is outside the consolidation edit allowlist");
+    expect(result.completed).toBe(true);
   });
 
   test("a channel without a native tool turn never falls back to a text protocol", async () => {

@@ -831,7 +831,10 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
         rawMemory: "raw",
         rolloutSummary: "summary",
         rolloutSlug: "memory-cite",
-        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+        // Recent on purpose: the store bootstrap now runs the codex-style
+        // retention prune, so a months-old unselected row would be recycled
+        // before the citation is recorded (tested separately).
+        sourceUpdatedAt: new Date().toISOString(),
       });
       filename = idx.stageGet(rolloutKey)?.artifactFilename ?? "";
     } finally {
@@ -1821,9 +1824,14 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
       // The idle checkpoint was written (event lane) …
       expect(index.extractionList().some((job) => job.sessionId === session.id && job.sourceEvent === "idle")).toBe(true);
       // … and the detached worker ran the drain + maybeConsolidate. No model
-      // adapter is registered in this runtime, so the run fails and is recorded
-      // as retryable work — never a degraded rule commit.
-      expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto_failed'`)).not.toEqual([]);
+      // adapter is registered in this runtime, so the attempt is recorded as a
+      // failure or as a caller abort (the plugin unload aborts the store
+      // channel) — never a degraded rule commit.
+      const consolidationAttempts =
+        index.rawAll<{ c: number }>(
+          "SELECT COUNT(*) AS c FROM audit WHERE action IN ('consolidate.auto_failed','consolidate.auto_aborted')",
+        )[0]?.c ?? 0;
+      expect(consolidationAttempts).toBeGreaterThan(0);
       expect(index.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).toEqual([]);
       expect(index.metaGet("consolidation_auto_last")).toBeUndefined();
     } finally {

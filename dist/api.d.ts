@@ -46,8 +46,20 @@ export declare function integrationStatus(root: string): Promise<{
         blocked: number;
         dead: number;
     };
+    consolidation: {
+        last: string | null;
+        failed: string | null;
+        attempts: number;
+        retryAt: string | null;
+        lastErrorKind: string | null;
+    };
     auditCount: number;
 }>;
+/** Revive dead-lettered extraction jobs (operator action). The durable queue
+ *  has no automatic revival on purpose: a job that exhausted its retry budget
+ *  must be an explicit operator decision (codex has no revive surface either;
+ *  its `clear-memories` resets the whole store). */
+export declare function integrationRequeueDeadExtractions(root: string, jobId?: string): Promise<number>;
 export declare function integrationContext(root: string, budgetTokens?: number): Promise<{
     summary: string;
     instructions: string;

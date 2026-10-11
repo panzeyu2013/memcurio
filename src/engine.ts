@@ -10,6 +10,7 @@ import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
 import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
+import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "./core/channel.js";
 import type { LlmChannel } from "./core/channel.js";
 
 /** Structured log sink shared by the engine and its embedding plugin. */
@@ -96,13 +97,15 @@ const MAX_DYNAMIC_HITS = 8;
 /** Automatic Phase-2 cooldown after a successful consolidation (exported so
  *  the workbench snapshot reports the deployed value, not a guess). */
 export const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-/** Work-driven override for the wall-clock success cooldown: a pending batch
- *  this large, or a pending row this old, consolidates without waiting out the
- *  cooldown (a copied codex cooldown is wall-clock only and can strand a
- *  growing batch for hours). The failure backoff is never overridden. */
-const AUTO_CONSOLIDATE_PENDING_TRIGGER = 3;
-const AUTO_CONSOLIDATE_MAX_WAIT_MS = 2 * 60 * 60 * 1000;
+/** Failure retry delay (codex stage-two JOB_RETRY_DELAY_SECONDS). Phase 2 is
+ *  demand-driven: the retry happens on the next user-activity trigger, never
+ *  from a background timer or the dormant-store sweep. */
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
+/** Consecutive automatic-failure bookkeeping (observability only: codex's
+ *  phase-2 claim deliberately does not gate on a retry budget). */
+const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
+const AUTO_CONSOLIDATE_RETRY_AT_KEY = "consolidation_auto_retry_at";
+const AUTO_CONSOLIDATE_KIND_KEY = "consolidation_auto_kind";
 /** Slow probe for a provider parked in the blocked state. Configuration
  *  changes normally reactivate it, but a restart can leave a job blocked in a
  *  process whose route never materializes; the probe (no LLM call, one DB
@@ -262,8 +265,6 @@ export class MemcurioAdapter {
   private workerPromise: Promise<QueueDrainResult[]> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDueAt: number | undefined;
-  private consolidateRetryTimer: ReturnType<typeof setTimeout> | undefined;
-  private consolidateRetryDueAt: number | undefined;
   private workspaceListCache: { at: number; files: string[] } | undefined;
   /** Retired adapters must never drain again: their channel may be aborted
    *  (harness dispose), so a late retry would burn job attempts into the
@@ -299,11 +300,6 @@ export class MemcurioAdapter {
       clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
       this.retryDueAt = undefined;
-    }
-    if (this.consolidateRetryTimer) {
-      clearTimeout(this.consolidateRetryTimer);
-      this.consolidateRetryTimer = undefined;
-      this.consolidateRetryDueAt = undefined;
     }
     this.workspaceListCache = undefined;
   }
@@ -1140,29 +1136,31 @@ export class MemcurioAdapter {
         const last = idx.metaGet("consolidation_auto_last");
         const failed = idx.metaGet("consolidation_auto_failed");
         const now = Date.now();
-        // Work-driven override: a long success cooldown must not strand a
-        // growing pending batch, an aging pending row, or a note the user just
-        // asked to remember. The failure backoff below is never overridden —
-        // a failing LLM route must not be hammered on every turn.
-        const pendingRows = idx.stageList().filter((r) => r.status === "pending" && !r.selectedForPhase2);
-        const oldestPending = pendingRows.reduce<string | undefined>(
-          (min, r) => (min === undefined || r.generatedAt < min ? r.generatedAt : min),
-          undefined,
-        );
-        const urgent =
-          pendingRows.length >= AUTO_CONSOLIDATE_PENDING_TRIGGER ||
-          (oldestPending !== undefined && now - Date.parse(oldestPending) >= AUTO_CONSOLIDATE_MAX_WAIT_MS) ||
-          idx.noteList().some(actionableNote);
+        // Codex parity: the success cooldown is wall-clock and is NOT bypassed
+        // by pending volume or aging backlog. Only a user-requested note
+        // (remember/forget/update) may consolidate inside the cooldown — that
+        // is the plugin's explicit product promise and it is documented as a
+        // deliberate deviation from codex (which has no note urgency).
+        const urgent = idx.noteList().some(actionableNote);
         if (last !== undefined && !urgent) {
           const elapsed = now - Date.parse(last);
           if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
             cooldownMs = AUTO_CONSOLIDATE_COOLDOWN_MS - elapsed;
           }
         }
-        if (cooldownMs === undefined && failed !== undefined) {
-          const elapsed = now - Date.parse(failed);
-          if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_RETRY_MS) {
-            cooldownMs = AUTO_CONSOLIDATE_RETRY_MS - elapsed;
+        if (cooldownMs === undefined) {
+          // retry_at is an absolute deadline; legacy stores only have the
+          // failure timestamp, so fall back to failed + retry delay.
+          const retryAtRaw = idx.metaGet(AUTO_CONSOLIDATE_RETRY_AT_KEY);
+          const retryAtMs = retryAtRaw !== undefined ? Date.parse(retryAtRaw) : Number.NaN;
+          const failedMs = failed !== undefined ? Date.parse(failed) : Number.NaN;
+          const deadline = Number.isFinite(retryAtMs)
+            ? retryAtMs
+            : Number.isFinite(failedMs)
+              ? failedMs + AUTO_CONSOLIDATE_RETRY_MS
+              : Number.NaN;
+          if (Number.isFinite(deadline) && now < deadline) {
+            cooldownMs = deadline - now;
           }
         }
       } finally {
@@ -1209,7 +1207,9 @@ export class MemcurioAdapter {
           idxFallback.close();
         }
       }
-      const provider = usableChannel ? new LlmLoopConsolidateProvider(undefined, usableChannel) : new RuleConsolidateProvider();
+      const provider = usableChannel
+        ? new LlmLoopConsolidateProvider(undefined, usableChannel, cfg.consolidateRunBudgetMs)
+        : new RuleConsolidateProvider();
       // Codex parity: a failed run leaves selection, notes and the baseline
       // untouched (no rule-provider commit), so the materialized workspace diff
       // keeps the work pending; the outer catch arms the failure backoff.
@@ -1218,13 +1218,15 @@ export class MemcurioAdapter {
       try {
         idx3.metaSet("consolidation_auto_last", new Date().toISOString());
         // A past failure must not keep shortening the next window after a
-        // successful run; the failure branch above ignores the empty marker.
+        // successful run; every failure bookkeeping key is cleared here.
         idx3.metaDelete("consolidation_auto_failed");
+        idx3.metaDelete(AUTO_CONSOLIDATE_ATTEMPTS_KEY);
+        idx3.metaDelete(AUTO_CONSOLIDATE_RETRY_AT_KEY);
+        idx3.metaDelete(AUTO_CONSOLIDATE_KIND_KEY);
         idx3.audit("consolidate.auto", "-", `automatic Phase 2 completed (provider=${usableChannel?.name ?? "rule"})`);
       } finally {
         idx3.close();
       }
-      this.clearConsolidateRetry();
       this.log("info", "automatic consolidation completed");
     } catch (err) {
       const message = String(err);
@@ -1239,31 +1241,50 @@ export class MemcurioAdapter {
         });
         return;
       }
+      const kind = MemcurioAdapter.failureKindOf(err);
+      if (kind === "aborted") {
+        // Caller/host aborts (session retire, plugin unload) are not the
+        // work's fault: no failure marker, no backoff, no attempt consumed.
+        try {
+          const idx = await Index.create(indexDb(root));
+          try {
+            idx.audit("consolidate.auto_aborted", "-", String(err).slice(0, 300));
+          } finally {
+            idx.close();
+          }
+        } catch {
+          // best effort
+        }
+        this.log("debug", "automatic consolidation aborted by caller", { error: String(err) });
+        return;
+      }
       try {
         const idx = await Index.create(indexDb(root));
         try {
-          idx.metaSet("consolidation_auto_failed", new Date().toISOString());
-          idx.audit("consolidate.auto_failed", "-", String(err).slice(0, 300));
+          const nowIso = new Date().toISOString();
+          const previous = Number.parseInt(idx.metaGet(AUTO_CONSOLIDATE_ATTEMPTS_KEY) ?? "0", 10);
+          const attempts = Number.isFinite(previous) ? previous + 1 : 1;
+          idx.metaSet("consolidation_auto_failed", nowIso);
+          idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, String(attempts));
+          // retry_at is an absolute deadline: the next user-activity trigger
+          // may retry only after it (codex stage-two retry_at semantics).
+          idx.metaSet(AUTO_CONSOLIDATE_RETRY_AT_KEY, new Date(Date.now() + AUTO_CONSOLIDATE_RETRY_MS).toISOString());
+          idx.metaSet(AUTO_CONSOLIDATE_KIND_KEY, kind);
+          idx.audit(
+            "consolidate.auto_failed",
+            "-",
+            `kind=${kind} attempts=${String(attempts)}: ${String(err).slice(0, 260)}`,
+          );
         } finally {
           idx.close();
         }
       } catch {
         // best effort
       }
-      // Codex parity (retry_at): the failure backoff must not depend on the
-      // next host event — an idle session would otherwise strand its pending
-      // work. The timer is unref'd, replaced on every failure, and cleared by
-      // dispose (the durable workspace diff is then retried by the next owner:
-      // a later session, or the dormant-store sweep).
-      this.scheduleConsolidateRetry(AUTO_CONSOLIDATE_RETRY_MS);
+      // No detached timer: Phase 2 is demand-driven (next turn/start), exactly
+      // like codex's claim-gated pipeline. An idle process issues zero calls.
       this.log("warn", "automatic consolidation skipped", { error: String(err) });
     }
-  }
-
-  /** Epoch ms of the next armed automatic-consolidation retry, or undefined.
-   *  Exposed for tests and worker observability; never a scheduling input. */
-  nextConsolidateRetryDueAt(): number | undefined {
-    return this.consolidateRetryDueAt;
   }
 
   async buildStaticContext(workdir: string, budgetTokens?: number): Promise<string> {
@@ -1424,6 +1445,21 @@ export class MemcurioAdapter {
     }
   }
 
+  /** Classify an automatic-Phase-2 failure. Aborts (caller/host) never arm
+   *  the failure backoff; timeouts and provider errors do. */
+  private static failureKindOf(err: unknown): "aborted" | "timeout" | "provider" | "unknown" {
+    if (err instanceof WorkerAbortedError) {
+      return "aborted";
+    }
+    if (err instanceof WorkerTimeoutError) {
+      return "timeout";
+    }
+    if (err instanceof WorkerProviderError) {
+      return "provider";
+    }
+    return "unknown";
+  }
+
   private scheduleRetry(delayMs: number): void {
     if (this.disposed) {
       return;
@@ -1449,39 +1485,6 @@ export class MemcurioAdapter {
     }, delay);
     const timer = this.retryTimer as unknown as { unref?: () => void };
     timer.unref?.();
-  }
-
-  /** Arm the codex-style retry_at for a failed automatic consolidation. */
-  private scheduleConsolidateRetry(delayMs: number): void {
-    if (this.disposed) {
-      return;
-    }
-    const delay = Math.max(100, Math.min(delayMs, 60 * 60_000));
-    const dueAt = Date.now() + delay;
-    if (this.consolidateRetryTimer && this.consolidateRetryDueAt !== undefined && this.consolidateRetryDueAt <= dueAt) {
-      return;
-    }
-    if (this.consolidateRetryTimer) {
-      clearTimeout(this.consolidateRetryTimer);
-    }
-    this.consolidateRetryDueAt = dueAt;
-    this.consolidateRetryTimer = setTimeout(() => {
-      this.consolidateRetryTimer = undefined;
-      this.consolidateRetryDueAt = undefined;
-      void this.maybeConsolidate().catch((err) => {
-        this.log("warn", "consolidation retry failed", { error: String(err) });
-      });
-    }, delay);
-    const timer = this.consolidateRetryTimer as unknown as { unref?: () => void };
-    timer.unref?.();
-  }
-
-  private clearConsolidateRetry(): void {
-    if (this.consolidateRetryTimer) {
-      clearTimeout(this.consolidateRetryTimer);
-      this.consolidateRetryTimer = undefined;
-      this.consolidateRetryDueAt = undefined;
-    }
   }
 
   private async scheduleNextWake(): Promise<void> {

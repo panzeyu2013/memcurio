@@ -295,17 +295,29 @@ describe("queue services", () => {
 
   test("consolidation reads the auto-run meta keys", async () => {
     const root = makeStore("queue");
-    expect(await consolidation(root)).toEqual({ last: undefined, failed: undefined });
+    expect(await consolidation(root)).toEqual({
+      last: undefined,
+      failed: undefined,
+      attempts: 0,
+      nextRetryAt: undefined,
+      lastErrorKind: undefined,
+    });
     const idx = await Index.create(indexDb(root));
     try {
       idx.metaSet("consolidation_auto_last", "2026-08-10T02:00:00.000Z");
       idx.metaSet("consolidation_auto_failed", "2026-08-10T03:00:00.000Z");
+      idx.metaSet("consolidation_auto_attempts", "2");
+      idx.metaSet("consolidation_auto_retry_at", "2026-08-10T04:00:00.000Z");
+      idx.metaSet("consolidation_auto_kind", "timeout");
     } finally {
       idx.close();
     }
     expect(await consolidation(root)).toEqual({
       last: "2026-08-10T02:00:00.000Z",
       failed: "2026-08-10T03:00:00.000Z",
+      attempts: 2,
+      nextRetryAt: "2026-08-10T04:00:00.000Z",
+      lastErrorKind: "timeout",
     });
   });
 });

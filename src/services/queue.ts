@@ -31,6 +31,13 @@ export interface ConsolidationState {
   last: string | undefined;
   /** ISO timestamp of the last failed automatic consolidation. */
   failed: string | undefined;
+  /** Consecutive automatic-Phase-2 failures (observability only; codex's
+   *  phase-2 claim deliberately does not gate on a retry budget). */
+  attempts: number;
+  /** Absolute retry deadline written by the last failure, when any. */
+  nextRetryAt: string | undefined;
+  /** Failure class of the last failure: aborted|timeout|provider|unknown. */
+  lastErrorKind: string | undefined;
 }
 
 /** Extraction-queue detail for the state surface: live (non-completed) jobs
@@ -65,9 +72,13 @@ export async function list(root: string): Promise<QueueState> {
 export async function consolidation(root: string): Promise<ConsolidationState> {
   const index = await Index.create(indexDb(root));
   try {
+    const attempts = Number.parseInt(index.metaGet("consolidation_auto_attempts") ?? "0", 10);
     return {
       last: index.metaGet("consolidation_auto_last"),
       failed: index.metaGet("consolidation_auto_failed"),
+      attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 0,
+      nextRetryAt: index.metaGet("consolidation_auto_retry_at"),
+      lastErrorKind: index.metaGet("consolidation_auto_kind"),
     };
   } finally {
     index.close();

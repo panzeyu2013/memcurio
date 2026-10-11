@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Index } from "./db.js";
 import type { ExtractionJobRow } from "./db.js";
+import { WorkerAbortedError } from "./channel.js";
 import type { AgentToolReply, LlmChannel, ToolSpec } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
@@ -649,6 +650,35 @@ export async function processExtractionQueue(
     if (err instanceof LeaseFencedError) {
       return { status: "fenced", jobId: claimed.jobId };
     }
+    if (err instanceof WorkerAbortedError) {
+      // Caller/host abort (session retire, plugin unload): release the claim
+      // WITHOUT consuming a retry attempt, and keep the job pending for the
+      // next live drain. Codex parity + the plugin's own retirement contract:
+      // a permanent abort must never burn attempts into the dead-letter path.
+      const releaseIdx = await Index.create(indexDb(root));
+      try {
+        const detail = redactSecrets(String(err)).text;
+        let released = false;
+        releaseIdx.withTransaction(() => {
+          released = releaseIdx.extractionRelease(
+            claimed.jobId,
+            detail,
+            claimed.claimToken ?? "",
+            new Date().toISOString(),
+          );
+          if (released) {
+            releaseIdx.audit(
+              "extract.queue_released",
+              claimed.host,
+              `${claimed.jobId} (aborted; provider=${claimed.provider}): ${detail.slice(0, 300)}`,
+            );
+          }
+        });
+      } finally {
+        releaseIdx.close();
+      }
+      return { status: "retry", jobId: claimed.jobId, retryInMs: 60_000 };
+    }
     const detail = redactSecrets(String(err)).text;
     const idx = await Index.create(indexDb(root));
     try {
@@ -669,7 +699,7 @@ export async function processExtractionQueue(
       }
       let result: ReturnType<Index["extractionFail"]> = { status: "fenced", nextAttemptAt: null };
       idx.withTransaction(() => {
-        result = idx.extractionFail(claimed.jobId, detail, opts.maxAttempts ?? 5, new Date().toISOString(), claimed.claimToken);
+        result = idx.extractionFail(claimed.jobId, detail, opts.maxAttempts ?? 3, new Date().toISOString(), claimed.claimToken);
         if (result.status !== "fenced") {
           idx.audit(
             result.status === "dead" ? "extract.queue_dead" : "extract.queue_retry",

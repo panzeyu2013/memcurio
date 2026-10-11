@@ -37,9 +37,13 @@ export async function list(root) {
 export async function consolidation(root) {
     const index = await Index.create(indexDb(root));
     try {
+        const attempts = Number.parseInt(index.metaGet("consolidation_auto_attempts") ?? "0", 10);
         return {
             last: index.metaGet("consolidation_auto_last"),
             failed: index.metaGet("consolidation_auto_failed"),
+            attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 0,
+            nextRetryAt: index.metaGet("consolidation_auto_retry_at"),
+            lastErrorKind: index.metaGet("consolidation_auto_kind"),
         };
     }
     finally {

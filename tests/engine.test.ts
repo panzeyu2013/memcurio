@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/engine.js";
 import { LlmExtractProvider, ProviderNotConfiguredError } from "../src/core/extract.js";
+import { WorkerAbortedError, WorkerTimeoutError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
 import { addAdHocNote } from "../src/core/adhoc.js";
 import { Index } from "../src/core/db.js";
@@ -229,19 +230,72 @@ describe("automatic consolidation failure handling", () => {
     }
   });
 
-  test("a failed run arms the codex-style retry_at instead of waiting for the next host event", async () => {
+  test("a failed run records retry_at/attempts and arms no detached timer", async () => {
     const channel: LlmChannel = {
       name: "dsh",
       agent: async () => ({ text: "still no tool call", toolCalls: [], finish: "stop" as const }),
     };
     const adapter = new MemcurioAdapter({ durableQueue: true, channel });
-    await addAdHocNote(dir, "retry timer note", "remember");
+    await addAdHocNote(dir, "retry note", "remember");
     await adapter.maybeConsolidate();
-    const due = adapter.nextConsolidateRetryDueAt();
-    expect(due).toBeDefined();
-    expect((due ?? 0) - Date.now()).toBeGreaterThan(50 * 60_000);
-    adapter.dispose();
-    expect(adapter.nextConsolidateRetryDueAt()).toBeUndefined();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_failed")).toBeDefined();
+      expect(idx.metaGet("consolidation_auto_attempts")).toBe("1");
+      expect(idx.metaGet("consolidation_auto_kind")).toBe("unknown");
+      const retryAt = Date.parse(idx.metaGet("consolidation_auto_retry_at") ?? "");
+      expect(Number.isFinite(retryAt)).toBe(true);
+      expect(retryAt - Date.now()).toBeGreaterThan(50 * 60_000);
+    } finally {
+      idx.close();
+    }
+    // Demand-driven: no timer field exists on the adapter any more.
+    expect((adapter as unknown as { consolidateRetryTimer?: unknown }).consolidateRetryTimer).toBeUndefined();
+  });
+
+  test("a host abort never arms the failure backoff", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        throw new WorkerAbortedError("memcurio: session retired", "session retired");
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "abort note", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_failed")).toBeUndefined();
+      expect(idx.metaGet("consolidation_auto_attempts")).toBeUndefined();
+      const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.auto_aborted");
+      expect(actions).not.toContain("consolidate.auto_failed");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("a timeout is classified and arms the failure backoff", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        throw new WorkerTimeoutError("consolidation run budget exceeded", "RUN_BUDGET");
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "timeout note", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_kind")).toBe("timeout");
+      expect(idx.metaGet("consolidation_auto_attempts")).toBe("1");
+      const detail = idx.rawAll<{ detail: string }>(
+        "SELECT detail FROM audit WHERE action = 'consolidate.auto_failed'",
+      );
+      expect(detail[0]?.detail).toContain("kind=timeout");
+    } finally {
+      idx.close();
+    }
   });
 
   test("Phase 2 runs on the store-scoped consolidateChannel, not the extraction channel", async () => {
@@ -331,7 +385,7 @@ describe("blocked extraction wake scheduling", () => {
 });
 
 describe("work-driven automatic consolidation", () => {
-  test("a three-row pending batch bypasses the wall-clock success cooldown", async () => {
+  test("pending backlog never bypasses the wall-clock success cooldown", async () => {
     const adapter = new MemcurioAdapter({ durableQueue: true });
     const autoCount = async (): Promise<number> => {
       const idx = await Index.create(indexDb(dir));
@@ -344,18 +398,16 @@ describe("work-driven automatic consolidation", () => {
     await addAdHocNote(dir, "seed the first consolidation", "remember");
     await adapter.maybeConsolidate();
     expect(await autoCount()).toBe(1);
-    // One pending row is not urgent: the 6h success cooldown still holds.
+    // Codex parity: the success cooldown is wall-clock; ANY pending volume
+    // inside the 6h window stays pending (no urgent volume bypass).
     await seedRollout("dsh|pending-1");
-    await adapter.maybeConsolidate();
-    expect(await autoCount()).toBe(1);
-    // A three-row pending batch trips AUTO_CONSOLIDATE_PENDING_TRIGGER.
     await seedRollout("dsh|pending-2");
     await seedRollout("dsh|pending-3");
     await adapter.maybeConsolidate();
-    expect(await autoCount()).toBe(2);
+    expect(await autoCount()).toBe(1);
     const idx = await Index.create(indexDb(dir));
     try {
-      expect(idx.stageList().filter((row) => row.status === "pending")).toHaveLength(0);
+      expect(idx.stageList().filter((row) => row.status === "pending").length).toBeGreaterThan(0);
     } finally {
       idx.close();
     }

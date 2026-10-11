@@ -79,3 +79,35 @@ export interface AgentToolReply {
      *  fields. */
     readonly native?: unknown;
 }
+/** Normalized worker-call failure class. The pipeline's retry policies key off
+ *  this instead of provider prose: "aborted" is a caller/host abort (the work
+ *  is not at fault and must not burn retry budget), "timeout" is a stalled or
+ *  over-budget call, "provider" is anything the upstream reported. */
+export type WorkerFailureKind = "aborted" | "timeout" | "provider";
+export declare class WorkerModelError extends Error {
+    readonly kind: WorkerFailureKind;
+    /** Stable host-routing code (e.g. ABORTED / TIMEOUT) when available. */
+    readonly code: string | undefined;
+    /** HTTP status the provider returned, when available. */
+    readonly status: number | undefined;
+    constructor(message: string, kind: WorkerFailureKind, opts?: {
+        code?: string;
+        status?: number;
+        cause?: unknown;
+    });
+}
+/** The caller (session retire, plugin unload, run budget) aborted the call. */
+export declare class WorkerAbortedError extends WorkerModelError {
+    constructor(message: string, code?: string);
+}
+/** The call stalled past the host idle watchdog or our run budget. */
+export declare class WorkerTimeoutError extends WorkerModelError {
+    constructor(message: string, code?: string);
+}
+export declare class WorkerProviderError extends WorkerModelError {
+    constructor(message: string, opts?: {
+        code?: string;
+        status?: number;
+        cause?: unknown;
+    });
+}
