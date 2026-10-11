@@ -93,6 +93,37 @@ export const MAX_CONSOLIDATION_PROMPT_BYTES = DEFAULT_PIPELINE_CONFIG.consolidat
 /** Per-section caps for the remaining inline dynamic inputs. */
 const NOTES_INLINE_MAX_BYTES = 64 * 1024;
 const ADHOC_INSTRUCTIONS_MAX_BYTES = 64 * 1024;
+/** Cumulative tool-result bytes (read_file) one Phase-2 run may pull into the
+ *  message history. Together with the system-prompt ceiling this bounds the
+ *  whole request, not just its first message (review P1-2). */
+export const READ_FILE_TOTAL_BYTES_PER_RUN = 1_000_000;
+/** Hard ceiling for one model request (system + full transcript). */
+export const MAX_AGENT_HISTORY_BYTES = 2_500_000;
+
+/** Thrown when another writer changed the consolidation inputs between plan and
+ *  commit. Contention, not failure: the engine must not arm the failure
+ *  backoff for it (review F-4). */
+export class ConsolidationContentionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsolidationContentionError";
+  }
+}
+
+/** Byte size of one model request (system + the full transcript). */
+function requestBytes(system: string, messages: ReadonlyArray<AgentTurnMessage>): number {
+  let total = Buffer.byteLength(system, "utf-8");
+  for (const message of messages) {
+    if (message.role === "user") {
+      total += Buffer.byteLength(message.text, "utf-8");
+    } else if (message.role === "tool") {
+      total += Buffer.byteLength(message.content, "utf-8") + Buffer.byteLength(message.name, "utf-8");
+    } else {
+      total += Buffer.byteLength(message.text ?? "", "utf-8") + Buffer.byteLength(message.reasoning ?? "", "utf-8");
+    }
+  }
+  return total;
+}
 
 /** Render the codex-style diff file the Phase-2 agent reads first. The body is
  *  byte-bounded with an explicit truncation marker (codex parity) and the
@@ -132,6 +163,48 @@ ${status}
       ? `\n[workspace diff truncated at ${String(maxBytes)} bytes]\n`
       : "";
   return `${header}${clipped}${truncation}${footer}`;
+}
+
+export interface ReadFilePage {
+  content: string;
+  truncated: boolean;
+  /** Byte offset to resume from (code-point aligned), when truncated. */
+  nextOffset?: number;
+}
+
+/** Page one workspace file by BYTES. Both page edges are snapped to UTF-8
+ *  code-point boundaries so a resumed read never sees a broken character
+ *  (review P2-1); the offset is the resume point printed in the marker. */
+export function readFilePage(
+  content: string,
+  offsetRaw: number,
+  limitRaw: number,
+): ReadFilePage | { pastEnd: number; bytes: number } {
+  const buf = Buffer.from(content, "utf-8");
+  let offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(Math.floor(limitRaw), READ_FILE_MAX_BYTES)
+      : READ_FILE_DEFAULT_BYTES;
+  if (offset >= buf.byteLength) {
+    return { pastEnd: offset, bytes: buf.byteLength };
+  }
+  while (offset < buf.byteLength && ((buf[offset] ?? 0) & 0xc0) === 0x80) {
+    offset += 1;
+  }
+  let end = Math.min(buf.byteLength, offset + limit);
+  while (end < buf.byteLength && ((buf[end] ?? 0) & 0xc0) === 0x80) {
+    end += 1;
+  }
+  const text = buf.subarray(offset, end).toString("utf-8");
+  if (end >= buf.byteLength) {
+    return { content: text, truncated: false };
+  }
+  return {
+    content: `${text}\n…[truncated: ${String(buf.byteLength - end)} more bytes; call read_file with offset=${String(end)}]`,
+    truncated: true,
+    nextOffset: end,
+  };
 }
 
 /** Byte-capped inline section with an explicit marker: a silent truncation
@@ -937,10 +1010,20 @@ const CONSOLIDATE_TOOLS: readonly ToolSpec[] = [
   {
     name: "read_file",
     description:
-      "Read one memory-workspace file (MEMORY.md, memory_summary.md, raw_memories.md, rollout_summaries/*.md, skills/*/SKILL.md, extensions/**).",
+      "Read one memory-workspace file (MEMORY.md, memory_summary.md, raw_memories.md, rollout_summaries/*.md, skills/*/SKILL.md, extensions/**). Reads are byte-paged: large inputs (the workspace diff, raw_memories) must be read page by page.",
     parameters: {
       type: "object",
-      properties: { rel: { type: "string", description: "Workspace-relative path." } },
+      properties: {
+        rel: { type: "string", description: "Workspace-relative path." },
+        offset: {
+          type: "number",
+          description: `Byte offset to start at (default 0). Use the offset printed by a truncation marker to continue.`,
+        },
+        limit: {
+          type: "number",
+          description: `Maximum bytes to return (default ${String(READ_FILE_DEFAULT_BYTES)}, hard cap ${String(READ_FILE_MAX_BYTES)}).`,
+        },
+      },
       required: ["rel"],
       additionalProperties: false,
     },
@@ -1008,6 +1091,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     const pendingNoteNames = new Set(safeInput.notes.map((note) => note.filename));
     const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? [], this.promptBudgetBytes);
     const messages: AgentTurnMessage[] = [{ role: "user", text: AGENT_BEGIN }];
+    let readBytes = 0;
     let report = "";
     let completed = false;
     let consumedNoteFilenames: string[] = [];
@@ -1035,6 +1119,13 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     for (let step = 0; step < this.steps; step++) {
       if (Date.now() - startedAt >= this.runBudgetMs) {
         budgetExceeded = true;
+      }
+      const historyBytes = requestBytes(system, messages);
+      if (historyBytes > MAX_AGENT_HISTORY_BYTES) {
+        throw new WorkerProviderError(
+          `consolidation request exceeds the ${String(MAX_AGENT_HISTORY_BYTES)} byte history ceiling (${String(historyBytes)} bytes)`,
+          { code: "INPUT_BUDGET_EXCEEDED" },
+        );
       }
       let reply: Awaited<ReturnType<LlmChannel["agent"]>>;
       try {
@@ -1119,7 +1210,21 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
           messages.push(toolResultMessage(call, "ok: consolidation finished", false));
           continue;
         }
-        const outcome = this.#executeTool(call.name, call.arguments, safeInput, edits, rejected);
+        let outcome = this.#executeTool(call.name, call.arguments, safeInput, edits, rejected);
+        if (call.name === "read_file" && !outcome.isError) {
+          // Per-run read budget: page-by-page reading must stay bounded, or a
+          // 1MB+ raw_memories could rebuild the megabyte request F1 removed.
+          const remaining = Math.max(0, READ_FILE_TOTAL_BYTES_PER_RUN - readBytes);
+          const bytes = Buffer.byteLength(outcome.content, "utf-8");
+          if (remaining === 0) {
+            outcome = { content: "(read budget exhausted for this run; finish with the pages you already have)", isError: true };
+          } else if (bytes > remaining) {
+            outcome = { content: `${clipUtf8(outcome.content, remaining)}\n…[read budget exhausted for this run]`, isError: outcome.isError };
+            readBytes = READ_FILE_TOTAL_BYTES_PER_RUN;
+          } else {
+            readBytes += bytes;
+          }
+        }
         messages.push(toolResultMessage(call, outcome.content, outcome.isError));
       }
       if (finished) break;
@@ -1169,24 +1274,14 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         }
         // Codex parity: a single read is byte-capped and pageable instead of
         // returning a whole (possibly megabyte) file into the loop history.
-        const buf = Buffer.from(content, "utf-8");
-        const rawOffset = Number(args.offset ?? 0);
-        const rawLimit = Number(args.limit ?? READ_FILE_DEFAULT_BYTES);
-        const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
-        const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), READ_FILE_MAX_BYTES) : READ_FILE_DEFAULT_BYTES;
-        if (offset >= buf.byteLength) {
-          return { content: `(offset ${String(offset)} is past the end of ${rel}, which is ${String(buf.byteLength)} bytes)`, isError: false };
+        const page = readFilePage(content, Number(args.offset ?? 0), Number(args.limit ?? READ_FILE_DEFAULT_BYTES));
+        if ("pastEnd" in page) {
+          return {
+            content: `(offset ${String(page.pastEnd)} is past the end of ${rel}, which is ${String(page.bytes)} bytes)`,
+            isError: false,
+          };
         }
-        const end = Math.min(buf.byteLength, offset + limit);
-        let text = buf.subarray(offset, end).toString("utf-8");
-        // Never end a page on a split code point.
-        if (end < buf.byteLength && text.endsWith("\uFFFD")) {
-          text = text.slice(0, -1);
-        }
-        if (end < buf.byteLength) {
-          text += `\n…[truncated: ${String(buf.byteLength - end)} more bytes; call read_file with offset=${String(end)}]`;
-        }
-        return { content: text, isError: false };
+        return { content: page.content, isError: false };
       }
       case "write_file": {
         let rel: string;
@@ -1765,11 +1860,11 @@ export async function runConsolidation(
     await planConsolidation(root, opts.config, { adopt: true, settle: true });
     const afterPlanStageRevision = stageRevision(idx);
     if (beforePlanStageRevision !== afterPlanStageRevision) {
-      throw new Error("consolidation inputs changed while planning; retry");
+      throw new ConsolidationContentionError("consolidation inputs changed while planning; retry");
     }
     const freshPlan = await planConsolidation(root, opts.config, { adopt: true, settle: true });
     if (stageRevision(idx) !== afterPlanStageRevision) {
-      throw new Error("consolidation inputs changed after artifact sync; retry");
+      throw new ConsolidationContentionError("consolidation inputs changed after artifact sync; retry");
     }
     // Codex-style succeeded_no_workspace_changes: skip the agent entirely when
     // there is genuinely nothing to do. Pending stage-1 work always produces a
@@ -1821,7 +1916,7 @@ export async function runConsolidation(
       throw new Error("consolidation lease lost before commit; retry");
     }
     if (workspaceRevision(root) !== providerBaseRevision || stageRevision(idx) !== providerBaseStageRevision) {
-      throw new Error("consolidation inputs changed while provider was running; retry");
+      throw new ConsolidationContentionError("consolidation inputs changed while provider was running; retry");
     }
     if (result.completed === false) {
       throw new Error(`consolidation provider did not complete: ${result.report || "unknown failure"}`);

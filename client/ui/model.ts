@@ -125,12 +125,17 @@ export const NON_WRITE_EXTRACT_ACTIONS: ReadonlySet<string> = new Set([
   "extract.queue_dead",
   "extract.queue_blocked",
   "extract.queue_unblocked",
+  "extract.queue_released",
 ]);
+
+/** Non-extract audit actions that are not durable writes (mirror of the host
+ *  filter). */
+export const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string> = new Set(["consolidate.auto_aborted"]);
 
 /** True for an action that actually changed stored memory (defensive client
  *  guard; the host's write-path filter is the primary one). */
 export function isWritePathAction(action: string): boolean {
-  if (NON_WRITE_EXTRACT_ACTIONS.has(action)) {
+  if (NON_WRITE_EXTRACT_ACTIONS.has(action) || NON_WRITE_OTHER_ACTIONS.has(action)) {
     return false;
   }
   return WRITE_PATH_ACTIONS.some((prefix) => action.startsWith(prefix));

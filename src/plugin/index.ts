@@ -208,9 +208,10 @@ function workerFailure(signal: AbortSignal | undefined, err?: unknown, failure?:
   if (code === "TIMEOUT") {
     return new WorkerTimeoutError(message, code);
   }
-  if (code === "ABORTED") {
-    return new WorkerAbortedError(message, code);
-  }
+  // Only OUR signal (session retire, plugin unload, run budget) marks a caller
+  // abort. A host-reported code=ABORTED with no local abort is an upstream
+  // condition: treating it as a caller abort would skip the failure backoff and
+  // turn extraction into an unbounded release loop (review P1-2).
   return new WorkerProviderError(message, { code, status, cause: err });
 }
 
@@ -252,7 +253,7 @@ function workerFailureIsTransient(failure: WorkerModelError): boolean {
   if (failure.kind === "timeout") {
     return true;
   }
-  if (typeof failure.status === "number" && failure.status >= 500) {
+  if (typeof failure.status === "number" && (failure.status >= 500 || failure.status === 429)) {
     return true;
   }
   const code = failure.code ?? "";

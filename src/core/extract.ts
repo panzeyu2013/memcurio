@@ -656,9 +656,9 @@ export async function processExtractionQueue(
       // next live drain. Codex parity + the plugin's own retirement contract:
       // a permanent abort must never burn attempts into the dead-letter path.
       const releaseIdx = await Index.create(indexDb(root));
+      let released = false;
       try {
         const detail = redactSecrets(String(err)).text;
-        let released = false;
         releaseIdx.withTransaction(() => {
           released = releaseIdx.extractionRelease(
             claimed.jobId,
@@ -676,6 +676,11 @@ export async function processExtractionQueue(
         });
       } finally {
         releaseIdx.close();
+      }
+      if (!released) {
+        // The lease was already gone: another worker owns or finalized the row.
+        // Do not report a retry we did not schedule (review P2-2).
+        return { status: "fenced", jobId: claimed.jobId };
       }
       return { status: "retry", jobId: claimed.jobId, retryInMs: 60_000 };
     }

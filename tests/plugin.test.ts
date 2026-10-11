@@ -187,6 +187,23 @@ describe("dshChannel", () => {
     expect(calls).toBe(1);
   });
 
+  test("a host-reported ABORTED without a local abort is a provider failure", async () => {
+    let calls = 0;
+    const ctx = {
+      llm: {
+        stream: (() => {
+          calls += 1;
+          throw Object.assign(new Error("Request was aborted"), { code: "ABORTED" });
+        }) as unknown as () => AsyncGenerator<StreamChunk>,
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined);
+    await expect(channel.agent("system", [{ role: "user", text: "go" }], [])).rejects.toBeInstanceOf(
+      WorkerProviderError,
+    );
+    expect(calls).toBe(1);
+  });
+
   test("provider failures retry at most twice", async () => {
     let calls = 0;
     const ctx = {
@@ -633,8 +650,8 @@ describe("DSH plugin contract", () => {
     const idx = await Index.create(indexDb(root));
     try {
       // Phase 2 is store-scoped: retirement neither runs a degraded rule pass
-      // nor consumes the pending note; a later turn/end or the dormant sweep
-      // retries it on the plugin lane.
+      // nor consumes the pending note; the next user-activity trigger (turn/end
+      // or store bootstrap) retries it on the plugin lane.
       expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.fallback'`)).toEqual([]);
       expect(idx.rawAll(`SELECT action FROM audit WHERE action='consolidate.auto'`)).toEqual([]);
       expect(idx.noteList().every((note) => !note.applied)).toBe(true);

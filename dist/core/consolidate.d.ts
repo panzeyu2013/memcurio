@@ -43,10 +43,35 @@ export declare const READ_FILE_MAX_BYTES = 200000;
  *  instructions); exceeding this ceiling means a new inline channel was added
  *  without a budget and the run must fail before the provider is called. */
 export declare const MAX_CONSOLIDATION_PROMPT_BYTES: number;
+/** Cumulative tool-result bytes (read_file) one Phase-2 run may pull into the
+ *  message history. Together with the system-prompt ceiling this bounds the
+ *  whole request, not just its first message (review P1-2). */
+export declare const READ_FILE_TOTAL_BYTES_PER_RUN = 1000000;
+/** Hard ceiling for one model request (system + full transcript). */
+export declare const MAX_AGENT_HISTORY_BYTES = 2500000;
+/** Thrown when another writer changed the consolidation inputs between plan and
+ *  commit. Contention, not failure: the engine must not arm the failure
+ *  backoff for it (review F-4). */
+export declare class ConsolidationContentionError extends Error {
+    constructor(message: string);
+}
 /** Render the codex-style diff file the Phase-2 agent reads first. The body is
  *  byte-bounded with an explicit truncation marker (codex parity) and the
  *  status list stays complete so the agent always sees WHICH files changed. */
 export declare function renderPhase2DiffFile(diff: ReadonlyArray<WorkspaceDiff>, maxBytes?: number): string;
+export interface ReadFilePage {
+    content: string;
+    truncated: boolean;
+    /** Byte offset to resume from (code-point aligned), when truncated. */
+    nextOffset?: number;
+}
+/** Page one workspace file by BYTES. Both page edges are snapped to UTF-8
+ *  code-point boundaries so a resumed read never sees a broken character
+ *  (review P2-1); the offset is the resume point printed in the marker. */
+export declare function readFilePage(content: string, offsetRaw: number, limitRaw: number): ReadFilePage | {
+    pastEnd: number;
+    bytes: number;
+};
 export interface StageSelection {
     rolloutKey: string;
     rolloutSlug: string;

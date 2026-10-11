@@ -210,10 +210,16 @@ export declare class Index {
         status: ExtractionJobStatus | "fenced";
         nextAttemptAt: string | null;
     };
-    /** Release a claimed job WITHOUT consuming a retry attempt: the failure was
-     *  caller/host-caused (session retire, plugin unload), not the work's fault.
+    /** Release a claimed job on a caller/host abort (session retire, plugin
+     *  unload). The claim already counted one attempt (db.ts claim), so the
+     *  release hands it back: `attempts = max(attempts - 1, 0)`. Without this,
+     *  two retirements plus one real provider failure would exhaust the 3-attempt
+     *  budget and silently dead-letter the rollout (review P1-1).
+     *
      *  The job returns to pending with a short delay so an aborted drain cannot
-     *  hot-loop the same claim; the next live drain or sweep retries it. */
+     *  hot-loop the same claim; the next live drain or sweep retries it. Returns
+     *  false when the lease is gone (another worker owns or already finalized the
+     *  row): the caller must not claim a release it did not perform. */
     extractionRelease(jobId: string, error: string, claimToken: string, now?: string): boolean;
     extractionList(status?: ExtractionJobStatus): ExtractionJobRow[];
     /** Check the fencing token and unexpired lease immediately before a worker

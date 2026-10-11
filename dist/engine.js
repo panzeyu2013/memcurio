@@ -2,9 +2,9 @@ import { fitContext } from "./core/budget.js";
 import { resolve } from "node:path";
 import { loadConfig } from "./core/config.js";
 import { pipelineConfig } from "./core/config.js";
-import { LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "./core/consolidate.js";
+import { ConsolidationContentionError, LlmLoopConsolidateProvider, RuleConsolidateProvider, runConsolidation } from "./core/consolidate.js";
 import { Index } from "./core/db.js";
-import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, policyRepairAuditor, processExtractionQueue, stageSession } from "./core/extract.js";
+import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, policyRepairAuditor, processExtractionQueue, ProviderNotConfiguredError, stageSession } from "./core/extract.js";
 import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
@@ -884,9 +884,11 @@ export class MemcurioAdapter {
                     blocked = true;
                     break;
                 }
-                if (result.status === "retry" && result.retryInMs !== undefined) {
-                    this.scheduleRetry(result.retryInMs);
-                    break;
+                if (result.status === "retry") {
+                    // Keep draining other ready jobs: a failed job now waits a fixed hour,
+                    // and breaking here would stall every other ready job behind it
+                    // (review F-5). scheduleNextWake() below arms the earliest wake.
+                    continue;
                 }
             }
             if (!blocked) {
@@ -928,6 +930,20 @@ export class MemcurioAdapter {
         return process.env.MEMCURIO_LLM_PROVIDER?.trim().toLowerCase() === "none" ? undefined : this.consolidateChannel;
     }
     async maybeConsolidate() {
+        // In-process single-flight: two triggers for the same store (bootstrap and
+        // a turn/end, or two sessions) must not both enter prune/plan. The durable
+        // workspace lease still serializes across processes.
+        if (this.consolidateInFlight !== null) {
+            return this.consolidateInFlight;
+        }
+        const run = this.runMaybeConsolidate().finally(() => {
+            this.consolidateInFlight = null;
+        });
+        this.consolidateInFlight = run;
+        return run;
+    }
+    consolidateInFlight = null;
+    async runMaybeConsolidate() {
         const root = this.root;
         if (this.disposed) {
             return;
@@ -1007,7 +1023,13 @@ export class MemcurioAdapter {
                 // (remember/forget/update) may consolidate inside the cooldown — that
                 // is the plugin's explicit product promise and it is documented as a
                 // deliberate deviation from codex (which has no note urgency).
-                const urgent = idx.noteList().some(actionableNote);
+                // Note urgency is BOUNDED: only a note created after the last
+                // successful consolidation may bypass the success cooldown. A note the
+                // model never consumed stays pending and must not turn every turn/end
+                // into a full Phase-2 run (review P1-5).
+                const urgent = idx
+                    .noteList()
+                    .some((note) => actionableNote(note) && (last === undefined || note.createdAt > last));
                 if (last !== undefined && !urgent) {
                     const elapsed = now - Date.parse(last);
                     if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
@@ -1110,6 +1132,44 @@ export class MemcurioAdapter {
                 this.log("debug", "automatic consolidation skipped: lease held by another process", {
                     error: message,
                 });
+                return;
+            }
+            if (err instanceof ProviderNotConfiguredError) {
+                // Waiting state: no route is known for this store yet. Codex's claim
+                // gates and the extraction side's `blocked` both defer instead of
+                // burning the failure budget (review P1-4). The next user-activity
+                // trigger retries once a route materializes.
+                try {
+                    const idx = await Index.create(indexDb(root));
+                    try {
+                        idx.audit("consolidate.auto_unavailable", "-", String(err).slice(0, 300));
+                    }
+                    finally {
+                        idx.close();
+                    }
+                }
+                catch {
+                    // best effort
+                }
+                this.log("debug", "automatic consolidation deferred: no model route", { error: String(err) });
+                return;
+            }
+            if (err instanceof ConsolidationContentionError) {
+                // Another writer changed the inputs between plan and commit: contention,
+                // not failure. Must not arm the 1h backoff (review F-4).
+                try {
+                    const idx = await Index.create(indexDb(root));
+                    try {
+                        idx.audit("consolidate.auto_contended", "-", String(err).slice(0, 300));
+                    }
+                    finally {
+                        idx.close();
+                    }
+                }
+                catch {
+                    // best effort
+                }
+                this.log("debug", "automatic consolidation contended", { error: String(err) });
                 return;
             }
             const kind = MemcurioAdapter.failureKindOf(err);
@@ -1320,7 +1380,9 @@ export class MemcurioAdapter {
             return "timeout";
         }
         if (err instanceof WorkerProviderError) {
-            return "provider";
+            // INPUT_BUDGET_EXCEEDED is our own invariant guard, not an upstream
+            // failure: keep it visible under its own audit kind (review F-8).
+            return err.code === "INPUT_BUDGET_EXCEEDED" ? "internal" : "provider";
         }
         return "unknown";
     }

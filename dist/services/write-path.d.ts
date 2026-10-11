@@ -18,5 +18,9 @@ export declare const WRITE_PATH_PREFIXES: readonly ["extract.", "adhoc.", "conso
  *  unread badge and a "memory updated" toast for a queue hop or a policy
  *  repair would be a false write notification. */
 export declare const NON_WRITE_EXTRACT_ACTIONS: ReadonlySet<string>;
+/** Non-extract audit actions that are bookkeeping/notices, never durable
+ *  writes: an aborted Phase-2 run did not touch memory and must not raise a
+ *  "memory updated" notification (review P2-3). */
+export declare const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string>;
 /** True when one audit action label names a durable memory write. */
 export declare function isWritePathAction(action: string): boolean;

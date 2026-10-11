@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/engine.js";
 import { LlmExtractProvider, ProviderNotConfiguredError } from "../src/core/extract.js";
-import { WorkerAbortedError, WorkerTimeoutError } from "../src/core/channel.js";
+import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../src/core/channel.js";
+import { ConsolidationContentionError } from "../src/core/consolidate.js";
 import type { LlmChannel } from "../src/core/channel.js";
 import { addAdHocNote } from "../src/core/adhoc.js";
 import { Index } from "../src/core/db.js";
@@ -296,6 +297,157 @@ describe("automatic consolidation failure handling", () => {
     } finally {
       idx.close();
     }
+  });
+
+  test("a missing route defers instead of recording a failure", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        throw new ProviderNotConfiguredError("DSH model route is not available for the Memcurio worker yet");
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "route-less note", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_failed")).toBeUndefined();
+      expect(idx.metaGet("consolidation_auto_attempts")).toBeUndefined();
+      expect(idx.metaGet("consolidation_auto_retry_at")).toBeUndefined();
+      const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.auto_unavailable");
+      expect(actions).not.toContain("consolidate.auto_failed");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("a legacy store with only consolidation_auto_failed is gated for one hour", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "legacy note", "remember");
+    const seed = await Index.create(indexDb(dir));
+    try {
+      seed.metaSet("consolidation_auto_failed", new Date().toISOString());
+    } finally {
+      seed.close();
+    }
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(0);
+    const age = await Index.create(indexDb(dir));
+    try {
+      age.metaSet("consolidation_auto_failed", new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString());
+    } finally {
+      age.close();
+    }
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(1);
+    adapter.dispose();
+  });
+
+  test("an input-contention race never arms the failure backoff", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        throw new ConsolidationContentionError("consolidation inputs changed while provider was running; retry");
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "contended note", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_failed")).toBeUndefined();
+      expect(idx.metaGet("consolidation_auto_attempts")).toBeUndefined();
+      const actions = idx.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.auto_contended");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("an input-budget invariant failure is audited as internal", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        throw new WorkerProviderError("consolidation prompt exceeds the ceiling", { code: "INPUT_BUDGET_EXCEEDED" });
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "budget note", "remember");
+    await adapter.maybeConsolidate();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_kind")).toBe("internal");
+      expect(idx.metaGet("consolidation_auto_attempts")).toBe("1");
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("concurrent triggers share one consolidation run", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        // Finish in one turn: the prose-nudge path would legitimately call the
+        // channel a second time and hide a single-flight regression.
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "concurrent note", "remember");
+    await Promise.all([adapter.maybeConsolidate(), adapter.maybeConsolidate(), adapter.maybeConsolidate()]);
+    expect(calls).toBe(1);
+    adapter.dispose();
+  });
+
+  test("a stuck note stops bypassing the cooldown after a successful run", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        // Completes without applying the note: it stays pending.
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "nothing to change" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "stuck note", "remember");
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(1);
+    const idx = await Index.create(indexDb(dir));
+    try {
+      expect(idx.metaGet("consolidation_auto_last")).toBeDefined();
+      expect(idx.noteList().every((note) => !note.applied)).toBe(true);
+    } finally {
+      idx.close();
+    }
+    // The note predates the success, so it no longer bypasses the 6h cooldown.
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(1);
+    adapter.dispose();
   });
 
   test("Phase 2 runs on the store-scoped consolidateChannel, not the extraction channel", async () => {

@@ -34,8 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extraction retry budget aligned with Codex stage 1**: fixed 1 h retry delay
   with a 3-attempt budget (was 1 s/2 s/4 s/8 s and dead after ~15 s).
 - **Operator surfaces**: `memory_status` / the snapshot now expose
-  `attempts`, `retryAt` and `lastErrorKind`, and dead-lettered extraction jobs
-  can be revived through `integrationRequeueDeadExtractions`.
+  `attempts`, `retryAt` and `lastErrorKind`; dead-lettered extraction jobs can
+  be revived through the exported `@memcurio/dsh-plugin/api` entry
+  (`integrationRequeueDeadExtractions`, audited as `extract.requeued`).
+- **Review hardening (round 1)**: abort releases now hand the claim attempt
+  back, so repeated retirements cannot dead-letter a rollout; a host-reported
+  `ABORTED` without a local abort is a provider failure (backoff applies) and
+  429 is transient; a missing route or an input-contention race defers without
+  recording a failure; only notes created after the last successful run bypass
+  the success cooldown; `read_file` exposes and enforces its `offset`/`limit`
+  schema, pages on UTF-8 code-point boundaries, and a 1 MB per-run read budget
+  plus a 2.5 MB request ceiling bound the whole transcript.
 
 ## [0.0.4] - 2026-09-28
 

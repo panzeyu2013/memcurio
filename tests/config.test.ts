@@ -27,6 +27,24 @@ describe("loadConfig", () => {
     expect(DEFAULT_CONFIG.pipeline.maxInputs).toBe(256);
   });
 
+  test("new pipeline keys have safe defaults and clamp to their bounds", () => {
+    // Missing keys (legacy config.json) fall back to the documented defaults.
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ pipeline: { maxInputs: 4 } }));
+    const legacy = loadConfig(dir);
+    expect(legacy.pipeline.consolidateRunBudgetMs).toBe(DEFAULT_CONFIG.pipeline.consolidateRunBudgetMs);
+    expect(legacy.pipeline.consolidatePromptBudgetBytes).toBe(
+      DEFAULT_CONFIG.pipeline.consolidatePromptBudgetBytes,
+    );
+    // Out-of-range values clamp instead of disabling the guards.
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ pipeline: { consolidateRunBudgetMs: 1, consolidatePromptBudgetBytes: 1 } }),
+    );
+    const clamped = loadConfig(dir);
+    expect(clamped.pipeline.consolidateRunBudgetMs).toBeGreaterThanOrEqual(1_000);
+    expect(clamped.pipeline.consolidatePromptBudgetBytes).toBeGreaterThanOrEqual(4_096);
+  });
+
   test("falls back to defaults on corrupt JSON", () => {
     writeFileSync(join(dir, "config.json"), "{ not valid json");
     const cfg = loadConfig(dir);

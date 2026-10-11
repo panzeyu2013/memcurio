@@ -344,6 +344,10 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // 只存在于 provider 可见 workspace（不落盘、不进 baseline/generation、write_file 不在编辑白名单）；system prompt 只含
   // 指令 + pending notes（64KB 截断）+ 工作区根/diff 文件路径；read_file 默认单次 20KB、上限 200KB，越界返回 offset 续读提示；
   // run 预算 cfg.consolidateRunBudgetMs（默认 30 分钟）经 AbortSignal 传入每次 agent 调用，超时抛 WorkerTimeoutError（kind=timeout，不降级 Rule）；
+  // 请求上界：每步前校验 system+messages 总量（MAX_AGENT_HISTORY_BYTES=2.5MB，超限抛 INPUT_BUDGET_EXCEEDED）；单 run 累计 read_file 结果上限
+  // READ_FILE_TOTAL_BYTES_PER_RUN=1MB（超出返回 "read budget exhausted" 工具结果，逼模型收敛）；read_file 页首/页尾均对齐 UTF-8 码点边界；
+  // 竞争：planning/provider 期间输入变化抛 ConsolidationContentionError（engine 记 consolidate.auto_contended，不计失败/不排退避）；
+  // 无路由：ProviderNotConfiguredError → engine 记 consolidate.auto_unavailable 并等待下一次用户活动（不写 failed/attempts/retry_at）；
   // 宿主/调用方 abort → WorkerAbortedError（kind=aborted）：engine 不写失败、不排退避、不烧抽取 attempt；
   // INIT 兜底：runConsolidation 在 provider 返回后计算「本次运行后」的 memory_summary.md——
   // 首行不是 v1（缺失/空/被写成空串/schema 不符）时，丢弃 provider 的摘要 edit 并补一条最小 v1
@@ -528,5 +532,5 @@ export class MemcurioAdapter {
 （bun test，`MEMCURIO_ROOT` 指向临时目录）：
 - workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + LlmLoop 用 mock channel）/ search.test.ts / read.test.ts（list/read 语义、分页/转义拒绝、截断、脱敏、遥测）/ inject.test.ts
 - db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
-- plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule 等）
+- plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule；worker 通道：瞬态重试换新 assembler、caller abort 不重试、宿主自报 ABORTED 归 provider、provider 失败至多两次重试、429 瞬态等）
 - settings.test.ts（0.1.7 设置面：Config schema 默认值与校验、volatile 实时视图、settings 服务页策略与 document-updated 通知、注入开关/registerTools/路由半对拒绝/桥快照）

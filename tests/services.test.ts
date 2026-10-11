@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { integrationContext } from "../src/api.js";
+import { integrationContext, integrationRequeueDeadExtractions } from "../src/api.js";
 import { Index } from "../src/core/db.js";
 import { LlmExtractProvider, processExtractionQueue, queueExtraction } from "../src/core/extract.js";
 import { ensureLayout, indexDb } from "../src/core/paths.js";
@@ -291,6 +291,37 @@ describe("queue services", () => {
     expect(deadJob?.attempts).toBe(3);
     expect(deadJob?.lastError).toContain("[REDACTED]");
     expect(deadJob?.lastError).not.toContain(SECRET);
+  });
+
+  test("the operator revive API requeues dead extraction jobs and audits it", async () => {
+    const root = makeStore("revive");
+    const idx = await Index.create(indexDb(root));
+    try {
+      const queued = idx.extractionEnqueue({
+        idempotencyKey: "revive-api",
+        host: "test",
+        provider: "revive-api",
+        sessionId: "s-revive",
+        sourceEvent: "session_end",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:revive",
+        contentHash: "revive",
+        snapshotJson: JSON.stringify({ sessionId: "s-revive" }),
+      });
+      const claimed = idx.extractionClaim("revive-api", new Date().toISOString(), 10_000);
+      idx.extractionFail(queued.jobId, "exhausted", 1, new Date().toISOString(), claimed?.claimToken);
+      expect(idx.extractionList("dead")).toHaveLength(1);
+    } finally {
+      idx.close();
+    }
+    expect(await integrationRequeueDeadExtractions(root)).toBe(1);
+    const check = await Index.create(indexDb(root));
+    try {
+      expect(check.extractionList("pending")).toHaveLength(1);
+      expect(check.rawAll("SELECT action FROM audit WHERE action='extract.requeued'")).toHaveLength(1);
+    } finally {
+      check.close();
+    }
   });
 
   test("consolidation reads the auto-run meta keys", async () => {

@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 
 import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
-import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, removeBlocksCitingOnly, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, readFilePage, removeBlocksCitingOnly, renderPhase2DiffFile, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
-import type { AgentTurnMessage, LlmChannel } from "../src/core/channel.js";
+import type { AgentTurnMessage, LlmChannel, ToolSpec } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
 import type { ExtractProvider, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
 import { Index } from "../src/core/db.js";
@@ -1335,6 +1335,62 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(Buffer.byteLength(system, "utf-8")).toBeLessThan(MAX_CONSOLIDATION_PROMPT_BYTES);
   });
 
+  test("the virtual diff file is byte-capped with an explicit truncation marker", () => {
+    const body = "y".repeat(50_000);
+    const file = renderPhase2DiffFile([{ rel: "raw_memories.md", hunks: [{ kind: "add", text: body }], text: body }], 5_000);
+    expect(file).toContain("Memory Workspace Diff");
+    expect(file).toContain("[workspace diff truncated at 5000 bytes]");
+    expect(Buffer.byteLength(file, "utf-8")).toBeLessThan(6_000);
+  });
+
+  test("read_file clamps an oversized page request to the hard cap", async () => {
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      2,
+      scriptedChannel(
+        [
+          { calls: [{ name: "read_file", args: { rel: PHASE2_DIFF_FILENAME, offset: 0, limit: 10_000_000 } }] },
+          { calls: [{ name: "finish", args: { report: "ok" } }] },
+        ],
+        prompts,
+      ),
+    );
+    await provider.consolidate({
+      workspace: { [PHASE2_DIFF_FILENAME]: "z".repeat(300_000) },
+      diff: [],
+      notes: [],
+      memoryRoot: dir,
+    });
+    const secondTurn = prompts[1]?.user ?? "";
+    expect(secondTurn).toContain("more bytes; call read_file with offset=200000");
+    expect(secondTurn.length).toBeLessThan(210_000);
+  });
+
+  test("the run budget aborts a slow agent loop as a timeout", async () => {
+    let sawAbort = false;
+    const provider = new LlmLoopConsolidateProvider(
+      3,
+      {
+        name: "slow",
+        async agent(_system, _messages, _tools, signal) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          sawAbort = signal?.aborted === true;
+          if (sawAbort) {
+            throw new Error("aborted by the run budget");
+          }
+          return { text: "", toolCalls: [], finish: "stop" as const };
+        },
+      },
+      10,
+    );
+    await expect(
+      provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir }),
+    ).rejects.toMatchObject({ name: "WorkerTimeoutError", code: "RUN_BUDGET" });
+    // The in-flight call must actually be signalled: the step-wise check alone
+    // would leave a slow stream running.
+    expect(sawAbort).toBe(true);
+  });
+
   test("the prompt ceiling fails the run instead of sending an oversized prompt", async () => {
     // The ceiling is an invariant guard: the production default is unreachable
     // through the per-section caps, so the test drives it through the provider
@@ -1372,6 +1428,82 @@ describe("LlmLoopConsolidateProvider", () => {
     const secondTurn = prompts[1]?.user ?? "";
     expect(secondTurn).toContain("TOOL read_file:");
     expect(secondTurn).toContain("…[truncated: 49900 more bytes; call read_file with offset=100]");
+  });
+
+  test("the read_file tool schema exposes the runtime paging parameters", async () => {
+    let seen: readonly ToolSpec[] = [];
+    const channel: LlmChannel = {
+      name: "capture",
+      async agent(_system, _messages, tools) {
+        seen = tools;
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
+          finish: "tool-calls",
+        };
+      },
+    };
+    await new LlmLoopConsolidateProvider(1, channel).consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    const readFile = seen.find((tool) => tool.name === "read_file");
+    expect(readFile).toBeDefined();
+    const properties = readFile?.parameters.properties ?? {};
+    expect(Object.keys(properties).sort()).toEqual(["limit", "offset", "rel"]);
+    expect(readFile?.parameters.additionalProperties).toBe(false);
+  });
+
+  test("readFilePage snaps both edges to code-point boundaries", () => {
+    const cjk = "记忆测试字符".repeat(30);
+    const first = readFilePage(cjk, 0, 10);
+    expect(first).toMatchObject({ truncated: true });
+    const firstBody = ("content" in first ? first.content : "").split("\n…[truncated")[0] ?? "";
+    expect(firstBody).not.toContain("\uFFFD");
+    let offset = "nextOffset" in first && first.nextOffset !== undefined ? first.nextOffset : 0;
+    let rebuilt = firstBody;
+    for (let i = 0; i < 500; i += 1) {
+      const page = readFilePage(cjk, offset, 7);
+      if ("pastEnd" in page) {
+        break;
+      }
+      rebuilt += (page.content.split("\n…[truncated")[0] ?? "");
+      if (!page.truncated || page.nextOffset === undefined) {
+        break;
+      }
+      offset = page.nextOffset;
+    }
+    // Resuming from the printed offsets yields the original text exactly: no
+    // lost characters and no duplication at the page seams.
+    expect(rebuilt).toBe(cjk);
+    // An offset landing mid-character is advanced to the next boundary.
+    const mid = readFilePage(cjk, 1, 9);
+    expect("content" in mid ? mid.content : "").not.toContain("\uFFFD");
+  });
+
+  test("the per-run read budget stops unbounded paging", async () => {
+    let calls = 0;
+    let sawBudget = false;
+    const provider = new LlmLoopConsolidateProvider(
+      8,
+      {
+        name: "greedy",
+        async agent(_system, messages) {
+          calls += 1;
+          const last = messages[messages.length - 1];
+          if (last !== undefined && last.role === "tool" && last.content.includes("read budget exhausted")) {
+            sawBudget = true;
+            return { text: "", toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }], finish: "tool-calls" as const };
+          }
+          const offset = calls === 1 ? 0 : 199_999 + (calls - 2) * 200_000;
+          return {
+            text: "",
+            toolCalls: [{ id: `r${String(calls)}`, name: "read_file", arguments: JSON.stringify({ rel: "big.md", offset, limit: 200_000 }) }],
+            finish: "tool-calls" as const,
+          };
+        },
+      },
+      60_000,
+    );
+    await provider.consolidate({ workspace: { "big.md": "a".repeat(1_400_000) }, diff: [], notes: [], memoryRoot: dir });
+    expect(sawBudget).toBe(true);
   });
 
   test("the virtual diff file is read-only for the agent", async () => {

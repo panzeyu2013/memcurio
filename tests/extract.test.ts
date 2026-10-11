@@ -366,15 +366,29 @@ describe("durable extraction queue", () => {
     const idx = await Index.create(indexDb(dir));
     try {
       const pending = idx.extractionList("pending")[0];
-      // One attempt was counted at claim time; the abort consumes none and the
-      // job stays pending for the next live drain.
+      // The claim counted one attempt and the release handed it back, so the
+      // abort consumes none of the retry budget.
       expect(pending?.jobId).toBe(queued.jobId);
-      expect(pending?.attempts).toBe(1);
+      expect(pending?.attempts).toBe(0);
       expect(idx.rawAll("SELECT action FROM audit WHERE action='extract.queue_released'")).toHaveLength(1);
       expect(idx.extractionList("dead")).toHaveLength(0);
+      idx.driver.run("UPDATE extraction_jobs SET next_attempt_at = ? WHERE job_id = ?", [
+        new Date().toISOString(),
+        queued.jobId,
+      ]);
     } finally {
       idx.close();
     }
+    // The released job is genuinely retryable: the next drain (same provider
+    // name, now succeeding) completes it.
+    class RecoveredProvider implements ExtractProvider {
+      readonly name = "aborting";
+      async extract(): Promise<Stage1Output | null> {
+        return null;
+      }
+    }
+    const drained = await processExtractionQueue(dir, new RecoveredProvider());
+    expect(drained.status).toBe("completed");
   });
 
   test("malformed model output is retried instead of acknowledged as a no-op", async () => {

@@ -912,7 +912,7 @@ describe("extraction_jobs", () => {
     }
   });
 
-  test("extractionRelease returns a claimed job without consuming an attempt", async () => {
+  test("extractionRelease hands the claim attempt back", async () => {
     const idx = await Index.create(dbPath);
     try {
       const queued = idx.extractionEnqueue({
@@ -931,11 +931,46 @@ describe("extraction_jobs", () => {
       expect(idx.extractionRelease(queued.jobId, "memcurio: session retired", claimed?.claimToken ?? "")).toBe(true);
       const pending = idx.extractionList("pending")[0];
       expect(pending?.status).toBe("pending");
-      // The claim already counted one attempt; the abort itself consumes none.
-      expect(pending?.attempts).toBe(1);
+      // The claim counted one attempt; the release hands it back so aborts
+      // never eat the retry budget (review P1-1).
+      expect(pending?.attempts).toBe(0);
       // The release re-arms with a short delay so an aborted drain cannot
       // hot-loop the same claim.
       expect(Date.parse(pending?.nextAttemptAt ?? "") - Date.now()).toBeGreaterThan(30_000);
+    } finally {
+      idx.close();
+    }
+  });
+
+  test("repeated aborts do not exhaust the retry budget", async () => {
+    const idx = await Index.create(dbPath);
+    try {
+      const queued = idx.extractionEnqueue({
+        idempotencyKey: "abort-budget",
+        host: "codex",
+        provider: "abort-budget",
+        sessionId: "s-abort",
+        sourceEvent: "session_end",
+        workdir: "/tmp/proj",
+        evidenceRef: "sha256:abort",
+        contentHash: "abort",
+        snapshotJson: JSON.stringify({ sessionId: "s-abort" }),
+      });
+      for (let i = 0; i < 3; i += 1) {
+        const now = new Date().toISOString();
+        const claimed = idx.extractionClaim("abort-budget", now, 10_000);
+        expect(claimed?.attempts).toBe(1);
+        expect(idx.extractionRelease(queued.jobId, "retired", claimed?.claimToken ?? "", now)).toBe(true);
+        expect(idx.extractionList("pending")[0]?.attempts).toBe(0);
+        idx.driver.run("UPDATE extraction_jobs SET next_attempt_at = ? WHERE job_id = ?", [now, queued.jobId]);
+      }
+      // One real provider failure after three aborts must still retry, not die.
+      const now = new Date().toISOString();
+      const claimed = idx.extractionClaim("abort-budget", now, 10_000);
+      const failed = idx.extractionFail(queued.jobId, "provider down", undefined, now, claimed?.claimToken);
+      expect(failed.status).toBe("pending");
+      expect(idx.extractionList("pending")[0]?.attempts).toBe(1);
+      expect(idx.extractionList("dead")).toHaveLength(0);
     } finally {
       idx.close();
     }

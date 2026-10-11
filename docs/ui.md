@@ -186,7 +186,7 @@ DSH Web（浏览器）
 ### 状态面
 
 - **队列**：pending/processing/blocked/dead 计数卡 + 明细（attempts、next_attempt、脱敏 lastError、provider 名；completed 为终态不入列表，折叠后移除）；blocked 原因引导（如"无模型路由"）。
-- **整合**：上次自动整合时间/结果、冷却/退避倒计时、"将要自动整合的候选"（usage/maxInputs 推导）——**整合雷达**。
+- **整合**：上次自动整合时间/结果、冷却/退避倒计时、`attempts`、`retryAt`、`lastErrorKind`（aborted|timeout|provider|internal|unknown）、"将要自动整合的候选"（usage/maxInputs 推导）——**整合雷达**。
 - **审计流**：最近写路径收据（时间/动作/对象/结果），支持过滤；新收据实时插入。
 - **隔离/健康**：store 根路径、no-cwd 告警、config 关键值摘要（只读展示）。
 

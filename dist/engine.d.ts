@@ -238,6 +238,8 @@ export declare class MemcurioAdapter {
      *  consolidation mid-run. */
     private modelChannel;
     maybeConsolidate(): Promise<void>;
+    private consolidateInFlight;
+    private runMaybeConsolidate;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
     /** Reserved engine API (v2.1): the plugin no longer injects per-turn hits;
      *  kept for host integrations and the workbench's manual simulator. */

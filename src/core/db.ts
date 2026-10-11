@@ -966,10 +966,16 @@ export class Index {
     return { status: "pending", nextAttemptAt };
   }
 
-  /** Release a claimed job WITHOUT consuming a retry attempt: the failure was
-   *  caller/host-caused (session retire, plugin unload), not the work's fault.
+  /** Release a claimed job on a caller/host abort (session retire, plugin
+   *  unload). The claim already counted one attempt (db.ts claim), so the
+   *  release hands it back: `attempts = max(attempts - 1, 0)`. Without this,
+   *  two retirements plus one real provider failure would exhaust the 3-attempt
+   *  budget and silently dead-letter the rollout (review P1-1).
+   *
    *  The job returns to pending with a short delay so an aborted drain cannot
-   *  hot-loop the same claim; the next live drain or sweep retries it. */
+   *  hot-loop the same claim; the next live drain or sweep retries it. Returns
+   *  false when the lease is gone (another worker owns or already finalized the
+   *  row): the caller must not claim a release it did not perform. */
   extractionRelease(
     jobId: string,
     error: string,
@@ -980,7 +986,8 @@ export class Index {
     const nextAttemptAt = new Date(Date.parse(now) + 60_000).toISOString();
     this.driver.run(
       `UPDATE extraction_jobs
-       SET status='pending', lease_until=NULL, claim_token=NULL, last_error=?, next_attempt_at=?
+       SET status='pending', lease_until=NULL, claim_token=NULL, last_error=?, next_attempt_at=?,
+           attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
        WHERE job_id=? AND status='processing' AND claim_token=? AND lease_until > ?`,
       [detail, nextAttemptAt, jobId, claimToken, now],
     );
