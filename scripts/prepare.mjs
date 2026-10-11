@@ -13,6 +13,8 @@ const required = [
   "dist/plugin/index.js",
   "dist/plugin/index.d.ts",
   "dist/engine.js",
+  "dist/api.js",
+  "dist/api.d.ts",
   "lib/client.js",
 ];
 

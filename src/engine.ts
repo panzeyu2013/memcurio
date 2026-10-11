@@ -101,11 +101,21 @@ export const AUTO_CONSOLIDATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
  *  demand-driven: the retry happens on the next user-activity trigger, never
  *  from a background timer or the dormant-store sweep. */
 const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
+/** Internal invariant failures (e.g. the request-budget ceiling) are
+ *  deterministic: a pathological model would otherwise retry every hour
+ *  forever. They back off for six hours instead. */
+const AUTO_CONSOLIDATE_INTERNAL_RETRY_MS = 6 * 60 * 60 * 1000;
 /** Consecutive automatic-failure bookkeeping (observability only: codex's
  *  phase-2 claim deliberately does not gate on a retry budget). */
 const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
 const AUTO_CONSOLIDATE_RETRY_AT_KEY = "consolidation_auto_retry_at";
 const AUTO_CONSOLIDATE_KIND_KEY = "consolidation_auto_kind";
+/** Process-wide single-flight for automatic consolidation, keyed by store root:
+ *  every adapter serving a store shares one in-flight run. */
+const CONSOLIDATION_IN_FLIGHT = new Map<string, Promise<void>>();
+/** One hour: comfortably above the default 30-minute run budget, below any
+ *  permanent occupation of a store entry. */
+const CONSOLIDATE_IN_FLIGHT_TTL_MS = 60 * 60_000;
 /** Slow probe for a provider parked in the blocked state. Configuration
  *  changes normally reactivate it, but a restart can leave a job blocked in a
  *  process whose route never materializes; the probe (no LLM call, one DB
@@ -1064,21 +1074,36 @@ export class MemcurioAdapter {
     return process.env.MEMCURIO_LLM_PROVIDER?.trim().toLowerCase() === "none" ? undefined : this.consolidateChannel;
   }
 
-  async maybeConsolidate(): Promise<void> {
-    // In-process single-flight: two triggers for the same store (bootstrap and
-    // a turn/end, or two sessions) must not both enter prune/plan. The durable
-    // workspace lease still serializes across processes.
-    if (this.consolidateInFlight !== null) {
-      return this.consolidateInFlight;
+  /** Store-level single-flight. Deliberately NOT an async method: returning
+   *  the stored promise itself keeps dedupe observable (p1 === p2) and lets a
+   *  test distinguish "merged into the in-flight run" from "lost the workspace
+   *  lease downstream". */
+  maybeConsolidate(): Promise<void> {
+    const existing = CONSOLIDATION_IN_FLIGHT.get(this.root);
+    if (existing !== undefined) {
+      return existing;
     }
     const run = this.runMaybeConsolidate().finally(() => {
-      this.consolidateInFlight = null;
+      if (CONSOLIDATION_IN_FLIGHT.get(this.root) === run) {
+        CONSOLIDATION_IN_FLIGHT.delete(this.root);
+      }
+      if (ttl !== undefined) {
+        clearTimeout(ttl);
+      }
     });
-    this.consolidateInFlight = run;
+    // Safety valve: the run budget aborts a wedged provider loop, but if the
+    // host stream never settles at all the entry must not occupy this store
+    // forever. Expiring the entry degrades to the pre-single-flight behaviour
+    // (the durable workspace lease still serializes the actual run).
+    const ttl = setTimeout(() => {
+      if (CONSOLIDATION_IN_FLIGHT.get(this.root) === run) {
+        CONSOLIDATION_IN_FLIGHT.delete(this.root);
+      }
+    }, CONSOLIDATE_IN_FLIGHT_TTL_MS);
+    ttl.unref?.();
+    CONSOLIDATION_IN_FLIGHT.set(this.root, run);
     return run;
   }
-
-  private consolidateInFlight: Promise<void> | null = null;
 
   private async runMaybeConsolidate(): Promise<void> {
     const root = this.root;
@@ -1162,10 +1187,20 @@ export class MemcurioAdapter {
         // Note urgency is BOUNDED: only a note created after the last
         // successful consolidation may bypass the success cooldown. A note the
         // model never consumed stays pending and must not turn every turn/end
-        // into a full Phase-2 run (review P1-5).
-        const urgent = idx
-          .noteList()
-          .some((note) => actionableNote(note) && (last === undefined || note.createdAt > last));
+        // into a full Phase-2 run (review P1-5). Timestamps are compared as
+        // parsed dates, and an unparseable value counts as NEW (conservative:
+        // the user's explicit remember must not be silently ignored).
+        const lastMs = last === undefined ? Number.NaN : Date.parse(last);
+        const urgent = idx.noteList().some((note) => {
+          if (!actionableNote(note)) {
+            return false;
+          }
+          if (!Number.isFinite(lastMs)) {
+            return true;
+          }
+          const createdMs = Date.parse(note.createdAt);
+          return !Number.isFinite(createdMs) || createdMs > lastMs;
+        });
         if (last !== undefined && !urgent) {
           const elapsed = now - Date.parse(last);
           if (Number.isFinite(elapsed) && elapsed < AUTO_CONSOLIDATE_COOLDOWN_MS) {
@@ -1254,6 +1289,23 @@ export class MemcurioAdapter {
       this.log("info", "automatic consolidation completed");
     } catch (err) {
       const message = String(err);
+      if (err instanceof ConsolidationContentionError) {
+        // Typed contention (workspace lease held by another writer, inputs
+        // changed): not a failure. Kept ahead of the legacy message match so a
+        // wording change can never reclassify it (round-2 review N5).
+        try {
+          const idx = await Index.create(indexDb(root));
+          try {
+            idx.audit("consolidate.auto_contended", "-", message.slice(0, 300));
+          } finally {
+            idx.close();
+          }
+        } catch {
+          // best effort
+        }
+        this.log("debug", "automatic consolidation contended", { error: message });
+        return;
+      }
       if (message.includes("already in progress")) {
         // A3: another process holds the workspace lease (runConsolidation
         // throws "consolidation already in progress for this workspace").
@@ -1326,7 +1378,8 @@ export class MemcurioAdapter {
           idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, String(attempts));
           // retry_at is an absolute deadline: the next user-activity trigger
           // may retry only after it (codex stage-two retry_at semantics).
-          idx.metaSet(AUTO_CONSOLIDATE_RETRY_AT_KEY, new Date(Date.now() + AUTO_CONSOLIDATE_RETRY_MS).toISOString());
+          const retryDelayMs = kind === "internal" ? AUTO_CONSOLIDATE_INTERNAL_RETRY_MS : AUTO_CONSOLIDATE_RETRY_MS;
+          idx.metaSet(AUTO_CONSOLIDATE_RETRY_AT_KEY, new Date(Date.now() + retryDelayMs).toISOString());
           idx.metaSet(AUTO_CONSOLIDATE_KIND_KEY, kind);
           idx.audit(
             "consolidate.auto_failed",

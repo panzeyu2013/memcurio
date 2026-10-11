@@ -130,7 +130,11 @@ export const NON_WRITE_EXTRACT_ACTIONS: ReadonlySet<string> = new Set([
 
 /** Non-extract audit actions that are not durable writes (mirror of the host
  *  filter). */
-export const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string> = new Set(["consolidate.auto_aborted"]);
+export const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string> = new Set([
+  "consolidate.auto_aborted",
+  "consolidate.auto_unavailable",
+  "consolidate.auto_contended",
+]);
 
 /** True for an action that actually changed stored memory (defensive client
  *  guard; the host's write-path filter is the primary one). */

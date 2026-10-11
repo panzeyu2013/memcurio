@@ -47,7 +47,15 @@ export declare const MAX_CONSOLIDATION_PROMPT_BYTES: number;
  *  message history. Together with the system-prompt ceiling this bounds the
  *  whole request, not just its first message (review P1-2). */
 export declare const READ_FILE_TOTAL_BYTES_PER_RUN = 1000000;
-/** Hard ceiling for one model request (system + full transcript). */
+/** Cap actually used when rendering the virtual diff: the diff must fit inside
+ *  one run's read budget (minus page-marker overhead), otherwise the agent
+ *  could never read the authoritative change list it is told to read first and
+ *  would silently consolidate a partial view. The 4 MiB codex-parity cap stays
+ *  as the absolute upper bound for future larger budgets. */
+export declare const PHASE2_DIFF_READABLE_BYTES: number;
+/** Hard ceiling for one model request (system + full transcript), derived from
+ *  the prompt budget plus the per-run read budget with headroom for assistant
+ *  output and tool-call arguments. */
 export declare const MAX_AGENT_HISTORY_BYTES = 2500000;
 /** Thrown when another writer changed the consolidation inputs between plan and
  *  commit. Contention, not failure: the engine must not arm the failure

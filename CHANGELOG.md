@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `attempts`, `retryAt` and `lastErrorKind`; dead-lettered extraction jobs can
   be revived through the exported `@memcurio/dsh-plugin/api` entry
   (`integrationRequeueDeadExtractions`, audited as `extract.requeued`).
+- **Review hardening (round 2)**: the virtual diff is capped to what one run's
+  read budget can actually read (with a truncation marker and disk-file
+  fallback guidance); the request ceiling now counts tool-call arguments and
+  host-native replay payloads; single-flight consolidation is store-scoped,
+  returns the shared promise, and expires after an hour if a run never settles;
+  note freshness compares parsed timestamps (unparseable values count as new);
+  internal invariant failures back off six hours; contention is typed instead of
+  message-matched; the no-op audit list is pinned by name in tests, and
+  `scripts/prepare.mjs` verifies the new `dist/api.*` entry point.
 - **Review hardening (round 1)**: abort releases now hand the claim attempt
   back, so repeated retirements cannot dead-letter a rollout; a host-reported
   `ABORTED` without a local abort is a provider failure (backoff applies) and

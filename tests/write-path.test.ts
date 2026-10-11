@@ -38,7 +38,24 @@ const SAMPLES = [
   "",
 ];
 
+/** Pinned list of known no-op audit actions: an action added to the engine
+ *  without a matching non-write entry must fail this list, not slip through a
+ *  set-driven sample (round-2 review N1). */
+const KNOWN_NO_WRITE_ACTIONS = [
+  "extract.queue_released",
+  "consolidate.auto_aborted",
+  "consolidate.auto_unavailable",
+  "consolidate.auto_contended",
+] as const;
+
 describe("write-path filter parity (host vs client copy)", () => {
+  test("every known no-op action is excluded by both copies", () => {
+    for (const action of KNOWN_NO_WRITE_ACTIONS) {
+      expect(hostIsWritePathAction(action)).toBe(false);
+      expect(clientIsWritePathAction(action)).toBe(false);
+    }
+  });
+
   test("prefix lists and non-write sets are identical", () => {
     expect([...CLIENT_PREFIXES]).toEqual([...HOST_PREFIXES]);
     expect([...CLIENT_NON_WRITE].sort()).toEqual([...HOST_NON_WRITE].sort());

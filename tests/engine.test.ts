@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { MemcurioAdapter } from "../src/engine.js";
 import { LlmExtractProvider, ProviderNotConfiguredError } from "../src/core/extract.js";
+import type { ExtractProvider, RolloutSnapshot } from "../src/core/extract.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../src/core/channel.js";
 import { ConsolidationContentionError } from "../src/core/consolidate.js";
 import type { LlmChannel } from "../src/core/channel.js";
@@ -322,6 +323,35 @@ describe("automatic consolidation failure handling", () => {
     }
   });
 
+  test("an unparseable last timestamp never suppresses a pending note", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "ok" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "malformed-last note", "remember");
+    const seed = await Index.create(indexDb(dir));
+    try {
+      // A hostile/legacy value that lexicographically sorts after the note's
+      // ISO timestamp but is not a date: the note must still be treated as new
+      // (round-2 review N3).
+      seed.metaSet("consolidation_auto_last", "not-a-date");
+    } finally {
+      seed.close();
+    }
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(1);
+    adapter.dispose();
+  });
+
   test("a legacy store with only consolidation_auto_failed is gated for one hour", async () => {
     let calls = 0;
     const channel: LlmChannel = {
@@ -391,6 +421,10 @@ describe("automatic consolidation failure handling", () => {
     try {
       expect(idx.metaGet("consolidation_auto_kind")).toBe("internal");
       expect(idx.metaGet("consolidation_auto_attempts")).toBe("1");
+      // An internal invariant failure is deterministic: it backs off six hours
+      // instead of the provider-failure hour (round-2 review N2).
+      const retryAt = Date.parse(idx.metaGet("consolidation_auto_retry_at") ?? "");
+      expect(retryAt - Date.now()).toBeGreaterThan(5 * 60 * 60 * 1000);
     } finally {
       idx.close();
     }
@@ -417,6 +451,35 @@ describe("automatic consolidation failure handling", () => {
     await Promise.all([adapter.maybeConsolidate(), adapter.maybeConsolidate(), adapter.maybeConsolidate()]);
     expect(calls).toBe(1);
     adapter.dispose();
+  });
+
+  test("two adapters for the same store share one consolidation run", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return {
+          text: "",
+          toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
+          finish: "tool-calls" as const,
+        };
+      },
+    };
+    const a = new MemcurioAdapter({ root: dir, durableQueue: true, channel });
+    const b = new MemcurioAdapter({ root: dir, durableQueue: true, channel });
+    await addAdHocNote(dir, "cross adapter note", "remember");
+    // Promise identity proves the second adapter was merged into the first
+    // run; asserting only the provider call count would let the workspace
+    // lease mask a missing single-flight (round-2 mutation survivor h).
+    const p1 = a.maybeConsolidate();
+    const p2 = b.maybeConsolidate();
+    expect(p1).toBe(p2);
+    await Promise.all([p1, p2]);
+    expect(calls).toBe(1);
+    a.dispose();
+    b.dispose();
   });
 
   test("a stuck note stops bypassing the cooldown after a successful run", async () => {
@@ -563,6 +626,34 @@ describe("work-driven automatic consolidation", () => {
     } finally {
       idx.close();
     }
+  });
+});
+
+describe("extraction drain scheduling", () => {
+  test("a retrying job does not stall the rest of the drain", async () => {
+    const attempted: string[] = [];
+    const extract: ExtractProvider = {
+      name: "mixed",
+      async extract(snapshot: RolloutSnapshot) {
+        attempted.push(snapshot.sessionId);
+        if (snapshot.sessionId === "fail-one") {
+          throw new Error("transient provider failure");
+        }
+        return null;
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, extract });
+    for (const id of ["fail-one", "ok-two"]) {
+      await adapter.sessionCreated(id, PROJ, "dsh");
+      await adapter.messageSeen(id, "p1", { kind: "user", text: "hello" });
+      await adapter.sessionIdle(id);
+    }
+    const results = await adapter.processPendingExtractions();
+    // The failed job is retried later; the ready job behind it still runs in
+    // the same drain (breaking on the first retry would return only [retry]).
+    expect(results.map((result) => result.status).sort()).toEqual(["completed", "retry"]);
+    expect(attempted.sort()).toEqual(["fail-one", "ok-two"]);
+    adapter.dispose();
   });
 });
 

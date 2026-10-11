@@ -204,6 +204,23 @@ describe("dshChannel", () => {
     expect(calls).toBe(1);
   });
 
+  test("429 is transient and retries like a 5xx", async () => {
+    let calls = 0;
+    const ctx = {
+      llm: {
+        stream: (() => {
+          calls += 1;
+          throw Object.assign(new Error("rate limited"), { status: 429 });
+        }) as unknown as () => AsyncGenerator<StreamChunk>,
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined);
+    await expect(channel.agent("system", [{ role: "user", text: "go" }], [])).rejects.toBeInstanceOf(
+      WorkerProviderError,
+    );
+    expect(calls).toBe(3);
+  });
+
   test("provider failures retry at most twice", async () => {
     let calls = 0;
     const ctx = {

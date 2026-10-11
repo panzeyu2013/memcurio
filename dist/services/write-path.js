@@ -33,7 +33,11 @@ export const NON_WRITE_EXTRACT_ACTIONS = new Set([
 /** Non-extract audit actions that are bookkeeping/notices, never durable
  *  writes: an aborted Phase-2 run did not touch memory and must not raise a
  *  "memory updated" notification (review P2-3). */
-export const NON_WRITE_OTHER_ACTIONS = new Set(["consolidate.auto_aborted"]);
+export const NON_WRITE_OTHER_ACTIONS = new Set([
+    "consolidate.auto_aborted",
+    "consolidate.auto_unavailable",
+    "consolidate.auto_contended",
+]);
 /** True when one audit action label names a durable memory write. */
 export function isWritePathAction(action) {
     if (NON_WRITE_EXTRACT_ACTIONS.has(action) || NON_WRITE_OTHER_ACTIONS.has(action)) {

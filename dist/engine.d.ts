@@ -237,8 +237,11 @@ export declare class MemcurioAdapter {
      *  store-scoped channel so a retiring session's abort cannot cancel a
      *  consolidation mid-run. */
     private modelChannel;
+    /** Store-level single-flight. Deliberately NOT an async method: returning
+     *  the stored promise itself keeps dedupe observable (p1 === p2) and lets a
+     *  test distinguish "merged into the in-flight run" from "lost the workspace
+     *  lease downstream". */
     maybeConsolidate(): Promise<void>;
-    private consolidateInFlight;
     private runMaybeConsolidate;
     buildStaticContext(workdir: string, budgetTokens?: number): Promise<string>;
     /** Reserved engine API (v2.1): the plugin no longer injects per-turn hits;

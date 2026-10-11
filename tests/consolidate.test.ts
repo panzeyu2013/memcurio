@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 
 import { addAdHocNote, pendingAdHocNotes } from "../src/core/adhoc.js";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
-import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, readFilePage, removeBlocksCitingOnly, renderPhase2DiffFile, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
+import { LlmLoopConsolidateProvider, MAX_CONSOLIDATION_PROMPT_BYTES, PHASE2_DIFF_FILENAME, PHASE2_DIFF_READABLE_BYTES, READ_FILE_TOTAL_BYTES_PER_RUN, RuleConsolidateProvider, planConsolidation, projectRawMemories, pruneExtensionResources, readFilePage, removeBlocksCitingOnly, renderPhase2DiffFile, renderRawMemories, runConsolidation, syncArtifacts } from "../src/core/consolidate.js";
 import type { ConsolidateInput, ConsolidateProvider, ConsolidateResult } from "../src/core/consolidate.js";
 import type { AgentTurnMessage, LlmChannel, ToolSpec } from "../src/core/channel.js";
 import { stageSession } from "../src/core/extract.js";
@@ -597,6 +597,36 @@ describe("RuleConsolidateProvider", () => {
 });
 
 describe("runConsolidation", () => {
+  test("the virtual diff file never exceeds one run's read budget", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "dsh|huge-diff",
+        rawMemory: `description: huge\ntask: huge\ntask_group: huge\ncwd: /tmp\nkeywords: huge\n\n### Task 1\n${"r".repeat(1_200_000)}`,
+        rolloutSummary: "# huge\nOutcome: success\n",
+        rolloutSlug: "huge-diff",
+        sourceUpdatedAt: new Date().toISOString(),
+      });
+    } finally {
+      idx.close();
+    }
+    let seen: ConsolidateInput | undefined;
+    const provider: ConsolidateProvider = {
+      name: "capture",
+      async consolidate(input) {
+        seen = input;
+        return { edits: [], report: "captured", rejected: [], consumedNoteFilenames: [], completed: true };
+      },
+    };
+    await runConsolidation(dir, provider, { execute: true });
+    const diffFile = seen?.workspace[PHASE2_DIFF_FILENAME] ?? "";
+    // The agent must be able to read the whole authoritative diff within one
+    // run's read budget; beyond that the file carries an explicit marker.
+    expect(Buffer.byteLength(diffFile, "utf-8")).toBeLessThanOrEqual(PHASE2_DIFF_READABLE_BYTES);
+    expect(diffFile).toContain("workspace diff truncated at");
+    expect(PHASE2_DIFF_READABLE_BYTES).toBeLessThanOrEqual(READ_FILE_TOTAL_BYTES_PER_RUN - 64_000);
+  });
+
   test("the provider receives the rendered virtual diff file, not inline diff text", async () => {
     await addAdHocNote(dir, "seed the diff file", "remember");
     let seen: ConsolidateInput | undefined;
@@ -1428,6 +1458,33 @@ describe("LlmLoopConsolidateProvider", () => {
     const secondTurn = prompts[1]?.user ?? "";
     expect(secondTurn).toContain("TOOL read_file:");
     expect(secondTurn).toContain("…[truncated: 49900 more bytes; call read_file with offset=100]");
+  });
+
+  test("the request history ceiling stops an accumulating transcript", async () => {
+    let calls = 0;
+    const provider = new LlmLoopConsolidateProvider(
+      10,
+      {
+        name: "blowup",
+        async agent() {
+          calls += 1;
+          // Tool-call arguments are replayed in every later request: enough of
+          // them must trip the request ceiling (round-2 mutation survivor x_i).
+          return {
+            text: "",
+            toolCalls: [
+              { id: `c${String(calls)}`, name: "list_files", arguments: JSON.stringify({ pad: "x".repeat(600_000) }) },
+            ],
+            finish: "tool-calls" as const,
+          };
+        },
+      },
+      60_000,
+    );
+    await expect(
+      provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir }),
+    ).rejects.toMatchObject({ code: "INPUT_BUDGET_EXCEEDED" });
+    expect(calls).toBeLessThan(10);
   });
 
   test("the read_file tool schema exposes the runtime paging parameters", async () => {
