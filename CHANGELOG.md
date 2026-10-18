@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-10-19
+
 ### Changed
 
 - **Aligned to DSH `0.2.1-rc.2`**: every `@deepseek-ai/dsh-*` devDependency
@@ -30,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line renames `evaluatePluginCompatibility`'s rejection payload from `peers`
   to `requirements`; the test reads whichever shape the installed gate
   exposes and pins the same six unmet peers either way.
+- **An unexposed namespace has its own state**: the panel paints a hollow dot
+  (with the namespace copy) instead of borrowing the read-only grey, a failed
+  write names the failure in the dot's tooltip, and loading / read-only /
+  unexposed / error / in-flight states are each covered by a panel test.
 
 ## [0.0.5] - 2026-10-11
 
