@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "memcurio",
+      "name": "@memcurio/dsh-plugin",
       "dependencies": {
         "@deepseek-ai/schemastery": "~3.18.4",
       },
