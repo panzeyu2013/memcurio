@@ -10,7 +10,7 @@
  * All copy is localized through the framework's `t` seat; failures carry
  * locale keys from the controller.
  */
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 
 import { MemorySwitch } from "../ui/switch.js";
@@ -111,25 +111,33 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
     void save("injectBudgetTokens", Number(draft)).then(announce);
   }, [announce, draftBudget, reset, save]);
 
-  const status = useMemo(() => {
-    if (face.status === "loading") return t("loading");
-    if (face.status === "unavailable") return face.mode === "memory" ? t("readOnly") : t("unavailable");
-    if (!face.writable) return t("readOnly");
-    if (busy) return t("saving");
-    return t("ready");
-  }, [busy, face.mode, face.status, face.writable, t]);
-
-  /** Icon-only status (the chamber / dsh-chamber-mcp convention: green ready,
-   *  grey idle/read-only, red error, pulsing while a write is in flight); the
-   *  phase text lives in the tooltip and the accessible name, so the panel
-   *  spends no vertical space on a status line. */
+  /** Icon-only status (the chamber / dsh-chamber-mcp convention): a green dot
+   *  when ready, a solid grey one when this client may not write, a hollow one
+   *  when the Host does not expose the namespace, a red one for a failure and a
+   *  pulse while a write is in flight. The phase text lives in title/aria-label,
+   *  so the panel spends no vertical space on a status line. Availability is
+   *  decided before writability: an unavailable namespace may still report
+   *  `writable: true`, and painting that case ready would contradict the copy. */
+  const stateName =
+    face.errorCode !== undefined || (notice !== null && !notice.ok)
+      ? "error"
+      : face.status === "loading"
+        ? "loading"
+        : face.status === "unavailable"
+          ? face.mode === "memory"
+            ? "readonly"
+            : "unavailable"
+          : !face.writable
+            ? "readonly"
+            : busy
+              ? "saving"
+              : "ready";
   const stateKey: SettingsKey =
     face.status === "loading" ? "loading" : !face.writable ? "readOnly" : busy ? "saving" : "ready";
-  // Status decides before writability here: an unavailable namespace may still
-  // report `writable: true`, and painting that case ready would contradict the
-  // copy. This is the icon rendered by the unavailable early return.
-  const stateName =
-    face.errorCode !== undefined || (notice !== null && !notice.ok) ? "error" : face.status === "loading" ? "loading" : face.status !== "ready" || !face.writable ? "readonly" : busy ? "saving" : "ready";
+  /** A failure's own copy wins over the phase label; the loading/unavailable
+   *  branch below shows the same label, so both name the icon consistently. */
+  const errorLabel =
+    notice !== null && !notice.ok ? notice.text : face.errorCode === undefined ? undefined : t(face.errorCode);
   const stateIcon = (name: string, label: string): ReactElement =>
     h(
       "span",
@@ -138,11 +146,13 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
     );
 
   if (face.status === "loading" || face.status === "unavailable") {
+    const phase = face.status === "loading" ? t("loading") : face.mode === "memory" ? t("readOnly") : t("unavailable");
     return h(
       "section",
       { className: "memcurio-panel" },
-      h("div", { className: "memcurio-head" }, h("h2", null, t("title")), stateIcon(stateName, status)),
-      h("p", { className: "memcurio-warn" }, status),
+      h("div", { className: "memcurio-head" }, h("h2", null, t("title")), stateIcon(stateName, errorLabel ?? phase)),
+      h("p", { className: "memcurio-warn" }, phase),
+      face.errorCode === undefined ? null : h("p", { className: "memcurio-alert", role: "alert" }, t(face.errorCode)),
     );
   }
 
@@ -223,7 +233,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
   return h(
     "section",
     { className: "memcurio-panel" },
-    h("div", { className: "memcurio-head" }, h("h2", null, t("title")), stateIcon(stateName, t(stateKey))),
+    h("div", { className: "memcurio-head" }, h("h2", null, t("title")), stateIcon(stateName, errorLabel ?? t(stateKey))),
     h("p", { className: "memcurio-intro" }, t("intro")),
     // Success is the icon turning green; only failures spend a text line.
     notice !== null && !notice.ok

@@ -34,7 +34,7 @@
 
 - **成对规则**：`provider`/`model` 必须同时给出；config-resolution 守卫在 Loader 落盘前拒绝半对与空串（`src/plugin/settings.ts:160-175`）。这是本插件的领域规则，不是上游契约。
 - **预算下限**：`injectBudgetTokens >= 128` 由 schema 拒绝（表单只做前置提示）。
-- **面板语义**：已覆盖徽标、单字段/整体恢复默认、写入被 host 拒绝时报错而非静默成功、`unavailable`（命名空间未暴露；`0.2.0` 远端的 `memory` 模式归入此类并显示为只读）与 `ready` 但 `writable=false`（宿主拒写）两种只读态——细节见 [ui.md](ui.md)。
+- **面板语义**：已覆盖徽标、单字段/整体恢复默认、写入被 host 拒绝时报错而非静默成功、`unavailable`（命名空间未暴露，空心灰点；`0.2.0` 远端的 `memory` 模式归入此类但按只读实心灰点呈现）与 `ready` 但 `writable=false`（宿主拒写，实心灰点）两种非就绪态；写入失败转红点、title 显示失败文案——细节见 [ui.md](ui.md)。
 - **`root` 归部署方**：永不进表单，也不做 volatile（避免把数据根写进用户覆盖层）。
 - **文档纪律**：设置契约只写在本文件；operations.md 只保留安装/操作步骤，ui.md 只保留呈现细节。
 

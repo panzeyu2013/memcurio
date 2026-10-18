@@ -550,12 +550,16 @@ describe("settings panel in jsdom (real react-dom)", () => {
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.loading);
     expect(panel.container.querySelector("#memcurio-provider")).toBeNull();
+    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("loading");
+    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("title")).toBe(en.loading);
 
     // 0.2.0 Hosts report a remote browser as an unavailable read-only namespace.
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", mode: "memory", writable: false };
     panel.scope.emit();
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
+    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("readonly");
+    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("title")).toBe(en.readOnly);
     panel.unmount();
   });
 
@@ -572,7 +576,7 @@ describe("settings panel in jsdom (real react-dom)", () => {
     // would otherwise satisfy a bare `not.toBe("ready")` through `undefined`.
     const unexposedState = panel.container.querySelector(".memcurio-state");
     expect(unexposedState).not.toBeNull();
-    expect(unexposedState?.getAttribute("data-state")).toBe("readonly");
+    expect(unexposedState?.getAttribute("data-state")).toBe("unavailable");
     expect(unexposedState?.getAttribute("title")).toBe(en.unavailable);
 
     // The same unexposed namespace with writes refused keeps the same copy.
@@ -594,6 +598,43 @@ describe("settings panel in jsdom (real react-dom)", () => {
     expect(refusingState).not.toBeNull();
     expect(refusingState?.getAttribute("data-state")).toBe("readonly");
     expect(refusingState?.getAttribute("title")).toBe(en.readOnly);
+    panel.unmount();
+  });
+
+  test("a failed write turns the dot red and names the failure", async () => {
+    const panel = await mountPanel();
+    panel.scope.set = async () => false;
+    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
+    await act(async () => {
+      control.click();
+      await Promise.resolve();
+    });
+    await panel.repaint();
+    const state = panel.container.querySelector(".memcurio-state");
+    expect(state).not.toBeNull();
+    expect(state?.getAttribute("data-state")).toBe("error");
+    expect(state?.getAttribute("title")).toBe(en.errNotLanded);
+    expect(panel.container.textContent).toContain(en.errNotLanded);
+    panel.unmount();
+  });
+
+  test("an in-flight write pulses the dot", async () => {
+    const panel = await mountPanel();
+    let release: (accepted: boolean) => void = () => undefined;
+    panel.scope.set = () =>
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
+    await act(async () => {
+      control.click();
+      await Promise.resolve();
+    });
+    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("saving");
+    await act(async () => {
+      release(false);
+      await Promise.resolve();
+    });
     panel.unmount();
   });
 

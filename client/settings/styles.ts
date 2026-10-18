@@ -32,13 +32,15 @@ const CSS = `
 .memcurio-status { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .memcurio-status-error { color: var(--dsw-alias-state-error-primary); }
 /* Icon-only status, the chamber / dsh-chamber-mcp convention: an 8px dot at
-   the panel's right — green ready, grey idle/read-only, red error, pulsing
+   the panel's right — green ready, solid grey for a read-only client, hollow
+   when the Host does not expose the namespace, red for a failure, pulsing
    while a write is in flight. The phase text lives in title/aria-label. */
 .memcurio-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .memcurio-state { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; }
 .memcurio-state-dot { width: 8px; height: 8px; border-radius: 50%; corner-shape: round; background: var(--dsw-alias-border-l3); }
 .memcurio-state[data-state="ready"] .memcurio-state-dot { background: var(--dsw-alias-state-success-primary); }
 .memcurio-state[data-state="saving"] .memcurio-state-dot { background: var(--dsw-alias-label-caption); animation: memcurio-state-pulse 1.2s ease-in-out infinite; }
+.memcurio-state[data-state="unavailable"] .memcurio-state-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l3); }
 .memcurio-state[data-state="error"] .memcurio-state-dot { background: var(--dsw-alias-state-error-primary); }
 @keyframes memcurio-state-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .memcurio-alert { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); }
