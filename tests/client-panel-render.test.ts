@@ -74,7 +74,6 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
     user: undefined,
     revision: 1,
     writable: true,
-    mode: "host",
   };
   readonly mutations: Array<readonly SettingsPathOp[]> = [];
   private readonly listeners = new Set<() => void>();
@@ -552,10 +551,49 @@ describe("settings panel in jsdom (real react-dom)", () => {
     expect(panel.container.textContent).toContain(en.loading);
     expect(panel.container.querySelector("#memcurio-provider")).toBeNull();
 
+    // 0.2.0 Hosts report a remote browser as an unavailable read-only namespace.
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", mode: "memory", writable: false };
     panel.scope.emit();
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
+    panel.unmount();
+  });
+
+  test("an unexposed namespace never claims ready or read-only", async () => {
+    const panel = await mountPanel();
+    // 0.2.1 decides availability apart from writability: a Host can report an
+    // unavailable namespace that still accepts writes.
+    panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", writable: true };
+    panel.scope.emit();
+    await panel.repaint();
+    expect(panel.container.textContent).toContain(en.unavailable);
+    expect(panel.container.textContent).not.toContain(en.readOnly);
+    // The state dot must exist and must not read as ready: a missing element
+    // would otherwise satisfy a bare `not.toBe("ready")` through `undefined`.
+    const unexposedState = panel.container.querySelector(".memcurio-state");
+    expect(unexposedState).not.toBeNull();
+    expect(unexposedState?.getAttribute("data-state")).toBe("readonly");
+    expect(unexposedState?.getAttribute("title")).toBe(en.unavailable);
+
+    // The same unexposed namespace with writes refused keeps the same copy.
+    panel.scope.snapshot = { ...panel.scope.snapshot, writable: false };
+    panel.scope.emit();
+    await panel.repaint();
+    expect(panel.container.textContent).toContain(en.unavailable);
+    panel.unmount();
+  });
+
+  test("a refusing Host is read-only, not unexposed", async () => {
+    const panel = await mountPanel();
+    panel.scope.snapshot = { ...panel.scope.snapshot, status: "ready", writable: false };
+    panel.scope.emit();
+    await panel.repaint();
+    expect(panel.container.textContent).toContain(en.readOnly);
+    expect(panel.container.textContent).not.toContain(en.unavailable);
+    const refusingState = panel.container.querySelector(".memcurio-state");
+    expect(refusingState).not.toBeNull();
+    expect(refusingState?.getAttribute("data-state")).toBe("readonly");
+    expect(refusingState?.getAttribute("title")).toBe(en.readOnly);
     panel.unmount();
   });
 

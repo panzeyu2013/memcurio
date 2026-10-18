@@ -31,7 +31,6 @@ class FakeScope implements ConfigFormPort<MemcurioSettingsView> {
     user: undefined,
     revision: 1,
     writable: true,
-    mode: "host",
   };
   readonly sets: Array<{ field: string; value: unknown }> = [];
   readonly unsets: string[] = [];
@@ -417,12 +416,18 @@ describe("MemcurioSettingsController", () => {
     expect(loading.status).toBe("loading");
     expect(loading.value).toEqual(BASE); // falls back to the decoded base
 
+    // 0.2.0 Hosts still report the legacy `memory` mode: the face forwards it.
     const memoryScope = new FakeScope();
     memoryScope.snapshot = { ...memoryScope.snapshot, status: "unavailable", mode: "memory", writable: false };
     const unavailable = new MemcurioSettingsController(memoryScope).face();
     expect(unavailable.status).toBe("unavailable");
     expect(unavailable.mode).toBe("memory");
     expect(unavailable.writable).toBe(false);
+
+    // 0.2.1 Hosts removed the field: the face carries no key at all.
+    const modernScope = new FakeScope();
+    modernScope.snapshot = { ...modernScope.snapshot, status: "unavailable", writable: false };
+    expect("mode" in new MemcurioSettingsController(modernScope).face()).toBe(false);
 
     const readOnlyScope = new FakeScope();
     readOnlyScope.snapshot = { ...readOnlyScope.snapshot, writable: false };

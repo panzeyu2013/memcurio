@@ -470,14 +470,20 @@ describe("DSH plugin contract", () => {
     // running dsh version (prereleases included); `dsh plugin add` rejects a
     // mismatch and the boot preflight disables the bundle. The gate is what
     // makes "peer range" an installability contract, not just a type hint.
-    for (const runtime of ["0.2.0-rc.1", "0.2.0-rc.2", "0.2.0", "0.2.1"]) {
+    for (const runtime of ["0.2.0-rc.1", "0.2.0-rc.2", "0.2.0", "0.2.1-rc.1", "0.2.1-rc.2", "0.2.1"]) {
       expect(evaluatePluginCompatibility(artifact, {}, runtime)).toBeUndefined();
     }
     // The floor is deliberate and one-way: a 0.2.x build is not installable on
     // 0.1.x (and vice versa), so the runtime upgrade and the plugin swap have to
     // happen as one pair. cordis is not a dsh* peer and must not be judged.
     const issue = evaluatePluginCompatibility(artifact, {}, "0.1.7-rc.2");
-    expect(issue?.peers).toEqual({
+    // The 0.2.1 line renamed this diagnostic's `peers` field to `requirements`.
+    // The plugin supports both lines, so the assertion reads whichever shape the
+    // installed gate exposes; it still fails closed when neither names the peers.
+    const unmet =
+      (issue as { requirements?: Record<string, string> } | undefined)?.requirements ??
+      (issue as { peers?: Record<string, string> } | undefined)?.peers;
+    expect(unmet).toEqual({
       "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
       "@deepseek-ai/dsh-compaction": "^0.2.0-rc.1",
       "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",

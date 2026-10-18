@@ -125,8 +125,11 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
    *  spends no vertical space on a status line. */
   const stateKey: SettingsKey =
     face.status === "loading" ? "loading" : !face.writable ? "readOnly" : busy ? "saving" : "ready";
+  // Status decides before writability here: an unavailable namespace may still
+  // report `writable: true`, and painting that case ready would contradict the
+  // copy. This is the icon rendered by the unavailable early return.
   const stateName =
-    face.errorCode !== undefined || (notice !== null && !notice.ok) ? "error" : face.status === "loading" ? "loading" : !face.writable ? "readonly" : busy ? "saving" : "ready";
+    face.errorCode !== undefined || (notice !== null && !notice.ok) ? "error" : face.status === "loading" ? "loading" : face.status !== "ready" || !face.writable ? "readonly" : busy ? "saving" : "ready";
   const stateIcon = (name: string, label: string): ReactElement =>
     h(
       "span",

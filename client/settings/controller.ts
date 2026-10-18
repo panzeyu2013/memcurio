@@ -57,7 +57,13 @@ export interface ConfigFormSnapshotLike<T> {
   user: unknown;
   revision: number | undefined;
   writable: boolean;
-  mode: "host" | "memory";
+  /** `0.2.0` line only: `memory` keeps a remote browser's preferences
+   *  process-local, so the Host reports an unavailable namespace that is
+   *  nonetheless read-only. The `0.2.1` line removed the field together with
+   *  the concept (every authenticated browser now syncs through the Host
+   *  document), so the mirror models it as optional and copies it only when an
+   *  older Host supplies it. */
+  mode?: "host" | "memory";
 }
 
 /** One namespaced field operation (mirrors dsh-settings' SettingsPathOpView). */
@@ -86,7 +92,8 @@ export interface SettingsFaceHook {
 export interface SettingsFace {
   status: "loading" | "ready" | "unavailable";
   writable: boolean;
-  mode: "host" | "memory";
+  /** Legacy Host signal; absent on the `0.2.1` line (see ConfigFormSnapshotLike). */
+  mode?: "host" | "memory";
   value: MemcurioSettingsView;
   base: MemcurioSettingsView;
   /** Fields present in the user layer (presence = overridden). */
@@ -225,7 +232,8 @@ export class MemcurioSettingsController {
     this.faceCache = {
       status: snapshot.status,
       writable: snapshot.writable,
-      mode: snapshot.mode,
+      // Copied only when the Host supplies it: the `0.2.1` line has no such field.
+      ...(snapshot.mode === undefined ? {} : { mode: snapshot.mode }),
       value: snapshot.value ?? decodeSettings(snapshot.base),
       base: decodeSettings(snapshot.base),
       overridden: overriddenFields(snapshot.user),

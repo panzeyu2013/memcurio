@@ -154,7 +154,7 @@ interface SessionRuntime {
 
 /** DSH built-in tool names (read/grep/glob/bash/pwsh are the file and shell
  *  tools registered by dsh-tool-fs, dsh-tool-fs-search, dsh-tool-bash and
- *  dsh-tool-pwsh; verified against DSH 0.1.7-rc.2, unchanged in 0.2.0-rc.1). Only these names may
+ *  dsh-tool-pwsh; verified against DSH 0.1.7-rc.2, unchanged in 0.2.0-rc.1 and 0.2.1-rc.2). Only these names may
  *  count as memory reuse — a write or unknown tool can never fake telemetry. */
 /** Exact existing memory-workspace files named by a shell command (simple
  *  whitespace/quote tokenizer; conservative on purpose — never speculative

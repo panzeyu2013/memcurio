@@ -10,7 +10,7 @@
 | [README.en.md](README.en.md) | English user entry: positioning, capabilities, quick start | users |
 | [architecture.md](architecture.md) | 分层架构、存储布局、模块地图、数据流 | 贡献者 |
 | [contract.md](contract.md) | 实现契约：模块职责、导出签名、数据格式（schema v11）、行为规则、测试契约 | 贡献者（改代码前必读） |
-| [settings.md](settings.md) | 设置契约：上游 DSH 0.1.7 规范、插件落点、本仓库约定、验证矩阵 | 插件/客户端贡献者、运维 |
+| [settings.md](settings.md) | 设置契约：上游 DSH 0.2.1-rc.2 规范、插件落点、本仓库约定、验证矩阵 | 插件/客户端贡献者、运维 |
 | [ui.md](ui.md) | 记忆 UI 契约：入口与面、host 服务层、写语义铁律、实时性通道、安全与非功能要求 | 客户端/插件贡献者 |
 | [operations.md](operations.md) | 安装、运行/升级与发布操作、DSH 集成面、FAQ、源码开发 | 运维/部署 |
 | [todo.md](todo.md) | 未完成待办（Release Gate R1）、集成/UI 遗留、开放决策 | 所有人（开放工作唯一入口） |

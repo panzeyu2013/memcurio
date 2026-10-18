@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Aligned to DSH `0.2.1-rc.2`**: every `@deepseek-ai/dsh-*` devDependency
+  pin moved together, `@deepseek-ai/cordis` / `cordis-plugin-loader` follow the
+  platform's `4.0.5` / `1.0.6`, and `@deepseek-ai/dsh-invariants` is dropped —
+  upstream stopped publishing it with the 0.2.1 line (the eleven packages that
+  shipped an `./invariant` companion dropped those entry points with it) and
+  this package only ever listed it as a devDependency. The peer range stays
+  `^0.2.0-rc.1`: the runtime compatibility gate still accepts
+  `>=0.2.0-rc.1 <0.3.0-0`.
+
+### Fixed
+
+- **The settings panel no longer requires a snapshot field the 0.2.1 Host
+  removed**: `ConfigFormSnapshot.mode` (process-local settings for a remote
+  browser) is modelled as an optional legacy signal, so the 0.2.0 line keeps
+  reporting those clients as read-only instead of unexposed, while a 0.2.1
+  Host — which decides availability apart from writability — renders
+  `unavailable` and never paints a ready dot for an unexposed namespace.
+- **The compatibility contract test follows the reworked gate**: the 0.2.1
+  line renames `evaluatePluginCompatibility`'s rejection payload from `peers`
+  to `requirements`; the test reads whichever shape the installed gate
+  exposes and pins the same six unmet peers either way.
+
 ## [0.0.5] - 2026-10-11
 
 ### Fixed
