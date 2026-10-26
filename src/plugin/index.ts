@@ -1115,6 +1115,15 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       // monopolise the per-tick budget and starve the rest.
       .sort((a, b) => (sweptRoots.get(a) ?? 0) - (sweptRoots.get(b) ?? 0))
       .slice(0, STORE_SWEEP_MAX_ROOTS);
+    // Finish the pass even when this tick opens nothing: a store that left the
+    // enumeration (adopted, quarantined) must not latch the pass forever.
+    if (startupPass && allRoots.every((root) => passVisited.has(root))) {
+      startupPass = false;
+      if (startupTimer) {
+        clearInterval(startupTimer);
+        startupTimer = undefined;
+      }
+    }
     if (roots.length === 0) {
       return;
     }
@@ -1125,14 +1134,6 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     for (const root of roots) {
       sweptRoots.set(root, sweptAt);
       passVisited.add(root);
-    }
-    // The startup pass is over once every sweepable root has been visited once.
-    if (startupPass && allRoots.every((root) => passVisited.has(root))) {
-      startupPass = false;
-      if (startupTimer) {
-        clearInterval(startupTimer);
-        startupTimer = undefined;
-      }
     }
     ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
     void (async () => {
