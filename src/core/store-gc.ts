@@ -20,6 +20,7 @@ import {
 	storeStateDir,
 	writeActivityToken,
 } from "./store-meta.js";
+import { listWorkspaceFiles } from "./workspace.js";
 import { atomicWrite } from "./transaction.js";
 
 /** Store reclamation ("GC"): quarantine a store that can never serve a session
@@ -175,22 +176,22 @@ function sizeOf(dir: string, depth = 0): number {
  *  live transaction (a staged row without a file is still content). */
 export function isStoreEmpty(dir: string): boolean {
 	const memory = join(dir, "memory");
-	for (const name of ["MEMORY.md", "memory_summary.md", "raw_memories.md"]) {
-		try {
-			if (statSync(join(memory, name)).size > 0) {
-				return false;
-			}
-		} catch {
-			void 0;
-		}
+	let rels: string[];
+	try {
+		// The readers walk memory/**/*.md (dot directories excluded), so the
+		// emptiness check must use the same enumeration or an extension resource
+		// would make a store look empty.
+		rels = listWorkspaceFiles(dir);
+	} catch {
+		return false;
 	}
-	for (const rel of [["rollout_summaries"], ["extensions", "ad_hoc", "notes"], ["skills"]]) {
+	for (const rel of rels) {
 		try {
-			if (readdirSync(join(memory, ...rel)).length > 0) {
+			if (statSync(join(memory, rel)).size > 0) {
 				return false;
 			}
 		} catch {
-			void 0;
+			return false;
 		}
 	}
 	return true;
@@ -206,13 +207,21 @@ function missingMarkPath(dir: string): string {
  *  when this is the first pass that sees it. */
 function missingAgeMs(dir: string, now: number): number | undefined {
 	try {
-		return now - statSync(missingMarkPath(dir)).mtimeMs;
+		const raw = readFileSync(missingMarkPath(dir), "utf-8").trim();
+		const at = Date.parse(raw);
+		if (Number.isFinite(at)) {
+			return Math.max(0, now - at);
+		}
+		return Math.max(0, now - statSync(missingMarkPath(dir)).mtimeMs);
 	} catch {
 		return undefined;
 	}
 }
 
 function markMissing(dir: string, now: number): void {
+	if (!existsSync(dir)) {
+		return;
+	}
 	try {
 		mkdirSync(join(dir, "state"), { recursive: true, mode: 0o700 });
 		writeFileSync(missingMarkPath(dir), new Date(now).toISOString(), { mode: 0o600 });
@@ -261,6 +270,17 @@ export function planStoreGc(
 	// whole pass is a no-op when reclamation is disabled.
 	if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
 		return plan;
+	}
+	// Directories that never got a database are invisible to the main
+	// enumeration; report them so an operator can explain the inventory.
+	try {
+		for (const name of readdirSync(dsh)) {
+			if (!name.startsWith(".") && !existsSync(join(dsh, name, "index.sqlite"))) {
+				plan.skipped.push({ key: name, reason: "no-index" });
+			}
+		}
+	} catch {
+		void 0;
 	}
 	for (const dir of storeDirsUnder(baseRoot)) {
 		const key = basename(dir);
@@ -551,19 +571,6 @@ export function restoreStore(
 	writeActivityToken(target);
 	clearSweptToken(target);
 	clearTombstone(baseRoot, key);
-	const manifestPath = join(entry.dir, "index.json");
-	try {
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<
-			string,
-			unknown
-		>;
-		atomicWrite(
-			manifestPath,
-			`${JSON.stringify({ ...manifest, restoredAt: new Date(now).toISOString() })}\n`,
-		);
-	} catch {
-		// The restore already succeeded; a failed annotation must not undo it.
-	}
 	// The entry now holds only its manifest; leaving it behind would accumulate
 	// dead directories (and keep the key "restorable" forever).
 	try {
@@ -626,10 +633,11 @@ export function restoreTombstonedStore(
 	}
 	const target = join(gcDirs(baseRoot).dsh, key);
 	if (existsSync(target) && !existsSync(join(target, "index.sqlite"))) {
-		// Ghost directory (a late settle re-created state/ after the quarantine):
-		// there is no store here, so drop it and restore the real one.
+		// Ghost directory (a late settle re-created state/ after the quarantine).
+		// Move it aside instead of deleting: it may hold another process's lease
+		// files or a half-created store.
 		try {
-			rmSync(target, { recursive: true, force: true });
+			renameSync(target, target + ".stale-" + String(now));
 		} catch {
 			void 0;
 		}
@@ -655,6 +663,9 @@ export function restoreTombstonedStore(
 		clearTombstone(baseRoot, key);
 		return { restoredTo: result.restoredTo };
 	} catch {
+		// The entry is gone (purged or manually removed): drop the stale tombstone
+		// so every adoption stops retrying a restore that cannot succeed.
+		clearTombstone(baseRoot, key);
 		return undefined;
 	}
 }
@@ -811,6 +822,12 @@ export async function executeStoreGc(
 						fence = "adopted";
 						return;
 					}
+					// Applies to both tiers: an unsettled token means an enqueue may have
+					// committed work this pass cannot see.
+					if (storeIsDirty(candidate.path)) {
+						fence = "dirty-token";
+						return;
+					}
 					if (candidate.tier === "orphan") {
 						const origin = readStoreOrigin(candidate.path);
 						if (
@@ -819,10 +836,6 @@ export async function executeStoreGc(
 								(origin.realpath !== origin.workdir && existsSync(origin.realpath)))
 						) {
 							fence = "workdir-revived";
-							return;
-						}
-						if (storeIsDirty(candidate.path)) {
-							fence = "dirty-token";
 							return;
 						}
 					}
@@ -838,7 +851,12 @@ export async function executeStoreGc(
 			}
 			const quarantinedPath = entry;
 			const moved = await deps.inspect(join(quarantinedPath, "store"));
-			if (!moved || moved.pending > 0) {
+			if (
+				!moved ||
+				moved.pending > 0 ||
+				moved.leaseActive ||
+				(candidate.tier === "empty" && moved.content)
+			) {
 				deps.lock(() => {
 					try {
 						renameSync(join(quarantinedPath, "store"), candidate.path);

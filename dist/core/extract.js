@@ -437,6 +437,9 @@ export async function processExtractionQueue(root, provider, opts = {}) {
     // this point publishes a different token, so settling against this snapshot
     // can never mark the store clean while that job is still pending.
     const activity = readActivityState(root);
+    // The failure-marker comparison must use the instant this snapshot was taken;
+    // a marker written later in the drain belongs to work this pass never saw.
+    const drainStartedAt = Date.now();
     const claimIdx = await Index.create(indexDb(root));
     let job;
     try {
@@ -448,7 +451,7 @@ export async function processExtractionQueue(root, provider, opts = {}) {
             if (changed > 0) {
                 claimIdx.audit("extract.queue_blocked", "-", `provider=${provider.name}; jobs=${changed}: ${detail.slice(0, 300)}`);
             }
-            settleAfterDrain(root, activity, claimIdx.extractionPendingCount());
+            settleAfterDrain(root, activity, claimIdx.extractionPendingCount(), drainStartedAt);
             return blocked ? { status: "blocked" } : { status: "empty" };
         }
         const unblocked = claimIdx.extractionUnblockProvider(provider.name);
@@ -459,7 +462,7 @@ export async function processExtractionQueue(root, provider, opts = {}) {
         if (!job) {
             // "No claimable job" is not "no work": a retry window or the running cap
             // can hide pending rows, so depth decides whether this store settles.
-            settleAfterDrain(root, activity, claimIdx.extractionPendingCount());
+            settleAfterDrain(root, activity, claimIdx.extractionPendingCount(), drainStartedAt);
         }
     }
     finally {

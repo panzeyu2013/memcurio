@@ -15,6 +15,7 @@ import {
 	appendLifecycleAudit,
 	gcDirs,
 	executeStoreGc,
+	isStoreEmpty,
 	planStoreGc,
 	purgeTrash,
 	quarantineStore,
@@ -490,6 +491,107 @@ describe("executeStoreGc", () => {
 		}
 	});
 
+
+	test("a WAL sidecar written after planning fences the move", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa000000000d1");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async (dir) => {
+					writeFileSync(join(dir, "index.sqlite-wal"), "");
+					return { pending: 0, leaseActive: false, content: false };
+				},
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "wal")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a store changed after the depth check is fenced", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa000000000d2");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async (dir) => {
+					const db = join(dir, "index.sqlite");
+					const old = new Date(Date.now() - 10_000);
+					utimesSync(db, old, old);
+					return { pending: 0, leaseActive: false, content: false };
+				},
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "store-changed")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a workspace that comes back after planning is fenced", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa000000000d3");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async (dir) => {
+					const origin = JSON.parse(readFileSync(join(dir, "state", "origin.json"), "utf-8")) as {
+						workdir: string;
+					};
+					mkdirSync(origin.workdir, { recursive: true });
+					return { pending: 0, leaseActive: false, content: false };
+				},
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "workdir-revived")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("an orphan that turns dirty after planning is fenced", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa000000000d4");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async (dir) => {
+					writeActivityToken(dir);
+					return { pending: 0, leaseActive: false, content: false };
+				},
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "dirty-token")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
 	test("work that appears in the moved store rolls the move back", async () => {
 		const { base, home, cleanup } = setup();
 		try {
@@ -540,10 +642,57 @@ describe("two-pass confirmation", () => {
 			expect(existsSync(store)).toBe(true);
 			const mark = join(store, "state", "gc-missing-since");
 			expect(existsSync(mark)).toBe(true);
-			const old = new Date(now - 2 * 3_600_000);
-			utimesSync(mark, old, old);
+			// The marker stores the instant it was first seen (not the file mtime),
+			// so clock jumps cannot stall the confirmation.
+			writeFileSync(mark, new Date(now - 2 * 3_600_000).toISOString());
 			const second = await executeStoreGc(base, policy(home), deps);
 			expect(second.quarantined).toEqual(["aaaa000000000b1"]);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("empty-store tier guards", () => {
+	test("extension content makes a store non-empty", () => {
+		const { base, cleanup } = setup();
+		try {
+			const store = makeStore(base, "aaaa000000000c1");
+			mkdirSync(join(store, "memory", "extensions", "foo", "resources"), { recursive: true });
+			writeFileSync(join(store, "memory", "extensions", "foo", "resources", "x.md"), "content");
+			expect(isStoreEmpty(store)).toBe(false);
+			expect(isStoreEmpty(makeStore(base, "aaaa000000000c2"))).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a dirty token blocks the empty tier inside the fence", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = makeStore(base, "aaaa000000000c3");
+			mkdirSync(join(store, "memory"), { recursive: true });
+			writeFileSync(join(store, "memory", "MEMORY.md"), "");
+			recordStoreOrigin(store, join(home, "worktrees", "repo-z", "alive"), "2026-08-01T00:00:00.000Z");
+			writeActivityToken(store);
+			const old = new Date(NOW - 2 * 86_400_000);
+			utimesSync(join(store, "state", "activity"), old, old);
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(
+				base,
+				policy(home, { retentionDays: 0, emptyStoreHours: 24 }),
+				{
+					now: NOW,
+					protectedRoots: new Set(),
+					isProtected: () => false,
+					inspect: async () => ({ pending: 0, leaseActive: false, content: false }),
+					audit: (row) => audits.push(row),
+					lock: (fn) => fn(),
+				},
+			);
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "dirty-token")).toBe(true);
 		} finally {
 			cleanup();
 		}

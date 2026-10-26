@@ -15,7 +15,7 @@ export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { pruneSessionLeases, sessionLeaseActive, storeIsDirty, touchSessionLease } from "../core/store-meta.js";
+import { clearSessionLease, pruneSessionLeases, sessionLeaseActive, storeIsDirty, touchSessionLease } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -932,7 +932,18 @@ export function apply(ctx, config = {}) {
     const passVisited = new Set();
     let routeAnnounced = false;
     const sweptRoots = new Map();
+    // One sweep batch at a time: the startup ticks fire every 500ms and must not
+    // stack a second batch (and its SQLite/LLM work) on top of the previous one.
+    let sweepInFlight = false;
     const sweepDormantStores = (reason) => {
+        if (sweepInFlight) {
+            return;
+        }
+        // Zombie leases (a crashed process never cleared its file) are garbage even
+        // when no worker route is known, so prune before the route gate.
+        for (const root of storeRootsUnder(baseRoot)) {
+            pruneSessionLeases(root, Date.now());
+        }
         const globalRoute = fixedRoute() ?? lastKnownRoute;
         if (!globalRoute) {
             return;
@@ -980,11 +991,10 @@ export function apply(ctx, config = {}) {
             sweptRoots.set(root, sweptAt);
             passVisited.add(root);
         }
+        sweepInFlight = true;
         ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
         void (async () => {
             for (const root of roots) {
-                // Drop lease files left by a crashed process before deciding anything.
-                pruneSessionLeases(root, Date.now());
                 const adapter = new MemcurioAdapter({
                     root,
                     host: "dsh",
@@ -1022,7 +1032,9 @@ export function apply(ctx, config = {}) {
                     adapter.dispose();
                 }
             }
-        })();
+        })().finally(() => {
+            sweepInFlight = false;
+        });
     };
     // Safety net for routes that appear without a new session (a restored
     // session replays its route; a pinned route can change live) and for stores
@@ -1031,6 +1043,9 @@ export function apply(ctx, config = {}) {
         // Refresh the cross-process ownership fence for every live session before
         // the sweep decides what is dormant.
         for (const runtime of sessions.values()) {
+            if (runtime.retired) {
+                continue;
+            }
             touchSessionLease(runtime.root, process.pid, runtime.session.id);
         }
         try {
@@ -1088,12 +1103,9 @@ export function apply(ctx, config = {}) {
     });
     const runStoreGc = async (reason) => {
         const policy = gcPolicy();
-        if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
-            return;
-        }
         const result = await executeStoreGc(baseRoot, policy, {
             now: Date.now(),
-            protectedRoots: new Set([...sessions.values()].map((runtime) => runtime.root)),
+            protectedRoots: new Set([...sessions.values()].filter((runtime) => !runtime.retired).map((runtime) => runtime.root)),
             isProtected: (dir) => [...sessions.values()].some((runtime) => runtime.root === dir && !runtime.retired) ||
                 sessionLeaseActive(dir),
             inspect: async (dir) => {
@@ -1392,6 +1404,12 @@ export function apply(ctx, config = {}) {
                 // otherwise stay "active" forever and never be swept again.
                 runtime.retired = true;
                 bootstrappedRoots.delete(runtime.root);
+                try {
+                    clearSessionLease(runtime.root, process.pid, runtime.session.id);
+                }
+                catch {
+                    void 0;
+                }
             }
         });
         return retirement;

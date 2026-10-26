@@ -20,7 +20,9 @@
     ├── origin.json                  # 生命周期：workdir / realpath / firstSeenAt / lastActivityAt（回收判定输入；每会话写一次）
     ├── activity                     # 脏 token（每次检查点事务提交后写；裸写不 fsync，容忍撕裂）
     ├── swept                        # 已结算 token（只在“队列为空”确认后推进；restore 与清理路径会删除它）
-    └── activity-failed              # token 写失败留下的持久标记（下一次空排空清除，防止已提交任务被误判干净）
+    ├── activity-failed              # token 写失败留下的持久标记（下一次空排空清除，防止已提交任务被误判干净）
+    ├── live/<pid>-<session>.json    # 跨进程会话租约（采纳时写、sweep 每 5 分钟心跳、15 分钟未心跳失效）
+    └── gc-missing-since             # 两遍确认：首次观察到 workdir 缺失的时刻（workdir 复活时清除）
 ```
 
 基座级（<DSH home>/memcurio/dsh/ 下）：dsh/.gc/ 保存生命周期审计 audit.jsonl、互斥锁 lifecycle.lock 与墓碑 tombstones/<key>.json；dsh/.trash/<ts>-<key>/ 保存已隔离的整棵 store（index.json manifest + store/）。两者都是点目录且不含直接的 index.sqlite，不会进入 sweep 或 UI 的 store 枚举。

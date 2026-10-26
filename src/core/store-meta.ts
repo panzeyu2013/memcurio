@@ -131,6 +131,9 @@ export function readStoreOrigin(root: string): StoreOrigin | undefined {
 }
 
 export function writeStoreOrigin(root: string, origin: StoreOrigin): void {
+  if (!existsSync(root)) {
+    return;
+  }
   mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
   atomicWrite(originPath(root), JSON.stringify(origin) + "\n");
 }

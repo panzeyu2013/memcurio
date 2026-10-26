@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The dormant sweep now fires on the transition to a known worker route instead of on every session creation, and the policy-rejected dead-letter requeue is one-shot per store (a store that keeps failing no longer revives every cycle).
+
 ### Added
 
 - **Store lifecycle: token-driven sweep and optional reclamation.** Every
@@ -27,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any memory content once storeEmptyStoreHours is set (default 0 = off).
   Orphan moves require two independent passes, a fresh session lease in any
   process blocks them, and conflicted trash entries expire after twice the
-  trash window. dsh/.gc/audit.jsonl records every plan, quarantine, rollback,
+  trash window. dsh/.gc/audit.jsonl records plan snapshots (when candidates exist), quarantine, rollback,
   purge and restore.
 - **integrationStoreGcPlan / integrationStoreGcRestore** operator API for a
   read-only reclamation inventory and a manual restore.

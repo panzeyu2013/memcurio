@@ -99,6 +99,9 @@ export function readStoreOrigin(root) {
     }
 }
 export function writeStoreOrigin(root, origin) {
+    if (!existsSync(root)) {
+        return;
+    }
     mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
     atomicWrite(originPath(root), JSON.stringify(origin) + "\n");
 }

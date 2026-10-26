@@ -41,7 +41,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11；位于 store 根）
 ├── config.json
-└── state/                           # 锁 + 生命周期元数据（origin.json / activity / swept / activity-failed）
+└── state/                           # 锁 + 生命周期元数据（origin.json / activity / swept / activity-failed / live/ / gc-missing-since）
 ```
 
 现状约束：cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载，不使用命名空间（ns）、`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md。模型访问仅来自宿主注入的 `ctx.llm` 通道；`MEMCURIO_LLM_PROVIDER=none` 保留为 Phase-2 熔断门禁（`src/engine.ts`）。memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），没有独立 CLI/MCP/HTTP LLM 通道。
