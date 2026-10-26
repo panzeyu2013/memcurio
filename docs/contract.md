@@ -17,7 +17,7 @@
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11）
 ├── config.json
 └── state/                           # 锁 + 生命周期元数据
-    ├── origin.json                  # 生命周期：workdir / realpath / firstSeenAt / lastActivityAt（回收判定输入；每会话写一次）
+    ├── origin.json                  # 生命周期：workdir / realpath / firstSeenAt / lastActivityAt（采纳时写、会话结束推进 lastActivityAt；ensureStoreOrigin 回填）
     ├── activity                     # 脏 token（每次检查点事务提交后写；裸写不 fsync，容忍撕裂）
     ├── swept                        # 已结算 token（只在“队列为空”确认后推进；restore 与清理路径会删除它）
     ├── activity-failed              # token 写失败留下的持久标记（下一次空排空清除，防止已提交任务被误判干净）
@@ -29,10 +29,10 @@
 
 ### Store 生命周期（回收协议）
 
-- **所有权**：每个会话在 `state/live/<pid>-<session>.json` 写租约，插件按 5 分钟心跳，15 分钟未心跳视为陈旧；GC 与 sweep 以“本进程会话 ∪ 新鲜租约”为保护集，退役会话不心跳也不再保护。
+- **所有权**：每个会话在 `state/live/<pid>-<session>.json` 写租约，插件按 5 分钟心跳，15 分钟未心跳视为陈旧；GC 与 sweep 都以“本进程会话 ∪ 新鲜租约”为保护集（sweep 另排除已 bootstrapped 的 store），退役会话不心跳也不再保护。
 - **脏 token**：`activity` 在检查点事务提交后写、`swept` 只在排空确认（含排空开始时刻快照）后推进；`activity-failed` 在 token 写失败时留下，下一次空排空清除。三者任一不一致即脏。
 - **两遍确认**：首次观察到 workdir 缺失只写 `state/gc-missing-since`（内容含 workdir 指纹），至少 1 小时后且再次确认缺失才允许隔离；workdir 复活时清除。
-- **隔离**：计划（`planStoreGc`）只读；执行器在 `lifecycle.lock` 内复核 inode/mtime、无 `-wal`、无租约/活会话、token 已结算、workdir 未复活、空店层无内容，然后把整棵 store rename 进 `.trash` 并写墓碑；rename 后再次检查 pending/lease/content，出现新工作则回滚。
+- **隔离**：operator 预览（dryRun）只读；内部计划会写/清两遍确认标记。执行器先做 inspect 预检（pending/lease/空店 content），再在 `lifecycle.lock` 内复核 inode/mtime、无 `-wal`、无租约/活会话、token 已结算、workdir 未复活，然后把整棵 store rename 进 `.trash` 并写墓碑；rename 后再次检查 pending/lease/content，出现新工作则回滚。
 - **恢复**：采纳同名 workdir 时按墓碑恢复；恢复在锁内、要求 `store/index.sqlite` 完整，冲突保留墓碑与 `.restore-conflict`，失败写 `store.restore_failed` 审计。
 - **清除**：`trashDays > 0` 时到期条目（冲突条目 2 倍窗口）被 purge，且只清指向该条目的墓碑；manifest 丢失但 store 仍在的条目按目录名与 mtime 恢复清单。
 
@@ -40,6 +40,7 @@
 
 - 会话租约心跳不取 `lifecycle.lock`：GC 的检查→rename 与心跳之间存在极窄的 TOCTOU；租约是辅助信号，年龄与锁内栅栏仍是主防线。
 - `scope=global` 的单一全局 store 不参与回收（删它等于删掉全部全局记忆）。
+- 用 `root` 覆盖数据根时 `dshHomeRoot` 仍是 DSH home：`scope=dsh-home` 会把所有 store 判为 outside-dsh-home（需配 `scope=all`）。
 - 非插件写入者（直接用 `MemcurioAdapter`/集成 API 的工具）不写会话租约。
 - 阻塞作业在 provider 不可用期间仍使 store 保持 dirty，sweep 每 30 分钟会打开它一次（单次约 0.3 ms）。
 - `.stale/` 幽灵保留 30 天；`trashDays=0` 时连它也不清理。

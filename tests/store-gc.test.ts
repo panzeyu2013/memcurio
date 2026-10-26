@@ -53,7 +53,10 @@ function setup(): { base: string; home: string; cleanup: () => void } {
 function makeStore(base: string, key: string): string {
   const dir = join(base, "dsh", key);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "index.sqlite"), "");
+  mkdirSync(join(dir, "memory"), { recursive: true });
+  // A real store always carries a SQLite header; the restore integrity check
+  // rejects an empty placeholder.
+  writeFileSync(join(dir, "index.sqlite"), "SQLite format 3\u0000");
   return dir;
 }
 
@@ -269,7 +272,7 @@ describe("quarantine / restore / purge", () => {
     const { base, home, cleanup } = setup();
     try {
       const store = makeStore(base, "ffff000000000001");
-      writeFileSync(join(store, "memory"), "x");
+      writeFileSync(join(store, "memory", "MEMORY.md"), "x");
       recordStoreOrigin(
         store,
         join(home, "worktrees", "repo-4", "wt"),

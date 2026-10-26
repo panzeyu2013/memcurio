@@ -5,10 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.7] - 2026-10-27
 
 ### Changed
 
+- A queue with no token write for seven days no longer blocks an orphan's
+  reclamation; every enqueue primitive (including queueExtraction) moves the
+  dirty token; ghost directories under state/ move to .stale/ and expire after
+  30 days; the GC purges inherited trash once, 60 seconds after apply.
 - The reclamation inventory is visible while both switches are off, and purge
   stays independent of retention; a queue whose token has not moved for seven
   days no longer blocks an orphan's reclamation; restore takes the lifecycle
@@ -37,8 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process blocks them, and conflicted trash entries expire after twice the
   trash window. dsh/.gc/audit.jsonl records plan snapshots (when candidates exist), quarantine, rollback,
   purge and restore.
-- **integrationStoreGcPlan / integrationStoreGcRestore** operator API for a
-  read-only reclamation inventory and a manual restore.
+- **integrationStoreGcPlan / integrationStoreGcRestore / integrationLifecycleAudit** operator API for a
+  read-only reclamation inventory, a manual restore and the lifecycle audit.
+- **storeGcScope / storeEmptyStoreHours** profile keys: keep reclamation inside
+  the worktrees tree (default) or allow it everywhere; empty-store reclamation
+  is its own switch, off by default.
 
 ## [0.0.6] - 2026-10-19
 

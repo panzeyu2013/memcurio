@@ -15,6 +15,7 @@ import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
 import { Index } from "../src/core/db.js";
+import { writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -22,7 +23,7 @@ import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
 import * as api from "../src/api.js";
 import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
-import { dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
+import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -2563,7 +2564,10 @@ describe("lifecycle wiring", () => {
       const store = workspaceStoreRoot(root, workdir, "workspace");
       const key = store.slice(store.lastIndexOf("/") + 1);
       mkdirSync(join(store, "memory"), { recursive: true });
-      writeFileSync(join(store, "index.sqlite"), "");
+      // A real database: the restore integrity check rejects placeholders, and
+      // the adopted session opens this file.
+      const seed = await Index.create(indexDb(store));
+      seed.close();
       writeFileSync(join(store, "memory", "MEMORY.md"), "# kept");
       quarantineStore(
         root,
@@ -2600,6 +2604,22 @@ describe("lifecycle wiring", () => {
     } finally {
       await disposeFibers(fibers);
     }
+  });
+});
+
+describe("dirtyStoreRoots", () => {
+  test("only stores whose tokens disagree are selected", () => {
+    const root = temporaryRoot();
+    const settled = join(root, "dsh", "settled");
+    const dirty = join(root, "dsh", "dirty");
+    for (const dir of [settled, dirty]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "index.sqlite"), "");
+    }
+    const token = writeActivityToken(settled);
+    writeSweptToken(settled, token);
+    writeActivityToken(dirty);
+    expect(dirtyStoreRoots([settled, dirty])).toEqual([dirty]);
   });
 });
 

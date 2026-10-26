@@ -25,7 +25,7 @@ import {
   integrationStatus,
 } from "../api.js";
 import type { AgentFinish, AgentTurnMessage, LlmChannel } from "../api.js";
-import { dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 import { Index } from "../core/db.js";
 import { withFileLock } from "../core/transaction.js";
 import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
@@ -37,7 +37,7 @@ export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { clearSessionLease, pruneSessionLeases, sessionLeaseActive, storeIsDirty, touchSessionLease } from "../core/store-meta.js";
+import { clearSessionLease, pruneSessionLeases, sessionLeaseActive, touchSessionLease } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -1105,12 +1105,14 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       [...sessions.values()].filter((runtime) => !runtime.retired).map((runtime) => runtime.root),
     );
     const allRoots = storeRootsUnder(baseRoot).filter(
-      (root) => !bootstrappedRoots.has(root) && !activeRoots.has(root),
+      // A fresh lease means another process is draining this store; two
+      // workers would fence each other's claims.
+      (root) => !bootstrappedRoots.has(root) && !activeRoots.has(root) && !sessionLeaseActive(root),
     );
     // The dirty token (activity != swept) is the ONLY reason a store is opened
     // in steady state: an orphan store's token never changes again, and a live
     // store drains through its own adapter. A dirty check is one stat per store.
-    const dirty = allRoots.filter((root) => storeIsDirty(root));
+    const dirty = dirtyStoreRoots(allRoots);
     const roots = allRoots
       .filter((root) => {
         if (startupPass && passVisited.has(root)) {

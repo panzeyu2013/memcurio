@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { storeDirsUnder } from "../core/store-gc.js";
+import { storeIsDirty } from "../core/store-meta.js";
 /** Store key used when a session carries no working directory. The host
  *  process cwd is an arbitrary process fact — keying on it would silently
  *  share memory across workspaces whenever two sessions happen to share that
@@ -38,6 +39,10 @@ export function storeRootsUnder(baseRoot) {
     // Single implementation (store-gc): dot-directories are lifecycle
     // bookkeeping (base root: .gc, .trash), never stores.
     return storeDirsUnder(baseRoot);
+}
+/** Steady-state sweep input: only stores whose tokens disagree are opened. */
+export function dirtyStoreRoots(roots) {
+    return roots.filter((root) => storeIsDirty(root));
 }
 /** Live (non-retired) session runtimes. A retired runtime keeps its store
  *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */

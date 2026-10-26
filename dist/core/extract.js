@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Index } from "./db.js";
 import { WorkerAbortedError } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
-import { readActivityState, settleAfterDrain } from "./store-meta.js";
+import { readActivityState, settleAfterDrain, writeActivityToken } from "./store-meta.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 const MAX_EVIDENCE_ITEMS = 256;
@@ -393,7 +393,13 @@ export async function queueExtraction(root, snapshot, sourceEvent, provider = "h
     ensureLayout(root);
     const idx = await Index.create(indexDb(root));
     try {
-        return enqueueExtractionJob(idx, snapshot, sourceEvent, provider);
+        const queued = enqueueExtractionJob(idx, snapshot, sourceEvent, provider);
+        // Every enqueue must move the dirty token; a clean watermark with pending
+        // rows would make the steady-state sweep skip the store forever.
+        if (queued.inserted) {
+            writeActivityToken(root);
+        }
+        return queued;
     }
     finally {
         idx.close();

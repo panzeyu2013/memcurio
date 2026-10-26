@@ -22,6 +22,8 @@ export declare function memcurioBaseRoot(): string;
  *  by the plugin's dormant-store sweep, which needs the stores no live session
  *  has adopted; a missing namespace simply means no stores exist yet. */
 export declare function storeRootsUnder(baseRoot: string): string[];
+/** Steady-state sweep input: only stores whose tokens disagree are opened. */
+export declare function dirtyStoreRoots(roots: readonly string[]): string[];
 /** Live (non-retired) session runtimes. A retired runtime keeps its store
  *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
 export declare function liveSessions<T extends {

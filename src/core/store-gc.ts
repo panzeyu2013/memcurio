@@ -1,10 +1,13 @@
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -14,6 +17,7 @@ import {
 import { basename, join, resolve, sep } from "node:path";
 
 import {
+  activityFailurePath,
   activityPath,
   clearSweptToken,
   readStoreOrigin,
@@ -206,16 +210,48 @@ const STALE_QUEUE_MS = 7 * 86_400_000;
  *  progress. After a week without a token write nothing can claim it any more
  *  (an orphan store has no live session), so the queue is dead weight. */
 function staleQueue(dir: string, now: number): boolean {
-  try {
-    return now - statSync(activityPath(dir)).mtimeMs > STALE_QUEUE_MS;
-  } catch {
-    return false;
+  // Use the NEWEST of the two signals: a fresh failure marker means the queue
+  // was just touched and must not be declared dead, while a missing activity
+  // token but an old marker still proves how long the queue has been stuck.
+  let newest = 0;
+  for (const file of [activityPath(dir), activityFailurePath(dir)]) {
+    try {
+      newest = Math.max(newest, statSync(file).mtimeMs);
+    } catch {
+      void 0;
+    }
   }
+  return newest > 0 && now - newest > STALE_QUEUE_MS;
 }
 
 /** An entry is still usable while it has a manifest or a store. A quarantine
  *  in progress has the manifest first; a partially purged directory may have
  *  neither, in which case the tombstone is stale. */
+/** A restore may only move a store that still has its workspace files and a
+ *  database SQLite accepts. A missing memory/ directory means a purge already
+ *  started deleting inside the copy. */
+function storeCopyIntact(entryDir: string): boolean {
+  const store = join(entryDir, "store");
+  const file = join(store, "index.sqlite");
+  if (!existsSync(file) || !existsSync(join(store, "memory"))) {
+    return false;
+  }
+  // The driver open is async and this path is synchronous; a header check still
+  // rejects an empty or truncated file left by an interrupted purge.
+  try {
+    const fd = openSync(file, "r");
+    try {
+      const head = Buffer.alloc(16);
+      const read = readSync(fd, head, 0, 16, 0);
+      return read === 16 && head.toString("latin1") === "SQLite format 3\u0000";
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 function entryUsable(entryDir: string): boolean {
   return existsSync(join(entryDir, "index.json")) || existsSync(join(entryDir, "store"));
 }
@@ -298,9 +334,6 @@ export function planStoreGc(
   // enumeration; report them so an operator can explain the inventory.
   try {
     for (const name of readdirSync(dsh)) {
-      if (name.includes(".stale-")) {
-        continue;
-      }
       if (!name.startsWith(".") && !existsSync(join(dsh, name, "index.sqlite"))) {
         plan.skipped.push({ key: name, reason: "no-index" });
       }
@@ -341,10 +374,7 @@ export function planStoreGc(
     }
     if (
       policy.scope === "dsh-home" &&
-      !under(realpathOrSelf(join(policy.dshHomeRoot, "worktrees")), origin.realpath) &&
-      // A symlinked DSH home makes the recorded realpath miss the prefix even
-      // though the store belongs to the worktrees tree; accept the raw path too.
-      !under(join(policy.dshHomeRoot, "worktrees"), origin.workdir)
+      !under(join(realpathOrSelf(policy.dshHomeRoot), "worktrees"), origin.realpath)
     ) {
       plan.skipped.push({ key, reason: "outside-dsh-home" });
       continue;
@@ -410,7 +440,14 @@ export function planStoreGc(
       ageDays: Math.round(effectiveAge * 10) / 10,
       sizeBytes: sizeOf(dir),
       tier: "orphan",
-      reasons: ["workdir-missing", `age>=${String(policy.retentionDays)}d`],
+      reasons: [
+        "workdir-missing",
+        "age>=" + String(policy.retentionDays) + "d",
+        ...(missingAgeMs(dir, now, origin.realpath) === undefined ||
+        (missingAgeMs(dir, now, origin.realpath) ?? 0) < MISSING_CONFIRM_MS
+          ? ["missing-unconfirmed"]
+          : []),
+      ],
     });
   }
   plan.trashEligible = trashEntries(baseRoot)
@@ -584,18 +621,22 @@ export function purgeTrash(
   policy: StoreGcPolicy,
   now = Date.now(),
 ): string[] {
-  if (!(policy.trashDays > 0)) {
-    return [];
-  }
   const removed: string[] = [];
   purgeDebris(baseRoot, now);
   purgeStaleGhosts(baseRoot, now);
+  if (!(policy.trashDays > 0)) {
+    return removed;
+  }
   for (const entry of trashEntries(baseRoot)) {
     if (!trashEntryEligible(entry, policy, now)) {
       continue;
     }
     try {
-      rmSync(entry.dir, { recursive: true, force: true });
+      const purging = join(gcDirs(baseRoot).gc, "purging");
+      mkdirSync(purging, { recursive: true, mode: 0o700 });
+      const moved = join(purging, basename(entry.dir));
+      renameSync(entry.dir, moved);
+      rmSync(moved, { recursive: true, force: true });
       // Only the tombstone that points at THIS entry may be dropped: the same
       // key can have an older and a newer quarantined copy.
       if (readTombstone(baseRoot, entry.key)?.entry === entry.dir) {
@@ -641,7 +682,7 @@ function restoreStoreInner(
   if (!entry) {
     throw new Error(`no quarantined store for key ${key}`);
   }
-  if (!existsSync(join(entry.dir, "store", "index.sqlite"))) {
+  if (!storeCopyIntact(entry.dir)) {
     // A purge interrupted mid-rmSync leaves a partial copy. Restoring it would
     // hand a broken store to the session and audit it as success.
     try {
@@ -722,6 +763,11 @@ export function restoreTombstonedStore(
   key: string,
   now = Date.now(),
 ): { restoredTo: string } | { conflict: true; existing: string } | undefined {
+  // Every adopted session calls this: do not take the global lock when there is
+  // nothing to restore (a long purge would otherwise block session creation).
+  if (!readTombstone(baseRoot, key)) {
+    return undefined;
+  }
   return withFileLock(gcDirs(baseRoot).lock, () => restoreTombstonedStoreInner(baseRoot, key, now));
 }
 
@@ -814,13 +860,14 @@ export function readLifecycleAudit(
   limit = 50,
 ): Array<Record<string, unknown>> {
   const { gc } = gcDirs(baseRoot);
-  let raw: string;
-  try {
-    raw = readFileSync(join(gc, "audit.jsonl"), "utf-8");
-  } catch {
-    return [];
-  }
-  return raw
+  const read = (name: string): string => {
+    try {
+      return readFileSync(join(gc, name), "utf-8");
+    } catch {
+      return "";
+    }
+  };
+  return (read("audit.jsonl.1") + read("audit.jsonl"))
     .split("\n")
     .filter(Boolean)
     .slice(-limit)
