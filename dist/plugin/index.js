@@ -1,5 +1,5 @@
-import { existsSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, isAbsolute, resolve, sep } from "node:path";
 import { BlockAssembler, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../core/channel.js";
@@ -10,12 +10,12 @@ import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "
 import { Index } from "../core/db.js";
 import { withFileLock } from "../core/transaction.js";
 import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
-import { appendLifecycleAudit, clearTombstone, gcDirs, planStoreGc, purgeTrash, quarantineStore, restoreTombstonedStore, } from "../core/store-gc.js";
+import { appendLifecycleAudit, executeStoreGc, gcDirs, restoreTombstonedStore } from "../core/store-gc.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { readStoreOrigin, storeIsDirty } from "../core/store-meta.js";
+import { storeIsDirty } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -1079,170 +1079,45 @@ export function apply(ctx, config = {}) {
         // Empty stores only matter when reclamation is enabled at all.
         emptyStoreHours: live().storeRetentionDays > 0 ? STORE_EMPTY_STORE_HOURS : 0,
     });
-    const verifyGcCandidate = async (candidate) => {
-        if (storeIsDirty(candidate.path)) {
-            return "dirty-token";
-        }
-        const idx = await Index.create(indexDb(candidate.path));
-        try {
-            let ok = false;
-            idx.withTransaction(() => {
-                if (idx.extractionPendingCount() > 0)
-                    return;
-                if (idx.consolidationLeaseActive(WORKSPACE_WRITE_LEASE_KEY))
-                    return;
-                // An "empty" store may still hold staged rows or notes that never
-                // reached a markdown file: those are content, not slack.
-                if (candidate.tier === "empty" &&
-                    (idx.stageList().some((row) => row.status !== "deleted") ||
-                        idx.noteList().some((note) => !note.applied))) {
-                    return;
-                }
-                ok = true;
-            });
-            return ok ? undefined : "busy";
-        }
-        finally {
-            idx.close();
-        }
-    };
-    const pendingInMovedStore = async (entry) => {
-        try {
-            const idx = await Index.create(indexDb(join(entry, "store")));
-            try {
-                return idx.extractionPendingCount();
-            }
-            finally {
-                idx.close();
-            }
-        }
-        catch {
-            // Fail closed: an unreadable moved store must trigger the rollback path,
-            // not look like "no pending work".
-            return 1;
-        }
-    };
     const runStoreGc = async (reason) => {
         const policy = gcPolicy();
-        const { lock } = gcDirs(baseRoot);
-        // Trash cleanup is maintenance, not reclamation: an operator who disables
-        // reclamation must not keep every quarantined store on disk forever.
-        try {
-            const removed = withFileLock(lock, () => purgeTrash(baseRoot, policy, Date.now()));
-            for (const dir of removed) {
-                appendLifecycleAudit(baseRoot, { at: new Date().toISOString(), action: "store.purge", entry: dir });
-            }
-        }
-        catch (error) {
-            warn(error);
-        }
-        if (!(policy.retentionDays > 0)) {
+        if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
             return;
         }
-        const now = Date.now();
-        const protectedRoots = new Set([...sessions.values()].map((runtime) => runtime.root));
-        let plan;
-        try {
-            plan = withFileLock(lock, () => planStoreGc(baseRoot, policy, { now, protectedRoots }));
-        }
-        catch (error) {
-            warn(error);
-            return;
-        }
-        for (const candidate of plan.candidates) {
-            try {
-                const before = statSync(join(candidate.path, "index.sqlite"));
-                const blocked = await verifyGcCandidate(candidate);
-                if (blocked !== undefined) {
-                    appendLifecycleAudit(baseRoot, {
-                        at: new Date().toISOString(),
-                        action: "store.quarantine_skipped",
-                        key: candidate.key,
-                        reason: blocked,
-                        sweep: reason,
-                    });
-                    continue;
-                }
-                // Re-check the world inside the lock: the plan and the verification are
-                // both advisory until this point.
-                let entry;
-                let fence;
-                withFileLock(lock, () => {
+        const result = await executeStoreGc(baseRoot, policy, {
+            now: Date.now(),
+            protectedRoots: new Set([...sessions.values()].map((runtime) => runtime.root)),
+            isProtected: (dir) => [...sessions.values()].some((runtime) => runtime.root === dir && !runtime.retired),
+            inspect: async (dir) => {
+                try {
+                    const idx = await Index.create(indexDb(dir));
                     try {
-                        const after = statSync(join(candidate.path, "index.sqlite"));
-                        if (after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) {
-                            fence = "store-changed";
-                            return;
-                        }
-                        if (existsSync(join(candidate.path, "index.sqlite-wal"))) {
-                            fence = "wal";
-                            return;
-                        }
-                        if ([...sessions.values()].some((runtime) => runtime.root === candidate.path && !runtime.retired)) {
-                            fence = "adopted";
-                            return;
-                        }
-                        if (candidate.tier === "orphan") {
-                            const origin = readStoreOrigin(candidate.path);
-                            if (origin && (existsSync(origin.workdir) || (origin.realpath !== origin.workdir && existsSync(origin.realpath)))) {
-                                fence = "workdir-revived";
-                                return;
-                            }
-                            if (storeIsDirty(candidate.path)) {
-                                fence = "dirty-token";
-                                return;
-                            }
-                        }
-                        entry = quarantineStore(baseRoot, candidate, { sweep: reason }, Date.now()).entry;
+                        let pending = 0;
+                        let leaseActive = false;
+                        let content = false;
+                        idx.withTransaction(() => {
+                            pending = idx.extractionPendingCount();
+                            leaseActive = idx.consolidationLeaseActive(WORKSPACE_WRITE_LEASE_KEY);
+                            content =
+                                idx.stageList().some((row) => row.status !== "deleted") ||
+                                    idx.noteList().some((note) => !note.applied);
+                        });
+                        return { pending, leaseActive, content };
                     }
-                    catch {
-                        fence = "error";
+                    finally {
+                        idx.close();
                     }
-                });
-                if (entry === undefined) {
-                    appendLifecycleAudit(baseRoot, {
-                        at: new Date().toISOString(),
-                        action: "store.quarantine_skipped",
-                        key: candidate.key,
-                        reason: fence ?? "unknown",
-                        sweep: reason,
-                    });
-                    continue;
                 }
-                // A job that committed before the rename now lives in the moved
-                // database: put the store back instead of losing it.
-                const quarantined = entry;
-                const leftover = await pendingInMovedStore(quarantined);
-                if (leftover > 0) {
-                    withFileLock(lock, () => {
-                        renameSync(join(quarantined, "store"), candidate.path);
-                        rmSync(quarantined, { recursive: true, force: true });
-                        clearTombstone(baseRoot, candidate.key);
-                    });
-                    appendLifecycleAudit(baseRoot, {
-                        at: new Date().toISOString(),
-                        action: "store.quarantine_rolled_back",
-                        key: candidate.key,
-                        tier: candidate.tier,
-                        pending: leftover,
-                        entry: quarantined,
-                    });
-                    continue;
+                catch {
+                    return undefined;
                 }
-                appendLifecycleAudit(baseRoot, {
-                    at: new Date().toISOString(),
-                    action: "store.quarantine",
-                    key: candidate.key,
-                    tier: candidate.tier,
-                    workdir: candidate.workdir,
-                    ageDays: candidate.ageDays,
-                    bytes: candidate.sizeBytes,
-                    entry: quarantined,
-                });
-            }
-            catch (error) {
-                warn(error);
-            }
+            },
+            audit: (record) => appendLifecycleAudit(baseRoot, record),
+            lock: (fn) => withFileLock(gcDirs(baseRoot).lock, fn),
+        });
+        if (result.quarantined.length > 0 || result.rolledBack.length > 0) {
+            ctx.logger.debug("memcurio: gc " + reason + " quarantined=" + String(result.quarantined.length) +
+                " rolledBack=" + String(result.rolledBack.length) + " skipped=" + String(result.skipped));
         }
     };
     const storeGcTimer = setInterval(() => {

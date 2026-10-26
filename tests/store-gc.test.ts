@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
 	appendLifecycleAudit,
 	gcDirs,
+	executeStoreGc,
 	planStoreGc,
 	purgeTrash,
 	quarantineStore,
@@ -386,3 +387,127 @@ describe("quarantine / restore / purge", () => {
 		}
 	});
 });
+
+describe("executeStoreGc", () => {
+	function orphan(base: string, home: string, key: string): string {
+		const store = makeStore(base, key);
+		mkdirSync(join(store, "memory"), { recursive: true });
+		writeFileSync(join(store, "memory", "MEMORY.md"), "# content");
+		recordStoreOrigin(store, join(home, "worktrees", "repo-x", key), "2026-08-01T00:00:00.000Z");
+		return store;
+	}
+
+	test("quarantines a verified orphan and audits it", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa0000000000a1");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async () => ({ pending: 0, leaseActive: false, content: false }),
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toEqual(["aaaa0000000000a1"]);
+			expect(existsSync(store)).toBe(false);
+			expect(trashEntries(base)).toHaveLength(1);
+			expect(audits.some((row) => row.action === "store.quarantine")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("pending work blocks the destructive move", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa0000000000a2");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async () => ({ pending: 1, leaseActive: false, content: false }),
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(result.skipped).toBe(1);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "pending")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a live consolidation lease blocks the move", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa0000000000a3");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async () => ({ pending: 0, leaseActive: true, content: false }),
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "lease")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("a store adopted after planning is fenced inside the lock", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa0000000000a4");
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => true,
+				inspect: async () => ({ pending: 0, leaseActive: false, content: false }),
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			expect(audits.some((row) => row.reason === "adopted")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("work that appears in the moved store rolls the move back", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = orphan(base, home, "aaaa0000000000a5");
+			const audits: Record<string, unknown>[] = [];
+			let calls = 0;
+			const result = await executeStoreGc(base, policy(home), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async () => {
+					calls += 1;
+					return { pending: calls === 1 ? 0 : 1, leaseActive: false, content: false };
+				},
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.quarantined).toHaveLength(0);
+			expect(result.rolledBack).toEqual(["aaaa0000000000a5"]);
+			expect(existsSync(join(store, "index.sqlite"))).toBe(true);
+			expect(audits.some((row) => row.action === "store.quarantine_rolled_back")).toBe(true);
+			expect(trashEntries(base)).toHaveLength(0);
+		} finally {
+			cleanup();
+		}
+	});
+});
+

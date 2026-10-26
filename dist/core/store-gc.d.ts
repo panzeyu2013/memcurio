@@ -109,3 +109,34 @@ export declare function restoreTombstonedStore(baseRoot: string, key: string, no
 } | undefined;
 export declare function appendLifecycleAudit(baseRoot: string, record: Record<string, unknown>): void;
 export declare function readLifecycleAudit(baseRoot: string, limit?: number): Array<Record<string, unknown>>;
+export interface StoreGcVerify {
+    /** Non-terminal extraction jobs in the store. */
+    pending: number;
+    /** A live consolidation lease exists. */
+    leaseActive: boolean;
+    /** Staged rows or unapplied notes still count as content. */
+    content: boolean;
+}
+export interface StoreGcExecDeps {
+    now: number;
+    protectedRoots: ReadonlySet<string>;
+    isProtected: (dir: string) => boolean;
+    inspect: (dir: string) => Promise<StoreGcVerify | undefined>;
+    audit: (record: Record<string, unknown>) => void;
+    lock: <T>(fn: () => T) => T;
+}
+export interface StoreGcExecResult {
+    quarantined: string[];
+    rolledBack: string[];
+    skipped: number;
+    purged: string[];
+}
+/** Execute one reclamation pass.
+ *
+ *  Destructive steps are fenced twice: the caller's inspection (queue depth,
+ *  lease, content) is advisory until the lock re-checks the store inode/mtime,
+ *  the absence of a WAL sidecar, the live-session set and the workspace path;
+ *  after the rename the moved database is inspected again and the move is
+ *  rolled back if any work appeared. Purge is maintenance and runs even when
+ *  reclamation itself is disabled. */
+export declare function executeStoreGc(baseRoot: string, policy: StoreGcPolicy, deps: StoreGcExecDeps): Promise<StoreGcExecResult>;

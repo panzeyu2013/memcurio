@@ -656,3 +656,156 @@ export function readLifecycleAudit(
 			}
 		});
 }
+
+export interface StoreGcVerify {
+	/** Non-terminal extraction jobs in the store. */
+	pending: number;
+	/** A live consolidation lease exists. */
+	leaseActive: boolean;
+	/** Staged rows or unapplied notes still count as content. */
+	content: boolean;
+}
+
+export interface StoreGcExecDeps {
+	now: number;
+	protectedRoots: ReadonlySet<string>;
+	isProtected: (dir: string) => boolean;
+	inspect: (dir: string) => Promise<StoreGcVerify | undefined>;
+	audit: (record: Record<string, unknown>) => void;
+	lock: <T>(fn: () => T) => T;
+}
+
+export interface StoreGcExecResult {
+	quarantined: string[];
+	rolledBack: string[];
+	skipped: number;
+	purged: string[];
+}
+
+/** Execute one reclamation pass.
+ *
+ *  Destructive steps are fenced twice: the caller's inspection (queue depth,
+ *  lease, content) is advisory until the lock re-checks the store inode/mtime,
+ *  the absence of a WAL sidecar, the live-session set and the workspace path;
+ *  after the rename the moved database is inspected again and the move is
+ *  rolled back if any work appeared. Purge is maintenance and runs even when
+ *  reclamation itself is disabled. */
+export async function executeStoreGc(
+	baseRoot: string,
+	policy: StoreGcPolicy,
+	deps: StoreGcExecDeps,
+): Promise<StoreGcExecResult> {
+	const result: StoreGcExecResult = { quarantined: [], rolledBack: [], skipped: 0, purged: [] };
+	const audit = (record: Record<string, unknown>): void => {
+		deps.audit({ at: new Date(deps.now).toISOString(), ...record });
+	};
+	try {
+		result.purged = deps.lock(() => purgeTrash(baseRoot, policy, deps.now));
+		for (const dir of result.purged) {
+			audit({ action: "store.purge", entry: dir });
+		}
+	} catch {
+		void 0;
+	}
+	if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
+		return result;
+	}
+	let plan: StoreGcPlan;
+	try {
+		plan = deps.lock(() => planStoreGc(baseRoot, policy, { now: deps.now, protectedRoots: deps.protectedRoots }));
+	} catch {
+		return result;
+	}
+	for (const candidate of plan.candidates) {
+		try {
+			const before = statSync(join(candidate.path, "index.sqlite"));
+			const verified = await deps.inspect(candidate.path);
+			const blockedReason = !verified
+				? "inspect-failed"
+				: verified.pending > 0
+					? "pending"
+					: verified.leaseActive
+						? "lease"
+						: candidate.tier === "empty" && verified.content
+							? "content"
+							: undefined;
+			if (blockedReason !== undefined) {
+				result.skipped += 1;
+				audit({ action: "store.quarantine_skipped", key: candidate.key, reason: blockedReason });
+				continue;
+			}
+			let entry: string | undefined;
+			let fence: string | undefined;
+			deps.lock(() => {
+				try {
+					const after = statSync(join(candidate.path, "index.sqlite"));
+					if (after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) {
+						fence = "store-changed";
+						return;
+					}
+					if (existsSync(join(candidate.path, "index.sqlite-wal"))) {
+						fence = "wal";
+						return;
+					}
+					if (deps.isProtected(candidate.path)) {
+						fence = "adopted";
+						return;
+					}
+					if (candidate.tier === "orphan") {
+						const origin = readStoreOrigin(candidate.path);
+						if (
+							origin &&
+							(existsSync(origin.workdir) ||
+								(origin.realpath !== origin.workdir && existsSync(origin.realpath)))
+						) {
+							fence = "workdir-revived";
+							return;
+						}
+						if (storeIsDirty(candidate.path)) {
+							fence = "dirty-token";
+							return;
+						}
+					}
+					entry = quarantineStore(baseRoot, candidate, { sweep: "gc" }, deps.now).entry;
+				} catch {
+					fence = "error";
+				}
+			});
+			if (entry === undefined) {
+				result.skipped += 1;
+				audit({ action: "store.quarantine_skipped", key: candidate.key, reason: fence ?? "unknown" });
+				continue;
+			}
+			const quarantinedPath = entry;
+			const moved = await deps.inspect(join(quarantinedPath, "store"));
+			if (!moved || moved.pending > 0) {
+				deps.lock(() => {
+					try {
+						renameSync(join(quarantinedPath, "store"), candidate.path);
+						rmSync(quarantinedPath, { recursive: true, force: true });
+						clearTombstone(baseRoot, candidate.key);
+					} catch {
+						// The entry stays; the tombstone still points at it.
+					}
+				});
+				result.rolledBack.push(candidate.key);
+				audit({ action: "store.quarantine_rolled_back", key: candidate.key, tier: candidate.tier, entry: quarantinedPath });
+				continue;
+			}
+			result.quarantined.push(candidate.key);
+			audit({
+				action: "store.quarantine",
+				key: candidate.key,
+				tier: candidate.tier,
+				workdir: candidate.workdir,
+				ageDays: candidate.ageDays,
+				bytes: candidate.sizeBytes,
+				entry: quarantinedPath,
+			});
+		} catch {
+			// One broken candidate must not abort the pass.
+		}
+	}
+	return result;
+}
+

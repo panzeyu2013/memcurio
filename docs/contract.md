@@ -19,7 +19,7 @@
 └── state/                           # 锁 + 生命周期元数据
     ├── origin.json                  # 生命周期：workdir / realpath / firstSeenAt / lastActivityAt（回收判定输入；每会话写一次）
     ├── activity                     # 脏 token（每次检查点事务提交后写；裸写不 fsync，容忍撕裂）
-    ├── swept                        # 已结算 token（只在“队列为空”确认后推进；永不清理）
+    ├── swept                        # 已结算 token（只在“队列为空”确认后推进；restore 与清理路径会删除它）
     └── activity-failed              # token 写失败留下的持久标记（下一次空排空清除，防止已提交任务被误判干净）
 ```
 
