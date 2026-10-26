@@ -18,6 +18,7 @@ import { Index } from "../src/core/db.js";
 import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
+import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
 import * as api from "../src/api.js";
 import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
@@ -2548,8 +2549,57 @@ describe("UiTransportRegistry", () => {
 });
 
 describe("liveSessions", () => {
-	test("drops retired runtimes", () => {
-		expect(liveSessions([{ retired: true }, { retired: false }, {}])).toEqual([{ retired: false }, {}]);
-	});
+  test("drops retired runtimes", () => {
+    expect(liveSessions([{ retired: true }, { retired: false }, {}])).toEqual([{ retired: false }, {}]);
+  });
+});
+
+describe("lifecycle wiring", () => {
+  test("a recreated workspace restores its quarantined memory", async () => {
+    const root = temporaryRoot();
+    const workdir = join(root, "workspace");
+    const { ctx, fibers } = await runtime();
+    try {
+      const store = workspaceStoreRoot(root, workdir, "workspace");
+      const key = store.slice(store.lastIndexOf("/") + 1);
+      mkdirSync(join(store, "memory"), { recursive: true });
+      writeFileSync(join(store, "index.sqlite"), "");
+      writeFileSync(join(store, "memory", "MEMORY.md"), "# kept");
+      quarantineStore(
+        root,
+        {
+          key,
+          path: store,
+          workdir,
+          lastActivityAt: new Date().toISOString(),
+          ageDays: 40,
+          sizeBytes: 0,
+          reasons: ["workdir-missing"],
+          tier: "orphan",
+        },
+        {},
+        Date.now(),
+      );
+      expect(existsSync(join(store, "index.sqlite"))).toBe(false);
+
+      const pluginFiber = await ctx.plugin(plugin, {
+        root,
+        injectContext: false,
+        provider: "test",
+        model: "test",
+      });
+      const session = ctx.sessions.prepare(SessionId("restore-me"), { meta: { cwd: workdir } });
+      const detach = ctx.sessions.enter(session);
+      ctx.sessions.announce(session);
+      await ctx.sessions.flush(session);
+
+      expect(existsSync(join(store, "index.sqlite"))).toBe(true);
+      expect(readTombstone(root, key)).toBeUndefined();
+      detach();
+      await pluginFiber.dispose();
+    } finally {
+      await disposeFibers(fibers);
+    }
+  });
 });
 

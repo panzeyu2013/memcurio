@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The reclamation inventory is visible while both switches are off, and purge
+  stays independent of retention; a queue whose token has not moved for seven
+  days no longer blocks an orphan's reclamation; restore takes the lifecycle
+  lock and refuses a partially deleted copy instead of auditing it as success.
 - The dormant sweep now fires on the transition to a known worker route instead of on every session creation, and the policy-rejected dead-letter requeue is one-shot per store (a store that keeps failing no longer revives every cycle).
 
 ### Added

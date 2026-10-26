@@ -43,14 +43,14 @@
 
 | 规范点 | 证据 |
 |---|---|
-| volatile 原地提交、非法候选不动引用 | `tests/loader-config.test.ts:45-80`（真实 Loader：同一 config 对象 + ref 原地变化） |
-| 半对/空串在解析层被拒、且不落盘 | `tests/settings.test.ts:221-229`「a lone route half is refused at resolution time」、`:231-238`「empty provider/model is refused by the resolution guard」、`tests/loader-config.test.ts:82-94`（半对不落盘） |
-| 守卫只作用于本条目、随插件 fiber 退出 | `tests/settings.test.ts:240-258`「the guard claims only this entry and leaves with the plugin fiber」 |
+| volatile 原地提交、非法候选不动引用 | `tests/loader-config.test.ts`（真实 Loader：同一 config 对象 + ref 原地变化） |
+| 半对/空串在解析层被拒、且不落盘 | `tests/settings.test.ts`「a lone route half is refused at resolution time」、``「empty provider/model is refused by the resolution guard」、`tests/loader-config.test.ts`（半对不落盘） |
+| 守卫只作用于本条目、随插件 fiber 退出 | `tests/settings.test.ts`「the guard claims only this entry and leaves with the plugin fiber」 |
 | 表单只暴露 volatile 字段、默认值与校验 | `tests/settings.test.ts`「provides the composition defaults and validates every field」「plain values and absent fields fall back exactly like the Loader defaults」 |
-| 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts:130-163`「suppresses the generated page and reports post-commit changes for memcurio only」 |
+| 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts`「suppresses the generated page and reports post-commit changes for memcurio only」 |
 | 浏览器侧快照/覆盖判定/set-unset 语义 | `tests/client-settings.test.ts`（presence-based overridden、revert、reset/resetAll、host 拒绝） |
 | 面板注册与渲染 | `tests/client-panel-render.test.ts`、`tests/ui-render.test.ts` |
-| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts:48-58`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
+| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
 | 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/client-bundle-drift.test.ts` |
 
 ## 5. 运维要点

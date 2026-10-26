@@ -10,7 +10,7 @@
 
 **不需要额外模型凭据，没有后台 daemon，没有向量数据库**——模型访问走宿主自己的 `ctx.llm` 路由，引擎核心零运行时依赖（`node:sqlite`），唯一运行时依赖是配置面用的 schemastery。
 
-> 状态：开发者预览（v0.0.5，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
+> 状态：开发者预览（v0.0.6，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
 
 ## 核心优点
 
@@ -63,7 +63,7 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 
 ```bash
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.5/memcurio-dsh-plugin-0.0.5.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.6/memcurio-dsh-plugin-0.0.6.tgz
 ```
 
 从源码构建（开发用）：
@@ -72,8 +72,8 @@ dsh plugin --profile <profile> add \
 git clone https://github.com/panzeyu2013/memcurio && cd memcurio
 bun install --frozen-lockfile
 bun run build          # tsc → dist/ + esbuild → lib/client.js（产物已提交，CI 校验不漂移）
-bun pm pack            # → memcurio-dsh-plugin-0.0.5.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.5.tgz
+bun pm pack            # → memcurio-dsh-plugin-0.0.6.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.6.tgz
 ```
 
 `cordis.patch.yml` 会把插件自动插入 profile，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`，无需手改配置。

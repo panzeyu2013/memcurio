@@ -874,8 +874,11 @@ export class MemcurioAdapter {
           idx.close();
         } finally {
           // A close that throws (final checkpoint busy/ENOSPC) must not hide the
-          // already committed session_end job.
-          this.publishActivity("session_end", true);
+          // already committed session_end job. A session that enqueued nothing
+          // must not create a phantom dirty token either.
+          if (queued) {
+            this.publishActivity("session_end", true);
+          }
         }
       }
     } else {

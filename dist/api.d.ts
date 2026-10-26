@@ -74,7 +74,9 @@ export declare function integrationCite(root: string, refs: readonly string[]): 
 }>;
 /** Read-only reclamation inventory. The caller supplies the policy because the
  *  base root, DSH home and retention all come from the embedding profile. */
-export declare function integrationStoreGcPlan(baseRoot: string, policy: StoreGcPolicy, now?: number, protectedRoots?: ReadonlySet<string>): import("./core/store-gc.js").StoreGcPlan;
+export declare function integrationStoreGcPlan(baseRoot: string, policy: StoreGcPolicy, now: number, protectedRoots: ReadonlySet<string>): import("./core/store-gc.js").StoreGcPlan;
+/** Read the lifecycle audit (last N entries). */
+export declare function integrationLifecycleAudit(baseRoot: string, limit?: number): Array<Record<string, unknown>>;
 /** Restore one quarantined store. Refuses to overwrite a live store at the
  *  same path and audits the outcome. */
 export declare function integrationStoreGcRestore(baseRoot: string, key: string, now?: number): {

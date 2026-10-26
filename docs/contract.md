@@ -27,6 +27,16 @@
 
 基座级（<DSH home>/memcurio/dsh/ 下）：dsh/.gc/ 保存生命周期审计 audit.jsonl、互斥锁 lifecycle.lock 与墓碑 tombstones/<key>.json；dsh/.trash/<ts>-<key>/ 保存已隔离的整棵 store（index.json manifest + store/）。两者都是点目录且不含直接的 index.sqlite，不会进入 sweep 或 UI 的 store 枚举。
 
+### Store 生命周期（回收协议）
+
+- **所有权**：每个会话在 `state/live/<pid>-<session>.json` 写租约，插件按 5 分钟心跳，15 分钟未心跳视为陈旧；GC 与 sweep 以“本进程会话 ∪ 新鲜租约”为保护集，退役会话不心跳也不再保护。
+- **脏 token**：`activity` 在检查点事务提交后写、`swept` 只在排空确认（含排空开始时刻快照）后推进；`activity-failed` 在 token 写失败时留下，下一次空排空清除。三者任一不一致即脏。
+- **两遍确认**：首次观察到 workdir 缺失只写 `state/gc-missing-since`（内容含 workdir 指纹），至少 1 小时后且再次确认缺失才允许隔离；workdir 复活时清除。
+- **隔离**：计划（`planStoreGc`）只读；执行器在 `lifecycle.lock` 内复核 inode/mtime、无 `-wal`、无租约/活会话、token 已结算、workdir 未复活、空店层无内容，然后把整棵 store rename 进 `.trash` 并写墓碑；rename 后再次检查 pending/lease/content，出现新工作则回滚。
+- **恢复**：采纳同名 workdir 时按墓碑恢复；恢复在锁内、要求 `store/index.sqlite` 完整，冲突保留墓碑与 `.restore-conflict`，失败写 `store.restore_failed` 审计。
+- **清除**：`trashDays > 0` 时到期条目（冲突条目 2 倍窗口）被 purge，且只清指向该条目的墓碑；manifest 丢失但 store 仍在的条目按目录名与 mtime 恢复清单。
+
+
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md、MEMORY.md 旧格式全部废弃。
 
 ## DB schema v11（index.sqlite）

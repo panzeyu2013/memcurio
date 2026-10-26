@@ -3,7 +3,7 @@
 import { addAdHocNote, type AdHocNote } from "./core/adhoc.js";
 import { Index } from "./core/db.js";
 import { writeActivityToken } from "./core/store-meta.js";
-import { appendLifecycleAudit, planStoreGc, restoreStore } from "./core/store-gc.js";
+import { appendLifecycleAudit, planStoreGc, readLifecycleAudit, restoreStore } from "./core/store-gc.js";
 import type { StoreGcPolicy } from "./core/store-gc.js";
 import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
 import { ensureLayout, indexDb } from "./core/paths.js";
@@ -158,10 +158,21 @@ export async function integrationCite(root: string, refs: readonly string[]) {
 export function integrationStoreGcPlan(
   baseRoot: string,
   policy: StoreGcPolicy,
-  now = Date.now(),
-  protectedRoots: ReadonlySet<string> = new Set(),
+  now: number,
+  protectedRoots: ReadonlySet<string>,
 ) {
-  return planStoreGc(baseRoot, policy, { now, protectedRoots });
+  // dryRun: a preview must not write lifecycle bookkeeping (the missing
+  // confirmation marker), and protectedRoots is required so a live session's
+  // store is never advertised as reclaimable.
+  return planStoreGc(baseRoot, policy, { now, protectedRoots, dryRun: true });
+}
+
+/** Read the lifecycle audit (last N entries). */
+export function integrationLifecycleAudit(
+  baseRoot: string,
+  limit = 50,
+): Array<Record<string, unknown>> {
+  return readLifecycleAudit(baseRoot, limit);
 }
 
 /** Restore one quarantined store. Refuses to overwrite a live store at the

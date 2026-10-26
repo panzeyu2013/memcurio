@@ -939,14 +939,14 @@ export function apply(ctx, config = {}) {
         if (sweepInFlight) {
             return;
         }
-        // Zombie leases (a crashed process never cleared its file) are garbage even
-        // when no worker route is known, so prune before the route gate.
-        for (const root of storeRootsUnder(baseRoot)) {
-            pruneSessionLeases(root, Date.now());
-        }
         const globalRoute = fixedRoute() ?? lastKnownRoute;
         if (!globalRoute) {
             return;
+        }
+        // Zombie leases (a crashed process never cleared its file) are garbage; the
+        // pass does real work only once a route exists, so prune here.
+        for (const root of storeRootsUnder(baseRoot)) {
+            pruneSessionLeases(root, Date.now());
         }
         const now = Date.now();
         // Never drain a store a live session owns: its own adapter is already
@@ -1032,7 +1032,11 @@ export function apply(ctx, config = {}) {
                     adapter.dispose();
                 }
             }
-        })().finally(() => {
+        })()
+            .catch((error) => {
+            warn(error);
+        })
+            .finally(() => {
             sweepInFlight = false;
         });
     };
@@ -1069,6 +1073,11 @@ export function apply(ctx, config = {}) {
     if (startupPass) {
         startupTimer = setInterval(() => {
             if (!startupPass) {
+                return;
+            }
+            // Without a route the sweep returns immediately; ticking it would only
+            // walk the store set every 500ms for the life of the process.
+            if (!(fixedRoute() ?? lastKnownRoute)) {
                 return;
             }
             try {

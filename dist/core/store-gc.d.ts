@@ -46,6 +46,8 @@ export interface StoreGcDeps {
     protectedRoots?: ReadonlySet<string>;
     /** Override for tests; defaults to "the directory exists". */
     isWorkdirAlive?: (path: string) => boolean;
+    /** Skip lifecycle bookkeeping writes; used by the operator preview. */
+    dryRun?: boolean;
 }
 export interface TrashEntry {
     dir: string;
@@ -114,7 +116,8 @@ export interface StoreGcVerify {
     pending: number;
     /** A live consolidation lease exists. */
     leaseActive: boolean;
-    /** Staged rows or unapplied notes still count as content. */
+    /** Staged rows or unapplied notes make an empty-tier store non-empty;
+     *  orphan stores rely on the trash window instead. */
     content: boolean;
 }
 export interface StoreGcExecDeps {

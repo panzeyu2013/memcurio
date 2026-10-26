@@ -2,7 +2,7 @@
 import { addAdHocNote } from "./core/adhoc.js";
 import { Index } from "./core/db.js";
 import { writeActivityToken } from "./core/store-meta.js";
-import { appendLifecycleAudit, planStoreGc, restoreStore } from "./core/store-gc.js";
+import { appendLifecycleAudit, planStoreGc, readLifecycleAudit, restoreStore } from "./core/store-gc.js";
 import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
 import { ensureLayout, indexDb } from "./core/paths.js";
 import { listMemory, readMemory } from "./core/read.js";
@@ -122,8 +122,15 @@ export async function integrationCite(root, refs) {
 }
 /** Read-only reclamation inventory. The caller supplies the policy because the
  *  base root, DSH home and retention all come from the embedding profile. */
-export function integrationStoreGcPlan(baseRoot, policy, now = Date.now(), protectedRoots = new Set()) {
-    return planStoreGc(baseRoot, policy, { now, protectedRoots });
+export function integrationStoreGcPlan(baseRoot, policy, now, protectedRoots) {
+    // dryRun: a preview must not write lifecycle bookkeeping (the missing
+    // confirmation marker), and protectedRoots is required so a live session's
+    // store is never advertised as reclaimable.
+    return planStoreGc(baseRoot, policy, { now, protectedRoots, dryRun: true });
+}
+/** Read the lifecycle audit (last N entries). */
+export function integrationLifecycleAudit(baseRoot, limit = 50) {
+    return readLifecycleAudit(baseRoot, limit);
 }
 /** Restore one quarantined store. Refuses to overwrite a live store at the
  *  same path and audits the outcome. */

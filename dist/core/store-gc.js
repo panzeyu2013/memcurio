@@ -1,8 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
-import { clearSweptToken, readStoreOrigin, storeIsDirty, storeStateDir, writeActivityToken, } from "./store-meta.js";
+import { activityPath, clearSweptToken, readStoreOrigin, storeIsDirty, writeActivityToken, } from "./store-meta.js";
 import { listWorkspaceFiles } from "./workspace.js";
-import { atomicWrite } from "./transaction.js";
+import { atomicWrite, withFileLock } from "./transaction.js";
 const DAY_MS = 86_400_000;
 export function gcDirs(baseRoot) {
     const dsh = join(resolve(baseRoot), "dsh");
@@ -112,15 +112,37 @@ export function isStoreEmpty(dir) {
     return true;
 }
 const MISSING_CONFIRM_MS = 3_600_000;
+const STALE_QUEUE_MS = 7 * 86_400_000;
+/** A pending job only blocks reclamation while it is plausibly still work in
+ *  progress. After a week without a token write nothing can claim it any more
+ *  (an orphan store has no live session), so the queue is dead weight. */
+function staleQueue(dir, now) {
+    try {
+        return now - statSync(activityPath(dir)).mtimeMs > STALE_QUEUE_MS;
+    }
+    catch {
+        return false;
+    }
+}
+/** An entry is still usable while it has a manifest or a store. A quarantine
+ *  in progress has the manifest first; a partially purged directory may have
+ *  neither, in which case the tombstone is stale. */
+function entryUsable(entryDir) {
+    return existsSync(join(entryDir, "index.json")) || existsSync(join(entryDir, "store"));
+}
 function missingMarkPath(dir) {
     return join(dir, "state", "gc-missing-since");
 }
 /** How long the recorded workspace has been observed missing, or undefined
  *  when this is the first pass that sees it. */
-function missingAgeMs(dir, now) {
+function missingAgeMs(dir, now, workdir) {
     try {
-        const raw = readFileSync(missingMarkPath(dir), "utf-8").trim();
-        const at = Date.parse(raw);
+        const raw = JSON.parse(readFileSync(missingMarkPath(dir), "utf-8"));
+        // A different workdir means a different disappearance: start over.
+        if (raw.workdir !== workdir || typeof raw.at !== "string") {
+            return undefined;
+        }
+        const at = Date.parse(raw.at);
         if (Number.isFinite(at)) {
             return Math.max(0, now - at);
         }
@@ -130,13 +152,13 @@ function missingAgeMs(dir, now) {
         return undefined;
     }
 }
-function markMissing(dir, now) {
+function markMissing(dir, now, workdir) {
     if (!existsSync(dir)) {
         return;
     }
     try {
         mkdirSync(join(dir, "state"), { recursive: true, mode: 0o700 });
-        writeFileSync(missingMarkPath(dir), new Date(now).toISOString(), { mode: 0o600 });
+        writeFileSync(missingMarkPath(dir), JSON.stringify({ at: new Date(now).toISOString(), workdir }), { mode: 0o600 });
     }
     catch {
         void 0;
@@ -148,14 +170,6 @@ function clearMissingMark(dir) {
     }
     catch {
         void 0;
-    }
-}
-function activityMtimeMs(dir) {
-    try {
-        return statSync(join(storeStateDir(dir), "activity")).mtimeMs;
-    }
-    catch {
-        return 0;
     }
 }
 function ageDaysOf(iso, now) {
@@ -173,11 +187,10 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
     const isAlive = deps.isWorkdirAlive ?? directoryExists;
     const { dsh } = gcDirs(baseRoot);
     const plan = { candidates: [], skipped: [], trashEligible: [] };
-    // A registration cannot be reclaimed while its workspace still exists, so the
-    // whole pass is a no-op when reclamation is disabled.
-    if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
-        return plan;
-    }
+    // The inventory (trash entries, no-index directories) is reported even when
+    // reclamation is disabled: an operator must be able to see what purging would
+    // remove. Only candidate selection is gated.
+    const reclaimEnabled = policy.retentionDays > 0 || policy.emptyStoreHours > 0;
     // Directories that never got a database are invisible to the main
     // enumeration; report them so an operator can explain the inventory.
     try {
@@ -218,16 +231,23 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
         }
         const emptyStore = policy.emptyStoreHours > 0 && isStoreEmpty(dir);
         if (!emptyStore && (isAlive(origin.workdir) || (origin.realpath !== origin.workdir && isAlive(origin.realpath)))) {
-            clearMissingMark(dir);
+            if (!deps.dryRun) {
+                clearMissingMark(dir);
+            }
             plan.skipped.push({ key, reason: "workdir-exists" });
             continue;
         }
         if (policy.scope === "dsh-home" &&
-            !under(realpathOrSelf(join(policy.dshHomeRoot, "worktrees")), origin.realpath)) {
+            !under(realpathOrSelf(join(policy.dshHomeRoot, "worktrees")), origin.realpath) &&
+            // A symlinked DSH home makes the recorded realpath miss the prefix even
+            // though the store belongs to the worktrees tree; accept the raw path too.
+            !under(join(policy.dshHomeRoot, "worktrees"), origin.workdir)) {
             plan.skipped.push({ key, reason: "outside-dsh-home" });
             continue;
         }
-        const lastRaw = Math.max(Number.isFinite(Date.parse(origin.lastActivityAt)) ? Date.parse(origin.lastActivityAt) : 0, Number.isFinite(Date.parse(origin.firstSeenAt)) ? Date.parse(origin.firstSeenAt) : 0, activityMtimeMs(dir));
+        // Age comes from the origin only: repair/restore/ensureOrigin rewrite the
+        // activity token and must not reset the retention clock.
+        const lastRaw = Math.max(Number.isFinite(Date.parse(origin.lastActivityAt)) ? Date.parse(origin.lastActivityAt) : 0, Number.isFinite(Date.parse(origin.firstSeenAt)) ? Date.parse(origin.firstSeenAt) : 0);
         // A clock jump or a restored backup can put the mtime in the future; treat
         // it as "now" so the store is not permanently un-reclaimable.
         const lastMs = lastRaw > 0 ? Math.min(lastRaw, now) : 0;
@@ -236,9 +256,13 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             continue;
         }
         const effectiveAge = (now - lastMs) / DAY_MS;
-        if (emptyStore) {
+        if (emptyStore && reclaimEnabled) {
             if (effectiveAge * 24 < policy.emptyStoreHours) {
                 plan.skipped.push({ key, reason: "too-recent" });
+                continue;
+            }
+            if (storeIsDirty(dir)) {
+                plan.skipped.push({ key, reason: "dirty-token" });
                 continue;
             }
             if (plan.candidates.length >= Math.max(1, policy.maxPerRun)) {
@@ -261,7 +285,9 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             plan.skipped.push({ key, reason: "too-recent" });
             continue;
         }
-        if (storeIsDirty(dir)) {
+        // A dirty store is normally fenced, but a queue nobody can claim any more
+        // must not keep the registration alive forever.
+        if (storeIsDirty(dir) && !staleQueue(dir, now)) {
             plan.skipped.push({ key, reason: "dirty-token" });
             continue;
         }
@@ -309,25 +335,33 @@ export function trashEntries(baseRoot) {
             continue;
         }
         const dir = join(trash, name);
+        let key;
+        let quarantinedAt;
         try {
             const manifest = JSON.parse(readFileSync(join(dir, "index.json"), "utf-8"));
-            if (typeof manifest.key !== "string" ||
-                typeof manifest.quarantinedAt !== "string") {
-                continue;
+            if (typeof manifest.key === "string" && typeof manifest.quarantinedAt === "string") {
+                key = manifest.key;
+                quarantinedAt = manifest.quarantinedAt;
             }
-            if (!existsSync(join(dir, "store"))) {
-                continue;
-            }
-            out.push({
-                dir,
-                key: manifest.key,
-                quarantinedAt: manifest.quarantinedAt,
-            });
         }
         catch {
-            // A half-written entry (crash between mkdir and manifest) is debris; the
-            // next run removes it.
+            void 0;
         }
+        if (!key || !quarantinedAt) {
+            // A non-atomic purge or a partial write can lose the manifest while the
+            // store itself survives. Recover what the directory name and mtime still
+            // tell us instead of leaking the entry forever.
+            if (!existsSync(join(dir, "store", "index.sqlite"))) {
+                continue;
+            }
+            const recovered = name.length > 25 ? name.slice(25) : name;
+            key = /^[0-9a-z][0-9a-z-]{0,63}$/.test(recovered) ? recovered : name;
+            quarantinedAt = new Date(statSync(dir).mtimeMs).toISOString();
+        }
+        if (!existsSync(join(dir, "store"))) {
+            continue;
+        }
+        out.push({ dir, key, quarantinedAt });
     }
     return out.sort((a, b) => (a.dir < b.dir ? 1 : a.dir > b.dir ? -1 : 0));
 }
@@ -431,6 +465,11 @@ export function purgeTrash(baseRoot, policy, now = Date.now()) {
  *  store at the same path, and invalidates the swept watermark so the restored
  *  store is examined by the next sweep. */
 export function restoreStore(baseRoot, key, now = Date.now()) {
+    // The lifecycle lock serializes this against the 6h purge and a concurrent
+    // adoption; without it a purge can delete the copy mid-rename.
+    return withFileLock(gcDirs(baseRoot).lock, () => restoreStoreInner(baseRoot, key, now));
+}
+function restoreStoreInner(baseRoot, key, now) {
     if (!/^[0-9a-z][0-9a-z-]{0,63}$/.test(key)) {
         throw new Error("invalid store key: " + JSON.stringify(key));
     }
@@ -438,6 +477,17 @@ export function restoreStore(baseRoot, key, now = Date.now()) {
     const entry = trashEntries(baseRoot).find((candidate) => candidate.key === key);
     if (!entry) {
         throw new Error(`no quarantined store for key ${key}`);
+    }
+    if (!existsSync(join(entry.dir, "store", "index.sqlite"))) {
+        // A purge interrupted mid-rmSync leaves a partial copy. Restoring it would
+        // hand a broken store to the session and audit it as success.
+        try {
+            writeFileSync(join(entry.dir, ".restore-conflict"), new Date(now).toISOString());
+        }
+        catch {
+            void 0;
+        }
+        return { conflict: true, existing: entry.dir, entry: entry.dir };
     }
     const target = join(dsh, key);
     if (existsSync(target)) {
@@ -498,6 +548,9 @@ export function clearTombstone(baseRoot, key) {
  *  workspace path was recreated). A live store at the path wins: the tombstone
  *  is stale and is dropped. */
 export function restoreTombstonedStore(baseRoot, key, now = Date.now()) {
+    return withFileLock(gcDirs(baseRoot).lock, () => restoreTombstonedStoreInner(baseRoot, key, now));
+}
+function restoreTombstonedStoreInner(baseRoot, key, now) {
     if (!readTombstone(baseRoot, key)) {
         return undefined;
     }
@@ -518,7 +571,7 @@ export function restoreTombstonedStore(baseRoot, key, now = Date.now()) {
         // stay: dropping it would let the quarantined copy be purged later.
         const tombstone = readTombstone(baseRoot, key);
         if (tombstone) {
-            if (!existsSync(join(tombstone.entry, "store"))) {
+            if (!entryUsable(tombstone.entry)) {
                 // The quarantined copy is gone (purged or removed by hand): the
                 // tombstone is stale and must not turn every adoption into a conflict.
                 clearTombstone(baseRoot, key);
@@ -534,24 +587,43 @@ export function restoreTombstonedStore(baseRoot, key, now = Date.now()) {
         return { conflict: true, existing: target };
     }
     try {
-        const result = restoreStore(baseRoot, key, now);
+        const result = restoreStoreInner(baseRoot, key, now);
         if ("conflict" in result) {
             return result;
         }
         clearTombstone(baseRoot, key);
         return { restoredTo: result.restoredTo };
     }
-    catch {
-        // The entry is gone (purged or manually removed): drop the stale tombstone
-        // so every adoption stops retrying a restore that cannot succeed.
-        clearTombstone(baseRoot, key);
+    catch (err) {
+        appendLifecycleAudit(baseRoot, {
+            at: new Date(now).toISOString(),
+            action: "store.restore_failed",
+            key,
+            reason: String(err),
+        });
+        // Clear only when the entry itself is gone. A transient rename failure
+        // (entry present, store/ still there) must keep the tombstone so a later
+        // adoption can retry.
+        const tombstone = readTombstone(baseRoot, key);
+        if (!tombstone || !entryUsable(tombstone.entry)) {
+            clearTombstone(baseRoot, key);
+        }
         return undefined;
     }
 }
 export function appendLifecycleAudit(baseRoot, record) {
     const { gc } = gcDirs(baseRoot);
     mkdirSync(gc, { recursive: true, mode: 0o700 });
-    appendFileSync(join(gc, "audit.jsonl"), `${JSON.stringify(record)}\n`, {
+    const file = join(gc, "audit.jsonl");
+    try {
+        if (statSync(file).size > 1_048_576) {
+            renameSync(file, file + ".1");
+        }
+    }
+    catch {
+        void 0;
+    }
+    appendFileSync(file, `${JSON.stringify(record)}\n`, {
         mode: 0o600,
     });
 }
@@ -621,9 +693,9 @@ export async function executeStoreGc(baseRoot, policy, deps) {
             if (candidate.tier === "orphan") {
                 // Two independent passes must agree the workspace is gone: a network
                 // mount that is briefly absent must not authorize a destructive move.
-                const missingFor = missingAgeMs(candidate.path, deps.now);
+                const missingFor = missingAgeMs(candidate.path, deps.now, candidate.workdir);
                 if (missingFor === undefined) {
-                    markMissing(candidate.path, deps.now);
+                    markMissing(candidate.path, deps.now, candidate.workdir);
                     result.skipped += 1;
                     audit({ action: "store.quarantine_skipped", key: candidate.key, reason: "missing-unconfirmed" });
                     continue;
@@ -636,9 +708,15 @@ export async function executeStoreGc(baseRoot, policy, deps) {
             }
             const before = statSync(join(candidate.path, "index.sqlite"));
             const verified = await deps.inspect(candidate.path);
+            const deadQueue = candidate.tier === "orphan" && verified !== undefined && verified.pending > 0
+                ? staleQueue(candidate.path, deps.now)
+                : false;
+            if (deadQueue) {
+                audit({ action: "store.dead_queue", key: candidate.key, pending: verified?.pending ?? 0 });
+            }
             const blockedReason = !verified
                 ? "inspect-failed"
-                : verified.pending > 0
+                : verified.pending > 0 && !deadQueue
                     ? "pending"
                     : verified.leaseActive
                         ? "lease"
@@ -669,7 +747,8 @@ export async function executeStoreGc(baseRoot, policy, deps) {
                     }
                     // Applies to both tiers: an unsettled token means an enqueue may have
                     // committed work this pass cannot see.
-                    if (storeIsDirty(candidate.path)) {
+                    if (storeIsDirty(candidate.path) &&
+                        !(candidate.tier === "orphan" && staleQueue(candidate.path, deps.now))) {
                         fence = "dirty-token";
                         return;
                     }
@@ -696,7 +775,7 @@ export async function executeStoreGc(baseRoot, policy, deps) {
             const quarantinedPath = entry;
             const moved = await deps.inspect(join(quarantinedPath, "store"));
             if (!moved ||
-                moved.pending > 0 ||
+                (moved.pending > 0 && !deadQueue) ||
                 moved.leaseActive ||
                 (candidate.tier === "empty" && moved.content)) {
                 deps.lock(() => {
