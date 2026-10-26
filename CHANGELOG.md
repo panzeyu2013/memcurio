@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off by default (0); when enabled it quarantines a store whose recorded
   workspace path is gone, whose last activity is older than the threshold,
   whose tokens are settled and whose queue/lease check is clean, moving it into
-  dsh/.trash/ behind a tombstone so a recreated workspace restores its memory
+  dsh/.trash/ behind a tombstone so a recreated workspace restores its memory.
+  A second tier reclaims stores that never produced any memory content after
+  48 idle hours (enabled together with the retention setting)
   instead of starting empty. dsh/.gc/audit.jsonl records every plan,
   quarantine, rollback, purge and restore.
 - **integrationStoreGcPlan / integrationStoreGcRestore** operator API for a

@@ -17,6 +17,9 @@ export interface StoreGcPolicy {
     /** The DSH home the plugin resolves; only used for the `dsh-home` scope. */
     dshHomeRoot: string;
     maxPerRun: number;
+    /** Reclaim stores that never produced any memory content once they are
+     *  this many hours idle. 0 disables the tier. */
+    emptyStoreHours: number;
 }
 export interface StoreGcCandidate {
     key: string;
@@ -26,6 +29,7 @@ export interface StoreGcCandidate {
     ageDays: number;
     sizeBytes: number;
     reasons: string[];
+    tier: "orphan" | "empty";
 }
 export interface StoreGcSkip {
     key: string;
@@ -57,6 +61,10 @@ export declare function gcDirs(baseRoot: string): {
 /** Store directories under one base root (a directory counts when it carries an
  *  index.sqlite; dot-directories such as `.gc`/`.trash` are skipped). */
 export declare function storeDirsUnder(baseRoot: string): string[];
+/** A store that never produced memory content: no docs, no rollout summaries,
+ *  no ad-hoc notes. The queue and stage rows are checked separately, under the
+ *  live transaction (a staged row without a file is still content). */
+export declare function isStoreEmpty(dir: string): boolean;
 /** Read-only reclamation plan. Every store that is not a candidate carries a
  *  reason, so an operator can explain the inventory without opening SQLite. */
 export declare function planStoreGc(baseRoot: string, policy: StoreGcPolicy, deps?: StoreGcDeps): StoreGcPlan;

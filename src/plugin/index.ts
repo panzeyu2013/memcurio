@@ -318,6 +318,7 @@ const STORE_SWEEP_PER_ROOT_MS = 30 * 60 * 1000;
 const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const STORE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STORE_GC_MAX_PER_RUN = 8;
+const STORE_EMPTY_STORE_HOURS = 48;
 
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
 const DSH_RETIRE_RETRY_MS = 5_000;
@@ -1210,6 +1211,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     scope: "dsh-home",
     dshHomeRoot: dshHome(),
     maxPerRun: STORE_GC_MAX_PER_RUN,
+    // Empty stores only matter when reclamation is enabled at all.
+    emptyStoreHours: live().storeRetentionDays > 0 ? STORE_EMPTY_STORE_HOURS : 0,
   });
 
   const verifyGcCandidate = async (candidate: StoreGcCandidate): Promise<string | undefined> => {
@@ -1222,6 +1225,11 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       idx.withTransaction(() => {
         if (idx.extractionPendingCount() > 0) return;
         if (idx.consolidationLeaseActive(WORKSPACE_WRITE_LEASE_KEY)) return;
+        // An "empty" store may still hold staged rows or notes that never
+        // reached a markdown file: those are content, not slack.
+        if (candidate.tier === "empty" && (idx.stageList().length > 0 || idx.noteList().length > 0)) {
+          return;
+        }
         ok = true;
       });
       return ok ? undefined : "busy";

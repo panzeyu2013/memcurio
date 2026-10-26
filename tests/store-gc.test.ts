@@ -73,6 +73,7 @@ function policy(
 		scope: "dsh-home",
 		dshHomeRoot: home,
 		maxPerRun: 8,
+		emptyStoreHours: 0,
 		...over,
 	};
 }
@@ -177,6 +178,31 @@ describe("store gc planner", () => {
 			});
 			expect(capped.candidates).toHaveLength(2);
 			expect(capped.skipped.some((s) => s.reason === "run-cap")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
+	test("empty stores are reclaimable after emptyStoreHours even if the path exists", () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const workdir = join(home, "worktrees", "repo-9", "alive");
+			mkdirSync(workdir, { recursive: true });
+			const store = makeStore(base, "abcd000000000001");
+			recordStoreOrigin(store, workdir, "2026-10-20T00:00:00.000Z");
+			mkdirSync(join(store, "memory"), { recursive: true });
+			writeFileSync(join(store, "memory", "MEMORY.md"), "");
+			const plan = planStoreGc(base, policy(home, { retentionDays: 30, emptyStoreHours: 24 }), {
+				now: NOW,
+			});
+			expect(plan.candidates).toHaveLength(1);
+			expect(plan.candidates[0]?.tier).toBe("empty");
+			// Content blocks the empty tier.
+			writeFileSync(join(store, "memory", "MEMORY.md"), "hello");
+			expect(
+				planStoreGc(base, policy(home, { retentionDays: 30, emptyStoreHours: 24 }), { now: NOW })
+					.candidates,
+			).toHaveLength(0);
 		} finally {
 			cleanup();
 		}

@@ -40,6 +40,9 @@ export interface StoreGcPolicy {
 	/** The DSH home the plugin resolves; only used for the `dsh-home` scope. */
 	dshHomeRoot: string;
 	maxPerRun: number;
+	/** Reclaim stores that never produced any memory content once they are
+	 *  this many hours idle. 0 disables the tier. */
+	emptyStoreHours: number;
 }
 
 export interface StoreGcCandidate {
@@ -50,6 +53,7 @@ export interface StoreGcCandidate {
 	ageDays: number;
 	sizeBytes: number;
 	reasons: string[];
+	tier: "orphan" | "empty";
 }
 
 export interface StoreGcSkip {
@@ -156,6 +160,32 @@ function sizeOf(dir: string, depth = 0): number {
 	return total;
 }
 
+/** A store that never produced memory content: no docs, no rollout summaries,
+ *  no ad-hoc notes. The queue and stage rows are checked separately, under the
+ *  live transaction (a staged row without a file is still content). */
+export function isStoreEmpty(dir: string): boolean {
+	const memory = join(dir, "memory");
+	for (const name of ["MEMORY.md", "memory_summary.md", "raw_memories.md"]) {
+		try {
+			if (statSync(join(memory, name)).size > 0) {
+				return false;
+			}
+		} catch {
+			void 0;
+		}
+	}
+	for (const rel of [["rollout_summaries"], ["extensions", "ad_hoc", "notes"]]) {
+		try {
+			if (readdirSync(join(memory, ...rel)).length > 0) {
+				return false;
+			}
+		} catch {
+			void 0;
+		}
+	}
+	return true;
+}
+
 function activityMtimeMs(dir: string): number {
 	try {
 		return statSync(join(storeStateDir(dir), "activity")).mtimeMs;
@@ -186,7 +216,7 @@ export function planStoreGc(
 	const plan: StoreGcPlan = { candidates: [], skipped: [], trashEligible: [] };
 	// A registration cannot be reclaimed while its workspace still exists, so the
 	// whole pass is a no-op when reclamation is disabled.
-	if (!(policy.retentionDays > 0)) {
+	if (!(policy.retentionDays > 0) && !(policy.emptyStoreHours > 0)) {
 		return plan;
 	}
 	for (const dir of storeDirsUnder(baseRoot)) {
@@ -212,7 +242,8 @@ export function planStoreGc(
 			plan.skipped.push({ key, reason: "no-workdir" });
 			continue;
 		}
-		if (isAlive(origin.workdir) || (origin.realpath !== origin.workdir && isAlive(origin.realpath))) {
+		const emptyStore = policy.emptyStoreHours > 0 && isStoreEmpty(dir);
+		if (!emptyStore && (isAlive(origin.workdir) || (origin.realpath !== origin.workdir && isAlive(origin.realpath)))) {
 			plan.skipped.push({ key, reason: "workdir-exists" });
 			continue;
 		}
@@ -233,6 +264,27 @@ export function planStoreGc(
 			continue;
 		}
 		const effectiveAge = (now - lastMs) / DAY_MS;
+		if (emptyStore) {
+			if (effectiveAge * 24 < policy.emptyStoreHours) {
+				plan.skipped.push({ key, reason: "too-recent" });
+				continue;
+			}
+			if (plan.candidates.length >= Math.max(1, policy.maxPerRun)) {
+				plan.skipped.push({ key, reason: "run-cap" });
+				continue;
+			}
+			plan.candidates.push({
+				key,
+				path: dir,
+				workdir: origin.realpath,
+				lastActivityAt: origin.lastActivityAt,
+				ageDays: Math.round(effectiveAge * 10) / 10,
+				sizeBytes: sizeOf(dir),
+				reasons: ["empty-store", "age>=" + String(policy.emptyStoreHours) + "h"],
+				tier: "empty",
+			});
+			continue;
+		}
 		if (effectiveAge < policy.retentionDays) {
 			plan.skipped.push({ key, reason: "too-recent" });
 			continue;
@@ -252,6 +304,7 @@ export function planStoreGc(
 			lastActivityAt: origin.lastActivityAt,
 			ageDays: Math.round(effectiveAge * 10) / 10,
 			sizeBytes: sizeOf(dir),
+			tier: "orphan",
 			reasons: ["workdir-missing", `age>=${String(policy.retentionDays)}d`],
 		});
 	}
