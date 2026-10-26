@@ -37,7 +37,7 @@ export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { storeIsDirty } from "../core/store-meta.js";
+import { pruneSessionLeases, sessionLeaseActive, storeIsDirty, touchSessionLease } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -310,7 +310,6 @@ const STORE_SWEEP_PER_ROOT_MS = 30 * 60 * 1000;
 const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const STORE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STORE_GC_MAX_PER_RUN = 8;
-const STORE_EMPTY_STORE_HOURS = 48;
 const STORE_STARTUP_TICK_MS = 500;
 
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
@@ -1138,6 +1137,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
     void (async () => {
       for (const root of roots) {
+        // Drop lease files left by a crashed process before deciding anything.
+        pruneSessionLeases(root, Date.now());
         const adapter = new MemcurioAdapter({
           root,
           host: "dsh",
@@ -1183,6 +1184,11 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // session replays its route; a pinned route can change live) and for stores
   // whose jobs stay blocked until a later route appears.
   const sweepTimer = setInterval(() => {
+    // Refresh the cross-process ownership fence for every live session before
+    // the sweep decides what is dormant.
+    for (const runtime of sessions.values()) {
+      touchSessionLease(runtime.root, process.pid, runtime.session.id);
+    }
     try {
       sweepDormantStores("periodic");
     } catch (error) {
@@ -1231,8 +1237,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     scope: config.storeGcScope === "all" ? "all" : "dsh-home",
     dshHomeRoot: dshHome(),
     maxPerRun: STORE_GC_MAX_PER_RUN,
-    // Empty stores only matter when reclamation is enabled at all.
-    emptyStoreHours: live().storeRetentionDays > 0 ? STORE_EMPTY_STORE_HOURS : 0,
+    // Empty-store reclamation has its own switch; it is off unless configured.
+    emptyStoreHours: config.storeEmptyStoreHours ?? 0,
   });
 
   const runStoreGc = async (reason: string): Promise<void> => {
@@ -1244,7 +1250,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       now: Date.now(),
       protectedRoots: new Set([...sessions.values()].map((runtime) => runtime.root)),
       isProtected: (dir) =>
-        [...sessions.values()].some((runtime) => runtime.root === dir && !runtime.retired),
+        [...sessions.values()].some((runtime) => runtime.root === dir && !runtime.retired) ||
+        sessionLeaseActive(dir),
       inspect: async (dir) => {
         try {
           const idx = await Index.create(indexDb(dir));

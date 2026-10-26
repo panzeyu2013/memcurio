@@ -8,7 +8,7 @@ import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, polic
 import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
-import { markActivityFailure, readActivityState, readStoreOrigin, recordStoreOrigin, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
+import { clearSessionLease, markActivityFailure, readActivityState, readStoreOrigin, recordStoreOrigin, touchSessionLease, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
 import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "./core/channel.js";
 /** The codex-style superset of read-only file tools (used as the engine
@@ -286,6 +286,9 @@ export class MemcurioAdapter {
         // store belongs to. Best effort — a failed write only delays reclamation.
         try {
             recordStoreOrigin(root, workdir, state.startedAt);
+            // Cross-process fence: a GC in another process must see that this store
+            // has a live session even when it never looks at our in-memory map.
+            touchSessionLease(root, process.pid, sessionId);
         }
         catch (err) {
             this.log("warn", "failed to record store origin", { sessionId, error: String(err) });
@@ -773,6 +776,12 @@ export class MemcurioAdapter {
             finally {
                 idx.close();
             }
+        }
+        try {
+            clearSessionLease(this.root, process.pid, sessionId);
+        }
+        catch {
+            void 0;
         }
         this.sessions.delete(sessionId);
         this.log("info", "session ended", { sessionId, staged, queued });

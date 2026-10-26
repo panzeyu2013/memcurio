@@ -62,6 +62,9 @@ export interface Config {
      *  all also reclaims stores whose workspace lived elsewhere. Deployment
      *  level (not rendered by the panel), like root. */
     storeGcScope?: "dsh-home" | "all";
+    /** Reclaim stores that never produced memory content once idle this many
+     *  hours. 0 disables the tier (default). Profile level. */
+    storeEmptyStoreHours?: number;
 }
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

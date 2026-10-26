@@ -394,6 +394,13 @@ describe("executeStoreGc", () => {
 		mkdirSync(join(store, "memory"), { recursive: true });
 		writeFileSync(join(store, "memory", "MEMORY.md"), "# content");
 		recordStoreOrigin(store, join(home, "worktrees", "repo-x", key), "2026-08-01T00:00:00.000Z");
+		// Pre-confirm the missing workspace: the executor needs two passes, and
+		// these tests are about the later gates.
+		mkdirSync(join(store, "state"), { recursive: true });
+		const mark = join(store, "state", "gc-missing-since");
+		writeFileSync(mark, "");
+		const old = new Date(NOW - 2 * 3_600_000);
+		utimesSync(mark, old, old);
 		return store;
 	}
 
@@ -505,6 +512,38 @@ describe("executeStoreGc", () => {
 			expect(existsSync(join(store, "index.sqlite"))).toBe(true);
 			expect(audits.some((row) => row.action === "store.quarantine_rolled_back")).toBe(true);
 			expect(trashEntries(base)).toHaveLength(0);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("two-pass confirmation", () => {
+	test("a missing workspace needs two passes before the move", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = makeStore(base, "aaaa000000000b1");
+			mkdirSync(join(store, "memory"), { recursive: true });
+			writeFileSync(join(store, "memory", "MEMORY.md"), "# content");
+			recordStoreOrigin(store, join(home, "worktrees", "repo-y", "gone"), "2026-08-01T00:00:00.000Z");
+			const now = Date.now();
+			const deps = {
+				now,
+				protectedRoots: new Set<string>(),
+				isProtected: () => false,
+				inspect: async () => ({ pending: 0, leaseActive: false, content: false }),
+				audit: () => undefined,
+				lock: <T,>(fn: () => T): T => fn(),
+			};
+			const first = await executeStoreGc(base, policy(home), deps);
+			expect(first.quarantined).toHaveLength(0);
+			expect(existsSync(store)).toBe(true);
+			const mark = join(store, "state", "gc-missing-since");
+			expect(existsSync(mark)).toBe(true);
+			const old = new Date(now - 2 * 3_600_000);
+			utimesSync(mark, old, old);
+			const second = await executeStoreGc(base, policy(home), deps);
+			expect(second.quarantined).toEqual(["aaaa000000000b1"]);
 		} finally {
 			cleanup();
 		}

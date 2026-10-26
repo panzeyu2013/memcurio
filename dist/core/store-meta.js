@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite } from "./transaction.js";
 /** Store lifecycle metadata: origin (what workspace this store belongs to) and
@@ -92,7 +92,6 @@ export function readStoreOrigin(root) {
             realpath: parsed.realpath,
             firstSeenAt: parsed.firstSeenAt,
             lastActivityAt: parsed.lastActivityAt,
-            ...(typeof parsed.workspaceId === "string" && parsed.workspaceId ? { workspaceId: parsed.workspaceId } : {}),
         };
     }
     catch {
@@ -119,7 +118,7 @@ function maxIso(a, b) {
 }
 /** Record (or refresh) the origin of one store. Idempotent: firstSeenAt is
  *  preserved and lastActivityAt only moves forward. */
-export function recordStoreOrigin(root, workdir, at = new Date().toISOString(), workspaceId) {
+export function recordStoreOrigin(root, workdir, at = new Date().toISOString()) {
     const existing = readStoreOrigin(root);
     const canonical = canonicalWorkdir(workdir);
     const origin = {
@@ -128,7 +127,6 @@ export function recordStoreOrigin(root, workdir, at = new Date().toISOString(), 
         realpath: canonical,
         firstSeenAt: existing?.firstSeenAt ?? at,
         lastActivityAt: maxIso(existing?.lastActivityAt, at),
-        ...(workspaceId ?? existing?.workspaceId ? { workspaceId: workspaceId ?? existing?.workspaceId } : {}),
     };
     writeStoreOrigin(root, origin);
     return origin;
@@ -293,4 +291,90 @@ export function settleAfterDrain(root, snapshot, count, observedAt = Date.now())
         return "repaired";
     }
     return "pending";
+}
+/** Cross-process ownership fence for the lifecycle GC.
+ *
+ *  A live session writes one lease file per (pid, session); the plugin's
+ *  periodic sweep refreshes it, so a session that sits idle is still visibly
+ *  owned. Any process's GC sees the file, which closes the window where a store
+ *  used by another harness process could be quarantined. Stale files (no
+ *  heartbeat within SESSION_LEASE_STALE_MS) are ignored and pruned. */
+export const SESSION_LEASE_STALE_MS = 15 * 60_000;
+export function sessionLeaseDir(root) {
+    return join(storeStateDir(root), "live");
+}
+function sessionLeaseName(pid, sessionId) {
+    const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "session";
+    return pid + "-" + safe + ".json";
+}
+export function touchSessionLease(root, pid, sessionId, at = Date.now()) {
+    if (!existsSync(root)) {
+        return;
+    }
+    try {
+        const dir = sessionLeaseDir(root);
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(dir, sessionLeaseName(pid, sessionId)), JSON.stringify({ pid, sessionId, at: new Date(at).toISOString() }), { mode: 0o600 });
+    }
+    catch {
+        // A failed heartbeat only costs the fence its strongest signal; the age
+        // gate still protects the store.
+    }
+}
+export function clearSessionLease(root, pid, sessionId) {
+    try {
+        unlinkSync(join(sessionLeaseDir(root), sessionLeaseName(pid, sessionId)));
+    }
+    catch (err) {
+        if (err.code !== "ENOENT") {
+            throw err;
+        }
+    }
+}
+/** True when any session lease is fresh enough to mean "someone is using this
+ *  store right now" (in any process). */
+export function sessionLeaseActive(root, now = Date.now(), staleMs = SESSION_LEASE_STALE_MS) {
+    const dir = sessionLeaseDir(root);
+    let names;
+    try {
+        names = readdirSync(dir);
+    }
+    catch {
+        return false;
+    }
+    for (const name of names) {
+        try {
+            if (now - statSync(join(dir, name)).mtimeMs <= staleMs) {
+                return true;
+            }
+        }
+        catch {
+            void 0;
+        }
+    }
+    return false;
+}
+/** Drop lease files whose owner stopped heartbeating. */
+export function pruneSessionLeases(root, now = Date.now(), staleMs = SESSION_LEASE_STALE_MS) {
+    const dir = sessionLeaseDir(root);
+    let names;
+    try {
+        names = readdirSync(dir);
+    }
+    catch {
+        return 0;
+    }
+    let removed = 0;
+    for (const name of names) {
+        try {
+            if (now - statSync(join(dir, name)).mtimeMs > staleMs) {
+                unlinkSync(join(dir, name));
+                removed += 1;
+            }
+        }
+        catch {
+            void 0;
+        }
+    }
+    return removed;
 }

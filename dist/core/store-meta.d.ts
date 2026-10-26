@@ -31,7 +31,6 @@ export interface StoreOrigin {
     realpath: string;
     firstSeenAt: string;
     lastActivityAt: string;
-    workspaceId?: string;
 }
 /** One token state as read from disk. `absent` means "never written"; `torn`
  *  means the file exists but does not hold a full token (mid-write, truncated,
@@ -61,7 +60,7 @@ export declare function readStoreOrigin(root: string): StoreOrigin | undefined;
 export declare function writeStoreOrigin(root: string, origin: StoreOrigin): void;
 /** Record (or refresh) the origin of one store. Idempotent: firstSeenAt is
  *  preserved and lastActivityAt only moves forward. */
-export declare function recordStoreOrigin(root: string, workdir: string, at?: string, workspaceId?: string): StoreOrigin;
+export declare function recordStoreOrigin(root: string, workdir: string, at?: string): StoreOrigin;
 /** Move lastActivityAt forward without rewriting the rest of the record. */
 export declare function touchStoreOriginActivity(root: string, at?: string): void;
 /** A fresh opaque token. Ordering is irrelevant: only equality with the
@@ -107,3 +106,19 @@ export declare function clearSweptToken(root: string): void;
  *  fresh read: an enqueue that committed in between publishes a different
  *  token, so the store stays dirty and is examined again. */
 export declare function settleAfterDrain(root: string, snapshot: TokenState, count: number, observedAt?: number): DrainSettlement;
+/** Cross-process ownership fence for the lifecycle GC.
+ *
+ *  A live session writes one lease file per (pid, session); the plugin's
+ *  periodic sweep refreshes it, so a session that sits idle is still visibly
+ *  owned. Any process's GC sees the file, which closes the window where a store
+ *  used by another harness process could be quarantined. Stale files (no
+ *  heartbeat within SESSION_LEASE_STALE_MS) are ignored and pruned. */
+export declare const SESSION_LEASE_STALE_MS: number;
+export declare function sessionLeaseDir(root: string): string;
+export declare function touchSessionLease(root: string, pid: number, sessionId: string, at?: number): void;
+export declare function clearSessionLease(root: string, pid: number, sessionId: string): void;
+/** True when any session lease is fresh enough to mean "someone is using this
+ *  store right now" (in any process). */
+export declare function sessionLeaseActive(root: string, now?: number, staleMs?: number): boolean;
+/** Drop lease files whose owner stopped heartbeating. */
+export declare function pruneSessionLeases(root: string, now?: number, staleMs?: number): number;

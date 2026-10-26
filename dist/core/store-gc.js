@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, realpathSync, rmSync, statSync, writeFileSync, } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { clearSweptToken, readStoreOrigin, storeIsDirty, storeStateDir, writeActivityToken, } from "./store-meta.js";
 import { atomicWrite } from "./transaction.js";
@@ -110,6 +110,37 @@ export function isStoreEmpty(dir) {
     }
     return true;
 }
+const MISSING_CONFIRM_MS = 3_600_000;
+function missingMarkPath(dir) {
+    return join(dir, "state", "gc-missing-since");
+}
+/** How long the recorded workspace has been observed missing, or undefined
+ *  when this is the first pass that sees it. */
+function missingAgeMs(dir, now) {
+    try {
+        return now - statSync(missingMarkPath(dir)).mtimeMs;
+    }
+    catch {
+        return undefined;
+    }
+}
+function markMissing(dir, now) {
+    try {
+        mkdirSync(join(dir, "state"), { recursive: true, mode: 0o700 });
+        writeFileSync(missingMarkPath(dir), new Date(now).toISOString(), { mode: 0o600 });
+    }
+    catch {
+        void 0;
+    }
+}
+function clearMissingMark(dir) {
+    try {
+        unlinkSync(missingMarkPath(dir));
+    }
+    catch {
+        void 0;
+    }
+}
 function activityMtimeMs(dir) {
     try {
         return statSync(join(storeStateDir(dir), "activity")).mtimeMs;
@@ -163,6 +194,7 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
         }
         const emptyStore = policy.emptyStoreHours > 0 && isStoreEmpty(dir);
         if (!emptyStore && (isAlive(origin.workdir) || (origin.realpath !== origin.workdir && isAlive(origin.realpath)))) {
+            clearMissingMark(dir);
             plan.skipped.push({ key, reason: "workdir-exists" });
             continue;
         }
@@ -171,7 +203,10 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             plan.skipped.push({ key, reason: "outside-dsh-home" });
             continue;
         }
-        const lastMs = Math.max(Number.isFinite(Date.parse(origin.lastActivityAt)) ? Date.parse(origin.lastActivityAt) : 0, Number.isFinite(Date.parse(origin.firstSeenAt)) ? Date.parse(origin.firstSeenAt) : 0, activityMtimeMs(dir));
+        const lastRaw = Math.max(Number.isFinite(Date.parse(origin.lastActivityAt)) ? Date.parse(origin.lastActivityAt) : 0, Number.isFinite(Date.parse(origin.firstSeenAt)) ? Date.parse(origin.firstSeenAt) : 0, activityMtimeMs(dir));
+        // A clock jump or a restored backup can put the mtime in the future; treat
+        // it as "now" so the store is not permanently un-reclaimable.
+        const lastMs = lastRaw > 0 ? Math.min(lastRaw, now) : 0;
         if (lastMs === 0) {
             plan.skipped.push({ key, reason: "bad-origin" });
             continue;
@@ -225,11 +260,10 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
         policy.trashDays > 0
             ? trashEntries(baseRoot)
                 .filter((entry) => {
-                if (existsSync(join(entry.dir, ".restore-conflict"))) {
-                    return false;
-                }
+                const conflict = existsSync(join(entry.dir, ".restore-conflict"));
+                const keepDays = conflict ? policy.trashDays * 2 : policy.trashDays;
                 const age = ageDaysOf(entry.quarantinedAt, now);
-                return age !== undefined && age >= policy.trashDays;
+                return age !== undefined && age >= keepDays;
             })
                 .map((entry) => entry.dir)
             : [];
@@ -347,11 +381,11 @@ export function purgeTrash(baseRoot, policy, now = Date.now()) {
     const removed = [];
     purgeDebris(baseRoot, now);
     for (const entry of trashEntries(baseRoot)) {
-        if (existsSync(join(entry.dir, ".restore-conflict"))) {
-            continue;
-        }
+        const conflict = existsSync(join(entry.dir, ".restore-conflict"));
         const age = ageDaysOf(entry.quarantinedAt, now);
-        if (age === undefined || age < policy.trashDays) {
+        // A conflicted entry keeps its data for twice the window, then goes too.
+        const keepDays = conflict ? policy.trashDays * 2 : policy.trashDays;
+        if (age === undefined || age < keepDays) {
             continue;
         }
         try {
@@ -549,8 +583,31 @@ export async function executeStoreGc(baseRoot, policy, deps) {
     catch {
         return result;
     }
+    if (plan.candidates.length > 0) {
+        audit({
+            action: "store.gc_plan",
+            candidates: plan.candidates.map((candidate) => candidate.key),
+            skipped: plan.skipped.length,
+        });
+    }
     for (const candidate of plan.candidates) {
         try {
+            if (candidate.tier === "orphan") {
+                // Two independent passes must agree the workspace is gone: a network
+                // mount that is briefly absent must not authorize a destructive move.
+                const missingFor = missingAgeMs(candidate.path, deps.now);
+                if (missingFor === undefined) {
+                    markMissing(candidate.path, deps.now);
+                    result.skipped += 1;
+                    audit({ action: "store.quarantine_skipped", key: candidate.key, reason: "missing-unconfirmed" });
+                    continue;
+                }
+                if (missingFor < MISSING_CONFIRM_MS) {
+                    result.skipped += 1;
+                    audit({ action: "store.quarantine_skipped", key: candidate.key, reason: "missing-unconfirmed" });
+                    continue;
+                }
+            }
             const before = statSync(join(candidate.path, "index.sqlite"));
             const verified = await deps.inspect(candidate.path);
             const blockedReason = !verified

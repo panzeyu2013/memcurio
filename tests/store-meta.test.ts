@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
 	activityFailurePath,
 	activityPath,
+	clearSessionLease,
 	canonicalWorkdir,
 	clearSweptToken,
 	markActivityFailure,
@@ -20,7 +21,11 @@ import {
 	newActivityToken,
 	readActivityState,
 	readStoreOrigin,
+	pruneSessionLeases,
 	readSweptState,
+	sessionLeaseActive,
+	sessionLeaseDir,
+	touchSessionLease,
 	recordStoreOrigin,
 	settleAfterDrain,
 	storeIsDirty,
@@ -275,3 +280,25 @@ describe("store origin", () => {
 		}
 	});
 });
+
+describe("session leases", () => {
+	test("a fresh lease protects the store across processes", () => {
+		const root = tempStore();
+		try {
+			expect(sessionLeaseActive(root)).toBe(false);
+			touchSessionLease(root, 4242, "session-abc");
+			expect(sessionLeaseActive(root)).toBe(true);
+			const lease = join(sessionLeaseDir(root), "4242-session-abc.json");
+			const old = new Date(Date.now() - 60 * 60_000);
+			utimesSync(lease, old, old);
+			expect(sessionLeaseActive(root)).toBe(false);
+			expect(pruneSessionLeases(root)).toBe(1);
+			touchSessionLease(root, 4242, "session-abc");
+			clearSessionLease(root, 4242, "session-abc");
+			expect(sessionLeaseActive(root)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+

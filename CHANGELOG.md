@@ -24,9 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose tokens are settled and whose queue/lease check is clean, moving it into
   dsh/.trash/ behind a tombstone so a recreated workspace restores its memory
   instead of starting empty. A second tier reclaims stores that never produced
-  any memory content after 48 idle hours (enabled together with the retention
-  setting). dsh/.gc/audit.jsonl records every quarantine, rollback, purge and
-  restore.
+  any memory content once storeEmptyStoreHours is set (default 0 = off).
+  Orphan moves require two independent passes, a fresh session lease in any
+  process blocks them, and conflicted trash entries expire after twice the
+  trash window. dsh/.gc/audit.jsonl records every plan, quarantine, rollback,
+  purge and restore.
 - **integrationStoreGcPlan / integrationStoreGcRestore** operator API for a
   read-only reclamation inventory and a manual restore.
 
