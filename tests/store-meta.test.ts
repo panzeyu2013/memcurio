@@ -4,12 +4,14 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+	activityFailurePath,
 	activityPath,
 	canonicalWorkdir,
 	clearSweptToken,
@@ -76,8 +78,23 @@ describe("dirty token", () => {
 			expect(storeIsDirty(root)).toBe(false);
 			markActivityFailure(root, "EACCES");
 			expect(storeIsDirty(root)).toBe(true);
-			expect(settleAfterDrain(root, readActivityState(root), 0)).toBe("advanced");
+			// A marker written before the drain may be cleared; +5ms keeps the
+			// comparison deterministic instead of racing the file mtime.
+			expect(settleAfterDrain(root, readActivityState(root), 0, Date.now() + 5)).toBe("advanced");
 			expect(storeIsDirty(root)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("a failure marker newer than the drain snapshot is preserved", () => {
+		const root = tempStore();
+		try {
+			markActivityFailure(root, "EACCES");
+			const future = new Date(Date.now() + 60_000);
+			utimesSync(activityFailurePath(root), future, future);
+			expect(settleAfterDrain(root, readActivityState(root), 0, Date.now())).toBe("advanced");
+			expect(storeIsDirty(root)).toBe(true);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

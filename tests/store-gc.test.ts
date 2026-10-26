@@ -208,6 +208,27 @@ describe("store gc planner", () => {
 		}
 	});
 
+	test("retention 0 disables the orphan tier even when the empty tier is on", () => {
+		const { base, home, cleanup } = setup();
+		try {
+			const store = makeStore(base, "eeee000000000002");
+			mkdirSync(join(store, "memory"), { recursive: true });
+			writeFileSync(join(store, "memory", "MEMORY.md"), "# content");
+			recordStoreOrigin(
+				store,
+				join(home, "worktrees", "repo-8", "gone"),
+				new Date(Date.now() - 3_600_000).toISOString(),
+			);
+			const plan = planStoreGc(base, policy(home, { retentionDays: 0, emptyStoreHours: 24 }), {
+				now: NOW,
+			});
+			expect(plan.candidates).toHaveLength(0);
+			expect(plan.skipped.some((s) => s.key === "eeee000000000002")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+
 	test("protected roots are never candidates", () => {
 		const { base, home, cleanup } = setup();
 		try {

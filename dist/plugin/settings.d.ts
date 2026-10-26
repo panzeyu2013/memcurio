@@ -58,6 +58,10 @@ export interface Config {
     model?: Volatile<string | undefined> | string;
     storeRetentionDays?: Volatile<number> | number;
     storeTrashDays?: Volatile<number> | number;
+    /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
+     *  all also reclaims stores whose workspace lived elsewhere. Deployment
+     *  level (not rendered by the panel), like root. */
+    storeGcScope?: "dsh-home" | "all";
 }
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

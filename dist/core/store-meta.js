@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite } from "./transaction.js";
 /** Store lifecycle metadata: origin (what workspace this store belongs to) and
@@ -189,8 +189,15 @@ export function markActivityFailure(root, detail) {
         // Best effort: the caller already logged the original failure.
     }
 }
-export function clearActivityFailure(root) {
+export function clearActivityFailure(root, observedAt) {
     try {
+        // A failure recorded AFTER the drain started belongs to an enqueue this
+        // settle never saw; clearing it would hide a committed job.
+        // Same-millisecond writes are kept: a concurrent enqueue that failed its
+        // token write must never be mistaken for a marker this drain already saw.
+        if (observedAt !== undefined && Math.floor(statSync(activityFailurePath(root)).mtimeMs) >= observedAt) {
+            return;
+        }
         unlinkSync(activityFailurePath(root));
     }
     catch (err) {
@@ -256,9 +263,9 @@ export function clearSweptToken(root) {
  *  The advancement value is always the token observed BEFORE the drain, never a
  *  fresh read: an enqueue that committed in between publishes a different
  *  token, so the store stays dirty and is examined again. */
-export function settleAfterDrain(root, snapshot, count) {
+export function settleAfterDrain(root, snapshot, count, observedAt = Date.now()) {
     if (count <= 0) {
-        clearActivityFailure(root);
+        clearActivityFailure(root, observedAt);
         if (snapshot.kind === "token") {
             writeSweptToken(root, snapshot.value);
             return "advanced";

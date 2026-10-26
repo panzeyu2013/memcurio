@@ -12,6 +12,7 @@ const entrySchema = Schema.object({
     // Reclamation is destructive, so it ships disabled: an operator opts in.
     storeRetentionDays: Schema.number().step(1).min(0).max(3650).default(0).volatile(),
     storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
+    storeGcScope: Schema.union(["dsh-home", "all"]).default("dsh-home"),
 });
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

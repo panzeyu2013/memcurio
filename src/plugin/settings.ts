@@ -62,6 +62,10 @@ export interface Config {
   model?: Volatile<string | undefined> | string;
   storeRetentionDays?: Volatile<number> | number;
   storeTrashDays?: Volatile<number> | number;
+  /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
+   *  all also reclaims stores whose workspace lived elsewhere. Deployment
+   *  level (not rendered by the panel), like root. */
+  storeGcScope?: "dsh-home" | "all";
 }
 
 const entrySchema = Schema.object({
@@ -75,6 +79,7 @@ const entrySchema = Schema.object({
   // Reclamation is destructive, so it ships disabled: an operator opts in.
   storeRetentionDays: Schema.number().step(1).min(0).max(3650).default(0).volatile(),
   storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
+  storeGcScope: Schema.union(["dsh-home", "all"] as const).default("dsh-home"),
 });
 
 /** The one settings schema: the Loader validates every write with it and the

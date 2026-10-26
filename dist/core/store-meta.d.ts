@@ -77,7 +77,7 @@ export declare function hasActivityFailure(root: string): boolean;
 /** Leave a durable trace that a publish failed. The file stays until a later
  *  settle proves the queue empty, so a committed job can never be invisible. */
 export declare function markActivityFailure(root: string, detail: string): void;
-export declare function clearActivityFailure(root: string): void;
+export declare function clearActivityFailure(root: string, observedAt?: number): void;
 /** True when this store may hold work the periodic sweep should look at.
  *  Absent/absent is the only state considered settled: everything else (a token
  *  that differs, a torn file, a token with no swept value, a failed publish)
@@ -106,4 +106,4 @@ export declare function clearSweptToken(root: string): void;
  *  The advancement value is always the token observed BEFORE the drain, never a
  *  fresh read: an enqueue that committed in between publishes a different
  *  token, so the store stays dirty and is examined again. */
-export declare function settleAfterDrain(root: string, snapshot: TokenState, count: number): DrainSettlement;
+export declare function settleAfterDrain(root: string, snapshot: TokenState, count: number, observedAt?: number): DrainSettlement;

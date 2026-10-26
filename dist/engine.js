@@ -748,9 +748,15 @@ export class MemcurioAdapter {
                 queued = job !== undefined;
             }
             finally {
-                idx.close();
+                try {
+                    idx.close();
+                }
+                finally {
+                    // A close that throws (final checkpoint busy/ENOSPC) must not hide the
+                    // already committed session_end job.
+                    this.publishActivity("session_end", true);
+                }
             }
-            this.publishActivity("session_end", true);
         }
         else {
             try {
@@ -896,16 +902,22 @@ export class MemcurioAdapter {
      *  holds non-terminal work, so the token protocol cannot settle it by
      *  accident. */
     async ensureStoreOrigin() {
-        if (readStoreOrigin(this.root)) {
+        const origin = readStoreOrigin(this.root);
+        const activity = readActivityState(this.root);
+        // A valid token means the sweep already knows whether this store is dirty;
+        // only a missing origin or an unreadable token needs the database.
+        if (origin && activity.kind === "token") {
             return;
         }
         const idx = await Index.create(indexDb(this.root));
         try {
-            const row = idx.rawAll("SELECT workdir, MAX(COALESCE(ended_at, started_at)) AS last_at FROM sessions WHERE workdir IS NOT NULL AND workdir != '' GROUP BY workdir ORDER BY last_at DESC LIMIT 1")[0];
-            if (row?.workdir) {
-                recordStoreOrigin(this.root, row.workdir, row.last_at ?? new Date().toISOString());
+            if (!origin) {
+                const row = idx.rawAll("SELECT workdir, MAX(COALESCE(ended_at, started_at)) AS last_at FROM sessions WHERE workdir IS NOT NULL AND workdir != '' GROUP BY workdir ORDER BY last_at DESC LIMIT 1")[0];
+                if (row?.workdir) {
+                    recordStoreOrigin(this.root, row.workdir, row.last_at ?? new Date().toISOString());
+                }
             }
-            if (idx.extractionPendingCount() > 0 && readActivityState(this.root).kind !== "token") {
+            if (activity.kind !== "token" && idx.extractionPendingCount() > 0) {
                 writeActivityToken(this.root);
             }
         }
@@ -927,6 +939,11 @@ export class MemcurioAdapter {
             }
             const revived = idx.extractionRequeuePolicyRejected(this.extract.name);
             idx.metaSet("extract.policy_requeue_v1", new Date().toISOString());
+            if (revived > 0) {
+                // Reviving dead letters creates pending work: publish the token the
+                // sweep uses to notice it.
+                writeActivityToken(this.root);
+            }
             if (revived > 0) {
                 idx.audit("extract.requeued", "-", `provider=${this.extract.name}; policy-rejected jobs=${String(revived)}`);
             }

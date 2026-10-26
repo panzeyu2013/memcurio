@@ -5,6 +5,7 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -127,8 +128,16 @@ function directoryExists(path: string): boolean {
 	}
 }
 
+function realpathOrSelf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
 function under(prefix: string, path: string): boolean {
-	const base = resolve(prefix);
+	const base = resolve(realpathOrSelf(prefix));
 	const target = resolve(path);
 	return target === base || target.startsWith(`${base}${sep}`);
 }
@@ -249,7 +258,7 @@ export function planStoreGc(
 		}
 		if (
 			policy.scope === "dsh-home" &&
-			!under(join(policy.dshHomeRoot, "worktrees"), origin.realpath)
+			!under(realpathOrSelf(join(policy.dshHomeRoot, "worktrees")), origin.realpath)
 		) {
 			plan.skipped.push({ key, reason: "outside-dsh-home" });
 			continue;
@@ -285,7 +294,7 @@ export function planStoreGc(
 			});
 			continue;
 		}
-		if (effectiveAge < policy.retentionDays) {
+		if (!(policy.retentionDays > 0) || effectiveAge < policy.retentionDays) {
 			plan.skipped.push({ key, reason: "too-recent" });
 			continue;
 		}

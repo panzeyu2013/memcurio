@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { atomicWrite } from "./transaction.js";
@@ -234,8 +234,15 @@ export function markActivityFailure(root: string, detail: string): void {
   }
 }
 
-export function clearActivityFailure(root: string): void {
+export function clearActivityFailure(root: string, observedAt?: number): void {
   try {
+    // A failure recorded AFTER the drain started belongs to an enqueue this
+    // settle never saw; clearing it would hide a committed job.
+    // Same-millisecond writes are kept: a concurrent enqueue that failed its
+    // token write must never be mistaken for a marker this drain already saw.
+    if (observedAt !== undefined && Math.floor(statSync(activityFailurePath(root)).mtimeMs) >= observedAt) {
+      return;
+    }
     unlinkSync(activityFailurePath(root));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -305,9 +312,14 @@ export function clearSweptToken(root: string): void {
  *  The advancement value is always the token observed BEFORE the drain, never a
  *  fresh read: an enqueue that committed in between publishes a different
  *  token, so the store stays dirty and is examined again. */
-export function settleAfterDrain(root: string, snapshot: TokenState, count: number): DrainSettlement {
+export function settleAfterDrain(
+  root: string,
+  snapshot: TokenState,
+  count: number,
+  observedAt = Date.now(),
+): DrainSettlement {
   if (count <= 0) {
-    clearActivityFailure(root);
+    clearActivityFailure(root, observedAt);
     if (snapshot.kind === "token") {
       writeSweptToken(root, snapshot.value);
       return "advanced";

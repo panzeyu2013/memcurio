@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, realpathSync, rmSync, statSync, writeFileSync, } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { clearSweptToken, readStoreOrigin, storeIsDirty, storeStateDir, writeActivityToken, } from "./store-meta.js";
 import { atomicWrite } from "./transaction.js";
@@ -41,8 +41,16 @@ function directoryExists(path) {
         return code !== "ENOENT" && code !== "ENOTDIR";
     }
 }
+function realpathOrSelf(path) {
+    try {
+        return realpathSync(path);
+    }
+    catch {
+        return path;
+    }
+}
 function under(prefix, path) {
-    const base = resolve(prefix);
+    const base = resolve(realpathOrSelf(prefix));
     const target = resolve(path);
     return target === base || target.startsWith(`${base}${sep}`);
 }
@@ -159,7 +167,7 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             continue;
         }
         if (policy.scope === "dsh-home" &&
-            !under(join(policy.dshHomeRoot, "worktrees"), origin.realpath)) {
+            !under(realpathOrSelf(join(policy.dshHomeRoot, "worktrees")), origin.realpath)) {
             plan.skipped.push({ key, reason: "outside-dsh-home" });
             continue;
         }
@@ -190,7 +198,7 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             });
             continue;
         }
-        if (effectiveAge < policy.retentionDays) {
+        if (!(policy.retentionDays > 0) || effectiveAge < policy.retentionDays) {
             plan.skipped.push({ key, reason: "too-recent" });
             continue;
         }

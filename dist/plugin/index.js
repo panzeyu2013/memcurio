@@ -1,4 +1,4 @@
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { BlockAssembler, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -15,7 +15,7 @@ export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { storeIsDirty } from "../core/store-meta.js";
+import { readStoreOrigin, storeIsDirty } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -202,6 +202,7 @@ const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const STORE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STORE_GC_MAX_PER_RUN = 8;
 const STORE_EMPTY_STORE_HOURS = 48;
+const STORE_STARTUP_TICK_MS = 500;
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
 const DSH_RETIRE_RETRY_MS = 5_000;
 /** System-prompt section order for the read-path guide: after the per-tool
@@ -928,6 +929,7 @@ export function apply(ctx, config = {}) {
      *  is still in flight), so every start visits each sweepable store once and
      *  ignores the tokens; steady state afterwards relies on the tokens only. */
     let startupPass = true;
+    let startupTimer;
     const passVisited = new Set();
     let routeAnnounced = false;
     const sweptRoots = new Map();
@@ -973,6 +975,10 @@ export function apply(ctx, config = {}) {
         // The startup pass is over once every sweepable root has been visited once.
         if (startupPass && allRoots.every((root) => passVisited.has(root))) {
             startupPass = false;
+            if (startupTimer) {
+                clearInterval(startupTimer);
+                startupTimer = undefined;
+            }
         }
         ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
         void (async () => {
@@ -1038,6 +1044,28 @@ export function apply(ctx, config = {}) {
     catch (error) {
         warn(error);
     }
+    // The startup pass covers the crash window between a commit and its token
+    // write; running it on the 5-minute cadence would leave a hot-reloaded or
+    // short-lived process with an unfinished pass for tens of minutes.
+    if (startupPass) {
+        startupTimer = setInterval(() => {
+            if (!startupPass) {
+                return;
+            }
+            try {
+                sweepDormantStores("startup");
+            }
+            catch (error) {
+                warn(error);
+            }
+        }, STORE_STARTUP_TICK_MS);
+        startupTimer.unref?.();
+        ctx.effect(() => () => {
+            if (startupTimer) {
+                clearInterval(startupTimer);
+            }
+        }, "memcurio startup pass");
+    }
     /** Reclaim stores whose workspace can never come back. Destructive work is
      *  fenced three ways: a fresh token/depth/lease check inside a write
      *  transaction, a tombstone keyed by store, and a post-rename re-check that
@@ -1045,7 +1073,7 @@ export function apply(ctx, config = {}) {
     const gcPolicy = () => ({
         retentionDays: live().storeRetentionDays,
         trashDays: live().storeTrashDays,
-        scope: "dsh-home",
+        scope: config.storeGcScope === "all" ? "all" : "dsh-home",
         dshHomeRoot: dshHome(),
         maxPerRun: STORE_GC_MAX_PER_RUN,
         // Empty stores only matter when reclamation is enabled at all.
@@ -1108,6 +1136,7 @@ export function apply(ctx, config = {}) {
         }
         for (const candidate of plan.candidates) {
             try {
+                const before = statSync(join(candidate.path, "index.sqlite"));
                 const blocked = await verifyGcCandidate(candidate);
                 if (blocked !== undefined) {
                     appendLifecycleAudit(baseRoot, {
@@ -1119,14 +1148,60 @@ export function apply(ctx, config = {}) {
                     });
                     continue;
                 }
-                const { entry } = withFileLock(lock, () => quarantineStore(baseRoot, candidate, { sweep: reason }, Date.now()));
+                // Re-check the world inside the lock: the plan and the verification are
+                // both advisory until this point.
+                let entry;
+                let fence;
+                withFileLock(lock, () => {
+                    try {
+                        const after = statSync(join(candidate.path, "index.sqlite"));
+                        if (after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) {
+                            fence = "store-changed";
+                            return;
+                        }
+                        if (existsSync(join(candidate.path, "index.sqlite-wal"))) {
+                            fence = "wal";
+                            return;
+                        }
+                        if ([...sessions.values()].some((runtime) => runtime.root === candidate.path && !runtime.retired)) {
+                            fence = "adopted";
+                            return;
+                        }
+                        if (candidate.tier === "orphan") {
+                            const origin = readStoreOrigin(candidate.path);
+                            if (origin && (existsSync(origin.workdir) || (origin.realpath !== origin.workdir && existsSync(origin.realpath)))) {
+                                fence = "workdir-revived";
+                                return;
+                            }
+                            if (storeIsDirty(candidate.path)) {
+                                fence = "dirty-token";
+                                return;
+                            }
+                        }
+                        entry = quarantineStore(baseRoot, candidate, { sweep: reason }, Date.now()).entry;
+                    }
+                    catch {
+                        fence = "error";
+                    }
+                });
+                if (entry === undefined) {
+                    appendLifecycleAudit(baseRoot, {
+                        at: new Date().toISOString(),
+                        action: "store.quarantine_skipped",
+                        key: candidate.key,
+                        reason: fence ?? "unknown",
+                        sweep: reason,
+                    });
+                    continue;
+                }
                 // A job that committed before the rename now lives in the moved
                 // database: put the store back instead of losing it.
-                const leftover = await pendingInMovedStore(entry);
+                const quarantined = entry;
+                const leftover = await pendingInMovedStore(quarantined);
                 if (leftover > 0) {
                     withFileLock(lock, () => {
-                        renameSync(join(entry, "store"), candidate.path);
-                        rmSync(entry, { recursive: true, force: true });
+                        renameSync(join(quarantined, "store"), candidate.path);
+                        rmSync(quarantined, { recursive: true, force: true });
                         clearTombstone(baseRoot, candidate.key);
                     });
                     appendLifecycleAudit(baseRoot, {
@@ -1134,7 +1209,7 @@ export function apply(ctx, config = {}) {
                         action: "store.quarantine_rolled_back",
                         key: candidate.key,
                         pending: leftover,
-                        entry,
+                        entry: quarantined,
                     });
                     continue;
                 }
@@ -1145,7 +1220,7 @@ export function apply(ctx, config = {}) {
                     workdir: candidate.workdir,
                     ageDays: candidate.ageDays,
                     bytes: candidate.sizeBytes,
-                    entry,
+                    entry: quarantined,
                 });
             }
             catch (error) {
