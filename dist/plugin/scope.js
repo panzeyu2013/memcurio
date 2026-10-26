@@ -52,6 +52,17 @@ export function storeRootsUnder(baseRoot) {
         .filter((root) => existsSync(join(root, "index.sqlite")));
 }
 /** Resolve the store used by one DSH workspace without exposing its path. */
+/** Live (non-retired) session runtimes. A retired runtime keeps its store
+ *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
+export function liveSessions(runtimes) {
+    const out = [];
+    for (const runtime of runtimes) {
+        if (!runtime.retired) {
+            out.push(runtime);
+        }
+    }
+    return out;
+}
 export function workspaceStoreRoot(baseRoot, workdir, scope) {
     if (scope === "global")
         return resolve(baseRoot);

@@ -56,6 +56,18 @@ export function storeRootsUnder(baseRoot: string): string[] {
 }
 
 /** Resolve the store used by one DSH workspace without exposing its path. */
+/** Live (non-retired) session runtimes. A retired runtime keeps its store
+ *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
+export function liveSessions<T extends { retired?: boolean }>(runtimes: Iterable<T>): T[] {
+  const out: T[] = [];
+  for (const runtime of runtimes) {
+    if (!runtime.retired) {
+      out.push(runtime);
+    }
+  }
+  return out;
+}
+
 export function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string {
   if (scope === "global") return resolve(baseRoot);
   if (!workdir) return join(resolve(baseRoot), "dsh", NO_CWD_STORE_KEY);

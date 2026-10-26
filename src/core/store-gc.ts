@@ -275,6 +275,9 @@ export function planStoreGc(
 	// enumeration; report them so an operator can explain the inventory.
 	try {
 		for (const name of readdirSync(dsh)) {
+			if (name.includes(".stale-")) {
+				continue;
+			}
 			if (!name.startsWith(".") && !existsSync(join(dsh, name, "index.sqlite"))) {
 				plan.skipped.push({ key: name, reason: "no-index" });
 			}
@@ -647,6 +650,12 @@ export function restoreTombstonedStore(
 		// stay: dropping it would let the quarantined copy be purged later.
 		const tombstone = readTombstone(baseRoot, key);
 		if (tombstone) {
+			if (!existsSync(join(tombstone.entry, "store"))) {
+				// The quarantined copy is gone (purged or removed by hand): the
+				// tombstone is stale and must not turn every adoption into a conflict.
+				clearTombstone(baseRoot, key);
+				return undefined;
+			}
 			try {
 				writeFileSync(join(tombstone.entry, ".restore-conflict"), new Date(now).toISOString());
 			} catch {

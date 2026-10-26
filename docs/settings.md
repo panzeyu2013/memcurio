@@ -50,7 +50,7 @@
 | 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts:130-163`「suppresses the generated page and reports post-commit changes for memcurio only」 |
 | 浏览器侧快照/覆盖判定/set-unset 语义 | `tests/client-settings.test.ts`（presence-based overridden、revert、reset/resetAll、host 拒绝） |
 | 面板注册与渲染 | `tests/client-panel-render.test.ts`、`tests/ui-render.test.ts` |
-| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts:48-58`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` 的 undefined 守卫；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:108` 的 inject 不含 settings） |
+| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts:48-58`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
 | 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/client-bundle-drift.test.ts` |
 
 ## 5. 运维要点

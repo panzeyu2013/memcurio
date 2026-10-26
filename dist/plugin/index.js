@@ -6,7 +6,7 @@ import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../
 import { pipelineConfig } from "../core/config.js";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
-import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 import { Index } from "../core/db.js";
 import { withFileLock } from "../core/transaction.js";
 import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
@@ -1042,10 +1042,7 @@ export function apply(ctx, config = {}) {
     const sweepTimer = setInterval(() => {
         // Refresh the cross-process ownership fence for every live session before
         // the sweep decides what is dormant.
-        for (const runtime of sessions.values()) {
-            if (runtime.retired) {
-                continue;
-            }
+        for (const runtime of liveSessions(sessions.values())) {
             touchSessionLease(runtime.root, process.pid, runtime.session.id);
         }
         try {
@@ -1105,9 +1102,8 @@ export function apply(ctx, config = {}) {
         const policy = gcPolicy();
         const result = await executeStoreGc(baseRoot, policy, {
             now: Date.now(),
-            protectedRoots: new Set([...sessions.values()].filter((runtime) => !runtime.retired).map((runtime) => runtime.root)),
-            isProtected: (dir) => [...sessions.values()].some((runtime) => runtime.root === dir && !runtime.retired) ||
-                sessionLeaseActive(dir),
+            protectedRoots: new Set(liveSessions(sessions.values()).map((runtime) => runtime.root)),
+            isProtected: (dir) => liveSessions(sessions.values()).some((runtime) => runtime.root === dir) || sessionLeaseActive(dir),
             inspect: async (dir) => {
                 try {
                     const idx = await Index.create(indexDb(dir));
@@ -1380,6 +1376,12 @@ export function apply(ctx, config = {}) {
         const retirement = Promise.all([ended, drain]).then(() => undefined);
         runtime.retirement = retirement;
         void retirement.then(() => {
+            try {
+                clearSessionLease(runtime.root, process.pid, runtime.session.id);
+            }
+            catch {
+                void 0;
+            }
             if (sessions.get(runtime.session.id) === runtime)
                 sessions.delete(runtime.session.id);
             // The store is dormant again: the periodic sweep may retry its durable

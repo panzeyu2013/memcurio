@@ -21,7 +21,7 @@ import { writeWorkspaceText } from "../src/core/workspace.js";
 import * as api from "../src/api.js";
 import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
-import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
+import { dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -2546,3 +2546,10 @@ describe("UiTransportRegistry", () => {
     releaseFailing();
   });
 });
+
+describe("liveSessions", () => {
+	test("drops retired runtimes", () => {
+		expect(liveSessions([{ retired: true }, { retired: false }, {}])).toEqual([{ retired: false }, {}]);
+	});
+});
+

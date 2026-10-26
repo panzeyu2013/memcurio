@@ -3,9 +3,12 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { NoopExtractProvider } from "../src/core/extract.js";
+import { NoopExtractProvider, processExtractionQueue } from "../src/core/extract.js";
+import type { ExtractProvider } from "../src/core/extract.js";
 import {
 	activityPath,
+	hasActivityFailure,
+	markActivityFailure,
 	readStoreOrigin,
 	storeIsDirty,
 } from "../src/core/store-meta.js";
@@ -97,3 +100,24 @@ describe("store lifecycle wiring", () => {
 		}
 	});
 });
+
+	test("a failure marker written during a drain survives the settle", async () => {
+		const { root, cleanup } = fixtures();
+		try {
+			const provider: ExtractProvider = {
+				name: "stub",
+				availability: () => {
+					markActivityFailure(root, "during-drain");
+					return { configured: false };
+				},
+				extract: async () => null,
+			};
+			const result = await processExtractionQueue(root, provider);
+			expect(result.status).toBe("empty");
+			expect(hasActivityFailure(root)).toBe(true);
+			expect(storeIsDirty(root)).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
+

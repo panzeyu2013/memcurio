@@ -492,6 +492,30 @@ describe("executeStoreGc", () => {
 	});
 
 
+
+	test("purge runs even when both reclamation switches are off", async () => {
+		const { base, home, cleanup } = setup();
+		try {
+			orphan(base, home, "aaaa000000000e1");
+			const anchor = Date.parse("2026-06-01T00:00:00.000Z");
+			const plan = planStoreGc(base, policy(home), { now: NOW });
+			const entry = quarantineStore(base, firstCandidate(plan), {}, anchor).entry;
+			const audits: Record<string, unknown>[] = [];
+			const result = await executeStoreGc(base, policy(home, { retentionDays: 0, emptyStoreHours: 0 }), {
+				now: NOW,
+				protectedRoots: new Set(),
+				isProtected: () => false,
+				inspect: async () => ({ pending: 0, leaseActive: false, content: false }),
+				audit: (row) => audits.push(row),
+				lock: (fn) => fn(),
+			});
+			expect(result.purged).toEqual([entry]);
+			expect(existsSync(entry)).toBe(false);
+			expect(audits.some((row) => row.action === "store.purge")).toBe(true);
+		} finally {
+			cleanup();
+		}
+	});
 	test("a WAL sidecar written after planning fences the move", async () => {
 		const { base, home, cleanup } = setup();
 		try {
