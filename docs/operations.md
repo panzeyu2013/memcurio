@@ -78,7 +78,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 设置面的完整契约（上游 0.1.7 规范、本插件落点、本仓库约定、验证矩阵）见 [settings.md](settings.md)。运维速览：
 
-- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单；生命周期字段 storeRetentionDays / storeTrashDays 同样可在表单调整。
+- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单；生命周期字段 storeRetentionDays / storeTrashDays 是破坏性开关，同样只作为 profile 配置项（不进面板），启用需显式编辑 profile patch。
 - 生效：`injectContext`/预算/路由即时；`scope` 对新会话生效；`registerTools` 重启生效。
 - UI 写入热生效（volatile 原地提交）；手改 YAML 默认也热生效（默认 base 启用 `dsh-hmr`，监视两份用户 patch 并即时 reconcile；禁用/无 HMR 才需要下次启动）；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
 
