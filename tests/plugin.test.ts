@@ -85,6 +85,9 @@ describe("storeRootsUnder", () => {
     mkdirSync(join(base, "dsh", "bbbbbbbbbbbbbbbb"), { recursive: true });
     // A regular file in the namespace is ignored, not an error.
     writeFileSync(join(base, "dsh", "not-a-dir"), "file");
+    // Dot-directories are lifecycle bookkeeping, even when they hold a database.
+    mkdirSync(join(base, "dsh", ".trash", "entry"), { recursive: true });
+    writeFileSync(join(base, "dsh", ".trash", "index.sqlite"), "");
     expect(storeRootsUnder(base)).toEqual([join(base, "dsh", "aaaaaaaaaaaaaaaa")]);
     expect(storeRootsUnder(join(base, "missing"))).toEqual([]);
   });

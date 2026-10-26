@@ -47,6 +47,10 @@ export function storeRootsUnder(baseRoot: string): string[] {
     return [];
   }
   return entries
+    // Dot-directories are lifecycle bookkeeping (base root: \`.gc\`, \`.trash\`),
+    // never stores: an index.sqlite that happens to land there must not make the
+    // sweep adopt a trash entry as a live workspace.
+    .filter((entry) => !entry.startsWith("."))
     .map((entry) => join(dshDir, entry))
     .filter((root) => existsSync(join(root, "index.sqlite")));
 }

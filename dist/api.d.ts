@@ -1,5 +1,6 @@
 /** Stable host-integration surface. Harness packages should import only here. */
 import { type AdHocNote } from "./core/adhoc.js";
+import type { StoreGcPolicy } from "./core/store-gc.js";
 export { MemcurioAdapter } from "./engine.js";
 export type { AdapterOptions } from "./engine.js";
 export type { HarnessToolPreset } from "./engine.js";
@@ -71,3 +72,16 @@ export declare function integrationContext(root: string, budgetTokens?: number):
 export declare function integrationCite(root: string, refs: readonly string[]): Promise<{
     counted: string[];
 }>;
+/** Read-only reclamation inventory. The caller supplies the policy because the
+ *  base root, DSH home and retention all come from the embedding profile. */
+export declare function integrationStoreGcPlan(baseRoot: string, policy: StoreGcPolicy, now?: number): import("./core/store-gc.js").StoreGcPlan;
+/** Restore one quarantined store. Refuses to overwrite a live store at the
+ *  same path and audits the outcome. */
+export declare function integrationStoreGcRestore(baseRoot: string, key: string, now?: number): {
+    restoredTo: string;
+    entry: string;
+} | {
+    conflict: true;
+    existing: string;
+    entry: string;
+};

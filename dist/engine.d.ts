@@ -213,6 +213,12 @@ export declare class MemcurioAdapter {
      *  the LLM decides whether that alone is worth remembering. No schema
      *  changes: sessions + extraction_jobs are the only tables involved. */
     backfillUnprocessedSessions(sessionIds?: readonly string[], evidenceFor?: (sessionId: string) => Promise<readonly BackfillEvidenceItem[] | undefined>): Promise<number>;
+    /** Publish the store's dirty token AFTER its enqueue transaction committed.
+     *  The sweep compares this token with the value it last settled, so a job
+     *  enqueued while nobody was looking is never missed; a failed write costs one
+     *  extra full pass (startup), never a lost job. Deliberately a plain write:
+     *  this runs on every checkpoint and must not fsync. */
+    private publishActivity;
     /** Drain durable jobs outside the host event request. Only one drain runs
      * per adapter; a failed job remains pending/dead in SQLite and schedules its
      * next retry without blocking future Hook responses. */
@@ -220,6 +226,12 @@ export declare class MemcurioAdapter {
      *  the reply parser now repairs false-positive lines, so those rejections
      *  get exactly one more attempt each. Called once per store at startup; the
      *  audit is written only when something actually moved. */
+    /** Backfill the lifecycle origin for a store created before the marker
+     *  existed (or whose origin write failed). One extra open per legacy store,
+     *  then never again. Also repairs a missing dirty token when the store still
+     *  holds non-terminal work, so the token protocol cannot settle it by
+     *  accident. */
+    ensureStoreOrigin(): Promise<void>;
     requeuePolicyRejectedExtractions(): Promise<number>;
     processPendingExtractions(limit?: number, deadline?: number): Promise<QueueDrainResult[]>;
     /** Epoch ms of the next scheduled worker wake, or undefined when none is

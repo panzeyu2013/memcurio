@@ -1175,6 +1175,16 @@ export class Index {
     return renewed;
   }
 
+  /** Read-only lease probe used by the lifecycle GC: a live lease means
+   *  another process may be consolidating this store right now. */
+  consolidationLeaseActive(leaseKey: string, now = new Date().toISOString()): boolean {
+    const row = this.driver.get<{ lease_until: string }>(
+      "SELECT lease_until FROM consolidation_leases WHERE lease_key=?",
+      [leaseKey],
+    );
+    return row != null && row.lease_until > now;
+  }
+
   consolidationRelease(leaseKey: string, owner: string): boolean {
     let released = false;
     this.withTransaction(() => {

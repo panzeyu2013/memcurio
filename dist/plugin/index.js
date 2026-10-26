@@ -1,16 +1,21 @@
-import { existsSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { existsSync, renameSync, rmSync } from "node:fs";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { BlockAssembler, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../core/channel.js";
 import { pipelineConfig } from "../core/config.js";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
-import { memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { dshHome, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { Index } from "../core/db.js";
+import { withFileLock } from "../core/transaction.js";
+import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
+import { appendLifecycleAudit, clearTombstone, gcDirs, planStoreGc, purgeTrash, quarantineStore, restoreTombstonedStore, } from "../core/store-gc.js";
 export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
-import { memoryWorkspace } from "../core/paths.js";
+import { indexDb, memoryWorkspace } from "../core/paths.js";
+import { storeIsDirty } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
 import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
@@ -194,6 +199,8 @@ const STORE_SWEEP_MAX_ROOTS = 8;
 const STORE_SWEEP_DRAIN_LIMIT = 4;
 const STORE_SWEEP_PER_ROOT_MS = 30 * 60 * 1000;
 const STORE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const STORE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const STORE_GC_MAX_PER_RUN = 8;
 const DSH_RETIRE_MAX_ATTEMPTS = 3;
 const DSH_RETIRE_RETRY_MS = 5_000;
 /** System-prompt section order for the read-path guide: after the per-tool
@@ -915,6 +922,13 @@ export function apply(ctx, config = {}) {
      *  re-block every job), and skips roots with a live session — that adapter
      *  owns the store. Retirement clears the bootstrap marker, so a store
      *  becomes sweepable again. */
+    /** One bounded full pass per process start. The tokens alone cannot prove a
+     *  previous process died clean (a checkpoint can commit while its token write
+     *  is still in flight), so every start visits each sweepable store once and
+     *  ignores the tokens; steady state afterwards relies on the tokens only. */
+    let startupPass = true;
+    const passVisited = new Set();
+    let routeAnnounced = false;
     const sweptRoots = new Map();
     const sweepDormantStores = (reason) => {
         const globalRoute = fixedRoute() ?? lastKnownRoute;
@@ -924,10 +938,25 @@ export function apply(ctx, config = {}) {
         const now = Date.now();
         // Never drain a store a live session owns: its own adapter is already
         // draining it, and two workers would only fence each other's claims.
-        const activeRoots = new Set([...sessions.values()].map((runtime) => runtime.root));
-        const roots = storeRootsUnder(baseRoot)
-            .filter((root) => !bootstrappedRoots.has(root) && !activeRoots.has(root))
-            .filter((root) => now - (sweptRoots.get(root) ?? 0) >= STORE_SWEEP_PER_ROOT_MS)
+        const activeRoots = new Set([...sessions.values()].filter((runtime) => !runtime.retired).map((runtime) => runtime.root));
+        const allRoots = storeRootsUnder(baseRoot).filter((root) => !bootstrappedRoots.has(root) && !activeRoots.has(root));
+        // The dirty token (activity != swept) is the ONLY reason a store is opened
+        // in steady state: an orphan store's token never changes again, and a live
+        // store drains through its own adapter. A dirty check is one stat per store.
+        const dirty = allRoots.filter((root) => storeIsDirty(root));
+        const roots = allRoots
+            .filter((root) => {
+            if (startupPass && passVisited.has(root)) {
+                return false;
+            }
+            if (!startupPass && !dirty.includes(root)) {
+                return false;
+            }
+            return now - (sweptRoots.get(root) ?? 0) >= STORE_SWEEP_PER_ROOT_MS;
+        })
+            // Least-recently-swept first: a store that keeps failing to drain must not
+            // monopolise the per-tick budget and starve the rest.
+            .sort((a, b) => (sweptRoots.get(a) ?? 0) - (sweptRoots.get(b) ?? 0))
             .slice(0, STORE_SWEEP_MAX_ROOTS);
         if (roots.length === 0) {
             return;
@@ -938,8 +967,13 @@ export function apply(ctx, config = {}) {
         const sweptAt = Date.now();
         for (const root of roots) {
             sweptRoots.set(root, sweptAt);
+            passVisited.add(root);
         }
-        ctx.logger.debug(`memcurio: sweeping ${String(roots.length)} dormant store(s) (${reason})`);
+        // The startup pass is over once every sweepable root has been visited once.
+        if (startupPass && allRoots.every((root) => passVisited.has(root))) {
+            startupPass = false;
+        }
+        ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
         void (async () => {
             for (const root of roots) {
                 const adapter = new MemcurioAdapter({
@@ -960,6 +994,9 @@ export function apply(ctx, config = {}) {
                     },
                 });
                 try {
+                    // Stores created before the marker (or with a failed write) get their
+                    // origin backfilled here, on the pass that already opens them.
+                    await adapter.ensureStoreOrigin();
                     const revived = await adapter.requeuePolicyRejectedExtractions();
                     if (revived > 0) {
                         ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
@@ -981,12 +1018,149 @@ export function apply(ctx, config = {}) {
     // Safety net for routes that appear without a new session (a restored
     // session replays its route; a pinned route can change live) and for stores
     // whose jobs stay blocked until a later route appears.
-    const sweepTimer = setInterval(() => sweepDormantStores("periodic"), STORE_SWEEP_INTERVAL_MS);
+    const sweepTimer = setInterval(() => {
+        try {
+            sweepDormantStores("periodic");
+        }
+        catch (error) {
+            // A corrupt lifecycle file must never take the plugin down.
+            warn(error);
+        }
+    }, STORE_SWEEP_INTERVAL_MS);
     sweepTimer.unref?.();
     ctx.effect(() => () => {
         clearInterval(sweepTimer);
     }, "memcurio dormant-store sweep");
-    sweepDormantStores("apply");
+    try {
+        sweepDormantStores("apply");
+    }
+    catch (error) {
+        warn(error);
+    }
+    /** Reclaim stores whose workspace can never come back. Destructive work is
+     *  fenced three ways: a fresh token/depth/lease check inside a write
+     *  transaction, a tombstone keyed by store, and a post-rename re-check that
+     *  rolls the move back if work appeared in the meantime. Off by default. */
+    const gcPolicy = () => ({
+        retentionDays: live().storeRetentionDays,
+        trashDays: live().storeTrashDays,
+        scope: "dsh-home",
+        dshHomeRoot: dshHome(),
+        maxPerRun: STORE_GC_MAX_PER_RUN,
+    });
+    const verifyGcCandidate = async (candidate) => {
+        if (storeIsDirty(candidate.path)) {
+            return "dirty-token";
+        }
+        const idx = await Index.create(indexDb(candidate.path));
+        try {
+            let ok = false;
+            idx.withTransaction(() => {
+                if (idx.extractionPendingCount() > 0)
+                    return;
+                if (idx.consolidationLeaseActive(WORKSPACE_WRITE_LEASE_KEY))
+                    return;
+                ok = true;
+            });
+            return ok ? undefined : "busy";
+        }
+        finally {
+            idx.close();
+        }
+    };
+    const pendingInMovedStore = async (entry) => {
+        try {
+            const idx = await Index.create(indexDb(join(entry, "store")));
+            try {
+                return idx.extractionPendingCount();
+            }
+            finally {
+                idx.close();
+            }
+        }
+        catch {
+            return 0;
+        }
+    };
+    const runStoreGc = async (reason) => {
+        const policy = gcPolicy();
+        if (!(policy.retentionDays > 0)) {
+            return;
+        }
+        const { lock } = gcDirs(baseRoot);
+        const now = Date.now();
+        const protectedRoots = new Set([...sessions.values()].map((runtime) => runtime.root));
+        let plan;
+        try {
+            plan = withFileLock(lock, () => planStoreGc(baseRoot, policy, { now, protectedRoots }));
+        }
+        catch (error) {
+            warn(error);
+            return;
+        }
+        for (const candidate of plan.candidates) {
+            try {
+                const blocked = await verifyGcCandidate(candidate);
+                if (blocked !== undefined) {
+                    appendLifecycleAudit(baseRoot, {
+                        at: new Date().toISOString(),
+                        action: "store.quarantine_skipped",
+                        key: candidate.key,
+                        reason: blocked,
+                        sweep: reason,
+                    });
+                    continue;
+                }
+                const { entry } = withFileLock(lock, () => quarantineStore(baseRoot, candidate, { sweep: reason }, Date.now()));
+                // A job that committed before the rename now lives in the moved
+                // database: put the store back instead of losing it.
+                const leftover = await pendingInMovedStore(entry);
+                if (leftover > 0) {
+                    withFileLock(lock, () => {
+                        renameSync(join(entry, "store"), candidate.path);
+                        rmSync(entry, { recursive: true, force: true });
+                        clearTombstone(baseRoot, candidate.key);
+                    });
+                    appendLifecycleAudit(baseRoot, {
+                        at: new Date().toISOString(),
+                        action: "store.quarantine_rolled_back",
+                        key: candidate.key,
+                        pending: leftover,
+                        entry,
+                    });
+                    continue;
+                }
+                appendLifecycleAudit(baseRoot, {
+                    at: new Date().toISOString(),
+                    action: "store.quarantine",
+                    key: candidate.key,
+                    workdir: candidate.workdir,
+                    ageDays: candidate.ageDays,
+                    bytes: candidate.sizeBytes,
+                    entry,
+                });
+            }
+            catch (error) {
+                warn(error);
+            }
+        }
+        try {
+            const removed = withFileLock(lock, () => purgeTrash(baseRoot, policy, Date.now()));
+            for (const dir of removed) {
+                appendLifecycleAudit(baseRoot, { at: new Date().toISOString(), action: "store.purge", entry: dir });
+            }
+        }
+        catch (error) {
+            warn(error);
+        }
+    };
+    const storeGcTimer = setInterval(() => {
+        void runStoreGc("periodic").catch(warn);
+    }, STORE_GC_INTERVAL_MS);
+    storeGcTimer.unref?.();
+    ctx.effect(() => () => {
+        clearInterval(storeGcTimer);
+    }, "memcurio store gc");
     const ensureSession = (session) => {
         const existing = sessions.get(session.id);
         if (existing)
@@ -1011,6 +1185,18 @@ export function apply(ctx, config = {}) {
             ctx.logger.warn("memcurio: session %s has no header.cwd; using the shared no-cwd store (workspace isolation unavailable)", session.id);
         }
         const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
+        // A recreated workspace path must reclaim its quarantined memory instead of
+        // silently starting from an empty store (the recreate-after-quarantine
+        // data-loss chain).
+        try {
+            const adopted = restoreTombstonedStore(baseRoot, basename(root));
+            if (adopted && "restoredTo" in adopted) {
+                ctx.logger.warn("memcurio: restored quarantined store for %s from %s", workdir, adopted.restoredTo);
+            }
+        }
+        catch (error) {
+            warn(error);
+        }
         // A pinned route is read LIVE at every consumption point (fixedRoute);
         // the seed only picks the session's initial fallback route.
         const seededRoute = fixedRoute() ?? latestRoute(seedEvents) ?? lastKnownRoute;
@@ -1059,7 +1245,12 @@ export function apply(ctx, config = {}) {
         bootstrapRoot(runtime);
         // A route just became known: dormant stores can now drain. Runs after this
         // session is registered, so its own (bootstrapped) store is excluded.
-        sweepDormantStores("session route");
+        // Only the transition "no route known" -> "route known" needs a sweep:
+        // every later session would just re-scan the directory.
+        if (seededRoute && !routeAnnounced) {
+            routeAnnounced = true;
+            sweepDormantStores("route");
+        }
         void enqueue(runtime, async () => {
             await adapter.sessionCreated(session.id, workdir, "dsh");
             // Seed summaries live in the SAME map the live handler consumes, so a
@@ -1205,6 +1396,12 @@ export function apply(ctx, config = {}) {
                     void retireSession(runtime).catch(() => undefined);
                 }, DSH_RETIRE_RETRY_MS);
                 timer.unref?.();
+            }
+            else {
+                // The adapter is disposed and retries are exhausted; the store would
+                // otherwise stay "active" forever and never be swept again.
+                runtime.retired = true;
+                bootstrappedRoots.delete(runtime.root);
             }
         });
         return retirement;

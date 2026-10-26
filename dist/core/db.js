@@ -838,6 +838,12 @@ export class Index {
         });
         return renewed;
     }
+    /** Read-only lease probe used by the lifecycle GC: a live lease means
+     *  another process may be consolidating this store right now. */
+    consolidationLeaseActive(leaseKey, now = new Date().toISOString()) {
+        const row = this.driver.get("SELECT lease_until FROM consolidation_leases WHERE lease_key=?", [leaseKey]);
+        return row != null && row.lease_until > now;
+    }
     consolidationRelease(leaseKey, owner) {
         let released = false;
         this.withTransaction(() => {

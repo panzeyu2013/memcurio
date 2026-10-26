@@ -68,6 +68,8 @@ describe("memcurio config schema", () => {
       scope: "workspace",
       injectContext: true,
       registerTools: true,
+      storeRetentionDays: 0,
+      storeTrashDays: 30,
     });
     expect(() => plugin.Config({ injectContext: "false" } as never)).toThrow();
     expect(() => plugin.Config({ scope: "elsewhere" } as never)).toThrow();
@@ -89,7 +91,13 @@ describe("live settings view", () => {
       provider: { get: () => route.provider },
       model: { get: () => route.model },
     };
-    expect(settingsView(config)).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
+    expect(settingsView(config)).toEqual({
+      scope: "workspace",
+      injectContext: true,
+      registerTools: true,
+      storeRetentionDays: 0,
+      storeTrashDays: 30,
+    });
     scope = "global";
     budget = 900;
     route = { provider: "p", model: "m" };
@@ -106,8 +114,16 @@ describe("live settings view", () => {
       scope: "global",
       injectContext: false,
       registerTools: false,
+      storeRetentionDays: 0,
+      storeTrashDays: 30,
     });
-    expect(settingsView({})).toEqual({ scope: "workspace", injectContext: true, registerTools: true });
+    expect(settingsView({})).toEqual({
+      scope: "workspace",
+      injectContext: true,
+      registerTools: true,
+      storeRetentionDays: 0,
+      storeTrashDays: 30,
+    });
     // The schema accepts `null` for an absent optional half; the view treats
     // it as absent, while falsy scalars remain real values.
     expect(
@@ -122,6 +138,8 @@ describe("live settings view", () => {
       registerTools: true,
       injectBudgetTokens: 0,
       provider: "",
+      storeRetentionDays: 0,
+      storeTrashDays: 30,
     });
   });
 });
@@ -157,7 +175,15 @@ describe("settings service wiring", () => {
     // Ours reports the freshly read value.
     scope = "global";
     ctx.emit("settings/document-updated", "memcurio" as never, 2);
-    expect(seen).toEqual([{ scope: "global", injectContext: true, registerTools: true }]);
+    expect(seen).toEqual([
+      {
+        scope: "global",
+        injectContext: true,
+        registerTools: true,
+        storeRetentionDays: 0,
+        storeTrashDays: 30,
+      },
+    ]);
   });
 });
 
@@ -359,7 +385,7 @@ describe("resolved settings behaviour", () => {
 
 describe("pinned worker route rule", () => {
   test("a pinned route requires both non-empty halves", () => {
-    const base = { scope: "workspace" as const, injectContext: true, registerTools: true };
+    const base = { scope: "workspace" as const, injectContext: true, registerTools: true, storeRetentionDays: 0, storeTrashDays: 30 };
     expect(pinnedRoute(base)).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();

@@ -37,6 +37,11 @@ export interface MemcurioSettings {
     injectBudgetTokens?: number;
     provider?: string;
     model?: string;
+    /** Lifecycle GC: minimum age (days) of an orphan store before quarantine.
+     *  0 disables reclamation. */
+    storeRetentionDays: number;
+    /** How long a quarantined store stays restorable before it is purged. */
+    storeTrashDays: number;
 }
 /** Plugin entry config. The Loader hands `apply` a resolved object whose
  *  editable fields are stable `Volatile` references (a settings write is
@@ -51,6 +56,8 @@ export interface Config {
     injectBudgetTokens?: Volatile<number | undefined> | number;
     provider?: Volatile<string | undefined> | string;
     model?: Volatile<string | undefined> | string;
+    storeRetentionDays?: Volatile<number> | number;
+    storeTrashDays?: Volatile<number> | number;
 }
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

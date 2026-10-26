@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Store lifecycle: token-driven sweep and optional reclamation.** Every
+  durable checkpoint publishes a dirty token (state/activity) after its
+  transaction commits, and the dormant sweep settles it (state/swept) only
+  after a drain proves the queue empty. A store is now opened only when the two
+  tokens differ, so an orphaned workspace is visited once instead of every
+  sweep; a failed token write leaves state/activity-failed, which keeps the
+  store dirty until a later empty drain clears it. Each plugin start still runs
+  one bounded full pass that ignores the tokens, covering a crash between a
+  commit and its token write.
+- **storeRetentionDays / storeTrashDays settings** (volatile). Reclamation is
+  off by default (0); when enabled it quarantines a store whose recorded
+  workspace path is gone, whose last activity is older than the threshold,
+  whose tokens are settled and whose queue/lease check is clean, moving it into
+  dsh/.trash/ behind a tombstone so a recreated workspace restores its memory
+  instead of starting empty. dsh/.gc/audit.jsonl records every plan,
+  quarantine, rollback, purge and restore.
+- **integrationStoreGcPlan / integrationStoreGcRestore** operator API for a
+  read-only reclamation inventory and a manual restore.
+
 ## [0.0.6] - 2026-10-19
 
 ### Changed

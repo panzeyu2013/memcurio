@@ -250,6 +250,9 @@ export declare class Index {
      *  write transaction, so two processes cannot both become the writer. */
     consolidationAcquire(leaseKey: string, owner: string, now?: string, leaseMs?: number): boolean;
     consolidationRenew(leaseKey: string, owner: string, now?: string, leaseMs?: number): boolean;
+    /** Read-only lease probe used by the lifecycle GC: a live lease means
+     *  another process may be consolidating this store right now. */
+    consolidationLeaseActive(leaseKey: string, now?: string): boolean;
     consolidationRelease(leaseKey: string, owner: string): boolean;
     audit(action: string, ns: string, detail: string): void;
     auditRecent(limit?: number): SqlRow[];

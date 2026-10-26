@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Index } from "./db.js";
 import { WorkerAbortedError } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
+import { readActivityState, settleAfterDrain } from "./store-meta.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 const MAX_EVIDENCE_ITEMS = 256;
@@ -432,6 +433,10 @@ class LeaseFencedError extends Error {
  *  expired lease; the next call to extractionClaim reclaims it. */
 export async function processExtractionQueue(root, provider, opts = {}) {
     ensureLayout(root);
+    // Snapshot the dirty token BEFORE the claim: any enqueue that commits after
+    // this point publishes a different token, so settling against this snapshot
+    // can never mark the store clean while that job is still pending.
+    const activity = readActivityState(root);
     const claimIdx = await Index.create(indexDb(root));
     let job;
     try {
@@ -443,6 +448,7 @@ export async function processExtractionQueue(root, provider, opts = {}) {
             if (changed > 0) {
                 claimIdx.audit("extract.queue_blocked", "-", `provider=${provider.name}; jobs=${changed}: ${detail.slice(0, 300)}`);
             }
+            settleAfterDrain(root, activity, claimIdx.extractionPendingCount());
             return blocked ? { status: "blocked" } : { status: "empty" };
         }
         const unblocked = claimIdx.extractionUnblockProvider(provider.name);
@@ -450,6 +456,11 @@ export async function processExtractionQueue(root, provider, opts = {}) {
             claimIdx.audit("extract.queue_unblocked", "-", `provider=${provider.name}; jobs=${unblocked}`);
         }
         job = claimIdx.extractionClaim(provider.name, new Date().toISOString(), opts.leaseMs ?? 120_000);
+        if (!job) {
+            // "No claimable job" is not "no work": a retry window or the running cap
+            // can hide pending rows, so depth decides whether this store settles.
+            settleAfterDrain(root, activity, claimIdx.extractionPendingCount());
+        }
     }
     finally {
         claimIdx.close();

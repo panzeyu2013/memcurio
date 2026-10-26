@@ -8,6 +8,7 @@ import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, polic
 import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
+import { markActivityFailure, readActivityState, readStoreOrigin, recordStoreOrigin, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
 import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "./core/channel.js";
 /** The codex-style superset of read-only file tools (used as the engine
@@ -280,6 +281,14 @@ export class MemcurioAdapter {
         }
         finally {
             idx.close();
+        }
+        // Origin is the lifecycle record GC needs: the canonical workspace path a
+        // store belongs to. Best effort — a failed write only delays reclamation.
+        try {
+            recordStoreOrigin(root, workdir, state.startedAt);
+        }
+        catch (err) {
+            this.log("warn", "failed to record store origin", { sessionId, error: String(err) });
         }
         this.log("info", "session created", { sessionId, workdir, host });
     }
@@ -741,6 +750,7 @@ export class MemcurioAdapter {
             finally {
                 idx.close();
             }
+            this.publishActivity("session_end", true);
         }
         else {
             try {
@@ -844,10 +854,33 @@ export class MemcurioAdapter {
                     await processRow(row);
                 }
             }
+            if (inserted > 0) {
+                this.publishActivity("backfill");
+            }
             return inserted;
         }
         finally {
             idx.close();
+        }
+    }
+    /** Publish the store's dirty token AFTER its enqueue transaction committed.
+     *  The sweep compares this token with the value it last settled, so a job
+     *  enqueued while nobody was looking is never missed; a failed write costs one
+     *  extra full pass (startup), never a lost job. Deliberately a plain write:
+     *  this runs on every checkpoint and must not fsync. */
+    publishActivity(sourceEvent, touchOrigin = false) {
+        try {
+            writeActivityToken(this.root);
+            if (touchOrigin) {
+                touchStoreOriginActivity(this.root);
+            }
+        }
+        catch (err) {
+            // A committed job whose token write failed would look clean to the sweep
+            // (absent/absent). Leave a durable marker that only a later empty drain
+            // clears, so the work stays visible.
+            markActivityFailure(this.root, String(err));
+            this.log("warn", "failed to publish store activity", { sourceEvent, error: String(err) });
         }
     }
     /** Drain durable jobs outside the host event request. Only one drain runs
@@ -857,13 +890,43 @@ export class MemcurioAdapter {
      *  the reply parser now repairs false-positive lines, so those rejections
      *  get exactly one more attempt each. Called once per store at startup; the
      *  audit is written only when something actually moved. */
+    /** Backfill the lifecycle origin for a store created before the marker
+     *  existed (or whose origin write failed). One extra open per legacy store,
+     *  then never again. Also repairs a missing dirty token when the store still
+     *  holds non-terminal work, so the token protocol cannot settle it by
+     *  accident. */
+    async ensureStoreOrigin() {
+        if (readStoreOrigin(this.root)) {
+            return;
+        }
+        const idx = await Index.create(indexDb(this.root));
+        try {
+            const row = idx.rawAll("SELECT workdir, MAX(COALESCE(ended_at, started_at)) AS last_at FROM sessions WHERE workdir IS NOT NULL AND workdir != '' GROUP BY workdir ORDER BY last_at DESC LIMIT 1")[0];
+            if (row?.workdir) {
+                recordStoreOrigin(this.root, row.workdir, row.last_at ?? new Date().toISOString());
+            }
+            if (idx.extractionPendingCount() > 0 && readActivityState(this.root).kind !== "token") {
+                writeActivityToken(this.root);
+            }
+        }
+        finally {
+            idx.close();
+        }
+    }
     async requeuePolicyRejectedExtractions() {
         if (!this.durableQueue || this.disposed) {
             return 0;
         }
         const idx = await Index.create(indexDb(this.root));
         try {
+            // One-shot per store lifetime: a job revived here that dies again with the
+            // same policy error must not be revived on every dormant sweep. Bump the
+            // key if a future parser repair needs another pass.
+            if (idx.metaGet("extract.policy_requeue_v1")) {
+                return 0;
+            }
             const revived = idx.extractionRequeuePolicyRejected(this.extract.name);
+            idx.metaSet("extract.policy_requeue_v1", new Date().toISOString());
             if (revived > 0) {
                 idx.audit("extract.requeued", "-", `provider=${this.extract.name}; policy-rejected jobs=${String(revived)}`);
             }
@@ -1458,6 +1521,7 @@ export class MemcurioAdapter {
             if (!queued) {
                 throw new Error("extraction checkpoint was not queued");
             }
+            this.publishActivity(sourceEvent);
             return { jobId: queued.jobId, inserted: queued.inserted };
         }
         finally {

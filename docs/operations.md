@@ -45,6 +45,8 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         injectContext: true
         registerTools: true
         # injectBudgetTokens: 2500  # 注入预算下限 128
+        # storeRetentionDays: 30     # 孤儿 store 回收阈值（天）；0 = 关闭（默认 0）
+        # storeTrashDays: 30         # quarantine 保留期（天），到期才 purge
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
         # 可选固定 worker 路由；省略两者则跟随会话自身路由（按日志顺序取最后一个
         # 路由事件：model/selection 或已应用的 request/header；AgentOptions 只是创建期默认）：
@@ -76,7 +78,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 设置面的完整契约（上游 0.1.7 规范、本插件落点、本仓库约定、验证矩阵）见 [settings.md](settings.md)。运维速览：
 
-- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单。
+- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单；生命周期字段 storeRetentionDays / storeTrashDays 同样可在表单调整。
 - 生效：`injectContext`/预算/路由即时；`scope` 对新会话生效；`registerTools` 重启生效。
 - UI 写入热生效（volatile 原地提交）；手改 YAML 默认也热生效（默认 base 启用 `dsh-hmr`，监视两份用户 patch 并即时 reconcile；禁用/无 HMR 才需要下次启动）；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
 
@@ -134,6 +136,12 @@ The default `scope: workspace` derives an opaque SHA-256 key from the absolute w
 This prevents two DSH Web workspaces from sharing memories accidentally. Set `scope: global` only when deliberate cross-project memory is desired. `root` changes the base directory; `MEMCURIO_ROOT` remains the environment fallback.
 
 A session without a `header.cwd` (the field is optional in DSH) never falls back to the daemon process cwd — that would silently share memory across workspaces that happen to share a cwd. Instead it deterministically uses `<DSH home>/memcurio/dsh/no-cwd/` and logs a warning so the degraded isolation is visible.
+
+### Store lifecycle (dormant sweep + reclamation)
+
+A store publishes its dirty token (state/activity) after every checkpoint transaction commits, and state/swept records the token the last drain settled. The dormant sweep opens a store only when the two differ (one stat otherwise), so an orphaned store is opened once and never again; a failed token write leaves state/activity-failed, which keeps the store dirty until a later empty drain clears it. Every plugin start performs one bounded full pass (8 stores per tick) that ignores the tokens, covering a crash between a commit and its token write. The sweep never consolidates: Phase 2 stays demand-driven (turn/end, store bootstrap).
+
+Reclamation is off by default (storeRetentionDays: 0). When enabled, a store is quarantined only if its recorded workspace path (raw and canonical spelling) is gone, its last activity is older than the threshold, it lives under <DSH home>/worktrees/** (unless storeGcScope=all is set in the profile), its tokens are settled, and a live transaction confirms extractionPendingCount() == 0 with no consolidation lease. Quarantine renames the store into <base>/dsh/.trash/ (restorable for storeTrashDays), writes a per-key tombstone, and audits the move; a post-rename re-check rolls the move back if a job appeared in the meantime. Adopting a workspace whose store was quarantined restores it from the trash instead of starting empty.
 
 ### Known limitations
 

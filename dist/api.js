@@ -1,6 +1,8 @@
 /** Stable host-integration surface. Harness packages should import only here. */
 import { addAdHocNote } from "./core/adhoc.js";
 import { Index } from "./core/db.js";
+import { writeActivityToken } from "./core/store-meta.js";
+import { appendLifecycleAudit, planStoreGc, restoreStore } from "./core/store-gc.js";
 import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
 import { ensureLayout, indexDb } from "./core/paths.js";
 import { listMemory, readMemory } from "./core/read.js";
@@ -89,6 +91,9 @@ export async function integrationRequeueDeadExtractions(root, jobId) {
     return withIndex(root, (index) => {
         const revived = index.extractionRequeueDead(jobId);
         if (revived > 0) {
+            // The sweep decides by token, not by queue depth: a revive that does not
+            // publish one would leave the store "clean" with pending work.
+            writeActivityToken(root);
             index.audit("extract.requeued", "-", `operator requeued ${String(revived)} dead extraction job(s)`);
         }
         return revived;
@@ -114,4 +119,21 @@ export async function integrationCite(root, refs) {
         index.audit("integration.cite", "-", `${refs.length} ref(s) -> ${counted.length} counted`);
         return { counted };
     });
+}
+/** Read-only reclamation inventory. The caller supplies the policy because the
+ *  base root, DSH home and retention all come from the embedding profile. */
+export function integrationStoreGcPlan(baseRoot, policy, now = Date.now()) {
+    return planStoreGc(baseRoot, policy, { now });
+}
+/** Restore one quarantined store. Refuses to overwrite a live store at the
+ *  same path and audits the outcome. */
+export function integrationStoreGcRestore(baseRoot, key, now = Date.now()) {
+    const result = restoreStore(baseRoot, key, now);
+    appendLifecycleAudit(baseRoot, {
+        at: new Date(now).toISOString(),
+        action: "store.restore",
+        key,
+        outcome: "conflict" in result ? "conflict" : "restored",
+    });
+    return result;
 }

@@ -40,6 +40,11 @@ export interface MemcurioSettings {
   injectBudgetTokens?: number;
   provider?: string;
   model?: string;
+  /** Lifecycle GC: minimum age (days) of an orphan store before quarantine.
+   *  0 disables reclamation. */
+  storeRetentionDays: number;
+  /** How long a quarantined store stays restorable before it is purged. */
+  storeTrashDays: number;
 }
 
 /** Plugin entry config. The Loader hands `apply` a resolved object whose
@@ -55,6 +60,8 @@ export interface Config {
   injectBudgetTokens?: Volatile<number | undefined> | number;
   provider?: Volatile<string | undefined> | string;
   model?: Volatile<string | undefined> | string;
+  storeRetentionDays?: Volatile<number> | number;
+  storeTrashDays?: Volatile<number> | number;
 }
 
 const entrySchema = Schema.object({
@@ -65,6 +72,9 @@ const entrySchema = Schema.object({
   injectBudgetTokens: Schema.number().step(1).min(128).volatile(),
   provider: Schema.string().volatile(),
   model: Schema.string().volatile(),
+  // Reclamation is destructive, so it ships disabled: an operator opts in.
+  storeRetentionDays: Schema.number().step(1).min(0).max(3650).default(0).volatile(),
+  storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
 });
 
 /** The one settings schema: the Loader validates every write with it and the
@@ -101,6 +111,8 @@ export function settingsView(config: Config): MemcurioSettings {
     ...(injectBudgetTokens === undefined ? {} : { injectBudgetTokens }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),
+    storeRetentionDays: read(config.storeRetentionDays) ?? 0,
+    storeTrashDays: read(config.storeTrashDays) ?? 30,
   };
 }
 
