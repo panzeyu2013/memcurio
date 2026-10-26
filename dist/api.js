@@ -122,8 +122,8 @@ export async function integrationCite(root, refs) {
 }
 /** Read-only reclamation inventory. The caller supplies the policy because the
  *  base root, DSH home and retention all come from the embedding profile. */
-export function integrationStoreGcPlan(baseRoot, policy, now = Date.now()) {
-    return planStoreGc(baseRoot, policy, { now });
+export function integrationStoreGcPlan(baseRoot, policy, now = Date.now(), protectedRoots = new Set()) {
+    return planStoreGc(baseRoot, policy, { now, protectedRoots });
 }
 /** Restore one quarantined store. Refuses to overwrite a live store at the
  *  same path and audits the outcome. */

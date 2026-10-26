@@ -1072,8 +1072,10 @@ export class MemcurioAdapter {
         return 0;
       }
       const revived = idx.extractionRequeuePolicyRejected(this.extract.name);
-      idx.metaSet("extract.policy_requeue_v1", new Date().toISOString());
       if (revived > 0) {
+        // Burn the one-shot marker only after a real revival; a marker written
+        // on a zero-result scan would make later policy-dead jobs invisible.
+        idx.metaSet("extract.policy_requeue_v1", new Date().toISOString());
         // Reviving dead letters creates pending work: publish the token the
         // sweep uses to notice it.
         writeActivityToken(this.root);

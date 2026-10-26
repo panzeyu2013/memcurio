@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite } from "./transaction.js";
 /** Store lifecycle metadata: origin (what workspace this store belongs to) and
@@ -181,6 +181,9 @@ export function hasActivityFailure(root) {
 /** Leave a durable trace that a publish failed. The file stays until a later
  *  settle proves the queue empty, so a committed job can never be invisible. */
 export function markActivityFailure(root, detail) {
+    if (!existsSync(root)) {
+        return;
+    }
     try {
         mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
         writeFileSync(activityFailurePath(root), new Date().toISOString() + " " + detail + "\n", { mode: 0o600 });
@@ -229,11 +232,19 @@ export function storeIsDirty(root) {
  *  runs once per checkpoint and the only consequence of an unreadable token is
  *  one extra sweep (a torn value never compares equal to swept). */
 export function writeActivityToken(root, token = newActivityToken()) {
+    // A quarantined store must not be resurrected as an empty directory by a
+    // late settle: that ghost would defeat restore-on-adopt.
+    if (!existsSync(root)) {
+        return token;
+    }
     mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
     writeFileSync(activityPath(root), token, { mode: 0o600 });
     return token;
 }
 export function writeSweptToken(root, token) {
+    if (!existsSync(root)) {
+        return;
+    }
     mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
     writeFileSync(sweptPath(root), token, { mode: 0o600 });
 }

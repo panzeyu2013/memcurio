@@ -1254,7 +1254,11 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         if (idx.consolidationLeaseActive(WORKSPACE_WRITE_LEASE_KEY)) return;
         // An "empty" store may still hold staged rows or notes that never
         // reached a markdown file: those are content, not slack.
-        if (candidate.tier === "empty" && (idx.stageList().length > 0 || idx.noteList().length > 0)) {
+        if (
+          candidate.tier === "empty" &&
+          (idx.stageList().some((row) => row.status !== "deleted") ||
+            idx.noteList().some((note) => !note.applied))
+        ) {
           return;
         }
         ok = true;
@@ -1274,16 +1278,28 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         idx.close();
       }
     } catch {
-      return 0;
+      // Fail closed: an unreadable moved store must trigger the rollback path,
+      // not look like "no pending work".
+      return 1;
     }
   };
 
   const runStoreGc = async (reason: string): Promise<void> => {
     const policy = gcPolicy();
+    const { lock } = gcDirs(baseRoot);
+    // Trash cleanup is maintenance, not reclamation: an operator who disables
+    // reclamation must not keep every quarantined store on disk forever.
+    try {
+      const removed = withFileLock(lock, () => purgeTrash(baseRoot, policy, Date.now()));
+      for (const dir of removed) {
+        appendLifecycleAudit(baseRoot, { at: new Date().toISOString(), action: "store.purge", entry: dir });
+      }
+    } catch (error) {
+      warn(error);
+    }
     if (!(policy.retentionDays > 0)) {
       return;
     }
-    const { lock } = gcDirs(baseRoot);
     const now = Date.now();
     const protectedRoots = new Set([...sessions.values()].map((runtime) => runtime.root));
     let plan: ReturnType<typeof planStoreGc>;
@@ -1366,6 +1382,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
             at: new Date().toISOString(),
             action: "store.quarantine_rolled_back",
             key: candidate.key,
+            tier: candidate.tier,
             pending: leftover,
             entry: quarantined,
           });
@@ -1375,6 +1392,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
           at: new Date().toISOString(),
           action: "store.quarantine",
           key: candidate.key,
+          tier: candidate.tier,
           workdir: candidate.workdir,
           ageDays: candidate.ageDays,
           bytes: candidate.sizeBytes,
@@ -1383,14 +1401,6 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       } catch (error) {
         warn(error);
       }
-    }
-    try {
-      const removed = withFileLock(lock, () => purgeTrash(baseRoot, policy, Date.now()));
-      for (const dir of removed) {
-        appendLifecycleAudit(baseRoot, { at: new Date().toISOString(), action: "store.purge", entry: dir });
-      }
-    } catch (error) {
-      warn(error);
     }
   };
 
@@ -1434,7 +1444,22 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     try {
       const adopted = restoreTombstonedStore(baseRoot, basename(root));
       if (adopted && "restoredTo" in adopted) {
+        appendLifecycleAudit(baseRoot, {
+          at: new Date().toISOString(),
+          action: "store.restore_on_adopt",
+          key: basename(root),
+          workdir,
+          entry: adopted.restoredTo,
+        });
         ctx.logger.warn("memcurio: restored quarantined store for %s from %s", workdir, adopted.restoredTo);
+      } else if (adopted && "conflict" in adopted) {
+        appendLifecycleAudit(baseRoot, {
+          at: new Date().toISOString(),
+          action: "store.restore_conflict",
+          key: basename(root),
+          workdir,
+          existing: adopted.existing,
+        });
       }
     } catch (error) {
       warn(error);

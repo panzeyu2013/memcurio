@@ -98,7 +98,7 @@ export function isStoreEmpty(dir) {
             void 0;
         }
     }
-    for (const rel of [["rollout_summaries"], ["extensions", "ad_hoc", "notes"]]) {
+    for (const rel of [["rollout_summaries"], ["extensions", "ad_hoc", "notes"], ["skills"]]) {
         try {
             if (readdirSync(join(memory, ...rel)).length > 0) {
                 return false;
@@ -221,12 +221,18 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             reasons: ["workdir-missing", `age>=${String(policy.retentionDays)}d`],
         });
     }
-    plan.trashEligible = trashEntries(baseRoot)
-        .filter((entry) => {
-        const age = ageDaysOf(entry.quarantinedAt, now);
-        return age !== undefined && age >= policy.trashDays;
-    })
-        .map((entry) => entry.dir);
+    plan.trashEligible =
+        policy.trashDays > 0
+            ? trashEntries(baseRoot)
+                .filter((entry) => {
+                if (existsSync(join(entry.dir, ".restore-conflict"))) {
+                    return false;
+                }
+                const age = ageDaysOf(entry.quarantinedAt, now);
+                return age !== undefined && age >= policy.trashDays;
+            })
+                .map((entry) => entry.dir)
+            : [];
     return plan;
 }
 /** Drop-by-name order keeps "newest entry" deterministic without parsing. */
@@ -289,16 +295,49 @@ export function quarantineStore(baseRoot, candidate, extras = {}, now = Date.now
     };
     // Manifest first: a crash after this point leaves an entry that still names
     // its store, so a human can restore it even if the rename never happened.
-    atomicWrite(join(entry, "index.json"), `${JSON.stringify(manifest)}\n`);
+    atomicWrite(join(entry, "index.json"), JSON.stringify(manifest) + "\n");
+    // Tombstone before the destructive rename: a crash between the two still
+    // points a later adoption at this entry.
+    writeTombstone(baseRoot, candidate.key, entry, now);
     try {
         renameSync(candidate.path, join(entry, "store"));
     }
     catch (err) {
         rmSync(entry, { recursive: true, force: true });
+        clearTombstone(baseRoot, candidate.key);
         throw err;
     }
-    writeTombstone(baseRoot, candidate.key, entry, now);
     return { entry, restoredPath: join(entry, "store") };
+}
+/** Remove half-written trash entries (mkdir succeeded, rename never ran). They
+ *  carry no store directory, so no reader can use them. */
+function purgeDebris(baseRoot, now) {
+    const { trash } = gcDirs(baseRoot);
+    let names;
+    try {
+        names = readdirSync(trash);
+    }
+    catch {
+        return;
+    }
+    for (const name of names) {
+        if (name.startsWith(".")) {
+            continue;
+        }
+        const dir = join(trash, name);
+        try {
+            if (existsSync(join(dir, "store"))) {
+                continue;
+            }
+            if (now - statSync(dir).mtimeMs < 3_600_000) {
+                continue;
+            }
+            rmSync(dir, { recursive: true, force: true });
+        }
+        catch {
+            void 0;
+        }
+    }
 }
 /** Purge quarantined stores past their retention. Returns the removed entries. */
 export function purgeTrash(baseRoot, policy, now = Date.now()) {
@@ -306,6 +345,7 @@ export function purgeTrash(baseRoot, policy, now = Date.now()) {
         return [];
     }
     const removed = [];
+    purgeDebris(baseRoot, now);
     for (const entry of trashEntries(baseRoot)) {
         if (existsSync(join(entry.dir, ".restore-conflict"))) {
             continue;
@@ -316,7 +356,11 @@ export function purgeTrash(baseRoot, policy, now = Date.now()) {
         }
         try {
             rmSync(entry.dir, { recursive: true, force: true });
-            clearTombstone(baseRoot, entry.key);
+            // Only the tombstone that points at THIS entry may be dropped: the same
+            // key can have an older and a newer quarantined copy.
+            if (readTombstone(baseRoot, entry.key)?.entry === entry.dir) {
+                clearTombstone(baseRoot, entry.key);
+            }
             removed.push(entry.dir);
         }
         catch {
@@ -329,6 +373,9 @@ export function purgeTrash(baseRoot, policy, now = Date.now()) {
  *  store at the same path, and invalidates the swept watermark so the restored
  *  store is examined by the next sweep. */
 export function restoreStore(baseRoot, key, now = Date.now()) {
+    if (!/^[0-9a-z][0-9a-z-]{0,63}$/.test(key)) {
+        throw new Error("invalid store key: " + JSON.stringify(key));
+    }
     const { dsh } = gcDirs(baseRoot);
     const entry = trashEntries(baseRoot).find((candidate) => candidate.key === key);
     if (!entry) {
@@ -356,6 +403,14 @@ export function restoreStore(baseRoot, key, now = Date.now()) {
     }
     catch {
         // The restore already succeeded; a failed annotation must not undo it.
+    }
+    // The entry now holds only its manifest; leaving it behind would accumulate
+    // dead directories (and keep the key "restorable" forever).
+    try {
+        rmSync(entry.dir, { recursive: true, force: true });
+    }
+    catch {
+        void 0;
     }
     return { restoredTo: target, entry: entry.dir };
 }
@@ -397,9 +452,29 @@ export function restoreTombstonedStore(baseRoot, key, now = Date.now()) {
         return undefined;
     }
     const target = join(gcDirs(baseRoot).dsh, key);
-    if (existsSync(target)) {
-        clearTombstone(baseRoot, key);
-        return undefined;
+    if (existsSync(target) && !existsSync(join(target, "index.sqlite"))) {
+        // Ghost directory (a late settle re-created state/ after the quarantine):
+        // there is no store here, so drop it and restore the real one.
+        try {
+            rmSync(target, { recursive: true, force: true });
+        }
+        catch {
+            void 0;
+        }
+    }
+    if (existsSync(join(target, "index.sqlite"))) {
+        // A live or half-created store wins the path, but the tombstone must
+        // stay: dropping it would let the quarantined copy be purged later.
+        const tombstone = readTombstone(baseRoot, key);
+        if (tombstone) {
+            try {
+                writeFileSync(join(tombstone.entry, ".restore-conflict"), new Date(now).toISOString());
+            }
+            catch {
+                void 0;
+            }
+        }
+        return { conflict: true, existing: target };
     }
     try {
         const result = restoreStore(baseRoot, key, now);
