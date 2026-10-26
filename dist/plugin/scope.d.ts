@@ -22,10 +22,10 @@ export declare function memcurioBaseRoot(): string;
  *  by the plugin's dormant-store sweep, which needs the stores no live session
  *  has adopted; a missing namespace simply means no stores exist yet. */
 export declare function storeRootsUnder(baseRoot: string): string[];
-/** Resolve the store used by one DSH workspace without exposing its path. */
 /** Live (non-retired) session runtimes. A retired runtime keeps its store
  *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
 export declare function liveSessions<T extends {
     retired?: boolean;
 }>(runtimes: Iterable<T>): T[];
+/** Resolve the store used by one DSH workspace without exposing its path. */
 export declare function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string;

@@ -413,17 +413,9 @@ export function planStoreGc(
       reasons: ["workdir-missing", `age>=${String(policy.retentionDays)}d`],
     });
   }
-  plan.trashEligible =
-    policy.trashDays > 0
-      ? trashEntries(baseRoot)
-          .filter((entry) => {
-            const conflict = existsSync(join(entry.dir, ".restore-conflict"));
-            const keepDays = conflict ? policy.trashDays * 2 : policy.trashDays;
-            const age = ageDaysOf(entry.quarantinedAt, now);
-            return age !== undefined && age >= keepDays;
-          })
-          .map((entry) => entry.dir)
-      : [];
+  plan.trashEligible = trashEntries(baseRoot)
+    .filter((entry) => trashEntryEligible(entry, policy, now))
+    .map((entry) => entry.dir);
   return plan;
 }
 
@@ -477,6 +469,18 @@ export function trashEntries(baseRoot: string): TrashEntry[] {
   return out.sort((a, b) => (a.dir < b.dir ? 1 : a.dir > b.dir ? -1 : 0));
 }
 
+/** The single "may this entry be purged" rule; the plan and the purge must
+ *  agree or the preview lies. */
+function trashEntryEligible(entry: TrashEntry, policy: StoreGcPolicy, now: number): boolean {
+  if (!(policy.trashDays > 0)) {
+    return false;
+  }
+  const conflict = existsSync(join(entry.dir, ".restore-conflict"));
+  const keepDays = conflict ? policy.trashDays * 2 : policy.trashDays;
+  const age = ageDaysOf(entry.quarantinedAt, now);
+  return age !== undefined && age >= keepDays;
+}
+
 export function quarantineStore(
   baseRoot: string,
   candidate: StoreGcCandidate,
@@ -520,6 +524,33 @@ export function quarantineStore(
 
 /** Remove half-written trash entries (mkdir succeeded, rename never ran). They
  *  carry no store directory, so no reader can use them. */
+/** Ghost directories are kept aside for 30 days (they may hold memory a late
+ *  settle wrote after the quarantine) and then removed. */
+function purgeStaleGhosts(baseRoot: string, now: number): void {
+  const dir = join(gcDirs(baseRoot).dsh, ".stale");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    try {
+      if (now - statSync(join(dir, name)).mtimeMs < 30 * DAY_MS) {
+        continue;
+      }
+      rmSync(join(dir, name), { recursive: true, force: true });
+      appendLifecycleAudit(baseRoot, {
+        at: new Date(now).toISOString(),
+        action: "store.purge_stale",
+        entry: name,
+      });
+    } catch {
+      void 0;
+    }
+  }
+}
+
 function purgeDebris(baseRoot: string, now: number): void {
   const { trash } = gcDirs(baseRoot);
   let names: string[];
@@ -558,12 +589,9 @@ export function purgeTrash(
   }
   const removed: string[] = [];
   purgeDebris(baseRoot, now);
+  purgeStaleGhosts(baseRoot, now);
   for (const entry of trashEntries(baseRoot)) {
-    const conflict = existsSync(join(entry.dir, ".restore-conflict"));
-    const age = ageDaysOf(entry.quarantinedAt, now);
-    // A conflicted entry keeps its data for twice the window, then goes too.
-    const keepDays = conflict ? policy.trashDays * 2 : policy.trashDays;
-    if (age === undefined || age < keepDays) {
+    if (!trashEntryEligible(entry, policy, now)) {
       continue;
     }
     try {
@@ -711,7 +739,9 @@ function restoreTombstonedStoreInner(
     // Move it aside instead of deleting: it may hold another process's lease
     // files or a half-created store.
     try {
-      renameSync(target, target + ".stale-" + String(now));
+      const staleDir = join(gcDirs(baseRoot).dsh, ".stale");
+      mkdirSync(staleDir, { recursive: true, mode: 0o700 });
+      renameSync(target, join(staleDir, basename(target) + "-" + String(now)));
     } catch {
       void 0;
     }

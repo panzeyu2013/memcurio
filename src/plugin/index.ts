@@ -1309,6 +1309,15 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   ctx.effect(() => () => {
     clearInterval(storeGcTimer);
   }, "memcurio store gc");
+  // A process that lives shorter than six hours would otherwise never purge
+  // the trash it inherited. Run once after adoption settles, then on the timer.
+  const storeGcBoot = setTimeout(() => {
+    void runStoreGc("startup").catch(warn);
+  }, 60_000);
+  storeGcBoot.unref?.();
+  ctx.effect(() => () => {
+    clearTimeout(storeGcBoot);
+  }, "memcurio store gc boot pass");
 
   const ensureSession = (session: Session): SessionRuntime => {
     const existing = sessions.get(session.id);

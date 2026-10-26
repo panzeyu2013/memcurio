@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { storeDirsUnder } from "../core/store-gc.js";
 
 /** Store key used when a session carries no working directory. The host
  *  process cwd is an arbitrary process fact — keying on it would silently
@@ -39,23 +40,11 @@ export function memcurioBaseRoot(): string {
  *  by the plugin's dormant-store sweep, which needs the stores no live session
  *  has adopted; a missing namespace simply means no stores exist yet. */
 export function storeRootsUnder(baseRoot: string): string[] {
-  const dshDir = join(resolve(baseRoot), "dsh");
-  let entries: string[];
-  try {
-    entries = readdirSync(dshDir);
-  } catch {
-    return [];
-  }
-  return entries
-    // Dot-directories are lifecycle bookkeeping (base root: \`.gc\`, \`.trash\`),
-    // never stores: an index.sqlite that happens to land there must not make the
-    // sweep adopt a trash entry as a live workspace.
-    .filter((entry) => !entry.startsWith("."))
-    .map((entry) => join(dshDir, entry))
-    .filter((root) => existsSync(join(root, "index.sqlite")));
+  // Single implementation (store-gc): dot-directories are lifecycle
+  // bookkeeping (base root: .gc, .trash), never stores.
+  return storeDirsUnder(baseRoot);
 }
 
-/** Resolve the store used by one DSH workspace without exposing its path. */
 /** Live (non-retired) session runtimes. A retired runtime keeps its store
  *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
 export function liveSessions<T extends { retired?: boolean }>(runtimes: Iterable<T>): T[] {
@@ -68,6 +57,7 @@ export function liveSessions<T extends { retired?: boolean }>(runtimes: Iterable
   return out;
 }
 
+/** Resolve the store used by one DSH workspace without exposing its path. */
 export function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string {
   if (scope === "global") return resolve(baseRoot);
   if (!workdir) return join(resolve(baseRoot), "dsh", NO_CWD_STORE_KEY);

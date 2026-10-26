@@ -36,6 +36,17 @@
 - **恢复**：采纳同名 workdir 时按墓碑恢复；恢复在锁内、要求 `store/index.sqlite` 完整，冲突保留墓碑与 `.restore-conflict`，失败写 `store.restore_failed` 审计。
 - **清除**：`trashDays > 0` 时到期条目（冲突条目 2 倍窗口）被 purge，且只清指向该条目的墓碑；manifest 丢失但 store 仍在的条目按目录名与 mtime 恢复清单。
 
+### 已知限制（有意保留）
+
+- 会话租约心跳不取 `lifecycle.lock`：GC 的检查→rename 与心跳之间存在极窄的 TOCTOU；租约是辅助信号，年龄与锁内栅栏仍是主防线。
+- `scope=global` 的单一全局 store 不参与回收（删它等于删掉全部全局记忆）。
+- 非插件写入者（直接用 `MemcurioAdapter`/集成 API 的工具）不写会话租约。
+- 阻塞作业在 provider 不可用期间仍使 store 保持 dirty，sweep 每 30 分钟会打开它一次（单次约 0.3 ms）。
+- `.stale/` 幽灵保留 30 天；`trashDays=0` 时连它也不清理。
+- 每轮 sweep 只写日志，不写 `stats.json`/计数器（PLAN §5 的观测项未落地）。
+- `audit.jsonl` 超过 1 MiB 轮转为 `.1`（只保留一代）。
+
+
 
 删除：命名空间（ns）概念整体移除（cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载）；`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md、MEMORY.md 旧格式全部废弃。
 
