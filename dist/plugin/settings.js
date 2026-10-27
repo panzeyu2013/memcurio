@@ -14,7 +14,7 @@ const entrySchema = Schema.object({
     storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
     storeGcScope: Schema.union(["dsh-home", "all"]).default("dsh-home"),
     storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(0),
-    storeSweepIntervalMs: Schema.number().step(1).min(10).max(3_600_000).default(300_000),
+    storeSweepIntervalMs: Schema.number().step(1).min(1_000).max(3_600_000).default(300_000),
 });
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

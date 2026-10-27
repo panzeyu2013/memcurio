@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  writeSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -1095,6 +1098,32 @@ test("stale ghost directories expire after 30 days", () => {
     purgeTrash(base, policy(home), NOW);
     expect(existsSync(oldGhost)).toBe(false);
     expect(existsSync(freshGhost)).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a database whose quick_check fails is not restored", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    seededOrphan(base, home, "aaaa000000001004", 2 * 3_600_000);
+    const entry = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    ).entry;
+    // The database still opens; only quick_check notices the bad freelist count.
+    const fd = openSync(join(entry, "store", "index.sqlite"), "r+");
+    try {
+      const buf = Buffer.alloc(4);
+      buf.writeUInt32BE(1, 0);
+      writeSync(fd, buf, 0, 4, 36);
+    } finally {
+      closeSync(fd);
+    }
+    const result = restoreStore(base, "aaaa000000001004", NOW);
+    expect("conflict" in result).toBe(true);
   } finally {
     cleanup();
   }

@@ -16,6 +16,7 @@ import {
   clearSessionLease,
   canonicalWorkdir,
   clearSweptToken,
+  hasActivityFailure,
   markActivityFailure,
   isStoreDirty,
   newActivityToken,
@@ -25,6 +26,7 @@ import {
   readSweptState,
   sessionLeaseActive,
   sessionLeaseDir,
+  publishActivitySafely,
   touchSessionLease,
   recordStoreOrigin,
   settleAfterDrain,
@@ -304,4 +306,26 @@ describe("session leases", () => {
     }
   });
 });
+
+  test("a torn but fresh lease fails closed", () => {
+    const root = tempStore();
+    try {
+      mkdirSync(join(root, "state", "live"), { recursive: true });
+      writeFileSync(join(sessionLeaseDir(root), "123-torn.json"), "{not json");
+      expect(sessionLeaseActive(root)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed token write leaves the durable failure marker", () => {
+    const root = tempStore();
+    try {
+      mkdirSync(join(root, "state", "activity"), { recursive: true });
+      publishActivitySafely(root);
+      expect(hasActivityFailure(root)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 

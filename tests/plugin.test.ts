@@ -2737,7 +2737,7 @@ describe("steady-state sweep", () => {
         injectContext: false,
         provider: "test",
         model: "test",
-        storeSweepIntervalMs: 50,
+        storeSweepIntervalMs: 1_000,
       });
       const settled = join(root, "dsh", "settled-store");
       const dirty = join(root, "dsh", "dirty-store");
@@ -2750,7 +2750,7 @@ describe("steady-state sweep", () => {
       writeActivityToken(dirty);
       const settledSwept = join(settled, "state", "swept");
       const before = statSync(settledSwept).mtimeMs;
-      const deadline = Date.now() + 3_000;
+      const deadline = Date.now() + 6_000;
       while (Date.now() < deadline && !existsSync(join(dirty, "state", "swept"))) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
