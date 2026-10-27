@@ -10,7 +10,7 @@ English · [简体中文](../README.md)
 
 **No extra model credentials, no background daemon, no vector database** — model access runs exclusively over the harness's own `ctx.llm` route. The engine core has zero runtime dependencies (`node:sqlite`); the only runtime dependency is the schemastery schema library used by the config surface.
 
-> Status: developer preview (v0.0.7, not released yet; 0.0.6 remains the old package; not on a registry yet; install from the checksummed Release tarball). The automatic memory loop is usable; quarantining/restoring/purging orphan stores (off by default, enabled per profile) is available; the visual memory workbench is the next milestone — see [todo.md](todo.md).
+> Status: developer preview (v0.0.7, not on a registry yet; install from the checksummed Release tarball). The automatic memory loop is usable; quarantining/restoring/purging orphan stores (off by default, enabled per profile) is available; the visual memory workbench is the next milestone — see [todo.md](todo.md).
 
 ## Why memcurio
 

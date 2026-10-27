@@ -10,7 +10,7 @@
 
 **不需要额外模型凭据，没有后台 daemon，没有向量数据库**——模型访问走宿主自己的 `ctx.llm` 路由，引擎核心零运行时依赖（`node:sqlite`），唯一运行时依赖是配置面用的 schemastery。
 
-> 状态：开发者预览（v0.0.7，尚未发布；发布前 0.0.6 仍是旧包，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；孤儿 store 的隔离/恢复/清除（默认关闭，按 profile 开启）已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
+> 状态：开发者预览（v0.0.7，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；孤儿 store 的隔离/恢复/清除（默认关闭，按 profile 开启）已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
 
 ## 核心优点
 
@@ -62,7 +62,6 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 要求 node >= 22.13（`node:sqlite`，无需 flag）与一个可用的 DSH profile。尚未发布 registry，直接装 Release 里的 tarball：
 
 ```bash
-# v0.0.7 尚未发布；打 tag 后此 URL 可用（发布前 0.0.6 是旧包）
 dsh plugin --profile <profile> add \
   https://github.com/panzeyu2013/memcurio/releases/download/v0.0.7/memcurio-dsh-plugin-0.0.7.tgz
 ```

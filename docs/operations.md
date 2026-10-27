@@ -16,7 +16,7 @@
 开发者预览阶段未发布到 npm，统一从 Release tarball 或本地打包安装：
 
 ```bash
-# 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256；v0.0.7 未发布前该 URL 不可用）
+# 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
   https://github.com/panzeyu2013/memcurio/releases/download/v0.0.7/memcurio-dsh-plugin-0.0.7.tgz
 
