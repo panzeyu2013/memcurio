@@ -103,7 +103,7 @@ export function writeStoreOrigin(root, origin) {
         return;
     }
     mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
-    atomicWrite(originPath(root), JSON.stringify(origin) + "\n");
+    atomicWrite(originPath(root), `${JSON.stringify(origin)}\n`);
 }
 function maxIso(a, b) {
     if (!a) {
@@ -145,7 +145,7 @@ export function touchStoreOriginActivity(root, at = new Date().toISOString()) {
 /** A fresh opaque token. Ordering is irrelevant: only equality with the
  *  recorded swept value is ever compared. */
 export function newActivityToken(now = Date.now()) {
-    return now.toString(36) + "-" + randomBytes(6).toString("hex");
+    return `${now.toString(36)}-${randomBytes(6).toString("hex")}`;
 }
 /** Read one token file. ANY read/validation failure degrades to `torn` (never
  *  throws): a corrupted file must not crash the sweep or the plugin load. */
@@ -186,7 +186,7 @@ export function publishActivitySafely(root) {
         writeActivityToken(root);
     }
     catch (err) {
-        markActivityFailure(root, "activity token write failed: " + String(err));
+        markActivityFailure(root, `activity token write failed: ${String(err)}`);
     }
 }
 /** Leave a durable trace that a publish failed. The file stays until a later
@@ -197,7 +197,7 @@ export function markActivityFailure(root, detail) {
     }
     try {
         mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
-        writeFileSync(activityFailurePath(root), new Date().toISOString() + " " + detail + "\n", { mode: 0o600 });
+        writeFileSync(activityFailurePath(root), `${new Date().toISOString()} ${detail}\n`, { mode: 0o600 });
     }
     catch {
         // Best effort: the caller already logged the original failure.
@@ -318,7 +318,7 @@ export function sessionLeaseDir(root) {
 }
 function sessionLeaseName(pid, sessionId) {
     const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "session";
-    return pid + "-" + safe + ".json";
+    return `${pid}-${safe}.json`;
 }
 export function touchSessionLease(root, pid, sessionId, at = Date.now()) {
     if (!existsSync(root)) {

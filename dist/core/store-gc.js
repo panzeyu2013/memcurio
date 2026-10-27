@@ -318,7 +318,7 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
                 lastActivityAt: origin.lastActivityAt,
                 ageDays: Math.round(effectiveAge * 10) / 10,
                 sizeBytes: sizeOf(dir),
-                reasons: ["empty-store", "age>=" + String(policy.emptyStoreHours) + "h"],
+                reasons: ["empty-store", `age>=${String(policy.emptyStoreHours)}h`],
                 tier: "empty",
             });
             continue;
@@ -347,7 +347,7 @@ export function planStoreGc(baseRoot, policy, deps = {}) {
             tier: "orphan",
             reasons: [
                 "workdir-missing",
-                "age>=" + String(policy.retentionDays) + "d",
+                `age>=${String(policy.retentionDays)}d`,
                 ...(missingAgeMs(dir, now, origin.realpath) === undefined ||
                     (missingAgeMs(dir, now, origin.realpath) ?? 0) < MISSING_CONFIRM_MS
                     ? ["missing-unconfirmed"]
@@ -439,7 +439,7 @@ export function quarantineStore(baseRoot, candidate, extras = {}, now = Date.now
     };
     // Manifest first: a crash after this point leaves an entry that still names
     // its store, so a human can restore it even if the rename never happened.
-    atomicWrite(join(entry, "index.json"), JSON.stringify(manifest) + "\n");
+    atomicWrite(join(entry, "index.json"), `${JSON.stringify(manifest)}\n`);
     // Tombstone before the destructive rename: a crash between the two still
     // points a later adoption at this entry.
     writeTombstone(baseRoot, candidate.key, entry, now);
@@ -568,7 +568,7 @@ export function restoreStore(baseRoot, key, now = Date.now()) {
 }
 function restoreStoreInner(baseRoot, key, now) {
     if (!/^[0-9a-z][0-9a-z-]{0,63}$/.test(key)) {
-        throw new Error("invalid store key: " + JSON.stringify(key));
+        throw new Error(`invalid store key: ${JSON.stringify(key)}`);
     }
     const { dsh } = gcDirs(baseRoot);
     const entry = trashEntries(baseRoot).find((candidate) => candidate.key === key);
@@ -612,14 +612,14 @@ function restoreStoreInner(baseRoot, key, now) {
     return { restoredTo: target, entry: entry.dir };
 }
 export function tombstonePath(baseRoot, key) {
-    return join(gcDirs(baseRoot).gc, "tombstones", key + ".json");
+    return join(gcDirs(baseRoot).gc, "tombstones", `${key}.json`);
 }
 /** Remember that this key was quarantined, so a later adoption of the same
  *  workspace path restores the memory instead of silently starting empty
  *  (the recreate-after-quarantine data-loss chain). */
 export function writeTombstone(baseRoot, key, entry, now = Date.now()) {
     mkdirSync(join(gcDirs(baseRoot).gc, "tombstones"), { recursive: true, mode: 0o700 });
-    atomicWrite(tombstonePath(baseRoot, key), JSON.stringify({ key, entry, at: new Date(now).toISOString() }) + "\n");
+    atomicWrite(tombstonePath(baseRoot, key), `${JSON.stringify({ key, entry, at: new Date(now).toISOString() })}\n`);
 }
 export function readTombstone(baseRoot, key) {
     try {
@@ -664,7 +664,7 @@ function restoreTombstonedStoreInner(baseRoot, key, now) {
         try {
             const staleDir = join(gcDirs(baseRoot).dsh, ".stale");
             mkdirSync(staleDir, { recursive: true, mode: 0o700 });
-            renameSync(target, join(staleDir, basename(target) + "-" + String(now)));
+            renameSync(target, join(staleDir, `${basename(target)}-${String(now)}`));
         }
         catch {
             void 0;
@@ -721,7 +721,7 @@ export function appendLifecycleAudit(baseRoot, record) {
     const file = join(gc, "audit.jsonl");
     try {
         if (statSync(file).size > 1_048_576) {
-            renameSync(file, file + ".1");
+            renameSync(file, `${file}.1`);
         }
     }
     catch {

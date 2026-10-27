@@ -135,7 +135,7 @@ export function writeStoreOrigin(root: string, origin: StoreOrigin): void {
     return;
   }
   mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
-  atomicWrite(originPath(root), JSON.stringify(origin) + "\n");
+  atomicWrite(originPath(root), `${JSON.stringify(origin)}\n`);
 }
 
 function maxIso(a: string | undefined, b: string): string {
@@ -185,7 +185,7 @@ export function touchStoreOriginActivity(root: string, at = new Date().toISOStri
 /** A fresh opaque token. Ordering is irrelevant: only equality with the
  *  recorded swept value is ever compared. */
 export function newActivityToken(now = Date.now()): string {
-  return now.toString(36) + "-" + randomBytes(6).toString("hex");
+  return `${now.toString(36)}-${randomBytes(6).toString("hex")}`;
 }
 
 /** Read one token file. ANY read/validation failure degrades to `torn` (never
@@ -228,7 +228,7 @@ export function publishActivitySafely(root: string): void {
   try {
     writeActivityToken(root);
   } catch (err) {
-    markActivityFailure(root, "activity token write failed: " + String(err));
+    markActivityFailure(root, `activity token write failed: ${String(err)}`);
   }
 }
 
@@ -240,7 +240,7 @@ export function markActivityFailure(root: string, detail: string): void {
   }
   try {
     mkdirSync(storeStateDir(root), { recursive: true, mode: 0o700 });
-    writeFileSync(activityFailurePath(root), new Date().toISOString() + " " + detail + "\n", { mode: 0o600 });
+    writeFileSync(activityFailurePath(root), `${new Date().toISOString()} ${detail}\n`, { mode: 0o600 });
   } catch {
     // Best effort: the caller already logged the original failure.
   }
@@ -373,7 +373,7 @@ export function sessionLeaseDir(root: string): string {
 
 function sessionLeaseName(pid: number, sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "session";
-  return pid + "-" + safe + ".json";
+  return `${pid}-${safe}.json`;
 }
 
 export function touchSessionLease(

@@ -66,8 +66,8 @@ function makeStore(base: string, key: string): string {
   db.close();
   // A clean close normally removes the sidecars; the executor's fence treats
   // any left-over -wal as "someone else has the database open".
-  rmSync(file + "-wal", { force: true });
-  rmSync(file + "-shm", { force: true });
+  rmSync(`${file}-wal`, { force: true });
+  rmSync(`${file}-shm`, { force: true });
   return dir;
 }
 

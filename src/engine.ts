@@ -1142,10 +1142,6 @@ export class MemcurioAdapter {
           break;
         }
         if (result.status === "retry") {
-          // Keep draining other ready jobs: a failed job now waits a fixed hour,
-          // and breaking here would stall every other ready job behind it
-          // (review F-5). scheduleNextWake() below arms the earliest wake.
-          continue;
         }
       }
       if (!blocked) {

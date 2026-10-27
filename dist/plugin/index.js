@@ -990,7 +990,7 @@ export function apply(ctx, config = {}) {
             passVisited.add(root);
         }
         sweepInFlight = true;
-        ctx.logger.debug("memcurio: sweep scanned=" + String(allRoots.length) + " dirty=" + String(dirty.length) + " opened=" + String(roots.length) + " fullPass=" + String(startupPass) + " (" + reason + ")");
+        ctx.logger.debug(`memcurio: sweep scanned=${String(allRoots.length)} dirty=${String(dirty.length)} opened=${String(roots.length)} fullPass=${String(startupPass)} (${reason})`);
         void (async () => {
             for (const root of roots) {
                 const adapter = new MemcurioAdapter({

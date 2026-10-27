@@ -290,7 +290,7 @@ describe("session leases", () => {
       expect(sessionLeaseActive(root)).toBe(false);
       touchSessionLease(root, process.pid, "session-abc");
       expect(sessionLeaseActive(root)).toBe(true);
-      const lease = join(sessionLeaseDir(root), process.pid + "-session-abc.json");
+      const lease = join(sessionLeaseDir(root), `${process.pid}-session-abc.json`);
       const old = new Date(Date.now() - 60 * 60_000);
       utimesSync(lease, old, old);
       expect(sessionLeaseActive(root)).toBe(false);
