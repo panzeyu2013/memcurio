@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2721,6 +2721,45 @@ describe("sweepBatch", () => {
     expect(bootGcEnabled(0, 0, true)).toBe(true);
     expect(bootGcEnabled(30, 0, false)).toBe(true);
     expect(bootGcEnabled(0, 24, false)).toBe(true);
+  });
+});
+
+describe("steady-state sweep", () => {
+  test("only dirty stores are opened after the startup pass", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    let pluginFiber: { dispose: () => Promise<void> } | undefined;
+    try {
+      // No stores at apply: the startup pass finishes immediately, so the next
+      // tick is steady state.
+      pluginFiber = await ctx.plugin(plugin, {
+        root,
+        injectContext: false,
+        provider: "test",
+        model: "test",
+        storeSweepIntervalMs: 50,
+      });
+      const settled = join(root, "dsh", "settled-store");
+      const dirty = join(root, "dsh", "dirty-store");
+      for (const dir of [settled, dirty]) {
+        mkdirSync(join(dir, "state"), { recursive: true });
+        writeFileSync(join(dir, "index.sqlite"), "");
+      }
+      const token = writeActivityToken(settled);
+      writeSweptToken(settled, token);
+      writeActivityToken(dirty);
+      const settledSwept = join(settled, "state", "swept");
+      const before = statSync(settledSwept).mtimeMs;
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline && !existsSync(join(dirty, "state", "swept"))) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(existsSync(join(dirty, "state", "swept"))).toBe(true);
+      expect(statSync(settledSwept).mtimeMs).toBe(before);
+    } finally {
+      if (pluginFiber) await pluginFiber.dispose();
+      await disposeFibers(fibers);
+    }
   });
 });
 

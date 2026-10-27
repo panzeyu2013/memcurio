@@ -62,8 +62,8 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 要求 node >= 22.13（`node:sqlite`，无需 flag）与一个可用的 DSH profile。尚未发布 registry，直接装 Release 里的 tarball：
 
 ```bash
+# v0.0.7 尚未发布；打 tag 后此 URL 可用（发布前 0.0.6 是旧包）
 dsh plugin --profile <profile> add \
-  # v0.0.7 尚未发布；打 tag 后此 URL 可用（发布前 0.0.6 是旧包）
   https://github.com/panzeyu2013/memcurio/releases/download/v0.0.7/memcurio-dsh-plugin-0.0.7.tgz
 ```
 

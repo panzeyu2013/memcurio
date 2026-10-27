@@ -9,7 +9,7 @@ import { createEvidenceSnapshot, enqueueExtractionJob, LlmExtractProvider, polic
 import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
-import { clearSessionLease, markActivityFailure, readActivityState, readStoreOrigin, recordStoreOrigin, touchSessionLease, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
+import { clearSessionLease, markActivityFailure, publishActivitySafely, readActivityState, readStoreOrigin, recordStoreOrigin, touchSessionLease, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
 import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "./core/channel.js";
 import type { LlmChannel } from "./core/channel.js";
@@ -1063,7 +1063,7 @@ export class MemcurioAdapter {
         }
       }
       if (activity.kind !== "token" && idx.extractionPendingCount() > 0) {
-        writeActivityToken(this.root);
+        publishActivitySafely(this.root);
       }
     } finally {
       idx.close();
@@ -1089,7 +1089,7 @@ export class MemcurioAdapter {
         idx.metaSet("extract.policy_requeue_v1", new Date().toISOString());
         // Reviving dead letters creates pending work: publish the token the
         // sweep uses to notice it.
-        writeActivityToken(this.root);
+        publishActivitySafely(this.root);
       }
       if (revived > 0) {
         idx.audit("extract.requeued", "-", `provider=${this.extract.name}; policy-rejected jobs=${String(revived)}`);

@@ -179,8 +179,6 @@ export function hasActivityFailure(root) {
         return err.code !== "ENOENT";
     }
 }
-/** Leave a durable trace that a publish failed. The file stays until a later
- *  settle proves the queue empty, so a committed job can never be invisible. */
 /** Publish the dirty token, leaving the durable failure marker if the write
  *  fails (the enqueue already committed). */
 export function publishActivitySafely(root) {
@@ -191,6 +189,8 @@ export function publishActivitySafely(root) {
         markActivityFailure(root, "activity token write failed: " + String(err));
     }
 }
+/** Leave a durable trace that a publish failed. The file stays until a later
+ *  settle proves the queue empty, so a committed job can never be invisible. */
 export function markActivityFailure(root, detail) {
     if (!existsSync(root)) {
         return;
@@ -370,7 +370,17 @@ export function sessionLeaseActive(root, now = Date.now(), staleMs = SESSION_LEA
             return true;
         }
         catch {
-            void 0;
+            // A torn lease is still evidence that someone wrote it: fail closed
+            // while its mtime is fresh.
+            try {
+                const file = join(dir, name);
+                if (now - statSync(file).mtimeMs <= staleMs) {
+                    return true;
+                }
+            }
+            catch {
+                void 0;
+            }
         }
     }
     return false;

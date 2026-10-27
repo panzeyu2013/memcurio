@@ -236,7 +236,11 @@ function storeCopyIntact(entryDir: string): boolean {
   }
   // A zero-byte or truncated file is not a database; reject it BEFORE opening
   // (opening would initialize it into an empty database and "succeed").
-  if (statSync(file).size < 512) {
+  try {
+    if (statSync(file).size < 512) {
+      return false;
+    }
+  } catch {
     return false;
   }
   // quick_check catches corruption; the read-only open must not modify the copy.
@@ -971,7 +975,7 @@ export async function executeStoreGc(
       if (candidate.tier === "orphan") {
         // Two independent passes must agree the workspace is gone: a network
         // mount that is briefly absent must not authorize a destructive move.
-                const missingFor = missingAgeMs(candidate.path, deps.now, candidate.workdir);
+        const missingFor = missingAgeMs(candidate.path, deps.now, candidate.workdir);
         if (missingFor === undefined) {
           markMissing(candidate.path, deps.now, candidate.workdir);
           result.skipped += 1;

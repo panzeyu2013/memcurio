@@ -65,6 +65,8 @@ export interface Config {
     /** Reclaim stores that never produced memory content once idle this many
      *  hours. 0 disables the tier (default). Profile level. */
     storeEmptyStoreHours?: number;
+    /** Steady-state sweep cadence in ms (profile level; tests and tuning). */
+    storeSweepIntervalMs?: number;
 }
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.

@@ -1208,7 +1208,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       // A corrupt lifecycle file must never take the plugin down.
       warn(error);
     }
-  }, STORE_SWEEP_INTERVAL_MS);
+  }, config.storeSweepIntervalMs ?? STORE_SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
   ctx.effect(() => () => {
     clearInterval(sweepTimer);

@@ -1034,3 +1034,69 @@ test("an empty database file is not restored as success", () => {
   }
 });
 
+test("a one-kilobyte corrupt database is not restored as success", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    seededOrphan(base, home, "aaaa000000001001", 2 * 3_600_000);
+    const entry = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    ).entry;
+    // Above the size gate, below a page: only quick_check can reject it.
+    writeFileSync(join(entry, "store", "index.sqlite"), Buffer.alloc(1_024));
+    const result = restoreStore(base, "aaaa000000001001", NOW);
+    expect("conflict" in result).toBe(true);
+    expect(existsSync(join(entry, ".restore-conflict"))).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a crashed purge leaves nothing behind in .purging", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    const purging = join(gcDirs(base).gc, "purging");
+    mkdirSync(purging, { recursive: true });
+    writeFileSync(join(purging, "leftover"), "x");
+    seededOrphan(base, home, "aaaa000000001002", 2 * 3_600_000);
+    quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    );
+    purgeTrash(base, policy(home), NOW);
+    expect(existsSync(join(purging, "leftover"))).toBe(false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("stale ghost directories expire after 30 days", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    const stale = join(gcDirs(base).dsh, ".stale");
+    mkdirSync(stale, { recursive: true });
+    const oldGhost = join(stale, "old-store");
+    const freshGhost = join(stale, "fresh-store");
+    mkdirSync(oldGhost);
+    mkdirSync(freshGhost);
+    const old = new Date(NOW - 40 * 86_400_000);
+    utimesSync(oldGhost, old, old);
+    seededOrphan(base, home, "aaaa000000001003", 2 * 3_600_000);
+    quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    );
+    purgeTrash(base, policy(home), NOW);
+    expect(existsSync(oldGhost)).toBe(false);
+    expect(existsSync(freshGhost)).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+

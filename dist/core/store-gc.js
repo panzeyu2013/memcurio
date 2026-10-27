@@ -146,7 +146,12 @@ function storeCopyIntact(entryDir) {
     }
     // A zero-byte or truncated file is not a database; reject it BEFORE opening
     // (opening would initialize it into an empty database and "succeed").
-    if (statSync(file).size < 512) {
+    try {
+        if (statSync(file).size < 512) {
+            return false;
+        }
+    }
+    catch {
         return false;
     }
     // quick_check catches corruption; the read-only open must not modify the copy.
