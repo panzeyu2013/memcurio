@@ -47,6 +47,12 @@ export function storeRootsUnder(baseRoot: string): string[] {
 }
 
 /** Steady-state sweep input: only stores whose tokens disagree are opened. */
+/** Whether the 60s boot GC pass has anything to do: reclamation on, or trash
+ *  already exists. A fresh default install stays side-effect free. */
+export function bootGcEnabled(retentionDays: number, emptyStoreHours: number, trashExists: boolean): boolean {
+  return retentionDays > 0 || emptyStoreHours > 0 || trashExists;
+}
+
 export function dirtyStoreRoots(roots: readonly string[]): string[] {
   return roots.filter((root) => storeIsDirty(root));
 }
@@ -64,6 +70,23 @@ export function liveSessions<T extends { retired?: boolean }>(runtimes: Iterable
 }
 
 /** Resolve the store used by one DSH workspace without exposing its path. */
+
+/** The wiring behind the sweep: compute dirty roots and select a batch. Kept
+ *  separate so the "only dirty" promise is testable with real stores. */
+export function sweepBatch(input: {
+  allRoots: readonly string[];
+  startupPass: boolean;
+  passVisited: ReadonlySet<string>;
+  sweptAt: ReadonlyMap<string, number>;
+  now: number;
+  perRootMs: number;
+  maxRoots: number;
+}): string[] {
+  return selectSweepRoots({
+    ...input,
+    dirtyRoots: new Set(dirtyStoreRoots(input.allRoots)),
+  });
+}
 
 /** Steady-state sweep input: only dirty stores are opened, one batch at a time,
  *  least-recently-swept first. Pure so the "dirty only" promise is testable. */

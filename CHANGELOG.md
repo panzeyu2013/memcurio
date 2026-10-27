@@ -9,14 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Consolidation prompts address task groups by their exact name in the summary
+  index, and rollout provenance stays task-local (a task no longer cites another
+  task's rollout files).
 - A queue with no token write for seven days no longer blocks an orphan's
   reclamation; every enqueue primitive (including queueExtraction) moves the
-  dirty token; ghost directories under state/ move to .stale/ and expire after
-  30 days; the GC purges inherited trash once, 60 seconds after apply.
+  dirty token; ghost directories left by a late settle move under .stale/ and
+  expire after 30 days; the GC purges inherited trash once, 60 seconds after
+  apply; audit.jsonl rotates at 1 MiB to audit.jsonl.1 and the reader follows
+  the rotation.
 - The reclamation inventory is visible while both switches are off, and purge
-  stays independent of retention; a queue whose token has not moved for seven
-  days no longer blocks an orphan's reclamation; restore takes the lifecycle
-  lock and refuses a partially deleted copy instead of auditing it as success.
+  stays independent of retention; restore takes the lifecycle lock, requires a
+  database that passes quick_check, and refuses a partially deleted copy
+  instead of auditing it as success.
 - The dormant sweep now fires on the transition to a known worker route instead of on every session creation, and the policy-rejected dead-letter requeue is one-shot per store (a store that keeps failing no longer revives every cycle).
 
 ### Added

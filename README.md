@@ -63,6 +63,7 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 
 ```bash
 dsh plugin --profile <profile> add \
+  # v0.0.7 尚未发布；打 tag 后此 URL 可用（发布前 0.0.6 是旧包）
   https://github.com/panzeyu2013/memcurio/releases/download/v0.0.7/memcurio-dsh-plugin-0.0.7.tgz
 ```
 

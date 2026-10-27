@@ -30,8 +30,11 @@ class BunDriver implements DbDriver {
   readonly name = "bun:sqlite";
   private db: BunDatabase;
 
-  constructor(db: BunDatabase) {
+  constructor(db: BunDatabase, readonly = false) {
     this.db = db;
+    if (readonly) {
+      return;
+    }
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 20000");
     this.db.exec("PRAGMA synchronous = NORMAL");
@@ -63,8 +66,11 @@ class NodeDriver implements DbDriver {
   readonly name = "node:sqlite";
   private db: NodeDatabase;
 
-  constructor(db: NodeDatabase) {
+  constructor(db: NodeDatabase, readonly = false) {
     this.db = db;
+    if (readonly) {
+      return;
+    }
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 20000");
     this.db.exec("PRAGMA synchronous = NORMAL");
@@ -119,15 +125,25 @@ function chmodDbFiles(path: string): void {
 /** Synchronous counterpart for callers that cannot await (the store lifecycle
  *  integrity check runs inside a synchronous restore). Uses require() because
  *  the runtime-specific module is chosen dynamically. */
-export function openDbSync(path: string): DbDriver {
+export function openDbSync(path: string, readonly = false): DbDriver {
   const require = createRequire(import.meta.url);
+  let bunModule: { Database: new (path: string, options?: { readonly?: boolean }) => BunDatabase } | undefined;
   try {
-    const bunModule = require("bun:sqlite") as { Database: new (path: string) => BunDatabase };
-    return new BunDriver(new bunModule.Database(path));
+    bunModule = require("bun:sqlite") as typeof bunModule;
   } catch {
-    const nodeModule = require("node:sqlite") as { DatabaseSync: new (path: string) => NodeDatabase };
-    return new NodeDriver(new nodeModule.DatabaseSync(path));
+    bunModule = undefined;
   }
+  if (bunModule) {
+    // Only the module lookup may fall through; a construction error (corrupt
+    // database, permissions) must reach the caller.
+    const db = readonly ? new bunModule.Database(path, { readonly: true }) : new bunModule.Database(path);
+    return new BunDriver(db, readonly);
+  }
+  const nodeModule = require("node:sqlite") as {
+    DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => NodeDatabase;
+  };
+  const db = readonly ? new nodeModule.DatabaseSync(path, { readOnly: true }) : new nodeModule.DatabaseSync(path);
+  return new NodeDriver(db, readonly);
 }
 
 export async function openDb(path: string): Promise<DbDriver> {

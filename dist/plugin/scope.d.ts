@@ -23,6 +23,9 @@ export declare function memcurioBaseRoot(): string;
  *  has adopted; a missing namespace simply means no stores exist yet. */
 export declare function storeRootsUnder(baseRoot: string): string[];
 /** Steady-state sweep input: only stores whose tokens disagree are opened. */
+/** Whether the 60s boot GC pass has anything to do: reclamation on, or trash
+ *  already exists. A fresh default install stays side-effect free. */
+export declare function bootGcEnabled(retentionDays: number, emptyStoreHours: number, trashExists: boolean): boolean;
 export declare function dirtyStoreRoots(roots: readonly string[]): string[];
 /** Live (non-retired) session runtimes. A retired runtime keeps its store
  *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
@@ -30,6 +33,17 @@ export declare function liveSessions<T extends {
     retired?: boolean;
 }>(runtimes: Iterable<T>): T[];
 /** Resolve the store used by one DSH workspace without exposing its path. */
+/** The wiring behind the sweep: compute dirty roots and select a batch. Kept
+ *  separate so the "only dirty" promise is testable with real stores. */
+export declare function sweepBatch(input: {
+    allRoots: readonly string[];
+    startupPass: boolean;
+    passVisited: ReadonlySet<string>;
+    sweptAt: ReadonlyMap<string, number>;
+    now: number;
+    perRootMs: number;
+    maxRoots: number;
+}): string[];
 /** Steady-state sweep input: only dirty stores are opened, one batch at a time,
  *  least-recently-swept first. Pure so the "dirty only" promise is testable. */
 export declare function selectSweepRoots(input: {

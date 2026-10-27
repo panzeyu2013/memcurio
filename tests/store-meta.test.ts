@@ -286,15 +286,18 @@ describe("session leases", () => {
     const root = tempStore();
     try {
       expect(sessionLeaseActive(root)).toBe(false);
-      touchSessionLease(root, 4242, "session-abc");
+      touchSessionLease(root, process.pid, "session-abc");
       expect(sessionLeaseActive(root)).toBe(true);
-      const lease = join(sessionLeaseDir(root), "4242-session-abc.json");
+      const lease = join(sessionLeaseDir(root), process.pid + "-session-abc.json");
       const old = new Date(Date.now() - 60 * 60_000);
       utimesSync(lease, old, old);
       expect(sessionLeaseActive(root)).toBe(false);
       expect(pruneSessionLeases(root)).toBe(1);
-      touchSessionLease(root, 4242, "session-abc");
-      clearSessionLease(root, 4242, "session-abc");
+      // A lease from a dead pid is stale immediately, not after 15 minutes.
+      touchSessionLease(root, 2_147_483_647, "dead");
+      expect(sessionLeaseActive(root)).toBe(false);
+      touchSessionLease(root, process.pid, "session-abc");
+      clearSessionLease(root, process.pid, "session-abc");
       expect(sessionLeaseActive(root)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

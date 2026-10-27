@@ -4,7 +4,7 @@ import type { ExtractionJobRow } from "./db.js";
 import { WorkerAbortedError } from "./channel.js";
 import type { AgentToolReply, LlmChannel, ToolSpec } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
-import { readActivityState, settleAfterDrain, writeActivityToken } from "./store-meta.js";
+import { publishActivitySafely, readActivityState, settleAfterDrain } from "./store-meta.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 
@@ -505,7 +505,7 @@ export async function queueExtraction(
     // Every enqueue must move the dirty token; a clean watermark with pending
     // rows would make the steady-state sweep skip the store forever.
     if (queued.inserted) {
-      writeActivityToken(root);
+      publishActivitySafely(root);
     }
     return queued;
   } finally {

@@ -75,6 +75,9 @@ export declare function readSweptState(root: string): TokenState;
 export declare function hasActivityFailure(root: string): boolean;
 /** Leave a durable trace that a publish failed. The file stays until a later
  *  settle proves the queue empty, so a committed job can never be invisible. */
+/** Publish the dirty token, leaving the durable failure marker if the write
+ *  fails (the enqueue already committed). */
+export declare function publishActivitySafely(root: string): void;
 export declare function markActivityFailure(root: string, detail: string): void;
 export declare function clearActivityFailure(root: string, observedAt?: number): void;
 /** True when this store may hold work the periodic sweep should look at.

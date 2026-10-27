@@ -20,5 +20,5 @@ export interface DbDriver {
 /** Synchronous counterpart for callers that cannot await (the store lifecycle
  *  integrity check runs inside a synchronous restore). Uses require() because
  *  the runtime-specific module is chosen dynamically. */
-export declare function openDbSync(path: string): DbDriver;
+export declare function openDbSync(path: string, readonly?: boolean): DbDriver;
 export declare function openDb(path: string): Promise<DbDriver>;

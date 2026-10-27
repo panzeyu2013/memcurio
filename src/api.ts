@@ -2,7 +2,7 @@
 
 import { addAdHocNote, type AdHocNote } from "./core/adhoc.js";
 import { Index } from "./core/db.js";
-import { writeActivityToken } from "./core/store-meta.js";
+import { publishActivitySafely } from "./core/store-meta.js";
 import { appendLifecycleAudit, planStoreGc, readLifecycleAudit, restoreStore } from "./core/store-gc.js";
 import type { StoreGcPolicy } from "./core/store-gc.js";
 import { renderMemoryContext, renderReadPathInstructions } from "./core/inject.js";
@@ -123,7 +123,7 @@ export async function integrationRequeueDeadExtractions(root: string, jobId?: st
     if (revived > 0) {
       // The sweep decides by token, not by queue depth: a revive that does not
       // publish one would leave the store "clean" with pending work.
-      writeActivityToken(root);
+      publishActivitySafely(root);
       index.audit("extract.requeued", "-", `operator requeued ${String(revived)} dead extraction job(s)`);
     }
     return revived;

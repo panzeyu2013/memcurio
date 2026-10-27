@@ -181,6 +181,16 @@ export function hasActivityFailure(root) {
 }
 /** Leave a durable trace that a publish failed. The file stays until a later
  *  settle proves the queue empty, so a committed job can never be invisible. */
+/** Publish the dirty token, leaving the durable failure marker if the write
+ *  fails (the enqueue already committed). */
+export function publishActivitySafely(root) {
+    try {
+        writeActivityToken(root);
+    }
+    catch (err) {
+        markActivityFailure(root, "activity token write failed: " + String(err));
+    }
+}
 export function markActivityFailure(root, detail) {
     if (!existsSync(root)) {
         return;
@@ -347,15 +357,32 @@ export function sessionLeaseActive(root, now = Date.now(), staleMs = SESSION_LEA
     }
     for (const name of names) {
         try {
-            if (now - statSync(join(dir, name)).mtimeMs <= staleMs) {
-                return true;
+            const file = join(dir, name);
+            if (now - statSync(file).mtimeMs > staleMs) {
+                continue;
             }
+            // A lease left by a dead process is stale immediately, not after 15 min:
+            // otherwise it hides the store from the startup pass.
+            const parsed = JSON.parse(readFileSync(file, "utf-8"));
+            if (typeof parsed.pid === "number" && parsed.pid !== process.pid && !processAlive(parsed.pid)) {
+                continue;
+            }
+            return true;
         }
         catch {
             void 0;
         }
     }
     return false;
+}
+function processAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (err) {
+        return err.code === "EPERM";
+    }
 }
 /** Drop lease files whose owner stopped heartbeating. */
 export function pruneSessionLeases(root, now = Date.now(), staleMs = SESSION_LEASE_STALE_MS) {

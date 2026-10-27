@@ -997,3 +997,40 @@ test("purge drops only the tombstone that points at the removed entry", () => {
   }
 });
 
+test("a truncated database is not restored as success", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    seededOrphan(base, home, "aaaa000000000ff1", 2 * 3_600_000);
+    const entry = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    ).entry;
+    writeFileSync(join(entry, "store", "index.sqlite"), "not a database");
+    const result = restoreStore(base, "aaaa000000000ff1", NOW);
+    expect("conflict" in result).toBe(true);
+    expect(existsSync(join(entry, ".restore-conflict"))).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("an empty database file is not restored as success", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    seededOrphan(base, home, "aaaa000000000ff2", 2 * 3_600_000);
+    const entry = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    ).entry;
+    writeFileSync(join(entry, "store", "index.sqlite"), "");
+    const result = restoreStore(base, "aaaa000000000ff2", NOW);
+    expect("conflict" in result).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+

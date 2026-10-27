@@ -23,7 +23,7 @@ import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
 import * as api from "../src/api.js";
 import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
-import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
+import { bootGcEnabled, dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, sweepBatch, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -2689,6 +2689,38 @@ describe("selectSweepRoots", () => {
         maxRoots: 1,
       }),
     ).toEqual(["a"]);
+  });
+});
+
+describe("sweepBatch", () => {
+  test("steady state opens only dirty stores", () => {
+    const root = temporaryRoot();
+    const settled = join(root, "dsh", "settled");
+    const dirty = join(root, "dsh", "dirty");
+    for (const dir of [settled, dirty]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "index.sqlite"), "");
+    }
+    const token = writeActivityToken(settled);
+    writeSweptToken(settled, token);
+    writeActivityToken(dirty);
+    const selected = sweepBatch({
+      allRoots: [settled, dirty],
+      startupPass: false,
+      passVisited: new Set(),
+      sweptAt: new Map(),
+      now: Date.now(),
+      perRootMs: 0,
+      maxRoots: 8,
+    });
+    expect(selected).toEqual([dirty]);
+  });
+
+  test("the boot pass is side-effect free only without work", () => {
+    expect(bootGcEnabled(0, 0, false)).toBe(false);
+    expect(bootGcEnabled(0, 0, true)).toBe(true);
+    expect(bootGcEnabled(30, 0, false)).toBe(true);
+    expect(bootGcEnabled(0, 24, false)).toBe(true);
   });
 });
 

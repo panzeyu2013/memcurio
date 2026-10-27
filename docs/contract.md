@@ -43,7 +43,7 @@
 - 用 `root` 覆盖数据根时 `dshHomeRoot` 仍是 DSH home：`scope=dsh-home` 会把所有 store 判为 outside-dsh-home（需配 `scope=all`）。
 - 非插件写入者（直接用 `MemcurioAdapter`/集成 API 的工具）不写会话租约。
 - 阻塞作业在 provider 不可用期间仍使 store 保持 dirty，sweep 每 30 分钟会打开它一次（单次约 0.3 ms）。
-- `.stale/` 幽灵保留 30 天；`trashDays=0` 时连它也不清理。
+- `.stale/` 幽灵保留 30 天。
 - 每轮 sweep 只写日志，不写 `stats.json`/计数器（PLAN §5 的观测项未落地）。
 - `audit.jsonl` 超过 1 MiB 轮转为 `.1`（只保留一代）。
 

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Index } from "./db.js";
 import { WorkerAbortedError } from "./channel.js";
 import { indexDb, ensureLayout } from "./paths.js";
-import { readActivityState, settleAfterDrain, writeActivityToken } from "./store-meta.js";
+import { publishActivitySafely, readActivityState, settleAfterDrain } from "./store-meta.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
 const MAX_EVIDENCE_ITEMS = 256;
@@ -397,7 +397,7 @@ export async function queueExtraction(root, snapshot, sourceEvent, provider = "h
         // Every enqueue must move the dirty token; a clean watermark with pending
         // rows would make the steady-state sweep skip the store forever.
         if (queued.inserted) {
-            writeActivityToken(root);
+            publishActivitySafely(root);
         }
         return queued;
     }

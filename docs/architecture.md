@@ -39,8 +39,6 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 │   ├── skills/                      # 可选：模型创建的可复用流程包
 │   ├── extensions/ad_hoc/notes/<ts>-<slug>.md  # memory_remember 的 note（append-only；仅用户显式 remember/forget/update；forget/update 由 LLM agent 应用）
 │   └── .baseline/                   # 上次成功整合后的快照（用于 diff）
-│   ├── store-meta.ts                # 生命周期元数据：origin / activity / swept / activity-failed / 会话租约 / 两遍确认标记
-│   ├── store-gc.ts                  # 回收：计划、锁内栅栏、隔离/回滚、墓碑、restore、purge、审计
 ├── index.sqlite                     # stage1_outputs / artifact IDs / ad_hoc_notes / sessions / audit / provider-scoped extraction_jobs / consolidation_leases / meta（schema v11；位于 store 根）
 ├── config.json
 └── state/                           # 锁 + 生命周期元数据（origin.json / activity / swept / activity-failed / live/ / gc-missing-since）
@@ -70,6 +68,8 @@ src/
 │   ├── read.ts         读路径 list/read 表面（listMemory / readMemory）
 │   ├── sanitize.ts     注入扫描 + 密钥脱敏（不变）
 │   ├── search.ts       读路径检索（searchMemory：MEMORY.md / summary / rollout_summaries，注入过滤 + usage 记账）
+│   ├── store-meta.ts   生命周期元数据（origin / activity / swept / activity-failed / live 租约 / 两遍确认标记）
+│   ├── store-gc.ts     回收（计划 / 锁内栅栏 / 隔离·回滚 / 墓碑 / restore / purge / 审计）
 │   ├── sqlite.ts       驱动按运行时分流：bun → bun:sqlite，node（>=22.5）→ node:sqlite（双驱动）
 │   ├── transaction.ts  原子写 + 文件锁（含 stale 回收；不变）
 │   ├── generation.ts   workspace + baseline generation manifest、提交标记和故障恢复

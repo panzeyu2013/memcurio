@@ -3,8 +3,11 @@ import { createRequire } from "node:module";
 class BunDriver {
     name = "bun:sqlite";
     db;
-    constructor(db) {
+    constructor(db, readonly = false) {
         this.db = db;
+        if (readonly) {
+            return;
+        }
         this.db.exec("PRAGMA journal_mode = WAL");
         this.db.exec("PRAGMA busy_timeout = 20000");
         this.db.exec("PRAGMA synchronous = NORMAL");
@@ -29,8 +32,11 @@ class BunDriver {
 class NodeDriver {
     name = "node:sqlite";
     db;
-    constructor(db) {
+    constructor(db, readonly = false) {
         this.db = db;
+        if (readonly) {
+            return;
+        }
         this.db.exec("PRAGMA journal_mode = WAL");
         this.db.exec("PRAGMA busy_timeout = 20000");
         this.db.exec("PRAGMA synchronous = NORMAL");
@@ -79,16 +85,24 @@ function chmodDbFiles(path) {
 /** Synchronous counterpart for callers that cannot await (the store lifecycle
  *  integrity check runs inside a synchronous restore). Uses require() because
  *  the runtime-specific module is chosen dynamically. */
-export function openDbSync(path) {
+export function openDbSync(path, readonly = false) {
     const require = createRequire(import.meta.url);
+    let bunModule;
     try {
-        const bunModule = require("bun:sqlite");
-        return new BunDriver(new bunModule.Database(path));
+        bunModule = require("bun:sqlite");
     }
     catch {
-        const nodeModule = require("node:sqlite");
-        return new NodeDriver(new nodeModule.DatabaseSync(path));
+        bunModule = undefined;
     }
+    if (bunModule) {
+        // Only the module lookup may fall through; a construction error (corrupt
+        // database, permissions) must reach the caller.
+        const db = readonly ? new bunModule.Database(path, { readonly: true }) : new bunModule.Database(path);
+        return new BunDriver(db, readonly);
+    }
+    const nodeModule = require("node:sqlite");
+    const db = readonly ? new nodeModule.DatabaseSync(path, { readOnly: true }) : new nodeModule.DatabaseSync(path);
+    return new NodeDriver(db, readonly);
 }
 export async function openDb(path) {
     let bunModule;

@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.5/memcurio-dsh-plugin-0.0.5.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.7/memcurio-dsh-plugin-0.0.7.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.5.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.5.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.7.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.7.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -139,7 +139,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 
 ### Store lifecycle (dormant sweep + reclamation)
 
-A store publishes its dirty token (state/activity) after every checkpoint transaction commits, and state/swept records the token the last drain settled. The dormant sweep reads the three token files (activity, swept, activity-failed) and opens a store only when they disagree, so a settled store is never opened again; a failed token write leaves state/activity-failed, which keeps the store dirty until a later empty drain clears it. Every plugin start performs one bounded full pass (8 stores per tick) that ignores the tokens, once a worker route is known and excluding stores owned by live sessions and bootstrapped roots; a permanently blocked job keeps the store dirty and the pass revisits it until the queue is drained. The sweep never consolidates: Phase 2 stays demand-driven (turn/end, store bootstrap). Reclamation runs on a 6-hour timer and once 60 seconds after apply (boot pass: it always reclaims expired trash and, when enabled, may also quarantine). The operator API exposes a read-only plan and a restore. Turning the two reclamation switches off stops new isolation but does not freeze trash that is already past storeTrashDays. A queue that has not written its token for seven days no longer blocks an orphan's reclamation. The empty-store tier ignores whether the workspace path still exists by design, but live sessions, session leases and unsettled tokens still block it.
+A store publishes its dirty token (state/activity) after every checkpoint transaction commits, and state/swept records the token the last drain settled. The dormant sweep reads the three token files (activity, swept, activity-failed) and opens a store only when they disagree, so a settled store is never opened again; a failed token write leaves state/activity-failed, which keeps the store dirty until a later empty drain clears it. Every plugin start performs one bounded full pass (8 stores per tick) that ignores the tokens, once a worker route is known and excluding stores owned by live sessions and bootstrapped roots; a permanently blocked job keeps the store dirty and the pass revisits it until the queue is drained. The sweep never consolidates: Phase 2 stays demand-driven (turn/end, store bootstrap). Reclamation runs on a 6-hour timer and once 60 seconds after apply. The boot pass is skipped when both switches are off and no trash/ directory exists; when it runs it reclaims expired trash and, if enabled, may also quarantine. The operator API exposes a read-only plan, a restore and the lifecycle audit; audit.jsonl rotates at 1 MiB to audit.jsonl.1. Turning the two reclamation switches off stops new isolation but does not freeze trash that is already past storeTrashDays. A queue that has not written its token for seven days no longer blocks an orphan's reclamation. The empty-store tier ignores whether the workspace path still exists by design, but live sessions, session leases and unsettled tokens still block it.
 
 A second, cheaper tier reclaims stores that never produced any memory content (no document, rollout summary or ad-hoc note, no staged rows) once storeEmptyStoreHours is set (default 0 = off). Reclamation is off by default (storeRetentionDays: 0); storeGcScope (profile key, not in the panel) widens the orphan tier from <DSH home>/worktrees to any path when set to all. When enabled, a store is quarantined only if its recorded workspace path (raw and canonical spelling) is gone, its last activity is older than the threshold, it lives under <DSH home>/worktrees/** (unless storeGcScope=all is set in the profile), its tokens are settled, and a live transaction confirms extractionPendingCount() == 0 with no consolidation lease. Quarantine renames the store into <base>/dsh/.trash/ (restorable for storeTrashDays), writes a per-key tombstone, and audits the move; a post-rename re-check rolls the move back if a job appeared in the meantime. Orphan moves require two independent passes (a one-hour confirmation marker), a fresh session lease written by any process blocks the move, and a restore conflict keeps its data for twice the trash window before expiring. Adopting a workspace whose store was quarantined restores it from the trash instead of starting empty.
 

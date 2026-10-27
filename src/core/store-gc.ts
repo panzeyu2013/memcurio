@@ -234,10 +234,14 @@ function storeCopyIntact(entryDir: string): boolean {
   if (!existsSync(file) || !existsSync(join(store, "memory"))) {
     return false;
   }
-  // quick_check catches a truncated or half-deleted database; an unreadable
-  // file is refused too.
+  // A zero-byte or truncated file is not a database; reject it BEFORE opening
+  // (opening would initialize it into an empty database and "succeed").
+  if (statSync(file).size < 512) {
+    return false;
+  }
+  // quick_check catches corruption; the read-only open must not modify the copy.
   try {
-    const db = openDbSync(file);
+    const db = openDbSync(file, true);
     try {
       const row = db.get<{ quick_check?: string }>("PRAGMA quick_check");
       return row?.quick_check === "ok";
@@ -369,10 +373,14 @@ export function planStoreGc(
       plan.skipped.push({ key, reason: "workdir-exists" });
       continue;
     }
-    if (
-      policy.scope === "dsh-home" &&
-      !under(join(realpathOrSelf(policy.dshHomeRoot), "worktrees"), origin.realpath)
-    ) {
+    const canonicalPrefix = join(realpathOrSelf(policy.dshHomeRoot), "worktrees");
+    const rawPrefix = join(policy.dshHomeRoot, "worktrees");
+    // A workdir recorded while dead keeps the symlink spelling; rewrite the raw
+    // home prefix onto the canonical one before the containment check.
+    const canonicalWorkdir = origin.realpath.startsWith(rawPrefix + sep)
+      ? join(canonicalPrefix, origin.realpath.slice(rawPrefix.length + 1))
+      : origin.realpath;
+    if (policy.scope === "dsh-home" && !under(canonicalPrefix, canonicalWorkdir)) {
       plan.skipped.push({ key, reason: "outside-dsh-home" });
       continue;
     }
@@ -621,6 +629,20 @@ export function purgeTrash(
   const removed: string[] = [];
   purgeDebris(baseRoot, now);
   purgeStaleGhosts(baseRoot, now);
+  // A purge that crashed between the move and the delete leaves an entry in
+  // .purging; it is already quarantined, so finish the delete here.
+  const purgingDir = join(gcDirs(baseRoot).gc, "purging");
+  try {
+    for (const name of readdirSync(purgingDir)) {
+      try {
+        rmSync(join(purgingDir, name), { recursive: true, force: true });
+      } catch {
+        void 0;
+      }
+    }
+  } catch {
+    void 0;
+  }
   if (!(policy.trashDays > 0)) {
     return removed;
   }
@@ -949,7 +971,7 @@ export async function executeStoreGc(
       if (candidate.tier === "orphan") {
         // Two independent passes must agree the workspace is gone: a network
         // mount that is briefly absent must not authorize a destructive move.
-            const missingFor = missingAgeMs(candidate.path, deps.now, candidate.workdir);
+                const missingFor = missingAgeMs(candidate.path, deps.now, candidate.workdir);
         if (missingFor === undefined) {
           markMissing(candidate.path, deps.now, candidate.workdir);
           result.skipped += 1;

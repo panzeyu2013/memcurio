@@ -137,7 +137,6 @@ test("ensureStoreOrigin backfills a legacy store from its last session", async (
       root,
       host: "dsh",
       durableQueue: true,
-      workdir,
       extract: new NoopExtractProvider(),
     });
     try {

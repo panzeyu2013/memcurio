@@ -6,7 +6,7 @@ import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "../
 import { pipelineConfig } from "../core/config.js";
 import { ProviderNotConfiguredError } from "../core/extract.js";
 import { MemcurioAdapter, integrationCite, integrationContext, integrationList, integrationRead, integrationRemember, integrationSearch, integrationStatus, } from "../api.js";
-import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { bootGcEnabled, dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, sweepBatch, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 import { Index } from "../core/db.js";
 import { withFileLock } from "../core/transaction.js";
 import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
@@ -960,9 +960,8 @@ export function apply(ctx, config = {}) {
         // in steady state: an orphan store's token never changes again, and a live
         // store drains through its own adapter. A dirty check is one stat per store.
         const dirty = dirtyStoreRoots(allRoots);
-        const roots = selectSweepRoots({
+        const roots = sweepBatch({
             allRoots,
-            dirtyRoots: new Set(dirty),
             startupPass,
             passVisited,
             sweptAt: sweptRoots,
@@ -1070,13 +1069,19 @@ export function apply(ctx, config = {}) {
     // write; running it on the 5-minute cadence would leave a hot-reloaded or
     // short-lived process with an unfinished pass for tens of minutes.
     if (startupPass) {
+        const startupDeadline = Date.now() + 5 * 60_000;
         startupTimer = setInterval(() => {
             if (!startupPass) {
                 return;
             }
-            // Without a route the sweep returns immediately; ticking it would only
-            // walk the store set every 500ms for the life of the process.
+            // Without a route the sweep returns immediately; stop the fast tick after
+            // five minutes (the periodic sweep continues the pass once a route
+            // appears) instead of keeping it alive for the whole process.
             if (!(fixedRoute() ?? lastKnownRoute)) {
+                if (Date.now() > startupDeadline) {
+                    clearInterval(startupTimer);
+                    startupTimer = undefined;
+                }
                 return;
             }
             try {
@@ -1108,6 +1113,13 @@ export function apply(ctx, config = {}) {
     });
     const runStoreGc = async (reason) => {
         const policy = gcPolicy();
+        // The timer must not create .gc/ on a default install: skip when both
+        // switches are off and there is no trash to reclaim.
+        if (policy.retentionDays <= 0 &&
+            policy.emptyStoreHours <= 0 &&
+            !existsSync(join(gcDirs(baseRoot).trash))) {
+            return;
+        }
         const result = await executeStoreGc(baseRoot, policy, {
             now: Date.now(),
             protectedRoots: new Set(liveSessions(sessions.values()).map((runtime) => runtime.root)),
@@ -1156,9 +1168,7 @@ export function apply(ctx, config = {}) {
     const storeGcBoot = setTimeout(() => {
         // A fresh default install must not create .gc/ or purge anything: run the
         // boot pass only when reclamation is on or a trash directory already exists.
-        if (live().storeRetentionDays <= 0 &&
-            (config.storeEmptyStoreHours ?? 0) <= 0 &&
-            !existsSync(join(gcDirs(baseRoot).trash))) {
+        if (!bootGcEnabled(live().storeRetentionDays, config.storeEmptyStoreHours ?? 0, existsSync(join(gcDirs(baseRoot).trash)))) {
             return;
         }
         void runStoreGc("startup").catch(warn);
