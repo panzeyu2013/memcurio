@@ -56,6 +56,22 @@ export function liveSessions(runtimes) {
     return out;
 }
 /** Resolve the store used by one DSH workspace without exposing its path. */
+/** Steady-state sweep input: only dirty stores are opened, one batch at a time,
+ *  least-recently-swept first. Pure so the "dirty only" promise is testable. */
+export function selectSweepRoots(input) {
+    return input.allRoots
+        .filter((root) => {
+        if (input.startupPass && input.passVisited.has(root)) {
+            return false;
+        }
+        if (!input.startupPass && !input.dirtyRoots.has(root)) {
+            return false;
+        }
+        return input.now - (input.sweptAt.get(root) ?? 0) >= input.perRootMs;
+    })
+        .sort((a, b) => (input.sweptAt.get(a) ?? 0) - (input.sweptAt.get(b) ?? 0))
+        .slice(0, input.maxRoots);
+}
 export function workspaceStoreRoot(baseRoot, workdir, scope) {
     if (scope === "global")
         return resolve(baseRoot);

@@ -1,13 +1,10 @@
 import {
   appendFileSync,
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   renameSync,
-  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -24,6 +21,7 @@ import {
   storeIsDirty,
   writeActivityToken,
 } from "./store-meta.js";
+import { openDbSync } from "./sqlite.js";
 import { listWorkspaceFiles } from "./workspace.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
 
@@ -236,16 +234,15 @@ function storeCopyIntact(entryDir: string): boolean {
   if (!existsSync(file) || !existsSync(join(store, "memory"))) {
     return false;
   }
-  // The driver open is async and this path is synchronous; a header check still
-  // rejects an empty or truncated file left by an interrupted purge.
+  // quick_check catches a truncated or half-deleted database; an unreadable
+  // file is refused too.
   try {
-    const fd = openSync(file, "r");
+    const db = openDbSync(file);
     try {
-      const head = Buffer.alloc(16);
-      const read = readSync(fd, head, 0, 16, 0);
-      return read === 16 && head.toString("latin1") === "SQLite format 3\u0000";
+      const row = db.get<{ quick_check?: string }>("PRAGMA quick_check");
+      return row?.quick_check === "ok";
     } finally {
-      closeSync(fd);
+      db.close();
     }
   } catch {
     return false;

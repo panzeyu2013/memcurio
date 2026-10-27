@@ -15,7 +15,7 @@ import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 
 import { Index } from "../src/core/db.js";
-import { writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
+import { sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
 import { settingsView } from "../src/plugin/settings.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -23,7 +23,7 @@ import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
 import * as api from "../src/api.js";
 import { WorkerAbortedError, WorkerProviderError } from "../src/core/channel.js";
 import type { LlmChannel } from "../src/core/channel.js";
-import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
+import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -2620,6 +2620,75 @@ describe("dirtyStoreRoots", () => {
     writeSweptToken(settled, token);
     writeActivityToken(dirty);
     expect(dirtyStoreRoots([settled, dirty])).toEqual([dirty]);
+  });
+});
+
+test("an adopted session writes a cross-process lease", async () => {
+  const root = temporaryRoot();
+  const workdir = join(root, "lease-ws");
+  const { ctx, fibers } = await runtime();
+  try {
+    const pluginFiber = await ctx.plugin(plugin, {
+      root,
+      injectContext: false,
+      provider: "test",
+      model: "test",
+    });
+    const session = ctx.sessions.prepare(SessionId("lease-me"), { meta: { cwd: workdir } });
+    const detach = ctx.sessions.enter(session);
+    ctx.sessions.announce(session);
+    await ctx.sessions.flush(session);
+    expect(sessionLeaseActive(workspaceStoreRoot(root, workdir, "workspace"))).toBe(true);
+    detach();
+    await pluginFiber.dispose();
+  } finally {
+    await disposeFibers(fibers);
+  }
+});
+
+describe("selectSweepRoots", () => {
+  const base = { now: 1_000_000_000, perRootMs: 30 * 60_000, maxRoots: 8 };
+  test("steady state selects only dirty roots", () => {
+    expect(
+      selectSweepRoots({
+        allRoots: ["a", "b"],
+        dirtyRoots: new Set(["b"]),
+        startupPass: false,
+        passVisited: new Set(),
+        sweptAt: new Map(),
+        ...base,
+      }),
+    ).toEqual(["b"]);
+  });
+  test("the startup pass visits settled stores too", () => {
+    expect(
+      selectSweepRoots({
+        allRoots: ["a", "b"],
+        dirtyRoots: new Set(),
+        startupPass: true,
+        passVisited: new Set(),
+        sweptAt: new Map(),
+        ...base,
+      }),
+    ).toEqual(["a", "b"]);
+  });
+  test("throttle and rotation prefer the least recently swept", () => {
+    const now = base.now;
+    expect(
+      selectSweepRoots({
+        allRoots: ["a", "b"],
+        dirtyRoots: new Set(["a", "b"]),
+        startupPass: false,
+        passVisited: new Set(),
+        sweptAt: new Map([
+          ["a", now - 31 * 60_000],
+          ["b", now],
+        ]),
+        now,
+        perRootMs: 30 * 60_000,
+        maxRoots: 1,
+      }),
+    ).toEqual(["a"]);
   });
 });
 

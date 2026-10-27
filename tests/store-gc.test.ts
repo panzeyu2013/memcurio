@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { openDbSync } from "../src/core/sqlite.js";
+
 import {
   appendLifecycleAudit,
   gcDirs,
@@ -54,9 +56,15 @@ function makeStore(base: string, key: string): string {
   const dir = join(base, "dsh", key);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "memory"), { recursive: true });
-  // A real store always carries a SQLite header; the restore integrity check
-  // rejects an empty placeholder.
-  writeFileSync(join(dir, "index.sqlite"), "SQLite format 3\u0000");
+  // A real database: the restore integrity check runs quick_check and the
+  // adopted session opens this file.
+  const file = join(dir, "index.sqlite");
+  const db = openDbSync(file);
+  db.close();
+  // A clean close normally removes the sidecars; the executor's fence treats
+  // any left-over -wal as "someone else has the database open".
+  rmSync(file + "-wal", { force: true });
+  rmSync(file + "-shm", { force: true });
   return dir;
 }
 
@@ -959,5 +967,33 @@ describe("two-pass threshold and empty-tier gates", () => {
       cleanup();
     }
   });
+});
+
+test("purge drops only the tombstone that points at the removed entry", () => {
+  const { base, home, cleanup } = setup();
+  try {
+    const key = "aaaa000000000fe1";
+    seededOrphan(base, home, key, 2 * 3_600_000);
+    const june = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-06-01T00:00:00.000Z"),
+    ).entry;
+    seededOrphan(base, home, key, 2 * 3_600_000);
+    const october = quarantineStore(
+      base,
+      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+      {},
+      Date.parse("2026-10-01T00:00:00.000Z"),
+    ).entry;
+    expect(readTombstone(base, key)?.entry).toBe(october);
+    const removed = purgeTrash(base, policy(home), NOW);
+    expect(removed).toContain(june);
+    expect(existsSync(june)).toBe(false);
+    expect(readTombstone(base, key)?.entry).toBe(october);
+  } finally {
+    cleanup();
+  }
 });
 

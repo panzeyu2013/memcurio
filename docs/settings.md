@@ -44,7 +44,7 @@
 | 规范点 | 证据 |
 |---|---|
 | volatile 原地提交、非法候选不动引用 | `tests/loader-config.test.ts`（真实 Loader：同一 config 对象 + ref 原地变化） |
-| 半对/空串在解析层被拒、且不落盘 | `tests/settings.test.ts`「a lone route half is refused at resolution time」、``「empty provider/model is refused by the resolution guard」、`tests/loader-config.test.ts`（半对不落盘） |
+| 半对/空串在解析层被拒、且不落盘 | `tests/settings.test.ts`「a lone route half is refused at resolution time」、「empty provider/model is refused by the resolution guard」、`tests/loader-config.test.ts`（半对不落盘） |
 | 守卫只作用于本条目、随插件 fiber 退出 | `tests/settings.test.ts`「the guard claims only this entry and leaves with the plugin fiber」 |
 | 表单只暴露 volatile 字段、默认值与校验 | `tests/settings.test.ts`「provides the composition defaults and validates every field」「plain values and absent fields fall back exactly like the Loader defaults」 |
 | 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts`「suppresses the generated page and reports post-commit changes for memcurio only」 |

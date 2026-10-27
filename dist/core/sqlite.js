@@ -1,4 +1,5 @@
 import { chmodSync } from "node:fs";
+import { createRequire } from "node:module";
 class BunDriver {
     name = "bun:sqlite";
     db;
@@ -75,6 +76,20 @@ function chmodDbFiles(path) {
  *    22.5–22.12 window required --experimental-sqlite). No native compile
  *    step either way.
  */
+/** Synchronous counterpart for callers that cannot await (the store lifecycle
+ *  integrity check runs inside a synchronous restore). Uses require() because
+ *  the runtime-specific module is chosen dynamically. */
+export function openDbSync(path) {
+    const require = createRequire(import.meta.url);
+    try {
+        const bunModule = require("bun:sqlite");
+        return new BunDriver(new bunModule.Database(path));
+    }
+    catch {
+        const nodeModule = require("node:sqlite");
+        return new NodeDriver(new nodeModule.DatabaseSync(path));
+    }
+}
 export async function openDb(path) {
     let bunModule;
     try {

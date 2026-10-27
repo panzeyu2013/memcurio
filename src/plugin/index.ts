@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { basename, isAbsolute, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
@@ -25,7 +25,7 @@ import {
   integrationStatus,
 } from "../api.js";
 import type { AgentFinish, AgentTurnMessage, LlmChannel } from "../api.js";
-import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
+import { dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, workspaceStoreRoot } from "./scope.js";
 import { Index } from "../core/db.js";
 import { withFileLock } from "../core/transaction.js";
 import { WORKSPACE_WRITE_LEASE_KEY } from "../core/consolidate.js";
@@ -1113,20 +1113,16 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     // in steady state: an orphan store's token never changes again, and a live
     // store drains through its own adapter. A dirty check is one stat per store.
     const dirty = dirtyStoreRoots(allRoots);
-    const roots = allRoots
-      .filter((root) => {
-        if (startupPass && passVisited.has(root)) {
-          return false;
-        }
-        if (!startupPass && !dirty.includes(root)) {
-          return false;
-        }
-        return now - (sweptRoots.get(root) ?? 0) >= STORE_SWEEP_PER_ROOT_MS;
-      })
-      // Least-recently-swept first: a store that keeps failing to drain must not
-      // monopolise the per-tick budget and starve the rest.
-      .sort((a, b) => (sweptRoots.get(a) ?? 0) - (sweptRoots.get(b) ?? 0))
-      .slice(0, STORE_SWEEP_MAX_ROOTS);
+    const roots = selectSweepRoots({
+      allRoots,
+      dirtyRoots: new Set(dirty),
+      startupPass,
+      passVisited,
+      sweptAt: sweptRoots,
+      now,
+      perRootMs: STORE_SWEEP_PER_ROOT_MS,
+      maxRoots: STORE_SWEEP_MAX_ROOTS,
+    });
     // Finish the pass even when this tick opens nothing: a store that left the
     // enumeration (adopted, quarantined) must not latch the pass forever.
     if (startupPass && allRoots.every((root) => passVisited.has(root))) {
@@ -1314,6 +1310,15 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // A process that lives shorter than six hours would otherwise never purge
   // the trash it inherited. Run once after adoption settles, then on the timer.
   const storeGcBoot = setTimeout(() => {
+    // A fresh default install must not create .gc/ or purge anything: run the
+    // boot pass only when reclamation is on or a trash directory already exists.
+    if (
+      live().storeRetentionDays <= 0 &&
+      (config.storeEmptyStoreHours ?? 0) <= 0 &&
+      !existsSync(join(gcDirs(baseRoot).trash))
+    ) {
+      return;
+    }
     void runStoreGc("startup").catch(warn);
   }, 60_000);
   storeGcBoot.unref?.();

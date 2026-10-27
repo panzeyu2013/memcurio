@@ -13,6 +13,8 @@ import {
   storeIsDirty,
 } from "../src/core/store-meta.js";
 import { MemcurioAdapter } from "../src/engine.js";
+import { ensureLayout, indexDb } from "../src/core/paths.js";
+import { Index } from "../src/core/db.js";
 
 function fixtures(): { root: string; workdir: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "memcurio-lifecycle-"));
@@ -120,4 +122,32 @@ describe("store lifecycle wiring", () => {
       cleanup();
     }
   });
+
+test("ensureStoreOrigin backfills a legacy store from its last session", async () => {
+  const { root, workdir, cleanup } = fixtures();
+  try {
+    ensureLayout(root);
+    const idx = await Index.create(indexDb(root));
+    try {
+      idx.recordSession("legacy", "dsh", workdir, new Date().toISOString());
+    } finally {
+      idx.close();
+    }
+    const adapter = new MemcurioAdapter({
+      root,
+      host: "dsh",
+      durableQueue: true,
+      workdir,
+      extract: new NoopExtractProvider(),
+    });
+    try {
+      await adapter.ensureStoreOrigin();
+    } finally {
+      adapter.dispose();
+    }
+    expect(readStoreOrigin(root)?.workdir).toBe(workdir);
+  } finally {
+    cleanup();
+  }
+});
 

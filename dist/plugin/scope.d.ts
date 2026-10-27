@@ -30,4 +30,16 @@ export declare function liveSessions<T extends {
     retired?: boolean;
 }>(runtimes: Iterable<T>): T[];
 /** Resolve the store used by one DSH workspace without exposing its path. */
+/** Steady-state sweep input: only dirty stores are opened, one batch at a time,
+ *  least-recently-swept first. Pure so the "dirty only" promise is testable. */
+export declare function selectSweepRoots(input: {
+    allRoots: readonly string[];
+    dirtyRoots: ReadonlySet<string>;
+    startupPass: boolean;
+    passVisited: ReadonlySet<string>;
+    sweptAt: ReadonlyMap<string, number>;
+    now: number;
+    perRootMs: number;
+    maxRoots: number;
+}): string[];
 export declare function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string;
