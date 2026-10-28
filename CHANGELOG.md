@@ -5,15 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.8] - 2026-10-28
+
+### Added
+
+- **`memory_read` returns `nextLineOffset` when a read is truncated** (line or
+  token cap). Pass it back as `lineOffset` to continue without overlap; when it
+  equals the requested offset the single line exceeds `maxTokens` and the cap
+  must be raised. The tool description and `docs/contract.md` document the
+  continuation contract.
 
 ### Changed
 
-- **Aligned development tooling to DSH `0.2.2-alpha.2`** — no source changes
-  and no rebuilt-artifact drift (`dist/` and `lib/client.js` rebuild
-  byte-identically). Every `@deepseek-ai/dsh-*` devDependency pin moved
-  together; `@deepseek-ai/cordis` follows `~4.0.6-alpha.1`, and the packaged
-  manifest's only runtime change is the `@deepseek-ai/schemastery` range
+- **Aligned development tooling to DSH `0.2.2-alpha.2`.** Every
+  `@deepseek-ai/dsh-*` devDependency pin moved together; `@deepseek-ai/cordis`
+  follows `~4.0.6-alpha.1`. The packaged manifest's only dependency change is
+  the `@deepseek-ai/schemastery` range
   (`~3.18.6-alpha.1`): on 0.2.2+ the config schema shares the host's copy; on
   rc.x profiles a nested copy remains; the host recognizes schemastery schemas
   structurally (`Symbol.for("schemastery")` + `meta`/`type`) and rebuilds form
@@ -32,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot dispatch (404 `unknown-session`), the served client bundle and an
   unknown route 404. The release job runs the same matrix before any Release
   mutation.
+
+### Fixed
+
+- **`compaction/prune` tags only evidence-bearing sequences.** The engine now
+  reports whether `messageRemoved` actually dropped a part, and the plugin tags
+  the bridge's prune row with just those seqs; tool-result/annotation prunes no
+  longer surface as memory-evidence prunes.
+
+### Security
+
+- **The injected memory block is framed by a per-injection nonce and a
+  data-only warning.** Model-authored memory can no longer close the
+  `>>>MEMORY_SUMMARY` boundary early (the close carries an unpredictable
+  nonce), and the block states explicitly that its contents are data, not
+  instructions.
 
 ## [0.0.7] - 2026-10-27
 
