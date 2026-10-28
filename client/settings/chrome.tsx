@@ -5,7 +5,7 @@ import type { FormShell } from "./draft.js";
 import type { InstantFace } from "./instant.js";
 import type { SectionT } from "./ui-types.js";
 
-type Tone = "success" | "neutral" | "warning" | "error";
+type Tone = "success" | "neutral" | "error";
 
 interface StatusView {
   tone: Tone;

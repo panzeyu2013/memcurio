@@ -24,7 +24,6 @@ const CSS = `
 .memcurio-settings-status { display: inline-flex; flex: none; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px; border-radius: 999px; background: var(--dsw-alias-bg-module-platform); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .memcurio-settings-status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-border-l3); }
 .memcurio-settings-status[data-tone="success"] .memcurio-settings-status-dot { background: var(--dsw-alias-state-success-primary); }
-.memcurio-settings-status[data-tone="warning"] .memcurio-settings-status-dot { background: var(--dsw-alias-state-warn-primary); }
 .memcurio-settings-status[data-tone="error"] .memcurio-settings-status-dot { background: var(--dsw-alias-state-error-primary); }
 .memcurio-settings-status[data-tone="neutral"] .memcurio-settings-status-dot { background: var(--dsw-alias-label-tertiary); }
 
@@ -42,7 +41,7 @@ const CSS = `
 .memcurio-settings-status-line { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 
 .memcurio-settings-switch { box-sizing: border-box; appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 auto; width: 36px; height: 20px; margin: 0; padding: 0; border: 0; border-radius: 10px; background: var(--dsw-alias-border-l3); cursor: pointer; }
-.memcurio-settings-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-label-primary-foreground); transition: transform 120ms ease; }
+.memcurio-settings-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-switch-thumb, var(--dsw-alias-label-primary-foreground)); transition: transform 120ms ease; }
 .memcurio-settings-switch:checked, .memcurio-settings-switch[aria-checked="true"] { background: var(--dsw-alias-brand-primary); }
 .memcurio-settings-switch:checked::after, .memcurio-settings-switch[aria-checked="true"]::after { transform: translateX(16px); }
 .memcurio-settings-switch:disabled { cursor: default; opacity: 0.5; }
@@ -68,7 +67,7 @@ const CSS = `
 
 .memcurio-settings-input-wrap { display: flex; align-items: center; box-sizing: border-box; width: 100%; height: 34px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-3); }
 .memcurio-settings-input-wrap:focus-within { border-color: var(--dsw-alias-state-business-primary); }
-.memcurio-settings-input-wrap[data-invalid="true"], .memcurio-settings-input-wrap:has(input[aria-invalid="true"]) { border-color: var(--dsw-alias-state-error-primary); }
+.memcurio-settings-input-wrap[data-invalid="true"] { border-color: var(--dsw-alias-state-error-primary); }
 .memcurio-settings-input { box-sizing: border-box; flex: 1 1 auto; min-width: 0; height: 32px; padding: 0 12px; border: 0; border-radius: var(--dsw-radius-md); background: transparent; font: inherit; font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary); }
 .memcurio-settings-input:focus { outline: none; }
 .memcurio-settings-input:disabled { color: var(--dsw-alias-label-tertiary); cursor: default; }
@@ -91,7 +90,7 @@ const CSS = `
 .memcurio-settings-choice:focus-within { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 1px; }
 .memcurio-settings-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .memcurio-settings-choice-label { min-width: 0; }
-.memcurio-settings-choice[data-disabled="true"], .memcurio-settings-choice:has(input:disabled) { cursor: default; opacity: 0.5; }
+.memcurio-settings-choice[data-disabled="true"] { cursor: default; opacity: 0.5; }
 .memcurio-settings-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .memcurio-settings-pair-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .memcurio-settings-check-row { display: flex; align-items: flex-start; gap: 10px; }
