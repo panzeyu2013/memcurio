@@ -133,7 +133,9 @@ DSH 生态已有其他记忆插件，社区也有通用记忆层。memcurio 的�
 
 ```bash
 bun run test          # 全量测试（并行隔离，默认；本机 ~1.4s）
+bun run test:coverage # CI 门禁：串行 + 覆盖率下限（函数 90 / 行 93）
 bun run test:serial   # 单进程隔离（排障/对比覆盖率）
+bun run smoke:node    # node:sqlite 驱动实跑（node >= 22.13，需 node 在 PATH）
 bun run typecheck     # src / tests / scripts / client
 bun run lint          # biome lint（格式化器有意禁用，紧凑风格）
 bun run build         # tsc → dist/ + esbuild → lib/client.js（提交制，CI 防漂移）

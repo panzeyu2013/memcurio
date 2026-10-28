@@ -24,8 +24,10 @@
 - [ ] **真实 DSH Web 人工确认**：会话内 header 入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及 Settings 面（记忆 ON/OFF 首行只读/不可用态、布尔开关行与输入控件样式、`settings.action` 导航行书页标记——0.2.2-alpha.2 行为未实机复核，客户端包自 0.2.1-rc.2 起字节相同）；注入转录行与指南行的实际渲染（自定义 chat node kind，0.1.7 会过滤普通 `context` 节点，0.2.2-alpha.2 未实机复核，需实机确认行位置/折叠与助手 turn 分组；兼容探针只覆盖启动与 HTTP 路由，不覆盖浏览器渲染）。
 - [ ] **`/memory` 客户端唤起、消息级跳转、审计收据客户端映射**：依赖上游能力/适配器。
 - [ ] **web profile 读命中遥测面**：在真实 web profile 会话确认命中只来自插件 `memory_read`/`memory_search`（`tool-fs`/`tool-fs-search` 在该 profile 被 disable）。
-- [ ] **node:sqlite 驱动实跑**：桥/快照测试需要 node >= 22.13 环境；全量测试仍以 bun 为准。
+- [ ] **桥/快照套件在 node 下整套跑**：驱动面（打开/建表/写入/读取）已由 `bun run smoke:node` 在 node 22/24 覆盖；剩余缺口是 planner/snapshot 套件仍以 bun 为唯一运行时。
 - [ ] **设置页真实浏览器 QA**：读屏（NVDA/VoiceOver）与键盘走查双提交域、折叠高级区、冲突重试；jsdom 只覆盖 DOM 语义，不含视觉与真实读屏行为。
+- [ ] **宿主的冲突信号映射**：stale fence 在 fake 里是 `mutate() -> false`（控制器报 not-landed，已有用例），真实 `SettingsForms.mutate` 是抛 `SettingsConflictError`（控制器报 hostRejected，用例已补）；仓库外的 web 宿主 `ConfigFormPort` 适配器到底透传哪种，本仓库无法确认。
+- [ ] **覆盖率闸门口径**：`scripts/check-coverage.ts` 比的是 bun 全表 `All files` 行，分母含 `tests/` 与 `scripts/`；当前 floors（90/93）在产品代码上同样成立，但新增未覆盖的测试辅助代码也会拉红。要不要按目录聚合尚未定。
 - [ ] **设置写入的 Host 级原子关联**：开关写与暂存表单的 rebase 依赖「一次文档变化 +1」的 revision 观察；毫秒级并发窗口目前只做保守拒绝（冲突），Host 若提供命名空间级关联可移除该假设。
 - [ ] **真实 Host 的 unset-pinning 集成验证**：客户端把「user 值等于 decoded base」视为未覆盖（为消掉 Host `set(inherited)` 回写造成的幽灵徽标）；该判定与 Host 文档的 presence 语义相反，需要一次真实 Host 端到端确认，并为「历史上等于 schema 默认的冗余 user 键」提供清理路径（当前只能改 profile patch）。
 

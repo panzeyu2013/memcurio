@@ -97,8 +97,9 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 
 ```bash
 bun run test          # 全量测试（并行隔离）
+bun run test:coverage # CI 门禁：串行 + 覆盖率下限
 bun run test:serial   # 单进程隔离（排障）
-bun run typecheck     # src/tests/scripts 全覆盖
+bun run typecheck     # src/tests/scripts/client 全覆盖
 bun run lint          # biome lint（格式化器有意禁用）
 bun run build         # tsc → dist/ + esbuild → lib/client.js
 bun run pack:check    # 构建 + tarball 白名单门禁
@@ -199,17 +200,20 @@ The 0.1.7-rc.2 alignment was additionally smoke-checked by hand against the inst
 
 ```
 ci.yml       push main + tags v* + pull_request + workflow_dispatch
-             → bun install --frozen-lockfile → build → typecheck → lint → test
-             → artifact existence → pack:check → eval:lexical → dist/lib drift
-             → bun pm pack --dry-run → npm pack --dry-run → node import smoke
+             → bun install --frozen-lockfile → build → typecheck → lint
+             → test:coverage (floor 90/93) → artifact existence → pack:check
+             → eval:lexical → dist/lib drift → bun pm pack --dry-run
+             → npm pack --dry-run → node import + smoke:node (node 22 与 24)
              → compat matrix (probe per host version, parallel jobs)
 release.yml  tag v* or workflow_dispatch(version, dry_run)
-             → same gate → compatibility matrix (--all, sequential)
+             → same gate (含 test:coverage 与 smoke:node)
+             → compatibility matrix (--all, sequential)
              → tag/version sanity → notes → pack + sha256
              → refuse-published → GitHub Release (+ tgz/sha256 assets)
 ```
 
-Both workflows run `scripts/verify-workflow-action-pins.mjs` first: every
+Both workflows run `bun run verify:workflows` (after setup-bun, so it
+depends on no runner-preinstalled toolchain): every
 action must be a 40-hex commit SHA with a `# vX.Y.Z` comment (no moving
 majors), the same action must not be pinned twice, and the release invariants
 (serialized publication, gate before mutation, fail-closed refuse step,
@@ -227,8 +231,9 @@ outside the automated lane.
 
 ```sh
 bun install --frozen-lockfile
-bun run build && bun run typecheck && bun run lint && bun run test
+bun run build && bun run typecheck && bun run lint && bun run test:coverage
 bun run pack:check          # rebuild + allowlist + dist reverse check
+bun run smoke:node          # node:sqlite driver (needs node on PATH)
 bun run verify:workflows    # action pins + release structure
 bun pm pack --dry-run       # tarball content dry-run
 bun run pack:tgz            # → .smoke/memcurio-dsh-plugin-<version>.tgz (dist + lib/client.js)

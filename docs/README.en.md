@@ -136,7 +136,9 @@ The dev toolchain runs on bun 1.3.14 (pinned to match CI); the shipped runtime i
 
 ```bash
 bun run test          # full suite (parallel, isolated by file; ~1.4s locally)
+bun run test:coverage # CI gate: serial + coverage floors (90% functions / 93% lines)
 bun run test:serial   # single-process isolation (debugging)
+bun run smoke:node    # real node:sqlite exercise (node >= 22.13, node on PATH)
 bun run typecheck     # src / tests / scripts / client
 bun run lint          # biome lint (formatter intentionally disabled; compact style)
 bun run build         # tsc → dist/ + esbuild → lib/client.js (committed; CI guards drift)
