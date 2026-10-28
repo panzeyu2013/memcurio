@@ -203,3 +203,36 @@ describe("settings-nav marking fallbacks", () => {
     expect(marksNothing()).toBe(true);
   });
 });
+
+describe("settings-nav probe timing", () => {
+  test("marks a dialog nav that commits after the seat mounts", async () => {
+    document.body.innerHTML = "";
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(SettingsNavProbe));
+    });
+    // The settings.action seat can mount before the shell commits its dialog.
+    document.body.insertAdjacentHTML("beforeend", SETTINGS_NAV);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const row = document.querySelectorAll('[role="dialog"] nav button')[1];
+    expect(row?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
+    // The waiter hands over to the dialog-scoped observer for rebuilds.
+    const replacement = document.createElement("button");
+    replacement.setAttribute("type", "button");
+    replacement.innerHTML = "<svg></svg><span>记忆</span>";
+    row?.replaceWith(replacement);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(replacement.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
+    await act(async () => {
+      root.unmount();
+    });
+    expect(marksNothing()).toBe(true);
+  });
+});
+

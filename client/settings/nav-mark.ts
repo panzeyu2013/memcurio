@@ -8,9 +8,10 @@
  *
  * Ownership: the first mark owns the row; a second mark of an already tagged
  * row is a no-op whose disposer removes nothing, and the owner's disposer
- * removes the tag. The probe observes only the settings dialog's nav, never
- * document.body: the old body-wide observer fired on every chat append for no
- * benefit.
+ * removes the tag. The probe observes the settings dialog (nav subtree) while
+ * the panel is open; the only document.body observation is a short-lived
+ * waiter used when the seat mounts before the dialog commits its nav, and it
+ * disconnects the moment that nav appears.
  */
 import { useEffect } from "react";
 import type { ReactElement } from "react";
@@ -80,14 +81,11 @@ export function SettingsNavProbe(): ReactElement | null {
     if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
       return () => owner();
     }
-    const nav = document.querySelector(NAV_SELECTOR);
-    if (nav === null) return () => owner();
-    // Observe the dialog, not just the current <nav>: the shell may replace
-    // the whole nav element while the panel stays open. The observer is still
-    // scoped to the settings dialog, never document.body.
-    const scope = nav.closest('[role="dialog"][aria-modal="true"]') ?? nav.parentElement ?? nav;
-    let queued = false;
     let disposed = false;
+    let queued = false;
+    let observer: MutationObserver | null = null;
+    let waiter: MutationObserver | null = null;
+
     const queue = (): void => {
       if (queued || disposed) return;
       queued = true;
@@ -102,11 +100,39 @@ export function SettingsNavProbe(): ReactElement | null {
       if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
       else setTimeout(run, 0);
     };
-    const observer = new MutationObserver(queue);
-    observer.observe(scope, { childList: true, subtree: true });
+
+    // Observe the dialog, not just the current <nav>: the shell may replace
+    // the whole nav element while the panel stays open.
+    const observeDialog = (nav: Element): void => {
+      const scope = nav.closest('[role="dialog"][aria-modal="true"]') ?? nav.parentElement ?? nav;
+      observer = new MutationObserver(queue);
+      observer.observe(scope, { childList: true, subtree: true });
+    };
+
+    const nav = document.querySelector(NAV_SELECTOR);
+    if (nav !== null) {
+      observeDialog(nav);
+    } else {
+      // The settings.action seat can mount before the dialog commits its nav
+      // (the seat and the rows are separate commits). Wait for the nav instead
+      // of giving up: without this waiter the row keeps the shell's fallback
+      // glyph until the user opens some other section. The body observation is
+      // scoped to this wait only and disconnects on the first nav.
+      waiter = new MutationObserver(() => {
+        const found = document.querySelector(NAV_SELECTOR);
+        if (found === null) return;
+        waiter?.disconnect();
+        waiter = null;
+        owner();
+        owner = markSettingsNavRow();
+        observeDialog(found);
+      });
+      waiter.observe(document.body, { childList: true, subtree: true });
+    }
     return () => {
       disposed = true;
-      observer.disconnect();
+      waiter?.disconnect();
+      observer?.disconnect();
       owner();
     };
   }, []);
