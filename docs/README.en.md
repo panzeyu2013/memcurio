@@ -135,7 +135,8 @@ The DSH ecosystem already has other memory plugins, and the wider community has 
 The dev toolchain runs on bun 1.3.14 (pinned to match CI); the shipped runtime is node (a CI node smoke imports the plugin entry).
 
 ```bash
-bun test              # full test suite (bun:test + bun:sqlite, isolated)
+bun run test          # full suite (parallel, isolated by file; ~1.4s locally)
+bun run test:serial   # single-process isolation (debugging)
 bun run typecheck     # src / tests / scripts / client
 bun run lint          # biome lint (formatter intentionally disabled; compact style)
 bun run build         # tsc → dist/ + esbuild → lib/client.js (committed; CI guards drift)

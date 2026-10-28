@@ -132,7 +132,8 @@ DSH 生态已有其他记忆插件，社区也有通用记忆层。memcurio 的�
 工具链 bun 1.3.14（与 CI 对齐）；发布运行时是 node（CI 有 node 冒烟导入插件入口）。
 
 ```bash
-bun test              # 全量测试（bun:test + bun:sqlite，隔离运行）
+bun run test          # 全量测试（并行隔离，默认；本机 ~1.4s）
+bun run test:serial   # 单进程隔离（排障/对比覆盖率）
 bun run typecheck     # src / tests / scripts / client
 bun run lint          # biome lint（格式化器有意禁用，紧凑风格）
 bun run build         # tsc → dist/ + esbuild → lib/client.js（提交制，CI 防漂移）

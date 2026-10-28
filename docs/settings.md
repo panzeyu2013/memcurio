@@ -59,10 +59,10 @@
 | 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts`「suppresses the generated page and reports post-commit changes for memcurio only」 |
 | 浏览器侧快照/覆盖判定/set-unset 语义 | `tests/client-settings.test.ts`（base-aware overridden、revert、host 拒绝/继承回写、`writeField`/`writeOps` revision 栅栏、隐藏 retention） |
 | 暂存表单草稿/校验/原子计划/失败保留/冲突 | `tests/client-settings-form.test.ts`（预算/路由/范围/工具的 plan、base 值=unset、revision/conflict） |
-| 面板注册与两域渲染/路由成对/可访问性 | `tests/client-panel-render.test.ts`（即时开关 pending/undo/rollback、预算内联错误、单次 mutate、隐藏生命周期提示、loading/unavailable/read-only） |
+| 面板注册与两域渲染/路由成对/可访问性 | `tests/client-settings-panel.test.ts`（即时开关 pending/undo/rollback、预算内联错误、单次 mutate、隐藏生命周期提示、loading/unavailable/read-only） |
 | 导航标记的对话框范围/行重建 | `tests/client-nav-mark.test.ts` |
 | 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
-| 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/client-bundle-drift.test.ts` |
+| 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/gates/bundle-drift.test.ts` |
 
 ## 5. 运维要点
 

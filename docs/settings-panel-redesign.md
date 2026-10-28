@@ -60,7 +60,7 @@
 | client/ui/switch.ts | 36x20 平台开关原子 | button role=switch；只响应自身点击 | 已删除：面板改用自有的 .memcurio-settings-switch，旧 atom 无生产调用 |
 | src/plugin/settings.ts | Config schema / volatile / base | injectBudgetTokens 无 schema 默认；base 可被部署 patch 固定 | UI 必须从 face.base 派生默认值 |
 | tests/client-settings.test.ts | 控制器语义 | 覆盖 set/unset/reset/verify | 需扩展草稿/冲突/原子计划 |
-| tests/client-panel-render.test.ts | 面板 DOM | 断言 5 行、route stack、主按钮等 | 大改；新增 a11y/交互用例 |
+| tests/client-settings-panel.test.ts | 面板 DOM | 断言 5 行、route stack、主按钮等 | 大改；新增 a11y/交互用例 |
 | docs/settings.md / docs/ui.md | 设置契约 / UI 契约 | 记录了「紧凑行」「图标状态」「行内 Save」 | 需同步改契约 |
 
 ### 1.2 当前渲染结构
@@ -686,7 +686,7 @@ client/settings/
 - client/entry.ts（client/ui/switch.ts 已删除）
 - src/plugin/settings.ts（schema/base/volatile）
 - docs/settings.md、docs/ui.md、docs/todo.md
-- tests/client-settings.test.ts、tests/client-settings-form.test.ts、tests/client-panel-render.test.ts、tests/client-nav-mark.test.ts
+- tests/client-settings.test.ts、tests/client-settings-form.test.ts、tests/client-settings-panel.test.ts、tests/client-nav-mark.test.ts
 - scripts/platform-externals.ts、scripts/build-client.ts
 - 安装树：@deepseek-ai/dsh-client-ui-settings-general/lib/client.js（General 行 CSS、Shell）、dsh-client-ui-settings/lib/types/client/config-form*.d.ts、dsh-client-ui-settings-shell/lib/client.js（SettingsForm 用法）、dsh-client-ui-plugin-manager/README.md（Plugins 配置槽位）、dsh-web-frontend bundle 里的 SettingsForm / SettingsValueField / SettingsFormModel。
 

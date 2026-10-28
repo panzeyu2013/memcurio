@@ -96,7 +96,8 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 ### 从源码开发
 
 ```bash
-bun test              # 全量测试（隔离运行）
+bun run test          # 全量测试（并行隔离）
+bun run test:serial   # 单进程隔离（排障）
 bun run typecheck     # src/tests/scripts 全覆盖
 bun run lint          # biome lint（格式化器有意禁用）
 bun run build         # tsc → dist/ + esbuild → lib/client.js
@@ -214,7 +215,7 @@ majors), the same action must not be pinned twice, and the release invariants
 (serialized publication, gate before mutation, fail-closed refuse step,
 dry-run guards) are asserted. The refuse step itself accepts only gh's explicit
 not-found stderr/HTTP 404 as "release absent" and fails closed on every other
-gh failure (regression-tested by `scripts/release-integrity.test.ts` under
+gh failure (regression-tested by `tests/gates/release-integrity.test.ts` under
 `bun test`). Bump pins by hand (`git ls-remote <repo>
 refs/tags/<tag>^{}`), update both workflows in one commit, re-run
 `bun run verify:workflows`. The compatibility matrix runs on hosted runners: each probe installs a
@@ -226,7 +227,7 @@ outside the automated lane.
 
 ```sh
 bun install --frozen-lockfile
-bun run build && bun run typecheck && bun run lint && bun test
+bun run build && bun run typecheck && bun run lint && bun run test
 bun run pack:check          # rebuild + allowlist + dist reverse check
 bun run verify:workflows    # action pins + release structure
 bun pm pack --dry-run       # tarball content dry-run

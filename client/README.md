@@ -16,7 +16,7 @@ runtime* constraints and the module map.
 - `bun scripts/build-client.ts` (also run by `bun run build`) bundles
   `client/entry.ts` with esbuild into the loader artifact
   `window.__ModuleLoader__.load({ id, factory })` at `lib/client.js`; the
-  output is committed, and `tests/client-bundle-drift.test.ts` fails when the
+  output is committed, and `tests/gates/bundle-drift.test.ts` fails when the
   built file is stale.
 - `package.json` declares `dsh.client` (`platform: "web"` + the official
   `inject` rows) and `exports["./client"]`; `bun run pack:check` validates

@@ -14,7 +14,7 @@ This document defines the contribution guidelines for memcurio. All commits, rev
 - TypeScript strict mode; `tsc --noEmit` must pass with zero errors; **no `any`** (enforced by `bun run lint`, rule `noExplicitAny`; if a relaxation is truly needed, use an explicit type assertion and explain why).
 - **No comments** (unless explaining security/concurrency semantics that are not self-evident); prefer self-documenting names over comments.
 - ESM; all local imports must use the `.js` extension; single-responsibility modules; no cross-layer imports (`src/plugin/` may call `src/engine.ts`/`src/api.ts`/`src/core/`, core must not depend on upper layers).
-- After adding files or changing core paths, run: `bun test` (all green) + `bun run typecheck` (covers src/tests/scripts/client) + `bun run lint` (biome, zero diagnostics) + `bun run build` + `bun run pack:check`.
+- After adding files or changing core paths, run: `bun run test` (all green, parallel + per-file isolation; `bun run test:serial` when debugging) + `bun run typecheck` (covers src/tests/scripts/client) + `bun run lint` (biome, zero diagnostics) + `bun run build` + `bun run pack:check`.
 - Biome is lint-only in this repo (formatter disabled — the codebase uses a compact single-line style); do not run `biome format`, and keep that style in new code.
 - Concurrency safety: all md writes go through the workspace lock + atomic write helpers (`withFileLock`/`atomicWrite`, `src/core/transaction.ts`) and SQLite `withTransaction`; never bypass `withTransaction`.
 - Transaction journal (`transactions.jsonl`, `src/core/transaction.ts`) covers destructive operations that cross process boundaries (e.g. consolidation commits, hard purge). Core write paths are protected by the SQLite `withTransaction` boundary plus the generation manifest protocol (`src/core/generation.ts`): cross-file Markdown + baseline commits are recoverable to "complete old or complete new" from the manifest, and `recoverPendingGenerations` arbitrates. Do not add new core write paths that bypass both mechanisms.
@@ -22,7 +22,7 @@ This document defines the contribution guidelines for memcurio. All commits, rev
 
 ## 3. Testing guidelines
 
-- Test framework: bun test; tests must be isolated (`MEMCURIO_ROOT` save/restore, console stubbing restored in `finally`).
+- Test framework: bun test (`bun run test` = `--parallel`, one isolated global per file). Tests must still be isolated (`MEMCURIO_ROOT` save/restore, console stubbing restored in `finally`, DOM via `tests/support/dom.ts` with `restore()`). Do not assume file order or shared process state.
 - **Fixes must ship with regression tests**: every bug fix includes a test that reproduces the old behavior (module tests live next to their surface — e.g. `tests/plugin.test.ts` for plugin behaviors).
 - Coverage priorities: source-of-truth ↔ index consistency, failure paths (transaction rollback / lock timeout / generation recovery), security boundaries (workspace traversal / injection / permissions).
 - No flaky tests: no fixed sleeps for external processes (use polling + timeout); every process/socket test must clean up explicitly.

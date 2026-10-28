@@ -569,9 +569,20 @@ export class MemcurioAdapter {
 
 ## 测试契约
 
-（bun test，`MEMCURIO_ROOT` 指向临时目录）：
-- workspace.test.ts / adhoc.test.ts / extract.test.ts / consolidate.test.ts（Rule 全路径 + LlmLoop 用 mock channel）/ search.test.ts / read.test.ts（list/read 语义、分页/转义拒绝、截断、脱敏、遥测）/ inject.test.ts
-- db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
-- plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule；worker 通道：瞬态重试换新 assembler、caller abort 不重试、宿主自报 ABORTED 归 provider、provider 失败至多两次重试、429 瞬态等）
-- settings.test.ts（0.1.7 设置面：Config schema 默认值与校验、volatile 实时视图、settings 服务页策略与 document-updated 通知、注入开关/registerTools/路由半对拒绝/桥快照）
-- `tests/support/host.ts`（测试组合的生产同构：system prompt + tool registry + native tool executor + LLM + session；`executeOne()` 把 batch API 收口成单次调用。0.2.2-alpha.2 起 `dsh-tools` 不再自己执行，缺 executor 时 `assemble()` 与 `execute()` 都会抛 `ToolExecutorUnavailableError`）
+运行方式（仓库根目录）：
+- `bun run test` = `bun test --parallel`：每个文件独立全局对象，并按 CPU 起多 worker（本机 28 核约 1.4s；CI 2 核约 4s）。默认入口。
+- `bun run test:serial` = `bun test --isolate`：单进程串行隔离，排障/对比覆盖率时用。
+- `bun run test:coverage`：串行运行全套并强制覆盖率下限（函数 90% / 行 93%，见 `scripts/check-coverage.ts`）。并行 worker 的覆盖率聚合会低报，因此门禁固定串行。
+- `bun run test:fast`：本机最快反馈，不加隔离；测试必须自行恢复 DOM/fetch/env。
+- 全局状态约定：替换 `globalThis`（DOM/fetch）或 `process.env` 的测试必须恢复；浏览器侧统一用 `tests/support/dom.ts` 的 `installDom()` + `afterAll(restore)`。需要固定 store root 的 core 测试用 `MEMCURIO_ROOT` 指向临时目录并在 afterEach 恢复。
+
+分层与文件：
+- core：workspace / adhoc / extract / consolidate / search / read / inject / generation / purge / db / config / paths / sanitize / budget / transaction / events / ids / store-gc / store-meta。db 覆盖 v8/v9→v11 迁移、claim fencing、blocked 配置态、terminal retention、lease；consolidate 覆盖 Rule 全路径 + LlmLoop mock channel；store-gc 覆盖规划、隔离区、双重围栏与恢复。
+- 集成：plugin.test.ts（manifest/peer/配置 schema、会话采纳、生命周期）、plugin-scope.test.ts（根布局/脏 token/选择与轮转）、plugin-telemetry.test.ts（证据/usage/路由）、plugin-channel.test.ts（worker 通道：重试/abort/硬上限/replay）、plugin-injection.test.ts（guide、摘要注入、context window、memory_cite）、plugin-tools.test.ts（7 个原生工具成功路径 + 无 session 守卫）、engine.test.ts（自动整合失败/退避/单飞/路由）、bridge.test.ts 与 plugin-bridge.test.ts（HostBridge 单元 + 真实 ctx 接线）、settings.test.ts / loader-config.test.ts（实时设置与真实 Loader）、ui-transport.test.ts（真实 HTTP/SSE）、store-lifecycle.test.ts。
+- services：services.test.ts、snapshot.test.ts、projector.test.ts、write-path.test.ts（host/client 过滤器一致性）。
+- client：client-settings.test.ts（controller）、client-settings-form.test.ts（staged form）、client-settings-panel.test.ts（真实 react-dom 面板 + 已构建 bundle）、client-nav-mark.test.ts、client-toast.test.ts、client-ui-core.test.ts（model/wire/transport）、client-ui-components.test.ts（组件渲染）、guide-row.test.ts。
+- 门禁/仓库（tests/gates）：bundle-drift.test.ts（已构建 bundle 漂移）、compat-matrix.test.ts（ci.yml 矩阵）、release-integrity.test.ts（pack allowlist 与 release 拒绝规则）。
+- Node 运行时：bun 测试永远走 bun:sqlite；`node scripts/smoke-node-sqlite.mjs` 在 CI 的 node 22/24 上执行真实的打开/建表/写入/读取，覆盖 node:sqlite 驱动。
+- support（测试专用，不被发布代码引用）：host.ts（生产同构 host + executeOne）、settings-fake.ts（Host 写入语义）、settings-port.ts（统一 fake port）、temp.ts（临时根注册表）、dom.ts（jsdom + 全局恢复）、async.ts（waitFor）、clock.ts（相对时间）。
+
+新增测试：先选层并复用 support；禁止用固定 sleep 等待异步副作用（用 `waitFor` 轮询）；新增/重命名文件时同步更新本节。
