@@ -1,22 +1,11 @@
 /**
- * Browser-half regression net (review finding F5).
+ * Browser-half regression net for the two-zone settings panel.
  *
- * Two layers, both anchored to REAL framework code rather than to our own
- * assumptions:
- *
- * 1. Loader/registration contract: the SHIPPED `lib/client.js` is executed
- *    through the official `window.__ModuleLoader__.load({ id, factory })`
- *    contract, imported into a real cordis context whose three injected
- *    services are spec-shaped fakes, and its registration is inspected. The
- *    hooks→prop conversion is asserted with the framework's own
- *    `standardHookPropName` (`face` → `useFace`), which is the exact rule the
- *    renderer applies.
- * 2. Panel liveness: the section component is rendered with real `react-dom`
- *    in jsdom against the controller's observable seat, so the previously
- *    shipped blocker (a value snapshot frozen by the renderer's inject memo)
- *    cannot come back unnoticed: a transport notification must repaint the
- *    panel, overrides must appear, and the route pair must be written
- *    atomically.
+ * Layer 1 executes the SHIPPED lib/client.js through the official
+ * window.__ModuleLoader__.load({ id, factory }) contract and inspects the
+ * settings registration (three observable hook seats, nav probe, bundle
+ * purity). Layer 2 renders the section with real react-dom in jsdom against
+ * the real controller + draft + instant models.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -28,14 +17,14 @@ import { standardHookPropName } from "@deepseek-ai/dsh-client-ui-slots";
 import { JSDOM } from "jsdom";
 
 import {
-  ERROR_KEYS,
   MemcurioSettingsController,
-  type SettingsField,
-  type MemcurioSettingsView,
-  type SettingsPathOp,
   type ConfigFormPort,
   type ConfigFormSnapshotLike,
+  type MemcurioSettingsView,
+  type SettingsPathOp,
 } from "../client/settings/controller.js";
+import { SettingsFormModel } from "../client/settings/draft.js";
+import { InjectionSwitchModel } from "../client/settings/instant.js";
 import { MemcurioSettingsSection } from "../client/settings/section.js";
 import type { SettingsKey } from "../client/settings/locales.js";
 import { en, zh } from "../client/settings/locales.js";
@@ -75,7 +64,7 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
     revision: 1,
     writable: true,
   };
-  readonly mutations: Array<readonly SettingsPathOp[]> = [];
+  readonly mutations: Array<{ ops: readonly SettingsPathOp[]; expectedRevision?: number }> = [];
   private readonly listeners = new Set<() => void>();
 
   getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
@@ -87,7 +76,6 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
     return () => this.listeners.delete(listener);
   }
 
-  /** Transport-side change (no controller call involved). */
   emit(): void {
     for (const listener of this.listeners) listener();
   }
@@ -99,8 +87,6 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
       if (op.op === "set") user[field] = op.value;
       else delete user[field];
     }
-    // The host's resolved document is base merged with the user layer: a
-    // cleared field falls back to the base instead of losing the key.
     const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
     this.snapshot = {
       ...this.snapshot,
@@ -112,22 +98,32 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
 
   async set(field: string, value: unknown): Promise<boolean> {
     this.fold([{ op: "set", path: [field], value }]);
+    this.emit();
     return true;
   }
 
   async unset(field: string): Promise<boolean> {
     this.fold([{ op: "unset", path: [field] }]);
+    this.emit();
     return true;
   }
 
-  async mutate(ops: readonly SettingsPathOp[]): Promise<boolean> {
-    this.mutations.push(ops);
+  async mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean> {
+    this.mutations.push({ ops, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
+    if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) return false;
     this.fold(ops);
+    this.emit();
     return true;
   }
 }
 
-const t = (key: SettingsKey): string => en[key];
+function t(key: SettingsKey, params?: Record<string, unknown>): string {
+  let text: string = en[key];
+  for (const [name, value] of Object.entries(params ?? {})) {
+    text = text.replaceAll(`{${name}}`, String(value));
+  }
+  return text;
+}
 
 /* ------------------------------------------------- 1. loader contract --- */
 
@@ -136,7 +132,6 @@ interface LoadedBundle {
   exports: { apply(ctx: Context): void; inject: string[] };
 }
 
-/** The frozen platform seed table, as the real loader would serve it. */
 const seeds: Record<string, unknown> = {
   react: React,
   "react/jsx-runtime": await import("react/jsx-runtime"),
@@ -144,9 +139,6 @@ const seeds: Record<string, unknown> = {
   "react-dom/client": await import("react-dom/client"),
   "@deepseek-ai/cordis": await import("@deepseek-ai/cordis"),
   "@deepseek-ai/dsh-client-ui-slots": await import("@deepseek-ai/dsh-client-ui-slots"),
-  // dsh-client-ui-primitives is intentionally NOT seeded: it pulls peer deps
-  // the harness does not install, and the shipped bundle must never require it
-  // (require purity is asserted below).
 };
 
 const requiredSpecifiers: string[] = [];
@@ -164,22 +156,14 @@ function loadBundleThroughLoader(code: string): LoadedBundle[] {
       loaded.push({ id: spec.id, exports: exports as LoadedBundle["exports"] });
     },
   };
-  // The bundle is a browser script: it only touches `window`.
   new Function("window", code)(win);
   return loaded;
 }
 
-/** React tracks the input value, so a plain assignment never fires onChange. */
 function typeInto(input: HTMLInputElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new win.Event("input", { bubbles: true }));
-}
-
-/** React's onBlur listens for focusout; a real blur() emits it. */
-function blur(input: HTMLInputElement): void {
-  input.focus();
-  input.blur();
 }
 
 describe("shipped browser bundle", () => {
@@ -192,7 +176,7 @@ describe("shipped browser bundle", () => {
     expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "configForms", "uiSession"]);
   });
 
-  test("registers the settings section with a hook seat the renderer maps to useFace", async () => {
+  test("registers the settings section with three observable hook seats", async () => {
     const code = readFileSync(join(import.meta.dir, "..", "lib", "client.js"), "utf8");
     const bundle = loadBundleThroughLoader(code)[0];
     if (!bundle) throw new Error("bundle did not register");
@@ -226,8 +210,6 @@ describe("shipped browser bundle", () => {
         return scope;
       },
     });
-    // Custom chat rows register through the optional conversation lane; the
-    // definitions are captured to pin their kinds.
     services.reflect.provide("uiConversation", {
       events: {
         register(definition: Record<string, unknown>) {
@@ -236,8 +218,6 @@ describe("shipped browser bundle", () => {
         },
       },
     });
-    // The browser half hard-injects the session-scope adapter (ui-session);
-    // the absent binding (key: undefined) is enough for activation.
     services.reflect.provide("uiSession", {
       adapter: {
         current: {
@@ -252,7 +232,6 @@ describe("shipped browser bundle", () => {
 
     expect(bindings).toHaveLength(1);
     expect(bindings[0]?.namespace).toBe("memcurio");
-    // Two namespaces ship: the settings panel's and the memory UI's.
     expect(localeRegistrations).toHaveLength(2);
     const settingsDict = localeRegistrations.find((entry) => entry.ns === "memcurio.settings");
     const uiDict = localeRegistrations.find((entry) => entry.ns === "memcurio.ui");
@@ -266,42 +245,34 @@ describe("shipped browser bundle", () => {
     const inject = spec.inject;
     if (typeof inject !== "function") throw new Error("the registration exposes no inject face");
 
-    // The renderer's own conversion rule: a `hooks` key named `face` becomes
-    // the `useFace` prop, and the seat is observable (never a value snapshot).
     const injected = (inject as () => {
       hooks: Record<string, { getSnapshot(): unknown; subscribe(fn: () => void): () => void }>;
+      formModel?: unknown;
+      switchModel?: unknown;
       [key: string]: unknown;
     })();
-    // The inject face carries the observable SEAT (the renderer memoizes this
-    // result once per entry, so a value snapshot would freeze at first paint).
-    expect(Object.keys(injected.hooks)).toEqual(["face"]);
+    expect(Object.keys(injected.hooks)).toEqual(["face", "form", "instant"]);
     expect(Object.keys(injected)).not.toContain("face");
     expect(standardHookPropName("face")).toBe("useFace");
-    expect(typeof injected.hooks.face?.getSnapshot).toBe("function");
-    expect(typeof injected.hooks.face?.subscribe).toBe("function");
-    // Identity-stable seat: stable getSnapshot between notifications.
-    const hook = injected.hooks.face;
-    if (!hook) throw new Error("the inject face exposes no hooks.face seat");
-    expect(hook.getSnapshot()).toBe(hook.getSnapshot());
-    // The settings-nav mark probe rides the settings.action seat, which the
-    // shell renders whenever its panel is open.
+    expect(standardHookPropName("form")).toBe("useForm");
+    expect(standardHookPropName("instant")).toBe("useInstant");
+    for (const seat of Object.values(injected.hooks)) {
+      expect(typeof seat.getSnapshot).toBe("function");
+      expect(typeof seat.subscribe).toBe("function");
+      expect(seat.getSnapshot()).toBe(seat.getSnapshot());
+    }
+    expect(typeof injected.formModel).toBe("object");
+    expect(typeof injected.switchModel).toBe("object");
+
     const navProbe = registrations.find((entry) => entry.id === "memcurio-nav-mark");
     expect(navProbe?.name).toBe("settings.action");
     expect(navProbe?.order).toBe(90);
     expect(navProbe?.locale).toBe("memcurio.settings");
     const probeSpec = navProbe;
 
-    // Product instruction (v1.7): the session header carries NO memcurio
-    // surface. Memory lives in Settings; injection/write feedback is transient.
     const headerEntries = registrations.filter((entry) => entry.name === "conversation.session.header.utilities");
     expect(headerEntries).toHaveLength(0);
-    // The generic name conversion still belongs to the platform contract the
-    // reserved status surface would ride if it is re-registered.
-    expect(standardHookPropName("settings")).toBe("useSettings");
 
-    // The probe is the shipped component: rendering it against the shell's
-    // rendered nav row (glyph + label) must tag that row, and unmounting must
-    // take the tag back.
     const Probe = probeSpec?.component;
     if (typeof Probe !== "function") throw new Error("the nav probe exposes no component");
     document.body.innerHTML = '<div role="dialog" aria-modal="true"><nav><button type="button"><svg></svg><span>Memory</span></button></nav></div>';
@@ -316,27 +287,18 @@ describe("shipped browser bundle", () => {
     await act(async () => {
       probeRoot.unmount();
     });
-    // Ownership after this point is timing-dependent (the entry's interaction
-    // watcher may hold the tag); the probe's own claim/release is pinned in
-    // tests/client-nav-mark.test.ts against a deterministic DOM.
     document.body.innerHTML = '<div id="root"></div>';
 
     const toolRows = registrations.filter((entry) => entry.name === "tool.call.toolview");
     expect(toolRows.map((entry) => entry.key)).toEqual([...MEMORY_TOOL_NAMES]);
 
-    // Custom chat rows (the system-prompt guide and the injected-memory row)
-    // register both a node definition and a keyed cell: 0.1.7 drops ordinary
-    // `context` nodes from the transcript, so the rows own their kinds.
     const contextRows = registrations.filter((entry) => entry.name === "conversation.chat.node");
     expect(contextRows.map((entry) => entry.key).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
     expect(contextRows.every((entry) => entry.locale === "memcurio.ui")).toBe(true);
     expect(definitions.map((definition) => definition.kind).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
 
-    // Bundle purity: only the platform seed may be required at runtime.
-    expect([...new Set(requiredSpecifiers)]).toEqual(["react"]);
+    expect([...new Set(requiredSpecifiers)].sort()).toEqual(["react", "react/jsx-runtime"]);
 
-    // Disposing the fiber (the watcher's disposer) takes the tag back, even
-    // after the node left the document.
     await fiber.dispose();
     expect(navRow?.getAttribute("data-memcurio-nav")).toBeNull();
   });
@@ -348,21 +310,39 @@ interface Panel {
   container: HTMLElement;
   scope: PanelScope;
   controller: MemcurioSettingsController;
+  form: SettingsFormModel;
+  switchModel: InjectionSwitchModel;
   unmount(): void;
+  remount(): Promise<void>;
   repaint(): Promise<void>;
 }
 
-async function mountPanel(): Promise<Panel> {
-  const scope = new PanelScope();
+async function mountPanel(scope = new PanelScope()): Promise<Panel> {
   const controller = new MemcurioSettingsController(scope);
-  const stop = controller.start();
+  const form = new SettingsFormModel(controller);
+  const switchModel = new InjectionSwitchModel(controller, (before) => form.rebase(before));
+  const stopController = controller.start();
+  const stopForm = form.start();
+  const stopSwitch = switchModel.start();
   const container = document.getElementById("root") as HTMLElement;
-  const root = createRoot(container);
+  let root = createRoot(container);
   const useFace = <T,>(selector: (snapshot: ReturnType<MemcurioSettingsController["face"]>) => T): T =>
     React.useSyncExternalStore(
       (listener) => controller.subscribe(listener),
       () => selector(controller.face()),
       () => selector(controller.face()),
+    );
+  const useForm = <T,>(selector: (snapshot: ReturnType<SettingsFormModel["shell"]>) => T): T =>
+    React.useSyncExternalStore(
+      (listener) => form.subscribe(listener),
+      () => selector(form.shell()),
+      () => selector(form.shell()),
+    );
+  const useInstant = <T,>(selector: (snapshot: ReturnType<InjectionSwitchModel["face"]>) => T): T =>
+    React.useSyncExternalStore(
+      (listener) => switchModel.subscribe(listener),
+      () => selector(switchModel.face()),
+      () => selector(switchModel.face()),
     );
   const repaint = async (): Promise<void> => {
     await act(async () => {
@@ -370,11 +350,10 @@ async function mountPanel(): Promise<Panel> {
         React.createElement(MemcurioSettingsSection, {
           t,
           useFace,
-          save: (field: SettingsField, value: unknown) => controller.save(field, value),
-          reset: (field: SettingsField) => controller.reset(field),
-          resetAll: () => controller.resetAll(),
-          saveRoute: (provider: string, model: string) => controller.saveRoute(provider, model),
-          resetRoute: () => controller.resetRoute(),
+          useForm,
+          useInstant,
+          formModel: form,
+          switchModel,
         } as never),
       );
       await Promise.resolve();
@@ -385,317 +364,483 @@ async function mountPanel(): Promise<Panel> {
     container,
     scope,
     controller,
+    form,
+    switchModel,
+    remount: async () => {
+      await act(async () => {
+        root.unmount();
+        root = createRoot(container);
+      });
+      await repaint();
+    },
     unmount: () => {
-      root.unmount();
-      stop();
+      act(() => {
+        root.unmount();
+      });
+      stopSwitch();
+      stopForm();
+      stopController();
+      switchModel.dispose();
+      form.dispose();
     },
     repaint,
   };
 }
 
+function saveButton(panel: Panel): HTMLButtonElement | undefined {
+  return panel.container.querySelector('button[type="submit"]') as HTMLButtonElement | undefined;
+}
+
+function advancedButton(panel: Panel): HTMLButtonElement {
+  const button = panel.container.querySelector(".memcurio-settings-advanced-toggle");
+  if (button === null) throw new Error("no advanced toggle");
+  return button as HTMLButtonElement;
+}
+
+async function click(element: Element | null | undefined): Promise<void> {
+  if (element === null || element === undefined) throw new Error("click target missing");
+  await act(async () => {
+    (element as HTMLElement).click();
+    await Promise.resolve();
+  });
+}
+
+async function type(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    typeInto(input, value);
+    await Promise.resolve();
+  });
+}
+
+/* ------------------------------------------------------- panel tests --- */
+
 describe("settings panel in jsdom (real react-dom)", () => {
-  test("repaints on a transport notification (the frozen-face regression)", async () => {
+  test("renders the instant zone and the staged configuration zone", async () => {
     const panel = await mountPanel();
-    expect(panel.container.textContent).toContain(en.title);
+    const text = panel.container.textContent ?? "";
+    expect(text).toContain(en.injectionSection);
+    expect(text).toContain(en.configSection);
+    expect(text).toContain(en.injectionLabel);
+    expect(text).toContain(en.budgetLabel);
+    expect(text).toContain(en.scopeLabel);
+    expect(text).toContain(en.configHint);
 
-    panel.scope.snapshot = { ...panel.scope.snapshot, value: { ...BASE, registerTools: false }, user: { registerTools: false } };
-    panel.scope.emit();
-    await panel.repaint();
+    const status = panel.container.querySelector(".memcurio-settings-status");
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.textContent).toContain(en.statusReadyOn);
 
-    // The switch reflects the transport change and the override badge appeared;
-    // the control keeps the platform atom contract (role + accessible label).
-    const control = panel.container.querySelector("#memcurio-registerTools");
-    expect(control?.getAttribute("role")).toBe("switch");
-    expect(control?.getAttribute("aria-checked")).toBe("false");
-    expect(control?.getAttribute("aria-label")).toBe(en.registerTools);
-    expect(panel.container.textContent).toContain(en.overridden);
+    const control = panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    expect(control.getAttribute("role")).toBe("switch");
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    expect(control.getAttribute("aria-labelledby")).not.toBeNull();
+    expect(control.getAttribute("aria-describedby")).not.toBeNull();
+
+    const form = panel.container.querySelector("form");
+    const formLabel = document.getElementById(form?.getAttribute("aria-labelledby") ?? "");
+    expect(formLabel?.textContent).toBe(en.configSection);
+
+    const advanced = advancedButton(panel);
+    expect(advanced.getAttribute("aria-expanded")).toBe("false");
+    const panelId = advanced.getAttribute("aria-controls") ?? "";
+    expect(document.getElementById(panelId)?.hidden).toBe(true);
+
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    expect(budget.value).toBe("");
+    expect(budget.placeholder).toBe(en.budgetPlaceholder);
+    expect(budget.getAttribute("type")).toBe("text");
+    const label = panel.container.querySelector(`label[for='${budget.id}']`);
+    expect(label?.textContent).toBe(en.budgetLabel);
+    expect(budget.getAttribute("aria-describedby")).not.toBeNull();
+
+    const scopeRadios = panel.container.querySelectorAll('input[type="radio"][name$="-scope"]');
+    expect(scopeRadios).toHaveLength(2);
+    expect((scopeRadios[0] as HTMLInputElement).checked).toBe(true);
+    expect(panel.container.querySelector(".memcurio-settings-choice-group")?.closest("fieldset")).not.toBeNull();
+    expect(saveButton(panel)?.disabled).toBe(true);
     panel.unmount();
   });
 
-  test("styles the fields with the shipped settings vocabulary", async () => {
-    const panel = await mountPanel();
-    const budget = panel.container.querySelector("#memcurio-injectBudgetTokens");
-    // The compact numeric control: the shipped input plus the narrow variant.
-    expect(budget?.className).toBe("memcurio-input memcurio-input-num");
-    // The official number pattern: text input + inputMode, not type=number.
-    expect(budget?.getAttribute("type")).toBe("text");
-    expect(budget?.getAttribute("inputmode")).toBe("numeric");
-    expect(panel.container.querySelector("#memcurio-provider")?.className).toBe("memcurio-input");
-    expect(panel.container.querySelector("#memcurio-model")?.className).toBe("memcurio-input");
-    expect(panel.container.querySelector(".memcurio-select-wrap #memcurio-scope")?.className).toBe("memcurio-select");
-    const resetAll = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.resetAll);
-    expect(resetAll?.className).toBe("memcurio-button");
-    // The master switch row carries NO explainer line (product instruction):
-    // the row is label + switch only, so the first description in the panel
-    // belongs to the next field.
-    const switchRow = panel.container.querySelector(".memcurio-field");
-    expect(switchRow?.querySelector(".memcurio-desc")).toBeNull();
-    expect(switchRow?.textContent).toBe(en.injectContext);
-    // One row per setting: the worker route shares a single control group, so
-    // the panel never stacks a label line and a control line per field.
-    const provider = panel.container.querySelector("#memcurio-provider");
-    const model = panel.container.querySelector("#memcurio-model");
-    expect(provider?.closest(".memcurio-control")).not.toBeNull();
-    expect(provider?.closest(".memcurio-control")).toBe(model?.closest(".memcurio-control"));
-    // The worker route STACKS: the control group owns a full-width line, so
-    // the two inputs + Save never squeeze the note into a narrow column.
-    const routeRow = provider?.closest(".memcurio-field-stack");
-    expect(routeRow).not.toBeNull();
-    expect(routeRow?.querySelector(".memcurio-route #memcurio-provider")).not.toBeNull();
-    expect(routeRow?.querySelector(".memcurio-route #memcurio-model")).not.toBeNull();
-    expect(routeRow?.querySelector(".memcurio-route button")?.className).toContain("memcurio-button-primary");
-    expect(routeRow?.querySelector(".memcurio-desc")?.textContent).toBe(en.routeNote);
-    // Five rows: master, budget, scope, tools, route (the host bridge is
-    // deployment-level config and has no panel row).
-    expect(panel.container.querySelectorAll(".memcurio-field")).toHaveLength(5);
-    panel.unmount();
-  });
 
-  test("marks the offending field invalid and disables read-only inputs", async () => {
-    const panel = await mountPanel();
+
+
+
+  test("resetting a field moves focus to the field's control", async () => {
+    const scope = new PanelScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      user: { injectBudgetTokens: 900 },
+      value: { ...BASE, injectBudgetTokens: 900 },
+    };
+    const panel = await mountPanel(scope);
+    const reset = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.reset);
+    expect(reset).toBeDefined();
+    reset?.focus();
+    await click(reset);
     await act(async () => {
-      await panel.controller.save("injectBudgetTokens", 10);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    expect(document.activeElement).toBe(budget);
+    expect(budget.value).toBe("");
+    panel.unmount();
+  });
+
+  test("leaving while a save is in flight lets it settle instead of discarding", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    let release: (accepted: boolean) => void = () => undefined;
+    panel.scope.mutate = () =>
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+    await click(saveButton(panel));
+    expect(panel.form.shell().saving).toBe(true);
+    await panel.remount();
+    expect(panel.form.shell().saving).toBe(true);
+    expect(panel.form.budget().text).toBe("900");
+    await act(async () => {
+      release(false);
       await Promise.resolve();
     });
+    expect(panel.form.shell().saving).toBe(false);
+    expect(panel.form.shell().failed).toBe("errNotLanded");
+    expect(panel.form.budget().text).toBe("900");
+    expect(panel.container.textContent).toContain(en.errNotLanded);
+    panel.unmount();
+  });
+
+  test("the visible injection label toggles the switch", async () => {
+    const panel = await mountPanel();
+    const label = panel.container.querySelector(".memcurio-settings-instant-label");
+    await click(label);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(false);
+    expect((panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement).getAttribute("aria-checked")).toBe("false");
+    panel.unmount();
+  });
+
+  test("leaving the page drops staged drafts", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    expect(panel.form.shell().dirty).toBe(true);
+    await panel.remount();
+    expect(panel.form.shell().dirty).toBe(false);
+    expect((panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value).toBe("");
+    panel.unmount();
+  });
+
+  test("the instant switch applies immediately, offers undo, and keeps other fields usable", async () => {
+    const panel = await mountPanel();
+    const control = panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    await click(control);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(false);
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    expect(panel.container.textContent).toContain(en.injectionUndo);
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusReadyOff);
+
+    const undo = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.injectionUndo);
+    await click(undo);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBeUndefined();
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    panel.unmount();
+
+    const pending = await mountPanel();
+    let release: (accepted: boolean) => void = () => undefined;
+    pending.scope.set = () =>
+      new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+    const pendingControl = pending.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    await act(async () => {
+      pendingControl.click();
+      await Promise.resolve();
+    });
+    const budget = pending.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    expect(pendingControl.disabled).toBe(true);
+    expect(budget.disabled).toBe(false);
+    expect(pending.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusSaving);
+    await act(async () => {
+      release(false);
+      await Promise.resolve();
+    });
+    expect(pending.container.textContent).toContain(en.errNotLanded);
+    pending.unmount();
+  });
+
+
+  test("an external injection change clears the optimistic undo and saved state", async () => {
+    const panel = await mountPanel();
+    const control = panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    await click(control);
+    expect(panel.switchModel.face().undo).toEqual({ value: true });
+    panel.scope.snapshot = {
+      ...panel.scope.snapshot,
+      value: { ...BASE, injectContext: true },
+      user: {},
+    };
+    panel.scope.emit();
     await panel.repaint();
-    const budget = panel.container.querySelector("#memcurio-injectBudgetTokens");
-    expect(budget?.getAttribute("aria-invalid")).toBe("true");
+    const face = panel.switchModel.face();
+    expect(face.value).toBe(true);
+    expect(face.undo).toBeUndefined();
+    expect(face.savedAt).toBeUndefined();
+    expect(face.errorCode).toBeUndefined();
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    panel.unmount();
+  });
+
+  test("a refused instant write rolls back and reports inline", async () => {
+    const panel = await mountPanel();
+    panel.scope.set = async () => false;
+    const control = panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    await click(control);
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    expect(panel.container.textContent).toContain(en.errNotLanded);
+    expect(panel.container.querySelector(".memcurio-settings-status")?.getAttribute("data-tone")).toBe("error");
+    panel.unmount();
+  });
+
+  test("the budget validates inline and writes only through Save", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "10");
+    expect(budget.getAttribute("aria-invalid")).toBe("true");
     expect(panel.container.textContent).toContain(en.errBudgetRange);
-
-    // A read-only transport disables the controls instead of faking editability.
-    panel.scope.snapshot = { ...panel.scope.snapshot, writable: false };
-    panel.scope.emit();
-    await panel.repaint();
-    expect((panel.container.querySelector("#memcurio-provider") as HTMLInputElement).disabled).toBe(true);
-    expect((panel.container.querySelector("#memcurio-scope") as HTMLSelectElement).disabled).toBe(true);
-    panel.unmount();
-  });
-
-  test("writes the route as one atomic pair through its Save button", async () => {
-    const panel = await mountPanel();
-    const provider = panel.container.querySelector("#memcurio-provider") as HTMLInputElement;
-    const model = panel.container.querySelector("#memcurio-model") as HTMLInputElement;
-    const save = (): HTMLButtonElement | undefined =>
-      [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.save) as
-        | HTMLButtonElement
-        | undefined;
-
-    // Nothing to save before an edit; the button is the only write path.
-    expect(save()?.disabled).toBe(true);
-    await act(async () => {
-      typeInto(provider, "deepseek");
-      typeInto(model, "deepseek-v4");
-    });
-    expect(save()?.disabled).toBe(false);
-    // Leaving a field writes NOTHING (no implicit blur commit).
-    await act(async () => {
-      blur(provider);
-      await Promise.resolve();
-    });
+    // Save stays clickable so a submit can reveal/focus the first error.
+    expect(saveButton(panel)?.disabled).toBe(false);
+    await click(saveButton(panel));
     expect(panel.scope.mutations).toHaveLength(0);
     await act(async () => {
-      save()?.click();
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 10));
     });
+    expect(document.activeElement).toBe(budget);
 
+    await type(budget, "900");
+    expect(budget.getAttribute("aria-invalid")).toBeNull();
+    expect(saveButton(panel)?.disabled).toBe(false);
+    await click(saveButton(panel));
     expect(panel.scope.mutations).toHaveLength(1);
-    expect(panel.scope.mutations[0]).toEqual([
-      { op: "set", path: ["provider"], value: "deepseek" },
-      { op: "set", path: ["model"], value: "deepseek-v4" },
-    ]);
+    expect(panel.scope.mutations[0]?.ops).toEqual([{ op: "set", path: ["injectBudgetTokens"], value: 900 }]);
+    expect(panel.scope.mutations[0]?.expectedRevision).toBe(1);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectBudgetTokens).toBe(900);
+    expect(panel.container.textContent).toContain(en.overridden);
+    expect(panel.container.textContent).toContain(en.saved);
+    expect(saveButton(panel)?.disabled).toBe(true);
     panel.unmount();
   });
 
-  test("keeps the edited input read-only (not disabled) while a write is in flight", async () => {
+
+  test("toggling injection before saving a staged draft does not create a self-conflict", async () => {
     const panel = await mountPanel();
-    let release: (() => void) | undefined;
-    const slow = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const originalSet = panel.scope.set.bind(panel.scope);
-    panel.scope.set = async (field: string, value: unknown): Promise<boolean> => {
-      await slow;
-      return originalSet(field, value);
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    const control = panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement;
+    await click(control);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(false);
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(1);
+    expect(panel.scope.mutations[0]?.expectedRevision).toBe(2);
+    const user = panel.scope.snapshot.user as Record<string, unknown>;
+    expect(user.injectContext).toBe(false);
+    expect(user.injectBudgetTokens).toBe(900);
+    panel.unmount();
+  });
+
+  test("a refused staged save keeps the draft and a revision change reports conflict", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    panel.scope.mutate = async () => false;
+    await click(saveButton(panel));
+    expect((panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value).toBe("900");
+    expect(panel.container.textContent).toContain(en.errNotLanded);
+    expect(saveButton(panel)?.disabled).toBe(false);
+    panel.unmount();
+
+    const conflict = await mountPanel();
+    const conflictBudget = conflict.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(conflictBudget, "900");
+    conflict.scope.mutate = async () => {
+      conflict.scope.snapshot = { ...conflict.scope.snapshot, revision: (conflict.scope.snapshot.revision ?? 0) + 1 };
+      return false;
     };
-    const pending = panel.controller.save("registerTools", false);
-    await panel.repaint();
-    const budget = panel.container.querySelector("#memcurio-injectBudgetTokens") as HTMLInputElement;
-    // readOnly (not disabled): a disabled control would blur in a real browser
-    // and fire an unrequested blur commit.
-    expect(budget.readOnly).toBe(true);
-    expect(budget.disabled).toBe(false);
-    release?.();
-    await pending;
-    await panel.repaint();
-    expect(budget.readOnly).toBe(false);
-    panel.unmount();
+    await click(saveButton(conflict));
+    expect(conflict.container.textContent).toContain(en.errConflict);
+    const reload = [...conflict.container.querySelectorAll("button")].find((button) => button.textContent === en.reload);
+    await click(reload);
+    expect((conflict.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value).toBe("");
+    conflict.unmount();
   });
 
-  test("shows status as a right-side icon, never as a text line", async () => {
+
+
+  test("a stale baseline is refused, keeps the draft, and reports conflict", async () => {
     const panel = await mountPanel();
-    const state = panel.container.querySelector(".memcurio-state");
-    expect(state?.getAttribute("data-state")).toBe("ready");
-    expect(state?.getAttribute("title")).toBe(en.ready);
-    expect(state?.getAttribute("aria-label")).toBe(en.ready);
-    // "Ready" is only the icon's name: no paragraph repeats it.
-    const texts = [...panel.container.querySelectorAll("p")].map((node) => node.textContent);
-    expect(texts).not.toContain(en.ready);
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    panel.scope.snapshot = { ...panel.scope.snapshot, revision: 2 };
+    panel.scope.emit();
+    await panel.repaint();
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(1);
+    expect(panel.scope.mutations[0]?.expectedRevision).toBe(1);
+    expect(panel.container.textContent).toContain(en.errConflict);
+    expect((panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value).toBe("900");
     panel.unmount();
   });
 
-  test("renders the loading and unavailable faces without touching the fields", async () => {
+  test("a conflicted save can be retried against the latest revision", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    await type(budget, "900");
+    const original = panel.scope.mutate.bind(panel.scope);
+    panel.scope.mutate = async () => {
+      panel.scope.snapshot = { ...panel.scope.snapshot, revision: (panel.scope.snapshot.revision ?? 0) + 1 };
+      return false;
+    };
+    await click(saveButton(panel));
+    expect(panel.container.textContent).toContain(en.errConflict);
+    panel.scope.mutate = original;
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(1);
+    expect(panel.scope.mutations[0]?.expectedRevision).toBe(2);
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectBudgetTokens).toBe(900);
+    expect(saveButton(panel)?.disabled).toBe(true);
+    panel.unmount();
+  });
+
+  test("scope, route, and tools stage and land as one atomic plan", async () => {
+    const panel = await mountPanel();
+    const global = panel.container.querySelector('input[value="global"]') as HTMLInputElement;
+    await click(global);
+    expect(panel.scope.mutations).toHaveLength(0);
+    expect(saveButton(panel)?.disabled).toBe(false);
+
+    const advanced = advancedButton(panel);
+    await click(advanced);
+    expect(advanced.getAttribute("aria-expanded")).toBe("true");
+    const pin = panel.container.querySelector('input[value="pin"]') as HTMLInputElement;
+    await click(pin);
+    const provider = panel.container.querySelector("input[id$='-provider']") as HTMLInputElement;
+    const model = panel.container.querySelector("input[id$='-model']") as HTMLInputElement;
+    expect(provider).not.toBeNull();
+    expect(model).not.toBeNull();
+    expect(panel.container.querySelector(`label[for='${provider.id}']`)?.textContent).toBe(en.routeProvider);
+    await type(provider, "deepseek");
+    expect(saveButton(panel)?.disabled).toBe(false);
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(0);
+    expect(panel.container.textContent).toContain(en.errRoutePair);
+    await type(model, "deepseek-v4");
+    expect(saveButton(panel)?.disabled).toBe(false);
+
+    const tools = panel.container.querySelector("input[id$='-tools']") as HTMLInputElement;
+    await click(tools);
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(1);
+    const ops = panel.scope.mutations[0]?.ops ?? [];
+    expect(ops).toContainEqual({ op: "set", path: ["scope"], value: "global" });
+    expect(ops).toContainEqual({ op: "set", path: ["provider"], value: "deepseek" });
+    expect(ops).toContainEqual({ op: "set", path: ["model"], value: "deepseek-v4" });
+    expect(ops).toContainEqual({ op: "set", path: ["registerTools"], value: false });
+    expect(panel.container.textContent).toContain(en.toolsRestart);
+    panel.unmount();
+  });
+
+  test("the deployment base drives the budget hint and the route default label", async () => {
+    const base = { ...BASE, injectBudgetTokens: 4000, provider: "deploy-p", model: "deploy-m" };
+    const scope = new PanelScope();
+    scope.snapshot = { ...scope.snapshot, value: base, base };
+    const panel = await mountPanel(scope);
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    expect(budget.value).toBe("4000");
+    expect(panel.container.textContent).toContain(en.budgetBaseHint.replace("{value}", "4000"));
+
+    const advanced = advancedButton(panel);
+    await click(advanced);
+    const defaultOption = panel.container.querySelector("input[value='default']") as HTMLInputElement;
+    const defaultLabel = panel.container.querySelector(`label[for='${defaultOption.id}']`);
+    expect(defaultLabel?.textContent).toContain(en.routeDefault);
+    expect(panel.container.textContent).toContain("deploy-p / deploy-m");
+    panel.unmount();
+  });
+
+  test("reset configuration defaults clears visible overrides but leaves hidden lifecycle keys", async () => {
+    const scope = new PanelScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      base: BASE,
+      user: {
+        injectContext: false,
+        injectBudgetTokens: 900,
+        scope: "global",
+        registerTools: false,
+        provider: "p",
+        model: "m",
+        storeRetentionDays: 30,
+      },
+      value: {
+        ...BASE,
+        injectContext: false,
+        injectBudgetTokens: 900,
+        scope: "global",
+        registerTools: false,
+        provider: "p",
+        model: "m",
+      },
+    };
+    const panel = await mountPanel(scope);
+    expect(panel.container.textContent).toContain(en.hiddenOverrides.replace("{count}", "1"));
+    await click([...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.resetAll));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(document.activeElement).toBe(panel.container.querySelector('input[inputmode="numeric"]'));
+    await click(saveButton(panel));
+    expect(panel.scope.mutations).toHaveLength(1);
+    const ops = panel.scope.mutations[0]?.ops ?? [];
+    expect(ops).toContainEqual({ op: "unset", path: ["injectBudgetTokens"] });
+    expect(ops).toContainEqual({ op: "unset", path: ["scope"] });
+    expect(ops).toContainEqual({ op: "unset", path: ["provider"] });
+    expect(ops).toContainEqual({ op: "unset", path: ["model"] });
+    expect(ops).toContainEqual({ op: "unset", path: ["registerTools"] });
+    expect(ops).not.toContainEqual({ op: "unset", path: ["injectContext"] });
+    expect(ops).not.toContainEqual({ op: "unset", path: ["storeRetentionDays"] });
+    const user = panel.scope.snapshot.user as Record<string, unknown>;
+    expect(user.storeRetentionDays).toBe(30);
+    expect(user.injectContext).toBe(false);
+    panel.unmount();
+  });
+
+  test("renders loading, unavailable, read-only, and legacy memory faces", async () => {
     const panel = await mountPanel();
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "loading", value: undefined };
     panel.scope.emit();
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.loading);
-    expect(panel.container.querySelector("#memcurio-provider")).toBeNull();
-    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("loading");
-    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("title")).toBe(en.loading);
+    expect(panel.container.querySelector(".memcurio-settings-switch")).toBeNull();
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusLoading);
 
-    // 0.2.0 Hosts report a remote browser as an unavailable read-only namespace.
+    panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", value: undefined, writable: true };
+    panel.scope.emit();
+    await panel.repaint();
+    expect(panel.container.textContent).toContain(en.unavailable);
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusUnavailable);
+
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", mode: "memory", writable: false };
     panel.scope.emit();
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
-    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("readonly");
-    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("title")).toBe(en.readOnly);
-    panel.unmount();
-  });
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusReadOnly);
 
-  test("an unexposed namespace never claims ready or read-only", async () => {
-    const panel = await mountPanel();
-    // 0.2.1 decides availability apart from writability: a Host can report an
-    // unavailable namespace that still accepts writes.
-    panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", writable: true };
-    panel.scope.emit();
-    await panel.repaint();
-    expect(panel.container.textContent).toContain(en.unavailable);
-    expect(panel.container.textContent).not.toContain(en.readOnly);
-    // The state dot must exist and must not read as ready: a missing element
-    // would otherwise satisfy a bare `not.toBe("ready")` through `undefined`.
-    const unexposedState = panel.container.querySelector(".memcurio-state");
-    expect(unexposedState).not.toBeNull();
-    expect(unexposedState?.getAttribute("data-state")).toBe("unavailable");
-    expect(unexposedState?.getAttribute("title")).toBe(en.unavailable);
-
-    // The same unexposed namespace with writes refused keeps the same copy.
-    panel.scope.snapshot = { ...panel.scope.snapshot, writable: false };
-    panel.scope.emit();
-    await panel.repaint();
-    expect(panel.container.textContent).toContain(en.unavailable);
-    panel.unmount();
-  });
-
-  test("a refusing Host is read-only, not unexposed", async () => {
-    const panel = await mountPanel();
-    panel.scope.snapshot = { ...panel.scope.snapshot, status: "ready", writable: false };
+    panel.scope.snapshot = { ...panel.scope.snapshot, status: "ready", mode: undefined, value: BASE, writable: false };
     panel.scope.emit();
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
-    expect(panel.container.textContent).not.toContain(en.unavailable);
-    const refusingState = panel.container.querySelector(".memcurio-state");
-    expect(refusingState).not.toBeNull();
-    expect(refusingState?.getAttribute("data-state")).toBe("readonly");
-    expect(refusingState?.getAttribute("title")).toBe(en.readOnly);
-    panel.unmount();
-  });
-
-  test("a failed write turns the dot red and names the failure", async () => {
-    const panel = await mountPanel();
-    panel.scope.set = async () => false;
-    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
-    await act(async () => {
-      control.click();
-      await Promise.resolve();
-    });
-    await panel.repaint();
-    const state = panel.container.querySelector(".memcurio-state");
-    expect(state).not.toBeNull();
-    expect(state?.getAttribute("data-state")).toBe("error");
-    expect(state?.getAttribute("title")).toBe(en.errNotLanded);
-    expect(panel.container.textContent).toContain(en.errNotLanded);
-    panel.unmount();
-  });
-
-  test("an in-flight write pulses the dot", async () => {
-    const panel = await mountPanel();
-    let release: (accepted: boolean) => void = () => undefined;
-    panel.scope.set = () =>
-      new Promise<boolean>((resolve) => {
-        release = resolve;
-      });
-    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
-    await act(async () => {
-      control.click();
-      await Promise.resolve();
-    });
-    expect(panel.container.querySelector(".memcurio-state")?.getAttribute("data-state")).toBe("saving");
-    await act(async () => {
-      release(false);
-      await Promise.resolve();
-    });
-    panel.unmount();
-  });
-
-  test("toggles and the bulk reset go through the controller", async () => {
-    const panel = await mountPanel();
-    const control = panel.container.querySelector("#memcurio-injectContext") as HTMLButtonElement;
-    expect(control.getAttribute("role")).toBe("switch");
-    await act(async () => {
-      control.click();
-      await Promise.resolve();
-    });
-    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(false);
-
-    // Toggling back to the default REVERTS the override: the user entry is
-    // cleared (so the badge disappears), never pinned as an equal value.
-    await act(async () => {
-      control.click();
-      await Promise.resolve();
-    });
-    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBeUndefined();
-    expect(panel.controller.face().overridden).toEqual([]);
-
-    // Two overrides, then the bulk reset clears them in ONE atomic mutation.
-    await act(async () => {
-      control.click();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      (panel.container.querySelector("#memcurio-registerTools") as HTMLButtonElement).click();
-      await Promise.resolve();
-    });
-    expect(panel.controller.face().overridden).toEqual(["injectContext", "registerTools"]);
-    const resetAllButton = [...panel.container.querySelectorAll("button")].find(
-      (button) => button.textContent === en.resetAll,
-    );
-    expect(resetAllButton).toBeDefined();
-    expect(resetAllButton?.disabled).toBe(false);
-    await act(async () => {
-      resetAllButton?.click();
-      await Promise.resolve();
-    });
-    expect(panel.controller.face().overridden).toEqual([]);
-    expect(panel.scope.mutations).toHaveLength(1);
-    panel.unmount();
-  });
-
-  test("renders failures from locale keys, not raw sentences", async () => {
-    const panel = await mountPanel();
-    const provider = panel.container.querySelector("#memcurio-provider") as HTMLInputElement;
-    await act(async () => {
-      typeInto(provider, "only-provider");
-    });
-    const save = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.save);
-    await act(async () => {
-      save?.click();
-      await Promise.resolve();
-    });
-    expect(panel.controller.face().errorCode).toBe(ERROR_KEYS.routePair);
-    await panel.repaint();
-    const alert = panel.container.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe(en.errRoutePair);
+    expect((panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement).disabled).toBe(true);
+    expect((panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).disabled).toBe(true);
+    expect(saveButton(panel)?.disabled).toBe(true);
     panel.unmount();
   });
 });

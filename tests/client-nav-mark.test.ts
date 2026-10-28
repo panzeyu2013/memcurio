@@ -17,7 +17,6 @@ import {
   NAV_MARK_ATTRIBUTE,
   remarkSettingsNavRow,
   SettingsNavProbe,
-  startSettingsNavWatcher,
 } from "../client/settings/nav-mark.js";
 
 /* ------------------------------------------------------------------ DOM --- */
@@ -127,6 +126,29 @@ describe("settings-nav probe", () => {
     expect(row?.getAttribute(NAV_MARK_ATTRIBUTE)).toBeNull();
   });
 
+
+  test("re-observes a replaced nav while the dialog stays open", async () => {
+    document.body.innerHTML = SETTINGS_NAV;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(SettingsNavProbe));
+    });
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    const replacement = document.createElement("nav");
+    replacement.innerHTML = '<button type="button"><svg></svg><span>Memory</span></button>';
+    dialog.querySelector("nav")?.replaceWith(replacement);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(replacement.querySelector("button")?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
+    await act(async () => {
+      root.unmount();
+    });
+    expect(replacement.querySelector("button")?.getAttribute(NAV_MARK_ATTRIBUTE)).toBeNull();
+  });
+
   test("re-marks the row the shell rebuilt while the panel is open", async () => {
     document.body.innerHTML = SETTINGS_NAV;
     const container = document.createElement("div");
@@ -156,21 +178,6 @@ describe("settings-nav probe", () => {
 });
 
 describe("settings-nav marking fallbacks", () => {
-  test("marks after the interaction that opened the panel (seat never mounted)", async () => {
-    document.body.innerHTML = '<div id="app"></div>';
-    const stop = startSettingsNavWatcher();
-    // The dialog appears after the click; nothing rendered the probe seat.
-    document.body.insertAdjacentHTML("beforeend", SETTINGS_NAV);
-    document.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
-    expect(document.querySelectorAll("button")[1]?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
-    // The watcher's disposer takes the claim back with the plugin fiber.
-    stop();
-    expect(marksNothing()).toBe(true);
-  });
-
   test("reports the labels it saw when no row matches (once per page load)", () => {
     document.body.innerHTML =
       '<div role="dialog" aria-modal="true"><nav><button type="button"><svg></svg><span>插件</span></button></nav></div>';

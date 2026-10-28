@@ -7,10 +7,9 @@
  * Every colour is a `--dsw-alias-*` semantic token owned by the platform
  * theme, so both shipped themes work without a dark variant and no literal
  * colour can drift from the host palette. Geometry follows the shipped
- * controls: the switch atom (36x20 track, 16px thumb) and the tool row
- * (16px leading slot, 24px row, 13px title). Motion is opt-in for the user:
- * `prefers-reduced-motion` disables the toast slide, the thumb sweep and the
- * chevron turn.
+ * controls: the tool row (16px leading slot, 24px row, 13px title). Motion is
+ * opt-in for the user: `prefers-reduced-motion` disables the toast slide and
+ * the chevron turn.
  *
  * @module
  */
@@ -27,16 +26,6 @@ const CSS = `
 .memcurio-indicator[data-state="disabled"] { color: var(--dsw-alias-label-dimmed); opacity: 0.72; }
 .memcurio-indicator-count { font-variant-numeric: tabular-nums; font-weight: 600; }
 .memcurio-indicator-unread { position: absolute; top: 1px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-brand-primary); }
-.memcurio-switch { box-sizing: border-box; position: relative; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 10px; corner-shape: round; background: var(--dsw-alias-border-l3); cursor: pointer; }
-.memcurio-switch[aria-checked="true"] { background: var(--dsw-alias-brand-primary); }
-.memcurio-switch:disabled { cursor: default; opacity: 0.5; }
-.memcurio-switch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
-.memcurio-switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; corner-shape: round; background: var(--dsw-alias-label-primary-foreground); transition: transform 120ms ease; }
-.memcurio-switch[aria-checked="true"] .memcurio-switch-thumb { transform: translate(16px); }
-.memcurio-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; }
-.memcurio-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.memcurio-switch-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
-.memcurio-switch-hint { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
 .memcurio-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 320px; max-height: 60vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: 12px; background: var(--dsw-alias-bg-layer-3); box-shadow: var(--dsw-shadow-lv3); color: var(--dsw-alias-label-primary); cursor: default; }
 .memcurio-popover-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
 .memcurio-section { display: flex; flex-direction: column; gap: 4px; }
@@ -97,7 +86,6 @@ const CSS = `
 @media (prefers-reduced-motion: reduce) {
   .memcurio-toast { animation: none; }
   .memcurio-toast-out { transition: none; }
-  .memcurio-switch-thumb { transition: none; }
   .memcurio-tool-leading-chevron svg { transition: none; }
   .memcurio-context-chevron svg { transition: none; }
 }

@@ -13,7 +13,8 @@
  *
  * Loader contract: this module is bundled into `lib/client.js` and registered
  * through `window.__ModuleLoader__.load({ id, factory })`; every runtime
- * import must be a frozen-platform seed module (`react` only here) — the
+ * import must be a frozen-platform seed module (`react` + `react/jsx-runtime`
+ * here) — the
  * `@deepseek-ai/dsh-client-*` imports below are TYPE-ONLY, and the actual
  * services arrive through cordis (`ctx.slots` / `ctx.locale` /
  * `ctx.configForms`). The UI modules import no icon package either: the
@@ -33,10 +34,11 @@ import {
   MemcurioSettingsController,
   NAMESPACE,
   type MemcurioSettingsView,
-  type SettingsField,
 } from "./settings/controller.js";
-import { SettingsNavProbe, startSettingsNavWatcher } from "./settings/nav-mark.js";
+import { SettingsNavProbe } from "./settings/nav-mark.js";
 import { MemcurioSettingsSection } from "./settings/section.js";
+import { SettingsFormModel } from "./settings/draft.js";
+import { InjectionSwitchModel } from "./settings/instant.js";
 import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.js";
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
@@ -124,17 +126,31 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), "memcurio: settings dictionaries");
   const t = ctx.locale.bind(SETTINGS_NS);
 
-  // The Host configuration form for this package's profile entry (0.1.7):
+  // The Host configuration form for this package's profile entry (0.2.x):
   // reads derive from the shared describe mirror, writes carry the entry's
   // revision fence, and a refusal re-reads Host state before answering.
   const scope = ctx.configForms.get<MemcurioSettingsView>(NAMESPACE);
   const controller = new MemcurioSettingsController(scope);
+  const formModel = new SettingsFormModel(controller);
+  const switchModel = new InjectionSwitchModel(controller, (before) => formModel.rebase(before));
 
   // External edits (the profile patch touched on disk) already reload the
   // shared settings mirror inside ui-settings; the form derives from that
   // mirror, so the controller's single subscription observes them without a
-  // second remote listener here.
-  ctx.effect(() => controller.start(), "memcurio: settings scope subscription");
+  // second remote listener here. The two models subscribe to the controller's
+  // fan-out, so one transport subscription serves all three seats.
+  ctx.effect(() => {
+    const stopController = controller.start();
+    const stopForm = formModel.start();
+    const stopSwitch = switchModel.start();
+    return () => {
+      stopSwitch();
+      stopForm();
+      stopController();
+      switchModel.dispose();
+      formModel.dispose();
+    };
+  }, "memcurio: settings models");
 
   ctx.slots.inject("settings.section", () =>
     ctx.slots.register(
@@ -148,22 +164,18 @@ export function apply(ctx: Context): void {
         // once per entry, so it must carry the observable seat, never a value
         // snapshot. `t` arrives from the framework locale seat.
         inject: () => ({
-          hooks: { face: controller.faceHook() },
-          save: (field: SettingsField, value: unknown) => controller.save(field, value),
-          reset: (field: SettingsField) => controller.reset(field),
-          resetAll: () => controller.resetAll(),
-          saveRoute: (provider: string, model: string) => controller.saveRoute(provider, model),
-          resetRoute: () => controller.resetRoute(),
+          hooks: {
+            face: controller.faceHook(),
+            form: formModel.faceHook(),
+            instant: switchModel.faceHook(),
+          },
+          formModel,
+          switchModel,
         }),
       },
       MemcurioSettingsSection,
     ),
   );
-
-  // Interaction-level fallback for the mark: a capture-phase listener tags the
-  // row after the click/key that opened the dialog, so the mark does not depend
-  // on the seat below ever mounting.
-  ctx.effect(() => startSettingsNavWatcher(), "memcurio: settings nav mark watcher");
 
   // The settings shell renders this seat whenever its panel is open (and the
   // nav rows exist at the same commit). The probe renders nothing: it tags the

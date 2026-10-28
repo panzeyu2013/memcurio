@@ -25,9 +25,13 @@
 
 - **命名空间 = profile entry id = `memcurio`**：`src/plugin/settings.ts:33`（`SETTINGS_NAMESPACE`）与 `client/settings/controller.ts:27`（`NAMESPACE`）同值，且与 `cordis.patch.yml` 的条目 id 一致。
 - **schema**：`Config`（`src/plugin/settings.ts`）就是该命名空间。`.volatile()`：`scope`/`injectContext`/`registerTools`/`injectBudgetTokens`/`provider`/`model`；`root` 非 volatile → 不进表单（部署数据位置）。
-- **生命周期字段**：storeRetentionDays（默认 0，回收关闭）与 storeTrashDays（默认 30）是 volatile；前者只决定“多久没活动的孤儿 store 可被隔离”，后者决定隔离后可恢复的保留期。两者都不影响注入与会话行为。本包自带面板不渲染这两个字段（破坏性开关，按部署配置处理）；通过 profile patch 设置，Loader 仍按 volatile 语义支持运行时改写。另有四个 profile 级键：storeGcScope（dsh-home | all，默认 dsh-home）、storeEmptyStoreHours（空店回收阈值，默认 0 = 关闭）、storeSweepIntervalMs（稳态 sweep 周期，默认 300000 ms，供测试/运维调优）、root（数据位置）。可见度：storeRetentionDays/storeTrashDays 进 settingsView 但面板不渲染（破坏性），storeGcScope/storeEmptyStoreHours 只在 Config（profile patch）；四个键都不影响注入与会话。
+- **生命周期字段**：storeRetentionDays（默认 0，回收关闭）与 storeTrashDays（默认 30）是 volatile；前者只决定“多久没活动的孤儿 store 可被隔离”，后者决定隔离后可恢复的保留期。两者都不影响注入与会话行为。本包自带面板不渲染这两个字段（破坏性开关，按部署配置处理）；通过 profile patch 设置，Loader 仍按 volatile 语义支持运行时改写。另有四个 profile 级键：storeGcScope（dsh-home | all，默认 dsh-home）、storeEmptyStoreHours（空店回收阈值，默认 0 = 关闭）、storeSweepIntervalMs（稳态 sweep 周期，默认 300000 ms，供测试/运维调优）、root（数据位置）。可见度：storeRetentionDays/storeTrashDays 进 settingsView 但面板不渲染（破坏性），storeGcScope/storeEmptyStoreHours 只在 Config（profile patch）；四个键都不影响注入与会话。面板的「恢复配置默认」只覆盖**表单域 5 个设置键**（预算、范围、provider、model、工具；4 个控件）；不含注入开关（它有独立的即时恢复），也不含隐藏的 retention 覆盖；隐藏项通过 `hiddenOverridden` 在页脚提示。（`storeSweepIntervalMs` 与 `root` 同样只走部署配置。）
 - **自带页面**：`installMemcurioSettings`（`src/plugin/settings.ts（installMemcurioSettings）`）用官方形状注册 `configure({ auto: false }, ctx.fiber)`，并订阅 `settings/document-updated` 只处理本命名空间。`settings` 是可选依赖（插件 `inject: [tools, llm, sessions]` 不变）：无该服务时记忆功能照常，只是没有配置页；settings 服务迟加载/被替换/被卸载都不重挂本插件。
-- **浏览器侧**：`ctx.configForms.get<MemcurioSettingsView>('memcurio')`（`client/entry.ts:130`）。控制器读 `status`/`value`/`base`/`user`/`writable`（`mode` 在 `0.2.0` 线作为 legacy 只读信号透传），由 `user` 的**存在性**判定"已覆盖"（`client/settings/controller.ts:229-241`）；写入走 `set`/`unset`（单字段，`controller.ts:254-283`）与 `mutate`（原子多操作：整体恢复默认 `:313`、worker 路由成对写入 `:333`——半对在解析层不合法，固定路由必须原子写）。值等于 composition base 时发 `unset`（恢复继承）而不是钉一个相同值。面板不做暂存编辑，因此不显式传 `expectedRevision`：每次写由 ui-settings 携带最新 revision 栅栏，"过期写入被拒"由服务兜底，落地与否再由面板**回读校验**判定（`controller.ts:273-277`）。
+- **浏览器侧**：`ctx.configForms.get<MemcurioSettingsView>('memcurio')`（`client/entry.ts`）。控制器读 `status`/`value`/`base`/`user`/`writable`，由 `user` 值与 decoded base 的**比较**判定“已覆盖”（存在且不等于 base；Host 对 lower-layer unset 会改写成等值 set）；值等于 composition base 时发 `unset`（恢复继承）而不是钉一个相同值。面板分两个提交域（`client/settings/section.tsx`）：
+  - **即时域**：`injectContext` 开关经 `controller.writeField`/`unsetField` 单字段写，乐观更新、单字段 pending、成功 5s 撤销、失败回滚并就近报错；控制器没有全局 busy/error，`client/settings/instant.ts` 管理自己的 pending/error/undo generation。成功写后回调 `formModel.rebase()` 把暂存域的 fence 前移到新 revision，避免同页「先改表单、再开关、再保存」的自冲突；表单保存期间开关/撤销禁用，开关 pending 期间 Save 禁用。panel 卸载（切换 Settings section 或关闭对话框）时，未提交草稿由 `formModel.discard()` 丢弃；在途 Save 允许结算，成功清草稿，失败保留错误和草稿供下次打开。立即生效的开关不在这个契约里，它已经落盘。
+  - **暂存域**：预算/范围/模型/工具由 `SettingsFormModel`（`client/settings/draft.ts`）持有草稿；`save()` 把所有变更合并成一次 `scope.mutate(ops, baselineRevision)`（`controller.writeOps`），成功后才清草稿，失败/冲突保留草稿；`provider`/`model` 永远成对原子写，半对在客户端校验层就不可达。
+  - `writeOps` 按 `user` 层逐项回读校验；`expectedRevision` 用第一次编辑时读到的 revision 作栅栏。控制器只保留 `writeField`/`unsetField`/`writeOps` 三条写路径；旧的 `save/reset/resetAll/saveRoute` 兼容路径已删除，face 不再有全局 error/busy。
+- **低层继承与冲突恢复**：Host 对 lower-layer 提供的字段执行 unset 时会改写成 `set(inherited)`（README:74），因此客户端把「user 值 == decoded base」视为未覆盖，并接受这种等值 set 作为 reset 成功；否则所有 `scope`/`injectContext`/`registerTools` 的恢复都会被误报失败。冲突（revision 变化）后 form baseline 推进到当前 revision，Save 可显式重试；inline 的 Discard draft 丢草稿并采用 host 值。invalid 时 Save 仍可点，但只展开高级区并聚焦首错、不写 host；保存期间字段 disabled，结束后焦点回到 footer 状态区；panel 卸载时若没有在途保存则 `formModel.discard()` 丢弃草稿（页面上有 configHint 提示）；在途 Save 会继续结算，成功清草稿，失败保留错误和草稿供下次打开。rebase 只在开关写入恰好把 revision 推进 1 且 baseline 等于开关前 revision 时发生，否则保留旧 fence 让 Save 报 conflict。
 - **无 secret 字段**：本插件没有 secret 类配置，上游"表单保留 secret 值"这条在此无适用对象。
 - **持久化**：写经由 ui-settings 的共享镜像与写队列落到活动 profile patch；磁盘上的外部改动由该镜像重载，本插件不再多接一个 remote 监听。
 - **生效语义**：`injectContext`/`injectBudgetTokens`/`provider`/`model` 即时（volatile 引用原地更新，不重挂插件）；`scope` 只对新会话生效；`registerTools` 需要重启（volatile 写入不重跑 `apply`）。
@@ -36,8 +40,10 @@
 ## 3. 本仓库自己的约定（非上游要求）
 
 - **成对规则**：`provider`/`model` 必须同时给出；config-resolution 守卫在 Loader 落盘前拒绝半对与空串（`src/plugin/settings.ts（assertRoutePair）`）。这是本插件的领域规则，不是上游契约。
-- **预算下限**：`injectBudgetTokens >= 128` 由 schema 拒绝（表单只做前置提示）。
-- **面板语义**：已覆盖徽标、单字段/整体恢复默认、写入被 host 拒绝时报错而非静默成功、`unavailable`（命名空间未暴露，空心灰点；`0.2.0` 远端的 `memory` 模式归入此类但按只读实心灰点呈现）与 `ready` 但 `writable=false`（宿主拒写，实心灰点）两种非就绪态；写入失败转红点、title 显示失败文案——细节见 [ui.md](ui.md)。
+- **预算下限**：`injectBudgetTokens >= 128` 由 schema 拒绝（表单只做前置提示）。空值 = `unset`：实际回退顺序是会话所属（按 scope 解析）的 `<store>/config.json` 的 `budget.maxInjectTokens` → 内置 2500；面板只读插件命名空间，所以 hint 写「留空时使用对应记忆存储的配置（内置 2,500）」，不能把它说成全局默认。
+- **等值 pin 的边界**：Host 官方 contract 仍以 user presence 标记 override；本面板为让 reset 徽标/验证符合 Host 的 `set(inherited)` 回写，把“存在且等于 decoded base”视为 inherited。副作用：如果 profile 里已有一个历史上的等值 key，而部署 base 之后发生变化，它可能变成 stale pin；这是 Host 的 unset limitation，需 Host 修复或手动清理 profile patch。
+- **默认来源的边界**：预算与 route 能区分显式 deployment base（预算 hint、route default label）；injection/tools 只显示 `Default: on/off`，因为 `ConfigFormSnapshot.base` 已包含 schema 默认，客户端无法可靠区分“部署显式设置”与“内置默认”。
+- **面板语义**：两提交域；逐字段「已修改 + 恢复默认」；批量按钮是「恢复配置默认」，只覆盖表单域 5 个设置键（不含注入开关）——隐藏的 storeRetentionDays/storeTrashDays 通过 `hiddenOverridden` 在页脚提示但不在这条批量路径里（破坏性生命周期设置仍由部署配置管理）；路由按「跟随会话 / 使用部署默认 / 固定模型」显式选择，固定时两半必填；注册工具是 checkbox +「重启后生效」；失败/冲突保留草稿并在字段与 footer 报错；状态 chip 带文字，不再只靠颜色。细节见 [ui.md](ui.md)。
 - **`root` 归部署方**：永不进表单，也不做 volatile（避免把数据根写进用户覆盖层）。
 - **文档纪律**：设置契约只写在本文件；operations.md 只保留安装/操作步骤，ui.md 只保留呈现细节。
 
@@ -50,8 +56,10 @@
 | 守卫只作用于本条目、随插件 fiber 退出 | `tests/settings.test.ts`「the guard claims only this entry and leaves with the plugin fiber」 |
 | 表单只暴露 volatile 字段、默认值与校验 | `tests/settings.test.ts`「provides the composition defaults and validates every field」「plain values and absent fields fall back exactly like the Loader defaults」 |
 | 自带页面 + 按命名空间过滤的条目变化事件 | `tests/settings.test.ts`「suppresses the generated page and reports post-commit changes for memcurio only」 |
-| 浏览器侧快照/覆盖判定/set-unset 语义 | `tests/client-settings.test.ts`（presence-based overridden、revert、reset/resetAll、host 拒绝） |
-| 面板注册与渲染 | `tests/client-panel-render.test.ts`、`tests/ui-render.test.ts` |
+| 浏览器侧快照/覆盖判定/set-unset 语义 | `tests/client-settings.test.ts`（base-aware overridden、revert、host 拒绝/继承回写、`writeField`/`writeOps` revision 栅栏、隐藏 retention） |
+| 暂存表单草稿/校验/原子计划/失败保留/冲突 | `tests/client-settings-form.test.ts`（预算/路由/范围/工具的 plan、base 值=unset、revision/conflict） |
+| 面板注册与两域渲染/路由成对/可访问性 | `tests/client-panel-render.test.ts`（即时开关 pending/undo/rollback、预算内联错误、单次 mutate、隐藏生命周期提示、loading/unavailable/read-only） |
+| 导航标记的对话框范围/行重建 | `tests/client-nav-mark.test.ts` |
 | 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
 | 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/client-bundle-drift.test.ts` |
 

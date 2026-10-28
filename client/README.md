@@ -32,10 +32,13 @@ runtime* constraints and the module map.
 
 | Path | Role |
 |---|---|
-| `entry.ts` | Cordis client plugin: settings controller/section, dictionaries, styles, transport, session-switch rebind, slot registrations. |
-| `settings/controller.ts` | Field state machine: per-field save/reset, atomic route pair, bulk reset, post-write verification (re-read the landed user layer). |
-| `settings/section.ts` + `settings/styles.ts` + `settings/locales.ts` | The rendered `settings.section` panel and its shipped-vocabulary styles/dictionary. |
-| `settings/nav-mark.ts` | The `settings.action` probe, mount hook and interaction watcher that tag the memcurio nav row for the stylesheet's book mark (the shell owns section icons). |
+| `entry.ts` | Cordis client plugin: settings controller/models/section, dictionaries, styles, transport, session-switch rebind, slot registrations. |
+| `settings/controller.ts` | Transport over one config form: face/overrides, single-field writes, atomic plan writes with revision fence and post-write verification. |
+| `settings/instant.ts` | Instant-zone model for the memory-injection switch: optimistic value, per-field pending, error, 5s undo, generation counter. |
+| `settings/draft.ts` | Staged configuration model: drafts, validation, one atomic path plan, revision baseline, failure/conflict retention, visible-only reset. |
+| `settings/section.tsx` + `settings/fields.tsx` + `settings/chrome.tsx` + `settings/ui-types.ts` | The rendered `settings.section` panel: section orchestration/focus, the four form fields and shared radio/badge, header/status/skeleton, and the hook/translator types. |
+| `settings/styles.ts` + `settings/locales.ts` | Shipped-vocabulary styles and the en/zh dictionary. |
+| `settings/nav-mark.ts` | The `settings.action` probe and mount hook that tag the memcurio nav row for the stylesheet's book mark; the observer is scoped to the settings dialog (so it survives a replaced nav) and never observes document.body. |
 | `ui/model.ts` | Observable memory UI store (injection preview, write receipts, unread, realtime mode) plus the pure derivations the surfaces read. |
 | `ui/transport.ts` | Same-origin snapshot + SSE client: one stream per page, snapshot-before-subscribe, `?after=` replay, polling fallback, session rebind. |
 | `ui/wire.ts` | Wire vocabulary mirrored from `src/services/projector.ts` / `src/services/snapshot.ts`, with boundary validators (`isUiDelta`, `isUiEventFrame`, `isUiSnapshotResponse`). |

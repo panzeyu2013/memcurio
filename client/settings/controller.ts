@@ -15,15 +15,15 @@
  * reserved `hooks` compartment; `face()` is identity-stable between
  * notifications, which is exactly what the framework's selector hooks expect.
  *
- * Write verification: the form's boolean answer is authoritative (0.1.7),
- * but the resolved view can still lag a refusal, so every save/reset ALSO
- * re-reads the snapshot and compares the landed user layer against the intent
- * before reporting success.
+ * Write verification: the form's boolean answer is authoritative on the
+ * 0.2.x Host, but the resolved view can still lag a refusal, so every write
+ * also re-reads the snapshot and compares the landed user layer against the
+ * intent before reporting success.
  */
 
 /** Settings namespace: the profile entry id this package's patch installs.
- *  DSH 0.1.7 keys a plugin's configuration form by its entry id, so the
- *  constant MUST stay in step with `cordis.patch.yml` (`id: memcurio`). */
+ *  DSH keys a plugin's configuration form by its entry id, so the constant
+ *  MUST stay in step with `cordis.patch.yml` (`id: memcurio`). */
 export const NAMESPACE = "memcurio";
 
 /** Fields the panel owns (root is deployment-level and read-only). */
@@ -37,6 +37,13 @@ export const SETTINGS_FIELDS = [
 ] as const;
 
 export type SettingsField = (typeof SETTINGS_FIELDS)[number];
+
+/** Destructive lifecycle fields stored in the same user layer but deliberately
+ *  not rendered by this panel. They are reported separately so a bulk reset of
+ *  the visible page can say exactly what it does and does not clear. */
+export const HIDDEN_SETTINGS_FIELDS = ["storeRetentionDays", "storeTrashDays"] as const;
+
+export type HiddenSettingsField = (typeof HIDDEN_SETTINGS_FIELDS)[number];
 
 /** Resolved settings view (mirrors the host namespace schema). */
 export interface MemcurioSettingsView {
@@ -79,8 +86,9 @@ export interface ConfigFormPort<T> {
   subscribe(listener: () => void): () => void;
   set(field: string, value: unknown): Promise<boolean>;
   unset(field: string): Promise<boolean>;
-  /** One atomic namespace mutation; the host reduces and validates ONCE. */
-  mutate(ops: readonly SettingsPathOp[]): Promise<boolean>;
+  /** One atomic namespace mutation; the host reduces and validates ONCE.
+   *  `expectedRevision` preserves an earlier read as the fence. */
+  mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean>;
 }
 
 /** Observable seat consumed by the panel through the `hooks` compartment. */
@@ -96,12 +104,14 @@ export interface SettingsFace {
   mode?: "host" | "memory";
   value: MemcurioSettingsView;
   base: MemcurioSettingsView;
-  /** Fields present in the user layer (presence = overridden). */
+  /** Fields whose user-layer value differs from the decoded base; presence
+   *  alone is not enough because the Host pins a lower-layer reset as an equal
+   *  set. Hidden retention fields use the same raw-base comparison. */
   overridden: SettingsField[];
-  /** Locale key of the last failure (the panel renders the copy). */
-  errorCode?: SettingsErrorCode;
-  /** Field currently being written (or "all" for a bulk reset). */
-  busy?: SettingsField | "all";
+  /** Destructive lifecycle fields present in the user layer but not rendered
+   *  here; the page reports them so "reset page defaults" is not mistaken for
+   *  "reset every override". */
+  hiddenOverridden: HiddenSettingsField[];
 }
 
 /** Locale keys the controller can report (every one exists in both
@@ -111,7 +121,6 @@ export const ERROR_KEYS = {
   budgetRange: "errBudgetRange",
   notLanded: "errNotLanded",
   notReady: "errNotReady",
-  resetNotLanded: "errResetNotLanded",
   hostRejected: "errHostRejected",
 } as const;
 
@@ -143,11 +152,32 @@ export function decodeSettings(raw: unknown): MemcurioSettingsView {
   };
 }
 
-/** Fields explicitly present in the stored user layer. */
-export function overriddenFields(user: unknown): SettingsField[] {
+/** Fields meaningfully overridden in the stored user layer. A value supplied
+ *  by the composition base is not an override: the Host rewrites an unset of
+ *  a lower-layer field into an equal set, so presence alone would leave every
+ *  reset pinned as changed. Pass the decoded base when available. */
+export function overriddenFields(user: unknown, base?: unknown): SettingsField[] {
   if (user === null || typeof user !== "object") return [];
   const layer = user as Record<string, unknown>;
-  return SETTINGS_FIELDS.filter((field) => Object.hasOwn(layer, field));
+  const baseLayer = base !== null && typeof base === "object" ? (base as Record<string, unknown>) : undefined;
+  return SETTINGS_FIELDS.filter((field) => {
+    if (!Object.hasOwn(layer, field)) return false;
+    if (baseLayer === undefined) return true;
+    return !(Object.hasOwn(baseLayer, field) && Object.is(layer[field], baseLayer[field]));
+  });
+}
+
+/** Destructive fields present in the stored user layer but not rendered.
+ *  A value equal to the raw base is a Host-pinned reset, not a user override. */
+export function hiddenOverriddenFields(user: unknown, base?: unknown): HiddenSettingsField[] {
+  if (user === null || typeof user !== "object") return [];
+  const layer = user as Record<string, unknown>;
+  const baseLayer = base !== null && typeof base === "object" ? (base as Record<string, unknown>) : undefined;
+  return HIDDEN_SETTINGS_FIELDS.filter((field) => {
+    if (!Object.hasOwn(layer, field)) return false;
+    if (baseLayer === undefined) return true;
+    return !(Object.hasOwn(baseLayer, field) && Object.is(layer[field], baseLayer[field]));
+  });
 }
 
 /** Pair rule over two raw halves: both present or neither (a present half
@@ -187,8 +217,6 @@ export class MemcurioSettingsController {
   private readonly scope: ConfigFormPort<MemcurioSettingsView>;
   private faceCache: SettingsFace | null = null;
   private readonly listeners = new Set<() => void>();
-  private errorCode: SettingsErrorCode | undefined;
-  private busy: SettingsField | "all" | undefined;
   /** ONE underlying scope subscription, fanned out to panel listeners. */
   private unsubscribeScope: (() => void) | undefined;
   /** Refcount so a redundant start()/dispose pair cannot kill the seat. */
@@ -229,16 +257,19 @@ export class MemcurioSettingsController {
   face(): SettingsFace {
     if (this.faceCache) return this.faceCache;
     const snapshot = this.scope.getSnapshot();
+    const base = decodeSettings(snapshot.base);
     this.faceCache = {
       status: snapshot.status,
       writable: snapshot.writable,
       // Copied only when the Host supplies it: the `0.2.1` line has no such field.
       ...(snapshot.mode === undefined ? {} : { mode: snapshot.mode }),
-      value: snapshot.value ?? decodeSettings(snapshot.base),
-      base: decodeSettings(snapshot.base),
-      overridden: overriddenFields(snapshot.user),
-      ...(this.errorCode ? { errorCode: this.errorCode } : {}),
-      ...(this.busy ? { busy: this.busy } : {}),
+      // The Host is authoritative, but a malformed/partial value must not
+      // reach routePair(...).trim() or the panel. Decode it to the same safe
+      // shape as base (unknown fields are ignored, bad scalars fall back).
+      value: decodeSettings(snapshot.value ?? snapshot.base),
+      base,
+      overridden: overriddenFields(snapshot.user, base),
+      hiddenOverridden: hiddenOverriddenFields(snapshot.user, snapshot.base),
     };
     return this.faceCache;
   }
@@ -251,127 +282,63 @@ export class MemcurioSettingsController {
     };
   }
 
-  async save(field: SettingsField, value: unknown): Promise<SaveOutcome> {
+
+  /** Current host revision. The staged form captures it on the first edit and
+   *  passes it back as the write fence, so a concurrent editor is refused
+   *  instead of silently overwritten. */
+  revision(): number | undefined {
+    return this.scope.getSnapshot().revision;
+  }
+
+  /** Low-level single-field write for the instant zone. The switch owns its
+   *  own pending/error/undo state; this method only writes and verifies. */
+  async writeField(field: SettingsField, value: unknown): Promise<SaveOutcome> {
     const face = this.face();
-    const view = face.value;
     const problem =
-      routeProblem(field, value, view) ?? (field === "injectBudgetTokens" ? budgetProblem(value) : undefined);
-    if (problem) return this.fail(problem);
-    // Writing the composition base value is a REVERT, not an override: clear
-    // the user-layer entry instead of pinning an identical value, so the
-    // "overridden" badge and its reset action disappear on their own when a
-    // user toggles a field back to its default.
+      routeProblem(field, value, face.value) ?? (field === "injectBudgetTokens" ? budgetProblem(value) : undefined);
+    if (problem) return { ok: false, code: problem };
     const reverts = Object.is(value, face.base[field]);
-    this.busy = field;
-    this.notify();
     let accepted: boolean;
     try {
       accepted = reverts ? await this.scope.unset(field) : await this.scope.set(field, value);
     } catch {
-      return this.fail(ERROR_KEYS.hostRejected);
+      return { ok: false, code: ERROR_KEYS.hostRejected };
     }
     if (!accepted || !this.verifyField(field, value, reverts)) {
-      // Resolved but not landed (host refusal) — or the transport left the
-      // ready state between the write and the read-back, which is a different
-      // fact and reports a different key.
-      return this.fail(this.refusalKey());
+      return { ok: false, code: this.refusalKey() };
     }
-    this.errorCode = undefined;
-    this.busy = undefined;
     this.notify();
     return { ok: true };
   }
 
-  async reset(field: SettingsField): Promise<SaveOutcome> {
-    // A reset reverts the field to the composition base, so the pair must be
-    // judged against base[field] (clearing one half of a pinned route is legal
-    // when the other half falls back to a base value that completes it).
-    const face = this.face();
-    const problem = routeProblem(field, face.base[field], face.value);
-    if (problem) return this.fail(problem);
-    this.busy = field;
-    this.notify();
+  /** Low-level clear for the instant zone's "reset to default" action. */
+  async unsetField(field: SettingsField): Promise<SaveOutcome> {
     let accepted: boolean;
     try {
       accepted = await this.scope.unset(field);
     } catch {
-      return this.fail(ERROR_KEYS.hostRejected);
+      return { ok: false, code: ERROR_KEYS.hostRejected };
     }
-    if (!accepted || overriddenFields(this.scope.getSnapshot().user).includes(field)) {
-      return this.fail(ERROR_KEYS.resetNotLanded);
+    if (!accepted || !this.verifyField(field, undefined, true)) {
+      return { ok: false, code: this.refusalKey() };
     }
-    this.errorCode = undefined;
-    this.busy = undefined;
     this.notify();
     return { ok: true };
   }
 
-  /** Clear every override in ONE atomic mutation. Per-field clearing cannot
-   *  express this: the host validates the resolved section on every write, so
-   *  a lone route half would be refused mid-way (and would leave the earlier
-   *  fields cleared). `mutate` reduces all ops and validates once. */
-  async resetAll(): Promise<SaveOutcome> {
-    const pending = overriddenFields(this.scope.getSnapshot().user);
-    if (pending.length === 0) return this.settleCleared();
-    this.busy = "all";
-    this.notify();
+  /** Low-level atomic plan write for the staged form. Verification is against
+   *  the landed user layer, not the host's boolean alone. */
+  async writeOps(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<SaveOutcome> {
+    if (ops.length === 0) return { ok: true };
     let accepted: boolean;
     try {
-      accepted = await this.scope.mutate(pending.map((field) => ({ op: "unset", path: [field] }) as const));
+      accepted = await this.scope.mutate(ops, expectedRevision);
     } catch {
-      return this.fail(ERROR_KEYS.hostRejected);
+      return { ok: false, code: ERROR_KEYS.hostRejected };
     }
-    if (!accepted || overriddenFields(this.scope.getSnapshot().user).length > 0) {
-      return this.fail(ERROR_KEYS.resetNotLanded);
+    if (!accepted || !this.verifyOps(ops)) {
+      return { ok: false, code: this.refusalKey() };
     }
-    return this.settleCleared();
-  }
-
-  /** Write the worker route as ONE atomic pair (both halves or neither):
-   *  a lone half is illegal in the resolved section, so single-field edits
-   *  could never land on a deployment that pins no route. */
-  async saveRoute(provider: string, model: string): Promise<SaveOutcome> {
-    const nextProvider = provider.trim();
-    const nextModel = model.trim();
-    if (routePairProblem(nextProvider, nextModel) !== undefined) return this.fail(ERROR_KEYS.routePair);
-    // Both an empty pair (follow the session route) and a pair equal to the
-    // composition base are reverts: clear the user halves so a route typed
-    // back to the default stops counting as overridden.
-    const base = this.face().base;
-    const reverts =
-      nextProvider === "" || (nextProvider === (base.provider ?? "") && nextModel === (base.model ?? ""));
-    this.busy = "all";
-    this.notify();
-    const ops: SettingsPathOp[] = reverts
-      ? [
-          { op: "unset", path: ["provider"] },
-          { op: "unset", path: ["model"] },
-        ]
-      : [
-          { op: "set", path: ["provider"], value: nextProvider },
-          { op: "set", path: ["model"], value: nextModel },
-        ];
-    let accepted: boolean;
-    try {
-      accepted = await this.scope.mutate(ops);
-    } catch {
-      return this.fail(ERROR_KEYS.hostRejected);
-    }
-    if (!accepted || !this.verifyRoute(reverts ? "" : nextProvider, reverts ? "" : nextModel)) {
-      return this.fail(this.refusalKey());
-    }
-    return this.settleCleared();
-  }
-
-  /** Revert both route halves to the composition base in one mutation. */
-  async resetRoute(): Promise<SaveOutcome> {
-    return this.saveRoute("", "");
-  }
-
-  /** Clear both route halves… alias kept explicit for panel symmetry. */
-  private settleCleared(): SaveOutcome {
-    this.errorCode = undefined;
-    this.busy = undefined;
     this.notify();
     return { ok: true };
   }
@@ -382,35 +349,47 @@ export class MemcurioSettingsController {
     return this.scope.getSnapshot().status === "ready" ? ERROR_KEYS.notLanded : ERROR_KEYS.notReady;
   }
 
-  private verifyRoute(provider: string, model: string): boolean {
+  /** Post-write verification for one atomic plan: every set landed with that
+   *  exact scalar; an unset either removed the entry or was rewritten by the
+   *  Host into a set of the inherited/base value (the documented lower-layer
+   *  reset limitation). Assumes the 0.2.x ui-settings mirror has folded the
+   *  accepted write before its promise resolves; revisit if that becomes
+   *  asynchronous. */
+  private verifyOps(ops: readonly SettingsPathOp[]): boolean {
     const snapshot = this.scope.getSnapshot();
     if (snapshot.status !== "ready") return false;
-    const user = (snapshot.user ?? {}) as Record<string, unknown>;
-    if (provider === "") {
-      return !Object.hasOwn(user, "provider") && !Object.hasOwn(user, "model");
+    const base = this.face().base as unknown as Record<string, unknown>;
+    const user = snapshot.user;
+    const layer = user !== null && typeof user === "object" ? (user as Record<string, unknown>) : {};
+    for (const op of ops) {
+      const field = op.path[0];
+      if (typeof field !== "string") return false;
+      if (op.op === "set") {
+        if (!Object.hasOwn(layer, field) || !Object.is(layer[field], op.value)) return false;
+      } else if (Object.hasOwn(layer, field)) {
+        if (!Object.hasOwn(base, field) || !Object.is(layer[field], base[field])) return false;
+      }
     }
-    return user.provider === provider && user.model === model;
+    return true;
   }
 
   /** Post-write verification against the landed user layer. All fields are
-   *  scalars, so strict identity is exact (no JSON-ordering caveat). A REVERT
-   *  must land as an ABSENT user entry — a pinned equal value is the exact
-   *  state this method exists to reject (the resolved mirror follows the
-   *  layer, and reset() verifies against the same fact). */
+   *  scalars, so strict identity is exact. A REVERT may land as an absent
+   *  entry OR, when a lower layer supplies the field, as an equal set of the
+   *  inherited value; the Host documents the latter and rewrites the unset
+   *  itself, so rejecting it would make every reset of a deployment-pinned
+   *  field report failure. */
   private verifyField(field: SettingsField, value: unknown, reverts: boolean): boolean {
     const snapshot = this.scope.getSnapshot();
     if (snapshot.status !== "ready") return false;
+    const base = this.face().base as unknown as Record<string, unknown>;
     const user = snapshot.user;
     const layer = user !== null && typeof user === "object" ? (user as Record<string, unknown>) : {};
-    if (reverts) return !Object.hasOwn(layer, field);
+    if (reverts) {
+      if (!Object.hasOwn(layer, field)) return true;
+      return Object.hasOwn(base, field) && Object.is(layer[field], base[field]);
+    }
     return Object.hasOwn(layer, field) && Object.is(layer[field], value);
-  }
-
-  private fail(code: SettingsErrorCode): { ok: false; code: SettingsErrorCode } {
-    this.errorCode = code;
-    this.busy = undefined;
-    this.notify();
-    return { ok: false, code };
   }
 
   private notify(): void {

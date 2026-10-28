@@ -5,6 +5,80 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The controller's legacy write API is gone.** `save/reset/resetAll/saveRoute/resetRoute`, the global `busy/errorCode` face fields and the legacy tests were removed; the instant switch and the staged form now drive only `writeField`/`unsetField`/`writeOps`, so route pairing and reset semantics have one implementation. The settings section was split into `chrome.tsx` and `fields.tsx` for reviewability.
+
+- **The settings panel is now a two-zone settings surface.** The memory
+  injection switch applies immediately (optimistic paint, per-field pending,
+  5s undo, verified rollback); budget, storage scope, memory-processing model
+  and register-tools form one staged configuration zone with a single Save,
+  per-field "changed / reset", one atomic `mutate` carrying the captured
+  revision, preserved drafts on refusal/conflict, and a footer status area.
+  A successful instant switch rebases the staged form's revision fence, and
+  the two zones never commit concurrently (the switch is disabled while the
+  form saves, Save while the switch is pending), so editing the switch before
+  saving a draft cannot create a self-inflicted conflict. Leaving the
+  configuration page (switching sections or closing Settings) discards staged
+  drafts, matching the visible copy under the zone label and the official
+  form's unmount contract. A save already in flight is allowed to settle:
+  success clears the draft, failure keeps it and the error for the next open.
+- **A conflict is recoverable, and resetting a lower-layer field is not
+  reported as a failure.** A conflicted Save advances the staged form's fence
+  to the latest revision, so the preserved draft can be saved again (or
+  discarded with the inline "Discard draft" action). The Host rewrites an
+  unset of a field supplied by a lower layer into an equal set of the
+  inherited value (dsh-settings README:74); the client now accepts that
+  outcome and treats a user value equal to the decoded base as "not overridden",
+  so `scope`/`injectContext`/`registerTools` resets no longer show a false
+  failure or a permanent Changed badge.
+- **Save remains clickable on an invalid form.** Clicking it expands the
+  advanced section and focuses the first invalid field without writing the
+  Host; the field errors, not a disabled button, are the signal. The switch
+  error now has its own `aria-describedby` id, the visible switch label
+  toggles the control, the form has an accessible name, the token unit is in
+  the budget field's description, and focus returns to the footer status when
+  a save settles.
+- **The config zone renders its "leaving this page discards drafts" hint** and
+  the budget hint names the relevant memory store rather than claiming a
+  global default; the scope hint keeps the "existing memories are not moved"
+  caveat. Provider/model is
+  edited as a follow / deployment-default / pin choice and is always written as
+  one pair. Register-tools is a checkbox with a restart tag
+  instead of a switch. Advanced fields are collapsed by default and surface
+  their changed/unsaved/invalid counts.
+- **Status and errors are no longer colour-only.** The header uses a text
+  status chip (injection on/off, saving, failed, read-only, unavailable); field
+  errors sit under their field with `aria-describedby`; the footer announces
+  saved/unsaved/failed/conflict; focus moves to the first invalid field; the
+  advanced panel and all inputs carry their labels/ARIA wiring.
+- **The budget hint reflects the relevant memory store's configuration.** The
+  panel no longer presents the engine's 2500 fallback as a global default: it
+  says empty uses the relevant memory store's `<store>/config.json`
+  `budget.maxInjectTokens` (built-in 2500), and a deployment base value is
+  shown as such. Clearing a non-overridden budget restores the effective value
+  instead of leaving a blank invalid-looking field.
+- **The settings bundle now uses JSX and the seeded `react/jsx-runtime`.**
+  `lib/client.js` still requires only platform seed modules
+  (`react`, `react/jsx-runtime`); the panel is split into typed components and
+  two framework-free models (`SettingsFormModel`, `InjectionSwitchModel`).
+
+### Fixed
+
+- **The bulk reset no longer claims to clear hidden lifecycle overrides.**
+  `storeRetentionDays` / `storeTrashDays` are volatile but deliberately not
+  rendered; the panel now reports them via `hiddenOverridden` and the bulk
+  action is "Reset configuration defaults", covering only the five form
+  setting keys (budget, scope, provider, model, tools) and not the instant
+  injection switch. The old "reset all overrides" wording was false when either hidden
+  key was overridden.
+- **The settings-nav observer no longer watches document.body or listens to
+  every click/keydown.** The probe observes only the settings dialog's nav, so
+  chat streaming and composer typing no longer schedule page-wide marking
+  work.
+
 ## [0.0.8] - 2026-10-28
 
 ### Added
