@@ -1,54 +1,92 @@
 #!/usr/bin/env bun
 /**
  * Compatibility probe: install the packed tarball into an isolated DSH profile
- * for one host version, compose the bundle, boot the web host and assert that
- * this plugin's route is mounted.
+ * for one host version, compose the bundle, boot the web host and assert the
+ * mounted surface.
  *
  * Why a separate probe instead of the unit suite: the suite runs against the
  * development host (the newest line) and may use APIs that older hosts do not
  * publish. The contract this package actually claims is the peer range, so the
- * probe exercises the built tarball against every host version we support:
- * install -> compose -> boot -> route. It is intentionally black-box; nothing
- * here imports this repository's sources.
+ * probe exercises the built tarball against the peer floor and one sample per
+ * published line: install -> compose -> boot -> route/client. It is
+ * intentionally black-box; nothing here imports this repository's sources.
  *
  * Usage:
  *   bun scripts/probe-compat.ts --version 0.2.2-alpha.2
- *   bun scripts/probe-compat.ts --version 0.2.1-rc.2 --work /tmp/probe
+ *   bun scripts/probe-compat.ts --all --clean
+ *   bun scripts/probe-compat.ts --version 0.2.1-rc.2 --work /tmp/probe --port 32191
+ *   bun scripts/probe-compat.ts --version 0.2.2-alpha.2 --cache .dsh-tmp/warm-bun-cache
+ *
+ * --work must live under .dsh-tmp or the OS temporary directory: the probe
+ * deletes and recreates it, so an unbounded path could erase unrelated files.
  *
  * Requirements: bun (pack + CLI install), node >= 22 (boot; the alpha line
  * needs >= 24.9), pnpm (the profile installer and `dsh plugin add`), curl.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { connect } from "node:net";
-import { join, resolve } from "node:path";
+import { connect, createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
+
+/** The peer floor plus one sample per published line (keep CI's matrix in sync). */
+const SUPPORTED_HOSTS = ["0.2.0-rc.1", "0.2.1-rc.2", "0.2.1-rc.4", "0.2.2-alpha.2"] as const;
+
+const DEFAULT_PORT = 32_000 + (process.pid % 1000);
 
 interface Options {
   version: string;
   work: string;
   port: number;
+  clean: boolean;
+  all: boolean;
+  /** Optional warm bun cache for local runs; CI leaves it empty (project cache). */
+  cache: string;
 }
-
-const DEFAULT_PORT = 32_000 + (process.pid % 1000);
 
 function parseArgs(argv: readonly string[]): Options {
   let version = "";
   let work = "";
   let port = DEFAULT_PORT;
+  let clean = false;
+  let all = false;
+  let cache = "";
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--version") version = argv[++i] ?? "";
     else if (arg === "--work") work = argv[++i] ?? "";
     else if (arg === "--port") port = Number(argv[++i] ?? DEFAULT_PORT);
+    else if (arg === "--cache") cache = argv[++i] ?? "";
+    else if (arg === "--all") all = true;
+    else if (arg === "--clean") clean = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
-  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error("--version <dsh-version> is required (for example 0.2.2-alpha.2)");
-  }
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("--port must be a TCP port");
-  return { version, work: work === "" ? join(repoRoot, ".dsh-tmp", "probe-compat", version) : resolve(work), port };
+  if (all && version !== "") throw new Error("--all and --version are mutually exclusive");
+  if (!all && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error("--version <dsh-version> is required (for example 0.2.2-alpha.2), or use --all");
+  }
+  const base = work === "" ? join(repoRoot, ".dsh-tmp", "probe-compat") : resolve(work);
+  return {
+    version,
+    // --all nests one directory per version under the base; a single probe
+    // treats --work as its exact directory.
+    work: all ? base : work === "" ? join(base, version) : base,
+    port,
+    clean,
+    all,
+    cache: cache === "" ? "" : resolve(cache),
+  };
+}
+
+/** The probe deletes its work directory; never let it point outside scratch space. */
+function assertProbeWorkPath(work: string): void {
+  const scratchRoots = [join(repoRoot, ".dsh-tmp") + sep, resolve(tmpdir()) + sep];
+  if (!scratchRoots.some((root) => work.startsWith(root))) {
+    throw new Error(`--work must live under .dsh-tmp or ${tmpdir()}: ${work}`);
+  }
 }
 
 function which(name: string): string {
@@ -126,7 +164,7 @@ async function waitFor(read: () => string, predicate: (text: string) => boolean,
     if (predicate(text)) return text;
     await sleep(500);
   }
-  throw new Error(`timed out after ${timeoutMs}ms waiting for the host`);
+  throw new Error(`timed out after ${timeoutMs}ms waiting for the host\n${tail(read())}`);
 }
 
 function http(port: number, path: string, extra: readonly string[] = [], output = "/dev/null"): string {
@@ -159,13 +197,33 @@ async function waitForPortClosed(port: number, timeoutMs: number): Promise<boole
   return !(await isListening(port));
 }
 
-async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+function portAvailable(port: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const server = createServer();
+    server.once("error", () => resolvePromise(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolvePromise(true));
+    });
+  });
+}
+
+/** Pick a free port; pid-derived defaults collide across probes on one machine. */
+async function freePort(start: number): Promise<number> {
+  for (let port = start; port < start + 50 && port <= 65_535; port += 1) {
+    if (await portAvailable(port)) return port;
+  }
+  throw new Error(`no free port in [${start}, ${start + 50})`);
+}
+
+async function probeVersion(options: Options): Promise<void> {
   const bun = process.execPath;
   const node = which("node");
-  const pnpm = which("pnpm");
+  if (Bun.which("pnpm") === null) {
+    throw new Error("required executable not found on PATH: pnpm (the plugin gate forwards to it)");
+  }
   if (Bun.which("curl") === null) throw new Error("required executable not found on PATH: curl");
 
+  assertProbeWorkPath(options.work);
   const cliDir = join(options.work, "cli");
   const home = join(options.work, "home");
   const packDir = join(options.work, "pack");
@@ -179,10 +237,13 @@ async function main(): Promise<void> {
     DSH_HOME: home,
     // Only the pnpm store is redirected. XDG_CACHE_HOME is deliberately left
     // alone: overriding it gives bun a cold install cache and re-downloads the
-    // whole host tree on every probe.
+    // whole host tree on every probe. Bun's own cache stays project-local;
+    // sharing one cache across probes makes concurrent/aborted runs contend on
+    // its lock.
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
     npm_config_store_dir: pnpmStore,
+    ...(options.cache === "" ? {} : { BUN_INSTALL_CACHE_DIR: options.cache }),
     CI: "1",
   };
 
@@ -242,21 +303,23 @@ async function main(): Promise<void> {
   // gate is instant and deterministic; against a fully installed web profile it
   // ran for minutes without output (observed with 0.2.2-alpha.2), so the probe
   // deliberately gates first. The final profile state is identical either way
-  // because pnpm resolves the profile's package.json, which the gate updates.
-  // A just-published host version is younger than pnpm's release-age policy
-  // (24h by default). The probe deliberately targets that exact version, so the
-  // policy is scoped off here; it would otherwise make CI red for a day after
-  // every upstream release. The flag applies only to this throwaway profile.
+  // because the installer resolves the profile's package.json, which the gate
+  // updates.
+  //
+  // The gate is the installer under test and runs through `dsh plugin add`
+  // (pnpm). Bulk host materialization uses bun: pnpm's hoisted import copies
+  // hundreds of files and intermittently fails with EAGAIN on overlay
+  // filesystems, while bun's flat tree is both fast and node-resolvable. This
+  // does not weaken the compatibility claim: the plugin is still installed and
+  // validated by the real pnpm gate above.
   step("install the host bundles");
   install(
-    pnpm,
+    bun,
     [
       "add",
       `@deepseek-ai/dsh-base@${options.version}`,
       `@deepseek-ai/dsh-web-app@${options.version}`,
       "--ignore-scripts",
-      "--config.minimum-release-age=0",
-      "--config.package-import-method=hardlink",
     ],
     { cwd: profileDir, env, stream: true },
   );
@@ -269,8 +332,9 @@ async function main(): Promise<void> {
     assert(composed.includes("id: tool-executor-native"), "0.2.2 host composition has no native tool executor");
   }
 
-  step(`boot the web host on 127.0.0.1:${options.port}`);
-  const child = spawn(node, [dshBin, "--profile", "probe", "--port", String(options.port), "--no-open"], {
+  const port = await freePort(options.port);
+  step(`boot the web host on 127.0.0.1:${port}`);
+  const child = spawn(node, [dshBin, "--profile", "probe", "--port", String(port), "--no-open"], {
     cwd: cliDir,
     env,
     detached: true,
@@ -285,24 +349,46 @@ async function main(): Promise<void> {
     stderr += chunk.toString();
   });
   const readLog = (): string => `${stdout}\n${stderr}`;
-  let token = "";
   try {
     const log = await waitFor(readLog, (text) => /\?token=[A-Za-z0-9_-]+/.test(text), 90_000);
-    token = /\?token=([A-Za-z0-9_-]+)/.exec(log)?.[1] ?? "";
+    const token = /\?token=([A-Za-z0-9_-]+)/.exec(log)?.[1] ?? "";
     assert(token !== "", "boot log carried no token");
     const indexHtml = join(options.work, "index.html");
-    const root = http(options.port, `/?token=${token}`, ["-c", jar, "-b", jar, "-L"], indexHtml);
+    const root = http(port, `/?token=${token}`, ["-c", jar, "-b", jar, "-L"], indexHtml);
     assert(root === "200", `web root answered ${root}, expected 200`);
     const html = readFileSync(indexHtml, "utf8");
-    assert(
-      html.includes("@memcurio/dsh-plugin/client.js"),
-      "boot payload does not register @memcurio/dsh-plugin/client.js",
-    );
-    const route = http(options.port, "/memcurio/snapshot?session=probe", ["-H", "x-memcurio-token: bogus"]);
-    assert(route === "403", `/memcurio/snapshot answered ${route}, expected 403 (route registered, token rejected)`);
-    const unknown = http(options.port, "/memcurio-nope");
+    assert(html.includes("@memcurio/dsh-plugin/client.js"), "boot payload does not register @memcurio/dsh-plugin/client.js");
+
+    // A 403 alone cannot prove the token check ran: the transport rejects
+    // before dispatch, so an always-403 handler would also pass. Prove the
+    // handler's own contract: the forbidden body, the HEAD method guard, and a
+    // VALID plugin token reaching the snapshot dispatcher (unknown session ->
+    // 404 unknown-session).
+    const uiToken = /__MEMCURIO_UI__[^\n]{0,200}?"token":"([0-9a-f]{16,})"/.exec(html)?.[1];
+    assert(uiToken !== undefined, "index.html carries no __MEMCURIO_UI__ token");
+    const forbiddenBody = join(options.work, "forbidden.json");
+    const forbidden = http(port, "/memcurio/snapshot?session=probe", ["-H", "x-memcurio-token: bogus"], forbiddenBody);
+    assert(forbidden === "403", `/memcurio/snapshot answered ${forbidden}, expected 403 (token rejected)`);
+    assert(readFileSync(forbiddenBody, "utf8").includes("forbidden"), "403 body is not the plugin's forbidden response");
+    const head = http(port, "/memcurio/snapshot", ["-I"]);
+    assert(head === "405", `HEAD /memcurio/snapshot answered ${head}, expected 405 (route-specific method guard)`);
+    const snapshotBody = join(options.work, "snapshot.json");
+    const snapshot = http(port, "/memcurio/snapshot?session=probe", ["-H", `x-memcurio-token: ${uiToken}`], snapshotBody);
+    assert(snapshot === "404", `valid-token snapshot answered ${snapshot}, expected 404 (unknown-session)`);
+    assert(readFileSync(snapshotBody, "utf8").includes("unknown-session"), "valid-token snapshot is not the unknown-session 404");
+
+    // Registration alone does not prove the bundle is served: fetch the
+    // revisioned plugin bundle from the boot payload and check its content.
+    const href = /href="(plugins\/\?\?[^"]*@memcurio\/dsh-plugin\/client\.js[^"]*)"/.exec(html)?.[1];
+    assert(href !== undefined, "index.html carries no client bundle link");
+    const bundleFile = join(options.work, "client-bundle.js");
+    const bundleStatus = http(port, `/${href.replaceAll("&amp;", "&")}`, ["-b", jar], bundleFile);
+    assert(bundleStatus === "200", `client bundle answered ${bundleStatus}, expected 200`);
+    assert(readFileSync(bundleFile, "utf8").includes("memory_cite"), "client bundle does not contain the memcurio client code");
+
+    const unknown = http(port, "/memcurio-nope");
     assert(unknown === "404", `unknown route answered ${unknown}, expected 404`);
-    console.log(`   root=${root} memcurio=${route} unknown=${unknown}`);
+    console.log(`   root=${root} forbidden=${forbidden} head=${head} snapshot=${snapshot} bundle=${bundleStatus} unknown=${unknown}`);
   } finally {
     try {
       if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
@@ -315,15 +401,31 @@ async function main(): Promise<void> {
     } catch {
       // already gone
     }
-    // A probe must not leave a listener behind for the next run (the default
-    // port is pid-derived, but CI reuses machines across jobs).
-    if (!(await waitForPortClosed(options.port, 10_000))) {
-      console.warn(`   warning: 127.0.0.1:${options.port} still accepts connections after SIGKILL`);
+    // A probe must not leave a listener behind for the next run (the port is
+    // free-picked, but CI reuses machines across jobs).
+    if (!(await waitForPortClosed(port, 10_000))) {
+      console.warn(`   warning: 127.0.0.1:${port} still accepts connections after SIGKILL`);
     }
     await Bun.write(bootLog, readLog());
   }
 
-  console.log(JSON.stringify({ ok: true, version: options.version, tarball, profileDir, bootLog }, null, 2));
+  if (options.clean) {
+    rmSync(options.work, { recursive: true, force: true });
+  }
+  console.log(
+    JSON.stringify({ ok: true, version: options.version, tarball, profileDir, bootLog, cleaned: options.clean }, null, 2),
+  );
+}
+
+async function main(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.all) {
+    for (const version of SUPPORTED_HOSTS) {
+      await probeVersion({ ...options, version, work: join(options.work, version) });
+    }
+    return;
+  }
+  await probeVersion(options);
 }
 
 main().catch((error: unknown) => {

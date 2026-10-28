@@ -33,13 +33,14 @@ export interface TestHost {
 
 export interface TestHostOptions {
   /**
-   * Mount the native tool executor. Required by any test that calls
-   * `systemPrompt.assemble()` or `ctx.tools.execute()`.
+   * Mount the native tool executor (default true). Required by any test that
+   * calls `systemPrompt.assemble()` or `ctx.tools.execute()`; pass false only
+   * for a test that intentionally composes a narrower host.
    */
   executor?: boolean;
 }
 
-/** Compose the host services in the same order production uses. */
+/** Compose the data services the plugin injects, plus the executor by default. */
 export async function createTestHost(options: TestHostOptions = {}): Promise<TestHost> {
   const ctx = new Context();
   const fibers: Fiber[] = [
@@ -48,7 +49,7 @@ export async function createTestHost(options: TestHostOptions = {}): Promise<Tes
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SessionStore),
   ];
-  if (options.executor === true) {
+  if (options.executor !== false) {
     fibers.push(await ctx.plugin(NativeToolExecutor));
   }
   return { ctx, fibers };
@@ -76,17 +77,23 @@ export interface ExecuteOneInput {
  * `ctx.tools.execute` now takes `{ calls, signal, agent? }` and returns
  * `{ results: [{ callId, result }] }`; tests that predate the batch API pass a
  * single call and read the outcome directly. Keeping that shape in one helper
- * makes the migration one line per assertion instead of five hand-built
- * batches, and any future batch change stays local to this function.
+ * means each call site states one call and one outcome, and any future batch
+ * change stays local to this function.
  */
 export async function executeOne(ctx: Context, input: ExecuteOneInput): Promise<ToolExecutionResult> {
+  const wireArguments = JSON.stringify(input.arguments);
+  if (wireArguments === undefined) {
+    // JSON.stringify returns undefined for undefined/functions/symbols; the
+    // batch API requires the raw JSON string the model produced.
+    throw new Error(`tool arguments for ${input.name} are not JSON-serializable`);
+  }
   const batch = await ctx.tools.execute({
     calls: [
       {
         type: "tool-call",
         id: input.callId,
         name: input.name,
-        arguments: JSON.stringify(input.arguments),
+        arguments: wireArguments,
       },
     ],
     signal: input.signal ?? new AbortController().signal,
@@ -95,6 +102,9 @@ export async function executeOne(ctx: Context, input: ExecuteOneInput): Promise<
   const first = batch.results[0];
   if (first === undefined) {
     throw new Error(`tool executor returned no result for ${input.name}`);
+  }
+  if (first.callId !== input.callId) {
+    throw new Error(`tool executor returned ${first.callId} for call ${input.callId}`);
   }
   return first.result;
 }

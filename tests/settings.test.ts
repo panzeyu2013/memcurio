@@ -44,7 +44,7 @@ function temporaryRoot(): string {
  *  settings surface; the executor is still required because tool calls run
  *  through ctx.tools.execute and prompt assembly asks it for schemas. */
 function harness(): Promise<TestHost> {
-  return createTestHost({ executor: true });
+  return createTestHost();
 }
 
 const disposeFibers = disposeTestHost;

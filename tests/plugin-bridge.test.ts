@@ -10,13 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
-import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
-import LlmRuntime, { createUserMessage } from "@deepseek-ai/dsh-llm";
-import SessionStore, { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
-import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
-import ToolRuntime from "@deepseek-ai/dsh-tools";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 
+import { createTestHost, disposeTestHost } from "./support/host.js";
+import type { TestHost } from "./support/host.js";
 import { memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
@@ -37,22 +36,11 @@ function temporaryRoot(): string {
   return root;
 }
 
-async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
-  const ctx = new Context();
-  const fibers = [
-    await ctx.plugin(SystemPrompt),
-    await ctx.plugin(ToolRuntime),
-    await ctx.plugin(LlmRuntime),
-    await ctx.plugin(SessionStore),
-    // 0.1.7: the settings surface is the plugin config itself (volatile
-    // fields), so a test composition needs no settings provider.
-  ];
-  return { ctx, fibers };
+function runtime(): Promise<TestHost> {
+  return createTestHost();
 }
 
-async function disposeFibers(fibers: Fiber[]): Promise<void> {
-  for (const fiber of fibers.reverse()) await fiber.dispose();
-}
+const disposeFibers = disposeTestHost;
 
 function collector(): { deltas: ProjectedDelta[]; deliver(deltas: ProjectedDelta[]): void } {
   return {

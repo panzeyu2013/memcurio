@@ -78,11 +78,12 @@ jobs:
   compat:
     name: compat (${{ matrix.dsh }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         dsh:
-          # The peer floor and every published line the plugin claims.
+          # Keep in sync with SUPPORTED_HOSTS in scripts/probe-compat.ts.
           - 0.2.0-rc.1
           - 0.2.1-rc.2
           - 0.2.1-rc.4

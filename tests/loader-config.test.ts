@@ -14,12 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { Context } from "@deepseek-ai/cordis";
+import type { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
-import LlmRuntime from "@deepseek-ai/dsh-llm";
-import SessionStore from "@deepseek-ai/dsh-session";
-import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
-import ToolRuntime from "@deepseek-ai/dsh-tools";
+
+import { createTestHost } from "./support/host.js";
+import type { TestHost } from "./support/host.js";
 
 const temporaryRoots = new Set<string>();
 
@@ -44,13 +43,9 @@ interface VolatileConfig {
 describe("loader volatile config commit (0.1.7)", () => {
   test("a volatile-only update commits into the running refs without a remount", async () => {
     const root = temporaryRoot();
-    const ctx = new Context();
-    const services = [
-      await ctx.plugin(SystemPrompt),
-      await ctx.plugin(ToolRuntime),
-      await ctx.plugin(LlmRuntime),
-      await ctx.plugin(SessionStore),
-    ];
+    const host: TestHost = await createTestHost();
+    const ctx = host.ctx;
+    const services = host.fibers;
     // The real app constructs the Loader inside a boot plugin (its `isolate`
     // maps must be a child scope of the services), so this harness does too.
     let loader: Loader | undefined;

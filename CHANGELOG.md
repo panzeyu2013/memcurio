@@ -14,19 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte-identically). Every `@deepseek-ai/dsh-*` devDependency pin moved
   together; `@deepseek-ai/cordis` follows `~4.0.6-alpha.1`, and the packaged
   manifest's only runtime change is the `@deepseek-ai/schemastery` range
-  (`~3.18.6-alpha.1`), so the config schema shares one copy with the host on
-  that line.
+  (`~3.18.6-alpha.1`): on 0.2.2+ the config schema shares the host's copy; on
+  rc.x profiles a nested copy remains, which is inert because the schema only
+  serves this plugin's own config (the settings form is not host-projected).
 - **The test host now composes a tool executor.** 0.2.2-alpha.2 moves tool
   execution out of `dsh-tools` into a plugin (`dsh-base` mounts
   `dsh-tool-executor-native`), and prompt assembly asks that executor for
   tool schemas. `tests/support/host.ts` composes the production-shaped host
   and `executeOne()` wraps the batch API, so tool tests still assert one call
   at a time.
-- **CI probes the supported host matrix.** A compatibility job installs the
-  packed tarball into isolated profiles for the peer floor and each published
-  line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.4`, `0.2.2-alpha.2`),
-  composes the bundle, boots the web host and asserts the `/memcurio` route
-  is registered.
+- **CI and the release gate probe the supported host matrix.** The probe
+  installs the packed tarball into isolated profiles for the peer floor plus
+  one sample per published line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.4`,
+  `0.2.2-alpha.2`), composes the bundle, boots the web host and asserts the
+  mounted surface: the plugin's forbidden body, HEAD 405, a valid-token
+  snapshot dispatch (404 `unknown-session`), the served client bundle and an
+  unknown route 404. The release job runs the same matrix before any Release
+  mutation.
 
 ## [0.0.7] - 2026-10-27
 

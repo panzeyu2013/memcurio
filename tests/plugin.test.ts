@@ -43,7 +43,7 @@ function runtime(): Promise<TestHost> {
   // Production profiles mount the tool registry and its native executor
   // together; prompt assembly (tool schemas) and ctx.tools.execute both go
   // through the executor, so the test host must include it.
-  return createTestHost({ executor: true });
+  return createTestHost();
 }
 
 const disposeFibers = disposeTestHost;

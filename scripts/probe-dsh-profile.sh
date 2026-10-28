@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# Real-profile probe: pack this package, install the tarball into an isolated
-# DSH profile and verify that the shipped bundle composes.
+# Legacy real-profile probe: pack this package, install the tarball into an
+# isolated DSH profile and verify that the shipped bundle composes. The CI
+# version matrix lives in scripts/probe-compat.ts (gate + compose + boot +
+# route/client assertions); this script remains for a quick manual
+# import/compose check.
 #
 # What it proves on ANY machine with a working `dsh` CLI (or bun as a
 # stand-in, see below):
