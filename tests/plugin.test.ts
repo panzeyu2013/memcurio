@@ -4,16 +4,15 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
-import type { Fiber } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
 import { CompactionId } from "@deepseek-ai/dsh-compaction";
-import LlmRuntime, { LlmAdapter, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { AssistantMessage, GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
-import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
+import { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
-import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
-import ToolRuntime from "@deepseek-ai/dsh-tools";
 
+import { createTestHost, disposeTestHost, executeOne } from "./support/host.js";
+import type { TestHost } from "./support/host.js";
 import { Index } from "../src/core/db.js";
 import { sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
@@ -40,22 +39,14 @@ function temporaryRoot(): string {
   return root;
 }
 
-async function runtime(): Promise<{ ctx: Context; fibers: Fiber[] }> {
-  const ctx = new Context();
-  const fibers = [
-    await ctx.plugin(SystemPrompt),
-    await ctx.plugin(ToolRuntime),
-    await ctx.plugin(LlmRuntime),
-    await ctx.plugin(SessionStore),
-    // 0.1.7: the settings surface is the plugin config itself (volatile
-    // fields), so a test composition needs no settings provider.
-  ];
-  return { ctx, fibers };
+function runtime(): Promise<TestHost> {
+  // Production profiles mount the tool registry and its native executor
+  // together; prompt assembly (tool schemas) and ctx.tools.execute both go
+  // through the executor, so the test host must include it.
+  return createTestHost({ executor: true });
 }
 
-async function disposeFibers(fibers: Fiber[]): Promise<void> {
-  for (const fiber of fibers.reverse()) await fiber.dispose();
-}
+const disposeFibers = disposeTestHost;
 
 describe("memcurio data root", () => {
   test("defaults to the DSH home namespace, honoring DSH_HOME over ~/.dsh", () => {
@@ -660,11 +651,10 @@ describe("DSH plugin contract", () => {
       provider: "test",
       model: "test",
     });
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId("invalid-memory-search"),
       name: "memory_search",
       arguments: { query: 42 },
-      signal: new AbortController().signal,
     });
     expect(result.isError).toBe(true);
     expect(result.error?.info).toMatchObject({ code: "INVALID_ARGS" });
@@ -972,15 +962,14 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     }
     expect(filename).not.toBe("");
 
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId("cite-1"),
       name: "memory_cite",
       arguments: {
         entries: [`rollout_summaries/${filename}:2-5`, "MEMORY.md:10-14"],
         rolloutIds: [rolloutKey],
       },
-      agent: { session } as never,
-      signal: new AbortController().signal,
+      agent: { session },
     });
     expect(result.isError).toBe(false);
 
@@ -1015,12 +1004,11 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     });
     await ctx.sessions.flush(session);
 
-    const empty = await ctx.tools.execute({
+    const empty = await executeOne(ctx, {
       callId: ToolCallId("cite-empty"),
       name: "memory_cite",
       arguments: { entries: [], rolloutIds: [] },
-      agent: { session } as never,
-      signal: new AbortController().signal,
+      agent: { session },
     });
     expect(empty.isError).toBe(true);
     if (empty.isError) {
@@ -1334,12 +1322,11 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     });
     await ctx.sessions.flush(session);
 
-    const exec = async (name: string, args: Record<string, unknown>) => ctx.tools.execute({
+    const exec = (name: string, args: Record<string, unknown>) => executeOne(ctx, {
       callId: ToolCallId(`bounds-${name}`),
       name,
       arguments: args,
-      agent: { session } as never,
-      signal: new AbortController().signal,
+      agent: { session },
     });
     const search = await exec("memory_search", { query: "x", topK: 201 });
     expect(search.isError).toBe(true);

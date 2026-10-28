@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Aligned development tooling to DSH `0.2.2-alpha.2`** — no source or
+  built-artifact changes (`dist/` and `lib/client.js` rebuild byte-identically).
+  Every `@deepseek-ai/dsh-*` devDependency pin moved together;
+  `@deepseek-ai/cordis` follows `~4.0.6-alpha.1`, and the runtime
+  `@deepseek-ai/schemastery` range follows `~3.18.6-alpha.1` so the config
+  schema shares one copy with the host on that line.
+- **The test host now composes a tool executor.** 0.2.2-alpha.2 moves tool
+  execution out of `dsh-tools` into a plugin (`dsh-base` mounts
+  `dsh-tool-executor-native`), and prompt assembly asks that executor for
+  tool schemas. `tests/support/host.ts` composes the production-shaped host
+  and `executeOne()` wraps the batch API, so tool tests still assert one call
+  at a time.
+- **CI probes the supported host matrix.** A compatibility job installs the
+  packed tarball into isolated profiles for `0.2.1-rc.2`, `0.2.1-rc.4` and
+  `0.2.2-alpha.2`, composes the bundle, boots the web host and asserts the
+  `/memcurio` route is registered.
+
 ## [0.0.7] - 2026-10-27
 
 ### Changed

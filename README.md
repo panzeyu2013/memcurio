@@ -59,7 +59,7 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 
 ## 快速开始
 
-要求 node >= 22.13（`node:sqlite`，无需 flag）与一个可用的 DSH profile。尚未发布 registry，直接装 Release 里的 tarball：
+要求 node >= 22.13（`node:sqlite`，无需 flag）与一个可用的 DSH profile。注意：这是**本插件**的下限；宿主 DSH `0.2.2` 线自身要求 Node >= 24.9（`0.2.1-rc.x` 不要求），宿主版本要求以 DSH 为准。尚未发布 registry，直接装 Release 里的 tarball：
 
 ```bash
 dsh plugin --profile <profile> add \

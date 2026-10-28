@@ -574,3 +574,4 @@ export class MemcurioAdapter {
 - db.test.ts（v8/v9→v11 迁移 + provider claim isolation + blocked 配置态 + claim-token fencing + terminal retention + monotonic checkpoint + stable artifact collision + stage/note/queue/consolidation lease 方法）、generation.test.ts / purge.test.ts、config.test.ts（resourceRetentionDays 默认 7/下限 1）、paths.test.ts、sanitize/budget/transaction/events/ids 保持
 - plugin.test.ts（DSH 事件接线：会话生命周期 → 证据/入队、注入、turn/end 自动整合、退休不降级 Phase 2、无 channel → blocked / 结构性回退 Rule；worker 通道：瞬态重试换新 assembler、caller abort 不重试、宿主自报 ABORTED 归 provider、provider 失败至多两次重试、429 瞬态等）
 - settings.test.ts（0.1.7 设置面：Config schema 默认值与校验、volatile 实时视图、settings 服务页策略与 document-updated 通知、注入开关/registerTools/路由半对拒绝/桥快照）
+- `tests/support/host.ts`（测试组合的生产同构：system prompt + tool registry + native tool executor + LLM + session；`executeOne()` 把 batch API 收口成单次调用。0.2.2-alpha.2 起 `dsh-tools` 不再自己执行，缺 executor 时 `assemble()` 与 `execute()` 都会抛 `ToolExecutorUnavailableError`）

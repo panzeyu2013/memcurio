@@ -62,7 +62,7 @@ Full detail: [architecture.md](architecture.md); behavior contract: [contract.md
 
 ## Quick start
 
-Requires node >= 22.13 (`node:sqlite`, no flag) and a working DSH profile. The package is not on a registry yet: install the Release tarball directly:
+Requires node >= 22.13 (`node:sqlite`, no flag) and a working DSH profile. That floor is the plugin's own; the DSH `0.2.2` line itself requires Node >= 24.9 (`0.2.1-rc.x` does not), so the host's requirement wins. The package is not on a registry yet: install the Release tarball directly:
 
 ```bash
 dsh plugin --profile <profile> add \

@@ -1,9 +1,11 @@
-# memcurio 设置契约（DSH 0.2.1-rc.2）
+# memcurio 设置契约（DSH 0.2.2-alpha.2）
 
 > 本文件是**设置面**的唯一真源：上游规范 → 本插件落点 → 本仓库自己的约定 → 验证矩阵 → 运维要点。
 > 安装/升级步骤见 [operations.md](operations.md)；面板的 UI 呈现（几何、文案、状态）见 [ui.md](ui.md)；模块导出签名见 [contract.md](contract.md)。
 
-## 1. 上游规范（DSH 0.2.1-rc.2）
+## 1. 上游规范（DSH 0.2.2-alpha.2）
+
+0.2.2-alpha.2 只把 settings 的 fiber 访问器从 `fiber.config` 改名为 `fiber.effectiveConfig`（getter 返回同一个值），表单投影的输入不变；本契约不受影响。
 
 权威来源是 DSH 安装树里随包发布的 README（`node_modules/@deepseek-ai/...`）。完整文档在 DSH 源码仓（`docs/subsystems/settings.md`、`vendor/loader/README.md`、`boot/config-editor/README.md`），本仓库不复制全文，只固定"对第三方插件成立"的部分：
 

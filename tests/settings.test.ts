@@ -14,13 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
-import type { Fiber, Volatile } from "@deepseek-ai/cordis";
+import type { Volatile } from "@deepseek-ai/cordis";
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
-import LlmRuntime, { ToolCallId, createUserMessage } from "@deepseek-ai/dsh-llm";
-import SessionStore, { SessionId } from "@deepseek-ai/dsh-session";
-import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
-import ToolRuntime from "@deepseek-ai/dsh-tools";
+import { ToolCallId, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { SessionId } from "@deepseek-ai/dsh-session";
 
+import { createTestHost, disposeTestHost, executeOne } from "./support/host.js";
+import type { TestHost } from "./support/host.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
 import { installMemcurioSettings, pinnedRoute, settingsView } from "../src/plugin/settings.js";
@@ -40,27 +40,14 @@ function temporaryRoot(): string {
   return root;
 }
 
-interface Harness {
-  ctx: Context;
-  fibers: Fiber[];
-}
-
 /** Real host services, no settings provider: the plugin config IS the
- *  settings surface, so a test composition only needs the data services. */
-async function harness(): Promise<Harness> {
-  const ctx = new Context();
-  const fibers = [
-    await ctx.plugin(SystemPrompt),
-    await ctx.plugin(ToolRuntime),
-    await ctx.plugin(LlmRuntime),
-    await ctx.plugin(SessionStore),
-  ];
-  return { ctx, fibers };
+ *  settings surface; the executor is still required because tool calls run
+ *  through ctx.tools.execute and prompt assembly asks it for schemas. */
+function harness(): Promise<TestHost> {
+  return createTestHost({ executor: true });
 }
 
-async function disposeFibers(fibers: Fiber[]): Promise<void> {
-  for (const fiber of fibers.reverse()) await fiber.dispose();
-}
+const disposeFibers = disposeTestHost;
 
 describe("memcurio config schema", () => {
   test("provides the composition defaults and validates every field", () => {
@@ -313,13 +300,12 @@ describe("resolved settings behaviour", () => {
     expect(JSON.stringify(sink)).not.toContain("pre-existing note");
 
     // A memory_read now yields a usage tick (the bridge reference is not frozen).
-    await ctx.tools.execute({
+    await executeOne(ctx, {
       callId: ToolCallId("live-memory-read"),
       name: "memory_read",
       arguments: { path: "MEMORY.md" },
-      signal: new AbortController().signal,
       agent: { session },
-    } as never);
+    });
     expect(sink.some((delta) => delta.kind === "usage-tick")).toBe(true);
 
     // New audit rows after the seeded baseline do surface as receipts.
