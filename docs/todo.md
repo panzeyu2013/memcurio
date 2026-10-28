@@ -18,6 +18,7 @@
 - [ ] **DSH lifecycle 覆盖**：resume、compaction、多 workspace 并发、DSH rc 升级兼容性的 smoke（并入 R1 的 E2E 脚本）。
 - [ ] **宿主矩阵全量扫**：peer 区间接受 12 个 0.2.x 版本，兼容矩阵只覆盖 floor + 每条已发布线的一档（4/12）；rc.3、0.2.0-rc.2、0.2.1-alpha.* 未 boot。需要时扩矩阵或按线抽样说明。
 - [ ] **非 web profile**：兼容矩阵只 boot `web`；headless/sdk/minimal 组合（无 webserver/settings）未进矩阵，插件在这些组合的理论路径见 `cordis.patch.yml` 的 inject。
+- [ ] **矩阵布局保真度**：兼容矩阵用 bun 物化宿主管线（插件门禁仍走 pnpm），与用户 profile 的 pnpm-hoisted 布局不同；boot/route 只依赖 node 解析，但布局差异未单独覆盖。
 - [ ] **记忆工作台（M0）**：按 [ui.md](ui.md) 的标题栏单按钮入口、三面一轴、注入模拟器、跨 store 只读切换、对话即写面、⭐ 两层分离；在已实测的 shipped 面（`client/ui` 的 store/transport/wire、`settings` 面板）上组装（预 S0 view-model 脚手架已删除）。
 - [ ] **真实 DSH Web 人工确认**：会话内 header 入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及 Settings 面（记忆 ON/OFF 首行只读/不可用态、布尔开关行与输入控件样式、`settings.action` 导航行书页标记——0.2.2-alpha.2 行为未实机复核，客户端包自 0.2.1-rc.2 起字节相同）；注入转录行与指南行的实际渲染（自定义 chat node kind，0.1.7 会过滤普通 `context` 节点，0.2.2-alpha.2 未实机复核，需实机确认行位置/折叠与助手 turn 分组；兼容探针只覆盖启动与 HTTP 路由，不覆盖浏览器渲染）。
 - [ ] **`/memory` 客户端唤起、消息级跳转、审计收据客户端映射**：依赖上游能力/适配器。
