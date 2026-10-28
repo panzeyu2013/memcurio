@@ -22,7 +22,7 @@ try {
   const sync = openDbSync(join(dir, "sync.sqlite"));
   try {
     if (underBun ? sync.name !== "bun:sqlite" : sync.name !== "node:sqlite") {
-      throw new Error("unexpected synchronous driver: " + sync.name);
+      throw new Error(`unexpected synchronous driver: ${sync.name}`);
     }
   } finally {
     sync.close();
@@ -31,7 +31,7 @@ try {
   const asyncDriver = await openDb(join(dir, "async.sqlite"));
   try {
     if (underBun ? asyncDriver.name !== "bun:sqlite" : asyncDriver.name !== "node:sqlite") {
-      throw new Error("unexpected asynchronous driver: " + asyncDriver.name);
+      throw new Error(`unexpected asynchronous driver: ${asyncDriver.name}`);
     }
   } finally {
     asyncDriver.close();
@@ -54,7 +54,7 @@ try {
   } finally {
     index.close();
   }
-  console.log("sqlite smoke ok (" + (underBun ? "bun" : "node") + ")");
+  console.log(`sqlite smoke ok (${underBun ? "bun" : "node"})`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

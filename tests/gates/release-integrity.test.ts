@@ -141,6 +141,70 @@ describe("release notes", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Release gate self-containment (both workflows, structural)
+// ---------------------------------------------------------------------------
+
+function workflow(file: string): string {
+  return readFileSync(join(repoRoot, ".github", "workflows", file), "utf8");
+}
+
+/** Comment lines carry no instruction: a commented-out command must not
+ *  satisfy an invariant. */
+function instructions(yml: string): string {
+  return yml
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+}
+
+/** A bare `bun run test` step (parallel mode), as opposed to test:coverage. */
+const PARALLEL_SUITE = /^\s*(?:- run: )?bun run test\s*$/m;
+
+describe("release gate self-containment", () => {
+  test("the release gate enforces the coverage floor, not only the parallel suite", () => {
+    // release.yml states the gate must be self-contained: tag-triggered
+    // workflows race CI, so a red coverage job elsewhere cannot block a
+    // release. Running the parallel suite here would drop that floor.
+    const gate = instructions(workflow("release.yml"));
+    expect(gate).toContain("bun run test:coverage");
+    expect(gate).not.toMatch(PARALLEL_SUITE);
+  });
+
+  test("both workflows exercise the node:sqlite driver", () => {
+    for (const file of ["ci.yml", "release.yml"]) {
+      expect(instructions(workflow(file))).toContain("bun run smoke:node");
+    }
+  });
+
+  test("ci runs the node smoke on both supported node lines and keeps the parallel suite", () => {
+    const ci = instructions(workflow("ci.yml"));
+    expect(ci.match(/bun run smoke:node/g) ?? []).toHaveLength(2);
+    // The serial coverage run is the floor; the parallel mode fails differently
+    // (per-file worker isolation), so CI must keep running it too.
+    expect(ci).toMatch(PARALLEL_SUITE);
+  });
+
+  test("the workflow verifier runs after the toolchain is pinned", () => {
+    // It used to run before setup-bun on the runner's preinstalled node; the
+    // pin is only meaningful if the verifier comes after it.
+    for (const file of ["ci.yml", "release.yml"]) {
+      const text = workflow(file);
+      const bunStep = text.indexOf("oven-sh/setup-bun");
+      const verifyStep = text.indexOf("Verify workflow action pins");
+      expect(bunStep).toBeGreaterThan(-1);
+      expect(verifyStep).toBeGreaterThan(bunStep);
+      expect(instructions(text)).not.toContain("node scripts/verify-workflow-action-pins.mjs");
+    }
+  });
+
+  test("no workflow swallows a failing step", () => {
+    for (const file of ["ci.yml", "release.yml"]) {
+      expect(instructions(workflow(file))).not.toMatch(/\|\|\s*true/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Release fail-closed guard (the release.yml refuse step)
 // ---------------------------------------------------------------------------
 

@@ -72,7 +72,7 @@
     "prepare": "node scripts/prepare.mjs",
     "test": "bun test --parallel",
     "test:serial": "bun test --isolate",
-    "test:fast": "bun test",
+    "test:shared": "bun test",
     "test:coverage": "bun scripts/check-coverage.ts",
     "smoke:node": "node scripts/smoke-node-sqlite.mjs",
     "lint": "biome lint src tests scripts client",
@@ -81,7 +81,7 @@
     "eval:lexical": "bun run scripts/eval-lexical.ts",
     "pack:tgz": "bun run build && mkdir -p .smoke && bun pm pack --destination .smoke --ignore-scripts",
     "release:notes": "node scripts/release-notes.mjs",
-    "verify:workflows": "node scripts/verify-workflow-action-pins.mjs",
+    "verify:workflows": "bun scripts/verify-workflow-action-pins.mjs",
     "build:client": "bun scripts/build-client.ts"
   },
   "dependencies": {

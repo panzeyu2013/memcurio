@@ -16,7 +16,7 @@
  *   every mutation step is skipped on `workflow_dispatch` dry runs.
  * - ci.yml runs the same chain on push main, tags v*, PRs, and manual dispatch.
  *
- * Run: node scripts/verify-workflow-action-pins.mjs
+ * Run: bun run verify:workflows
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -131,8 +131,9 @@ if (!/node scripts\/release-notes\.mjs/.test(releaseYaml)) {
 if (!/bun pm pack --destination/.test(releaseYaml)) {
   fail("release.yml: the release must pack the tarball with bun pm pack --destination");
 }
-if (!/verify-workflow-action-pins\.mjs/.test(releaseYaml)) {
-  fail("release.yml: the gate must run this verifier (node scripts/verify-workflow-action-pins.mjs)");
+const runsVerifier = /bun run verify:workflows/;
+if (!runsVerifier.test(releaseYaml)) {
+  fail("release.yml: the gate must run this verifier (bun run verify:workflows)");
 }
 
 // ---- ci.yml structural invariants ----
@@ -146,8 +147,8 @@ if (!/permissions:\s*\n\s*contents:\s*read/.test(ciYaml)) {
 }
 if (!/bun install --frozen-lockfile/.test(ciYaml)) fail("ci.yml: installs must use bun install --frozen-lockfile");
 if (!/git diff --exit-code -- dist\/ lib\//.test(ciYaml)) fail("ci.yml: missing the committed-artifact drift check");
-if (!/verify-workflow-action-pins\.mjs/.test(ciYaml)) {
-  fail("ci.yml: must run this verifier (node scripts/verify-workflow-action-pins.mjs)");
+if (!runsVerifier.test(ciYaml)) {
+  fail("ci.yml: must run this verifier (bun run verify:workflows)");
 }
 
 const pins = [...seenActions.entries()].map(([action, sha]) => `${action}@${sha.slice(0, 7)}`).join(", ");

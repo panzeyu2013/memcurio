@@ -6,8 +6,8 @@
  * improves, never lower it to make a change pass.
  *
  * Deliberately serial (--isolate, no --parallel): parallel workers under-report
- * the merged coverage table (measured 89% lines vs 95% serial), which would
- * spuriously fail the gate.
+ * the merged coverage table (measured 89.6% lines vs 95.9% serial), which would
+ * spuriously fail the floor.
  */
 import { spawnSync } from "node:child_process";
 
@@ -19,7 +19,7 @@ const result = spawnSync(
   ["test", "--isolate", "--coverage", "--coverage-reporter=text"],
   { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 );
-const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g");
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const stripAnsi = (text: string): string => text.replace(ANSI, "");
 const stdout = stripAnsi(result.stdout ?? "");
 const stderr = stripAnsi(result.stderr ?? "");
@@ -30,7 +30,7 @@ if (result.status !== 0) {
 }
 
 // Bun writes the coverage table to stderr; test results share that stream.
-const report = stderr + "\n" + stdout;
+const report = `${stderr}\n${stdout}`;
 const summary = /^All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)/m.exec(report);
 if (!summary) {
   console.error("coverage gate: the text reporter has no 'All files' row");
