@@ -15,6 +15,8 @@ import { ensureLayout, indexDb } from "../src/core/paths.js";
 import { MAX_HIT_CHARS } from "../src/core/inject.js";
 import { readWorkspaceText, writeWorkspaceText } from "../src/core/workspace.js";
 
+import { daysAgo } from "./support/clock.js";
+
 let dir: string;
 let prevRoot: string | undefined;
 let prevProvider: string | undefined;
@@ -49,10 +51,6 @@ function finishingChannel(onFinish: () => void = () => undefined, delayMs = 0): 
     },
   };
 }
-
-/** Selection windows are measured against the wall clock, so fixtures use
- *  relative timestamps — a hard-coded date silently ages out of the window. */
-const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "engine-"));

@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { SUPPORTED_HOSTS } from "../scripts/compat-hosts.js";
+import { SUPPORTED_HOSTS } from "../../scripts/compat-hosts.js";
 
-const repoRoot = join(import.meta.dir, "..");
+const repoRoot = join(import.meta.dir, "..", "..");
 
 /** The `dsh:` list under the `compat` job in ci.yml, in file order. */
 function ciMatrixVersions(): string[] {

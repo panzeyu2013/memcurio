@@ -37,7 +37,7 @@ describe("fitLines", () => {
     expect(r.lines).toEqual(["a", "b"]);
   });
 
-  test("zero or negative budget injects nothing", () => {
+  test("fitLines emits no lines for a zero or negative budget", () => {
     for (const budget of [0, -5]) {
       const r = fitLines(["abc"], budget);
       expect(r.lines).toHaveLength(0);
@@ -62,7 +62,7 @@ describe("truncateMiddle", () => {
     expect(rendered).not.toContain("m".repeat(200));
   });
 
-  test("zero or negative budget injects nothing", () => {
+  test("truncateMiddle returns empty for a zero or negative budget", () => {
     expect(truncateMiddle("abc", 0)).toBe("");
     expect(truncateMiddle("abc", -1)).toBe("");
   });

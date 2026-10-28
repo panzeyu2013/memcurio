@@ -7,9 +7,7 @@
  * sidebar row with the same label must stay untouched), the ambiguity refusal,
  * and complete removal on disposal.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-
-import { JSDOM } from "jsdom";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   markSettingsNavRow,
@@ -19,19 +17,12 @@ import {
   SettingsNavProbe,
 } from "../client/settings/nav-mark.js";
 
+import { installDom, loadReact } from "./support/dom.js";
+
 /* ------------------------------------------------------------------ DOM --- */
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
-const win = dom.window as unknown as Window & typeof globalThis;
-const globals = globalThis as unknown as Record<string, unknown>;
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "CustomEvent", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"]) {
-  globals[key] = (win as unknown as Record<string, unknown>)[key];
-}
-globals.IS_REACT_ACT_ENVIRONMENT = true;
-
-const React = await import("react");
-const { createRoot } = await import("react-dom/client");
-const { act } = await import("react");
+const testDom = installDom("<!doctype html><html><body></body></html>");
+const { React, createRoot, act } = await loadReact();
 
 const SETTINGS_NAV = `<div role="dialog" aria-modal="true"><nav>
   <button type="button"><svg></svg><span>General</span></button>
@@ -43,8 +34,21 @@ function marksNothing(): boolean {
   return document.querySelector(`[${NAV_MARK_ATTRIBUTE}]`) === null;
 }
 
+/** MutationObserver callbacks land on a later task; poll instead of sleeping. */
+async function waitForMark(element: Element | null | undefined): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (element?.getAttribute(NAV_MARK_ATTRIBUTE) === "true") return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("nav row was never marked");
+}
+
 afterEach(() => {
   document.body.innerHTML = "";
+});
+afterAll(() => {
+  testDom.restore();
 });
 
 describe("settings-nav mark", () => {
@@ -140,7 +144,7 @@ describe("settings-nav probe", () => {
     replacement.innerHTML = '<button type="button"><svg></svg><span>Memory</span></button>';
     dialog.querySelector("nav")?.replaceWith(replacement);
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForMark(replacement.querySelector("button"));
     });
     expect(replacement.querySelector("button")?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
     await act(async () => {
@@ -167,7 +171,7 @@ describe("settings-nav probe", () => {
     row?.replaceWith(replacement);
     expect(replacement.getAttribute(NAV_MARK_ATTRIBUTE)).toBeNull();
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForMark(replacement);
     });
     expect(replacement.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
     await act(async () => {
@@ -216,7 +220,7 @@ describe("settings-nav probe timing", () => {
     // The settings.action seat can mount before the shell commits its dialog.
     document.body.insertAdjacentHTML("beforeend", SETTINGS_NAV);
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForMark(document.querySelectorAll('[role="dialog"] nav button')[1]);
     });
     const row = document.querySelectorAll('[role="dialog"] nav button')[1];
     expect(row?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
@@ -226,7 +230,7 @@ describe("settings-nav probe timing", () => {
     replacement.innerHTML = "<svg></svg><span>记忆</span>";
     row?.replaceWith(replacement);
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForMark(replacement);
     });
     expect(replacement.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
     await act(async () => {

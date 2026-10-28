@@ -7,27 +7,24 @@
  * purity). Layer 2 renders the section with real react-dom in jsdom against
  * the real controller + draft + instant models.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ReactElement } from "react";
 
 import { Context } from "@deepseek-ai/cordis";
 import { standardHookPropName } from "@deepseek-ai/dsh-client-ui-slots";
-import { JSDOM } from "jsdom";
 
 import {
   MemcurioSettingsController,
-  type ConfigFormPort,
-  type ConfigFormSnapshotLike,
   type MemcurioSettingsView,
-  type SettingsPathOp,
 } from "../client/settings/controller.js";
 import { SettingsFormModel } from "../client/settings/draft.js";
 import { InjectionSwitchModel } from "../client/settings/instant.js";
 import { MemcurioSettingsSection } from "../client/settings/section.js";
 import { mountStyles } from "../client/settings/styles.js";
-import { foldSnapshot } from "./support/settings-fake.js";
+import { installDom, loadReact } from "./support/dom.js";
+import { FakeSettingsPort } from "./support/settings-port.js";
 import type { SettingsKey } from "../client/settings/locales.js";
 import { en, zh } from "../client/settings/locales.js";
 import { en as uiEn, zh as uiZh } from "../client/ui/locales.js";
@@ -37,73 +34,23 @@ const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, re
 
 /* ------------------------------------------------------------------ DOM --- */
 
-const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-  pretendToBeVisual: true,
-});
-const win = dom.window as unknown as Window & typeof globalThis;
-const globals = globalThis as unknown as Record<string, unknown>;
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "CustomEvent", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"]) {
-  globals[key] = (win as unknown as Record<string, unknown>)[key];
-}
-globals.IS_REACT_ACT_ENVIRONMENT = true;
-
-const React = await import("react");
-const { createRoot } = await import("react-dom/client");
-const { act } = await import("react");
+const testDom = installDom();
+const win = testDom.window;
+const { React, createRoot, act } = await loadReact();
 
 afterEach(() => {
   document.body.innerHTML = '<div id="root"></div>';
 });
+afterAll(() => {
+  testDom.restore();
+});
 
 /* --------------------------------------------------------- scope port --- */
 
-class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
-  snapshot: ConfigFormSnapshotLike<MemcurioSettingsView> = {
-    status: "ready",
-    value: BASE,
-    base: BASE,
-    user: undefined,
-    revision: 1,
-    writable: true,
-  };
-  readonly mutations: Array<{ ops: readonly SettingsPathOp[]; expectedRevision?: number }> = [];
-  private readonly listeners = new Set<() => void>();
-
-  getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
-    return this.snapshot;
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  emit(): void {
-    for (const listener of this.listeners) listener();
-  }
-
-  private fold(ops: readonly SettingsPathOp[]): void {
-    this.snapshot = foldSnapshot(this.snapshot, ops);
-  }
-
-  async set(field: string, value: unknown): Promise<boolean> {
-    this.fold([{ op: "set", path: [field], value }]);
-    this.emit();
-    return true;
-  }
-
-  async unset(field: string): Promise<boolean> {
-    this.fold([{ op: "unset", path: [field] }]);
-    this.emit();
-    return true;
-  }
-
-  async mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean> {
-    this.mutations.push({ ops, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
-    if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) return false;
-    this.fold(ops);
-    this.emit();
-    return true;
+class PanelScope extends FakeSettingsPort {
+  constructor() {
+    // The rendered panel subscribes through the port: notify on land.
+    super({ emitOnLand: true });
   }
 }
 
@@ -391,7 +338,17 @@ async function click(element: Element | null | undefined): Promise<void> {
   if (element === null || element === undefined) throw new Error("click target missing");
   await act(async () => {
     (element as HTMLElement).click();
-    await Promise.resolve();
+    // A click starts a settings write whose continuation lands on a later
+    // task; keep that task inside act so React does not warn (and so the
+    // assertion sees the settled state).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** Publish an external snapshot change inside act (subscription fan-out). */
+async function emitInAct(scope: PanelScope): Promise<void> {
+  await act(async () => {
+    scope.emit();
   });
 }
 
@@ -571,7 +528,7 @@ describe("settings panel in jsdom (real react-dom)", () => {
       value: { ...BASE, injectContext: true },
       user: {},
     };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     const face = panel.switchModel.face();
     expect(face.value).toBe(true);
@@ -672,7 +629,7 @@ describe("settings panel in jsdom (real react-dom)", () => {
     const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
     await type(budget, "900");
     panel.scope.snapshot = { ...panel.scope.snapshot, revision: 2 };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     await click(saveButton(panel));
     expect(panel.scope.mutations).toHaveLength(1);
@@ -808,26 +765,26 @@ describe("settings panel in jsdom (real react-dom)", () => {
   test("renders loading, unavailable, read-only, and legacy memory faces", async () => {
     const panel = await mountPanel();
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "loading", value: undefined };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.loading);
     expect(panel.container.querySelector(".memcurio-settings-switch")).toBeNull();
     expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusLoading);
 
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", value: undefined, writable: true };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.unavailable);
     expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusUnavailable);
 
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "unavailable", mode: "memory", writable: false };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
     expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusReadOnly);
 
     panel.scope.snapshot = { ...panel.scope.snapshot, status: "ready", mode: undefined, value: BASE, writable: false };
-    panel.scope.emit();
+    await emitInAct(panel.scope);
     await panel.repaint();
     expect(panel.container.textContent).toContain(en.readOnly);
     expect((panel.container.querySelector(".memcurio-settings-switch") as HTMLButtonElement).disabled).toBe(true);
@@ -931,7 +888,7 @@ describe("settings panel regressions", () => {
       });
     await click(control);
     expect(control.getAttribute("aria-checked")).toBe("false");
-    panel.scope.emit(); // unrelated external notification while pending
+    await emitInAct(panel.scope); // unrelated external notification while pending
     await panel.repaint();
     expect(control.getAttribute("aria-checked")).toBe("false");
     await act(async () => {
@@ -1014,7 +971,7 @@ describe("settings panel subscription", () => {
       value: { ...BASE, injectBudgetTokens: 1234 },
       revision: 6,
     };
-    panel.scope.emit(); // no manual repaint: the seat subscription must drive it
+    await emitInAct(panel.scope); // no manual repaint: the seat subscription must drive it
     await act(async () => {
       await Promise.resolve();
     });

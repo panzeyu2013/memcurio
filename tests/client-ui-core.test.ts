@@ -3,7 +3,7 @@
  * guards, the inline marks, and the host transport's request guard.
  *
  * The browser-side rendering contract (loader registration, slot entries,
- * bundle purity) is covered by client-panel-render.test.ts; this file owns
+ * bundle purity) is covered by client-settings-panel.test.ts; this file owns
  * the derivations those surfaces are built on.
  */
 import { describe, expect, test } from "bun:test";
@@ -21,16 +21,7 @@ import { createUiTransportClient } from "../client/ui/transport.js";
 import { isUiDelta, isUiEventFrame, isUiSnapshotResponse, type UiSnapshot } from "../client/ui/wire.js";
 import { isSameOriginLoopbackRequest } from "../src/plugin/ui-transport.js";
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(5);
-  }
-  throw new Error("waitFor timed out");
-};
+import { sleep, waitFor } from "./support/async.js";
 
 const SNAPSHOT: UiSnapshot = {
   at: "2026-09-14T00:00:00.000Z",
@@ -400,7 +391,7 @@ describe("transport ordering", () => {
         onDeltas: () => undefined,
       });
       client.start();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await waitFor(() => calls.length > 0 && calls.some((call) => call.includes("/events")));
       // First call must be the snapshot (gap-closing order).
       expect(calls[0]).toContain("/snapshot");
       expect(calls.some((call) => call.includes("/events"))).toBe(true);
@@ -408,10 +399,12 @@ describe("transport ordering", () => {
 
       // A newer frame advances the floor; an older snapshot must not overwrite it.
       controller?.enqueue(encoder.encode('data: {"seq":5,"deltas":[]}\n\n'));
-      await new Promise((resolve) => setTimeout(resolve, 20));
       snapshotSeq = 3;
       client.refresh();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // A second snapshot request is the barrier: the client admits refreshes
+      // only after the stream frame above was folded, so the floor is
+      // observable without a fixed sleep.
+      await waitFor(() => calls.filter((call) => call.includes("/snapshot")).length >= 2);
       expect(applied).toEqual([1]);
 
       controller?.close();

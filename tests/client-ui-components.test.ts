@@ -4,9 +4,7 @@
  * Runs against jsdom with the real react-dom, so a createElement-level bug
  * (wrong prop, stale seat, broken toggle) fails here instead of in the GUI.
  */
-import { afterEach, describe, expect, test } from "bun:test";
-
-import { JSDOM } from "jsdom";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 
 import type { MemorySettingsFaceLike, MemorySettingsHook, MemoryToolBlockLike } from "../client/ui/contracts.js";
 import {
@@ -26,22 +24,20 @@ import { createMemoryUiStore } from "../client/ui/model.js";
 import { MemoryToolRow } from "../client/ui/tool-rows.js";
 import type { UiSnapshot } from "../client/ui/wire.js";
 
+import { eventCalls, waitFor } from "./support/async.js";
+import { installDom, loadReact } from "./support/dom.js";
+
 /* ------------------------------------------------------------------ DOM --- */
 
-const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true });
-const win = dom.window as unknown as Window & typeof globalThis;
-const globals = globalThis as unknown as Record<string, unknown>;
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "MouseEvent", "CustomEvent", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"]) {
-  globals[key] = (win as unknown as Record<string, unknown>)[key];
-}
-globals.IS_REACT_ACT_ENVIRONMENT = true;
-
-const React = await import("react");
-const { createRoot } = await import("react-dom/client");
-const { act } = await import("react");
+const testDom = installDom();
+const win = testDom.window;
+const { React, createRoot, act } = await loadReact();
 
 afterEach(() => {
   document.body.innerHTML = '<div id="root"></div>';
+});
+afterAll(() => {
+  testDom.restore();
 });
 
 const t = (key: string, params?: Record<string, unknown>): string =>
@@ -468,17 +464,6 @@ describe("memory injection context row", () => {
  * a fake cordis context and a fake fetch.
  */
 describe("entry transport rebind on session switch", () => {
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-  const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void> => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (predicate()) return;
-      await sleep(5);
-    }
-    throw new Error("waitFor timed out");
-  };
-  const eventCalls = (calls: readonly string[]): string[] => calls.filter((call) => call.includes("/events"));
-
   test("switching sessions closes the old stream and re-subscribes for the new session", async () => {
     const globals = globalThis as unknown as Record<string, unknown>;
     const originalFetch = globalThis.fetch;

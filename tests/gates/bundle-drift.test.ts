@@ -8,10 +8,10 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildClientBundle } from "../scripts/build-client.js";
+import { buildClientBundle } from "../../scripts/build-client.js";
 
 test("lib/client.js is the current esbuild output", async () => {
   const built = await buildClientBundle();
-  const shipped = readFileSync(join(import.meta.dir, "..", "lib", "client.js"), "utf8");
+  const shipped = readFileSync(join(import.meta.dir, "..", "..", "lib", "client.js"), "utf8");
   expect(shipped).toBe(built);
 });

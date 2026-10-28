@@ -18,6 +18,8 @@ import type { HostBridge } from "../src/plugin/bridge.js";
 import type { ProjectedDelta } from "../src/services/projector.js";
 import { installUiTransport, UI_BASE_PATH, UI_BOOT_GLOBAL, type UiTransport } from "../src/plugin/ui-transport.js";
 
+import { waitFor } from "./support/async.js";
+
 interface BridgeSinkLike {
   deliver(deltas: ProjectedDelta[], root: string): void;
 }
@@ -32,15 +34,6 @@ interface Harness {
 
 function delta(sessionId: string, text: string): ProjectedDelta {
   return { kind: "inject-updated", sessionId, staticText: text, duplicate: false } as ProjectedDelta;
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("waitFor timed out");
 }
 
 /** Read an SSE body until `until` accepts the accumulated text (or timeout). */

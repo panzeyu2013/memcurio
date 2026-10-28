@@ -5,8 +5,6 @@
  * sink, plus the hostBridgeOf() accessor.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
@@ -15,6 +13,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 
 import { createTestHost, disposeTestHost } from "./support/host.js";
+import { createTempRoots } from "./support/temp.js";
 import type { TestHost } from "./support/host.js";
 import { memoryWorkspace } from "../src/core/paths.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
@@ -23,17 +22,14 @@ import type { ProjectedDelta } from "../src/services/projector.js";
 
 const plugin = await import("../src/plugin/index.js");
 
-const temporaryRoots = new Set<string>();
+const tempRoots = createTempRoots();
 
 afterEach(() => {
-  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
-  temporaryRoots.clear();
+  tempRoots.cleanup();
 });
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "memcurio-bridge-dsh-"));
-  temporaryRoots.add(root);
-  return root;
+  return tempRoots.root("memcurio-bridge-dsh-");
 }
 
 function runtime(): Promise<TestHost> {

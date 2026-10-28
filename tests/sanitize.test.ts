@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 
-import { fitLines, estimateTokens } from "../src/core/budget.js";
 import { normalizeText, redactSecrets, sanitizeForInjection, scanInjection } from "../src/core/sanitize.js";
 
 describe("redactSecrets", () => {
@@ -310,27 +309,5 @@ describe("scanInjection", () => {
     expect(normalizeText("a\u202eb")).toBe("ab");
     expect(normalizeText("ｆｏｏｂａｒ")).toBe("foobar");
     expect(normalizeText("a\u00adb")).toBe("ab");
-  });
-});
-
-describe("fitLines", () => {
-  test("truncates when over budget", () => {
-    const lines = ["很短的条目", "另一个条目", "第三条"];
-    const r = fitLines(lines, 3);
-    expect(r.truncated).toBeGreaterThan(0);
-    expect(r.usedTokens).toBeLessThanOrEqual(3);
-    expect(r.lines.length + r.truncated).toBe(3);
-  });
-
-  test("keeps everything within budget", () => {
-    const lines = ["ab", "cd"];
-    const r = fitLines(lines, 100);
-    expect(r.truncated).toBe(0);
-    expect(r.lines).toEqual(["ab", "cd"]);
-  });
-
-  test("estimateTokens heuristic", () => {
-    expect(estimateTokens("跨会话记忆")).toBe(5);
-    expect(estimateTokens("")).toBe(0);
   });
 });

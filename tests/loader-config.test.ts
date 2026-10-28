@@ -9,8 +9,6 @@
  * half) must leave the running references untouched.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,19 +16,17 @@ import type { Context } from "@deepseek-ai/cordis";
 import { Loader } from "@deepseek-ai/cordis-plugin-loader";
 
 import { createTestHost } from "./support/host.js";
+import { createTempRoots } from "./support/temp.js";
 import type { TestHost } from "./support/host.js";
 
-const temporaryRoots = new Set<string>();
+const tempRoots = createTempRoots();
 
 afterEach(() => {
-  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
-  temporaryRoots.clear();
+  tempRoots.cleanup();
 });
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "memcurio-loader-"));
-  temporaryRoots.add(root);
-  return root;
+  return tempRoots.root("memcurio-loader-");
 }
 
 /** Volatile slice of the resolved entry config this contract is about. */

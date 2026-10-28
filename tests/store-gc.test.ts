@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { integrationLifecycleAudit, integrationStoreGcPlan, integrationStoreGcRestore } from "../src/api.js";
 import { openDbSync } from "../src/core/sqlite.js";
 
 import {
@@ -947,6 +948,7 @@ describe("two-pass threshold and empty-tier gates", () => {
         writeFileSync(join(store, "memory", "MEMORY.md"), "");
         recordStoreOrigin(store, join(home, "worktrees", "repo-t", key), "2026-08-01T00:00:00.000Z");
       }
+      const contentStore = join(base, "dsh", "aaaa000000000fb");
       const audits: Record<string, unknown>[] = [];
       const result = await executeStoreGc(
         base,
@@ -955,8 +957,10 @@ describe("two-pass threshold and empty-tier gates", () => {
           now: NOW,
           protectedRoots: new Set(),
           isProtected: () => false,
+          // Select by exact store path. A substring match would flip both
+          // stores whenever the ambient checkout path happens to contain it.
           inspect: async (dir) =>
-            dir.includes("fb")
+            dir === contentStore
               ? { pending: 0, leaseActive: false, content: true }
               : undefined,
           audit: (row) => audits.push(row),
@@ -1000,58 +1004,40 @@ test("purge drops only the tombstone that points at the removed entry", () => {
   }
 });
 
-test("a truncated database is not restored as success", () => {
-  const { base, home, cleanup } = setup();
-  try {
-    seededOrphan(base, home, "aaaa000000000ff1", 2 * 3_600_000);
-    const entry = quarantineStore(
-      base,
-      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
-      {},
-      Date.parse("2026-06-01T00:00:00.000Z"),
-    ).entry;
-    writeFileSync(join(entry, "store", "index.sqlite"), "not a database");
-    const result = restoreStore(base, "aaaa000000000ff1", NOW);
-    expect("conflict" in result).toBe(true);
-    expect(existsSync(join(entry, ".restore-conflict"))).toBe(true);
-  } finally {
-    cleanup();
-  }
-});
-
-test("an empty database file is not restored as success", () => {
-  const { base, home, cleanup } = setup();
-  try {
-    seededOrphan(base, home, "aaaa000000000ff2", 2 * 3_600_000);
-    const entry = quarantineStore(
-      base,
-      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
-      {},
-      Date.parse("2026-06-01T00:00:00.000Z"),
-    ).entry;
-    writeFileSync(join(entry, "store", "index.sqlite"), "");
-    const result = restoreStore(base, "aaaa000000000ff2", NOW);
-    expect("conflict" in result).toBe(true);
-  } finally {
-    cleanup();
-  }
-});
-
-test("a one-kilobyte corrupt database is not restored as success", () => {
-  const { base, home, cleanup } = setup();
-  try {
-    seededOrphan(base, home, "aaaa000000001001", 2 * 3_600_000);
-    const entry = quarantineStore(
-      base,
-      firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
-      {},
-      Date.parse("2026-06-01T00:00:00.000Z"),
-    ).entry;
+test("a corrupt database is never restored as success", () => {
+  const cases = [
+    // Truncated garbage.
+    { key: "aaaa000000000ff1", payload: Buffer.from("not a database"), expectMarker: true },
+    // An empty file.
+    { key: "aaaa000000000ff2", payload: Buffer.alloc(0) },
     // Above the size gate, below a page: only quick_check can reject it.
-    writeFileSync(join(entry, "store", "index.sqlite"), Buffer.alloc(1_024));
-    const result = restoreStore(base, "aaaa000000001001", NOW);
-    expect("conflict" in result).toBe(true);
-    expect(existsSync(join(entry, ".restore-conflict"))).toBe(true);
+    { key: "aaaa000000001001", payload: Buffer.alloc(1_024), expectMarker: true },
+  ];
+  const { base, home, cleanup } = setup();
+  try {
+    const outcomes = cases.map((c) => {
+      seededOrphan(base, home, c.key, 2 * 3_600_000);
+      const entry = quarantineStore(
+        base,
+        firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+        {},
+        Date.parse("2026-06-01T00:00:00.000Z"),
+      ).entry;
+      writeFileSync(join(entry, "store", "index.sqlite"), c.payload);
+      const result = restoreStore(base, c.key, NOW);
+      return {
+        key: c.key,
+        conflict: "conflict" in result,
+        ...(c.expectMarker === undefined ? {} : { marker: existsSync(join(entry, ".restore-conflict")) }),
+      };
+    });
+    expect(outcomes).toEqual(
+      cases.map((c) => ({
+        key: c.key,
+        conflict: true,
+        ...(c.expectMarker === undefined ? {} : { marker: c.expectMarker }),
+      })),
+    );
   } finally {
     cleanup();
   }
@@ -1127,5 +1113,74 @@ test("a database whose quick_check fails is not restored", () => {
   } finally {
     cleanup();
   }
+});
+
+
+describe("public API wrappers (src/api.ts)", () => {
+  test("the plan is a read-only preview and honors protected roots", () => {
+    const { base, home, cleanup } = setup();
+    try {
+      const store = seededOrphan(base, home, "aaaa000000001101", 2 * 3_600_000);
+      const plan = integrationStoreGcPlan(base, policy(home), NOW, new Set());
+      expect(plan.candidates.map((candidate) => candidate.key)).toContain("aaaa000000001101");
+      // A preview writes no lifecycle bookkeeping.
+      expect(integrationLifecycleAudit(base)).toEqual([]);
+      const protectedPlan = integrationStoreGcPlan(base, policy(home), NOW, new Set([store]));
+      expect(protectedPlan.candidates).toHaveLength(0);
+      expect(protectedPlan.skipped.some((entry) => entry.reason === "active")).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the lifecycle audit wrapper returns the newest requested window", () => {
+    const { base, cleanup } = setup();
+    try {
+      for (let i = 0; i < 3; i++) {
+        appendLifecycleAudit(base, {
+          at: "2026-10-0" + String(i + 1) + "T00:00:00.000Z",
+          action: "store.quarantine",
+          key: "k" + String(i),
+        });
+      }
+      expect(integrationLifecycleAudit(base).map((row) => row.key)).toEqual(["k0", "k1", "k2"]);
+      expect(integrationLifecycleAudit(base, 2).map((row) => row.key)).toEqual(["k1", "k2"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the restore wrapper audits both the conflict and the successful restore", () => {
+    const { base, home, cleanup } = setup();
+    try {
+      const key = "aaaa000000001102";
+      seededOrphan(base, home, key, 2 * 3_600_000);
+      quarantineStore(
+        base,
+        firstCandidate(planStoreGc(base, policy(home), { now: NOW })),
+        {},
+        Date.parse("2026-06-01T00:00:00.000Z"),
+      );
+      const live = makeStore(base, key);
+      const conflict = integrationStoreGcRestore(base, key, NOW);
+      expect("conflict" in conflict).toBe(true);
+      expect(existsSync(join(live, "index.sqlite"))).toBe(true);
+
+      rmSync(live, { recursive: true, force: true });
+      const restored = integrationStoreGcRestore(base, key, NOW);
+      expect("restoredTo" in restored).toBe(true);
+      if ("restoredTo" in restored) {
+        expect(existsSync(join(restored.restoredTo, "index.sqlite"))).toBe(true);
+        expect(readFileSync(join(restored.restoredTo, "memory", "MEMORY.md"), "utf8")).toBe("# content");
+      }
+      expect(
+        integrationLifecycleAudit(base)
+          .filter((row) => row.action === "store.restore")
+          .map((row) => row.outcome),
+      ).toEqual(["conflict", "restored"]);
+    } finally {
+      cleanup();
+    }
+  });
 });
 

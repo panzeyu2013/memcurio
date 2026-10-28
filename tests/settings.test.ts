@@ -9,8 +9,6 @@
  * the plugin's side of the contract plus the behavior an activation honors.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Context } from "@deepseek-ai/cordis";
@@ -20,6 +18,7 @@ import { ToolCallId, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 
 import { createTestHost, disposeTestHost, executeOne } from "./support/host.js";
+import { createTempRoots } from "./support/temp.js";
 import type { TestHost } from "./support/host.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
@@ -27,17 +26,14 @@ import { installMemcurioSettings, pinnedRoute, settingsView } from "../src/plugi
 
 const plugin = await import("../src/plugin/index.js");
 
-const temporaryRoots = new Set<string>();
+const tempRoots = createTempRoots();
 
 afterEach(() => {
-  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
-  temporaryRoots.clear();
+  tempRoots.cleanup();
 });
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "memcurio-settings-"));
-  temporaryRoots.add(root);
-  return root;
+  return tempRoots.root("memcurio-settings-");
 }
 
 /** Real host services, no settings provider: the plugin config IS the

@@ -4,9 +4,9 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parsePackedPaths } from "./pack-output.js";
+import { parsePackedPaths } from "../../scripts/pack-output.js";
 
-const repoRoot = join(import.meta.dir, "..");
+const repoRoot = join(import.meta.dir, "..", "..");
 const tempDirs: string[] = [];
 
 function tempDir(prefix: string): string {

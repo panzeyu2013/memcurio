@@ -6,73 +6,17 @@ import { describe, expect, test } from "bun:test";
 
 import {
   MemcurioSettingsController,
-  type ConfigFormPort,
-  type ConfigFormSnapshotLike,
   type MemcurioSettingsView,
-  type SettingsPathOp,
 } from "../client/settings/controller.js";
 import { SettingsFormModel } from "../client/settings/draft.js";
-import { foldSnapshot } from "./support/settings-fake.js";
+import { FakeSettingsPort } from "./support/settings-port.js";
 
 const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
-class DraftScope implements ConfigFormPort<MemcurioSettingsView> {
-  snapshot: ConfigFormSnapshotLike<MemcurioSettingsView> = {
-    status: "ready",
-    value: BASE,
-    base: BASE,
-    user: undefined,
-    revision: 1,
-    writable: true,
-  };
-  readonly mutations: Array<{ ops: readonly SettingsPathOp[]; expectedRevision?: number }> = [];
-  /** The next write never settles, like a hung settings RPC. */
-  hangNext = false;
-  /** The next write rejects, like a dead transport. */
-  rejectNext = false;
-  /** The next mutation lands but answers false (a late read-back refusal). */
-  landButRefuse = false;
-  private readonly listeners = new Set<() => void>();
-
-  getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
-    return this.snapshot;
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  emit(): void {
-    for (const listener of this.listeners) listener();
-  }
-
-  /** One accepted write: the snapshot folds through the Host's reducer. */
-  private write(ops: readonly SettingsPathOp[]): Promise<boolean> | boolean {
-    if (this.hangNext) return new Promise<boolean>(() => undefined);
-    if (this.rejectNext) {
-      this.rejectNext = false;
-      throw new Error("transport down");
-    }
-    const refused = this.landButRefuse;
-    this.landButRefuse = false;
-    this.snapshot = foldSnapshot(this.snapshot, ops);
-    this.emit();
-    return !refused;
-  }
-
-  async set(field: string, value: unknown): Promise<boolean> {
-    return this.write([{ op: "set", path: [field], value }]);
-  }
-
-  async unset(field: string): Promise<boolean> {
-    return this.write([{ op: "unset", path: [field] }]);
-  }
-
-  async mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean> {
-    this.mutations.push({ ops, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
-    if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) return false;
-    return this.write(ops);
+class DraftScope extends FakeSettingsPort {
+  constructor() {
+    // The staged model subscribes through the port: notify on land.
+    super({ emitOnLand: true });
   }
 }
 

@@ -7,6 +7,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { daysAgo } from "./support/clock.js";
+
 let dir: string;
 let dbPath: string;
 
@@ -18,10 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
-
-/** Clock-independent source timestamp: the selection window is measured
- *  against Date.now(), so hardcoded dates rot out of the 30-day window. */
-const daysAgo = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
 
 const stage = {
   rolloutKey: "test|s1",
@@ -1148,5 +1146,11 @@ test("sqlite driver keeps the DB file private (0600)", async () => {
 test("unparsable config files do not affect DB open", async () => {
   writeFileSync(join(dir, "config.json"), "not json");
   const idx = await Index.create(dbPath);
-  idx.close();
+  try {
+    const version = idx.driver.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'");
+    expect(version?.value).toBe("11");
+    expect(idx.stageList()).toEqual([]);
+  } finally {
+    idx.close();
+  }
 });

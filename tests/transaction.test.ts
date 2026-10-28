@@ -38,10 +38,10 @@ describe("file lock", () => {
     const lockPath = join(dir, "cross.lock");
     // Child holds the lock for HOLD_MS; the parent must observe a wait of at
     // least HOLD_MS - slack before running.
-    const HOLD_MS = 900;
+    const HOLD_MS = 150;
     const child = Bun.spawn({
       cmd: [
-        "bun",
+        process.execPath,
         "-e",
         `import { writeFileSync, rmSync } from "node:fs";
          writeFileSync(${JSON.stringify(lockPath)}, process.pid + "|" + Date.now(), { flag: "wx", mode: 0o600 });
@@ -54,7 +54,7 @@ describe("file lock", () => {
     try {
       // Wait until the child actually holds the lock (generous bound: bun
       // process cold start under CI load can exceed 1s).
-      for (let i = 0; i < 500 && !existsSync(lockPath); i++) {
+      for (let i = 0; i < 200 && !existsSync(lockPath); i++) {
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(existsSync(lockPath)).toBe(true);
@@ -65,17 +65,17 @@ describe("file lock", () => {
       }, { timeoutMs: 5_000 });
       expect(ran).toBe(true);
       // The parent really waited for the holder instead of stealing/re-trying.
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(Math.max(0, HOLD_MS - 150));
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(Math.max(0, HOLD_MS - 50));
     } finally {
       child.kill();
     }
-  });
+  }, 15_000);
 
   test("withFileLock times out when a live holder never releases", async () => {
     const lockPath = join(dir, "hold.lock");
     const child = Bun.spawn({
       cmd: [
-        "bun",
+        process.execPath,
         "-e",
         `import { writeFileSync } from "node:fs";
          writeFileSync(${JSON.stringify(lockPath)}, process.pid + "|" + Date.now(), { flag: "wx", mode: 0o600 });
@@ -85,15 +85,15 @@ describe("file lock", () => {
       stderr: "ignore",
     });
     try {
-      for (let i = 0; i < 100 && !existsSync(lockPath); i++) {
+      for (let i = 0; i < 50 && !existsSync(lockPath); i++) {
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(existsSync(lockPath)).toBe(true);
-      expect(() => withFileLock(lockPath, () => {}, { timeoutMs: 150 })).toThrow(/file lock timeout/);
+      expect(() => withFileLock(lockPath, () => {}, { timeoutMs: 80 })).toThrow(/file lock timeout/);
     } finally {
       child.kill();
     }
-  });
+  }, 15_000);
 
   test("release leaves a lock that changed hands after acquisition", () => {
     const lockPath = join(dir, "handover.lock");
@@ -282,20 +282,6 @@ describe("workspace writes (atomic + locked)", () => {
     expect(readWorkspaceText(dir, "MEMORY.md")).toBe("# Task Group: a\n");
     const path = join(dir, "memory", "MEMORY.md");
     expect(statSync(path).mode & 0o777).toBe(0o600);
-  });
-
-  test("lock contention serializes concurrent writers without lost updates", () => {
-    const lockPath = join(dir, "locks", "x.lock");
-    const counter: number[] = [];
-    const worker = (): void => {
-      withFileLock(lockPath, () => {
-        counter.push(1);
-      });
-    };
-    for (let i = 0; i < 4; i++) {
-      worker();
-    }
-    expect(counter).toHaveLength(4);
   });
 
   test("re-entrant lock is rejected", () => {

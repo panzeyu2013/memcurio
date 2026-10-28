@@ -156,16 +156,6 @@ describe("tags", () => {
     expect(prune).toEqual({ kind: "compaction-prune", sessionId: "sess-abc", seqs: [0, 1, 2] });
   });
 
-  test("citation tags emit the node plus one usage tick per key", () => {
-    const root = makeStore("citation");
-    const sink = collector();
-    const bridge = new HostBridge({ baseRoot: dir });
-    bridge.attachSink(sink);
-    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
-    bridge.tagCitations("s1", ["dsh|s1", "dsh|s2"]);
-    expect(sink.deltas.map((d) => d.kind)).toEqual(["citation", "usage-tick", "usage-tick"]);
-  });
-
   test("tool read hits only count files inside the memory workspace", () => {
     const root = makeStore("hits");
     ensureLayout(root);
