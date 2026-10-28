@@ -44,9 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The config zone renders its "leaving this page discards drafts" hint** and
   the budget hint names the relevant memory store rather than claiming a
   global default; the scope hint keeps the "existing memories are not moved"
-  caveat. Provider/model is
-  edited as a follow / deployment-default / pin choice and is always written as
-  one pair. Register-tools is a checkbox with a restart tag
+  caveat. Provider/model is edited as either the inherited default (the copy
+  follows the session, or the deployment default when the deployment pins a
+  pair) or a fixed pair, and a fixed pair is always written atomically.
+  Register-tools is a checkbox with a restart tag
   instead of a switch. Advanced fields are collapsed by default and surface
   their changed/unsaved/invalid counts.
 - **Status and errors are no longer colour-only.** The header uses a text
@@ -67,6 +68,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A write can no longer freeze the panel.** Every transport write has a
+  15 s deadline: a settings RPC that never settles now answers `errTimeout`,
+  resets the pending/saving state and keeps the draft, instead of leaving Save
+  disabled (and the panel still locked after reopening) until a page reload.
+  A late answer is ignored; retrying fences against the newer revision and
+  reports a conflict rather than overwriting.
+- **A draft typed back to the effective value releases the revision fence.**
+  The fence is captured per pending operation, so an abandoned edit no longer
+  makes the next, unrelated Save look stale and report a false conflict.
+- **A refusal that the Host already landed settles instead of dead-ending.**
+  When the read-back fails but nothing is left to write, the form reports
+  "Saved" (the Host already holds those values) instead of showing "Save
+  again" with Save disabled and only "Discard" as an exit.
+- **The instant switch and the staged form no longer show contradictory
+  errors.** A successful save clears the switch's stale failure copy, so
+  "Save failed" and "Saved" cannot sit on screen together.
+- **The settings-nav mark no longer depends on render order.** If the
+  settings.action seat commits before the dialog's nav, a short-lived waiter
+  marks the row as soon as the nav appears and hands over to the dialog-scoped
+  observer (which still restores the tag when the shell rebuilds the row).
 - **The bulk reset no longer claims to clear hidden lifecycle overrides.**
   `storeRetentionDays` / `storeTrashDays` are volatile but deliberately not
   rendered; the panel now reports them via `hiddenOverridden` and the bulk

@@ -38,7 +38,7 @@ runtime* constraints and the module map.
 | `settings/draft.ts` | Staged configuration model: drafts, validation, one atomic path plan, revision baseline, failure/conflict retention, visible-only reset. |
 | `settings/section.tsx` + `settings/fields.tsx` + `settings/chrome.tsx` + `settings/ui-types.ts` | The rendered `settings.section` panel: section orchestration/focus, the four form fields and shared radio/badge, header/status/skeleton, and the hook/translator types. |
 | `settings/styles.ts` + `settings/locales.ts` | Shipped-vocabulary styles and the en/zh dictionary. |
-| `settings/nav-mark.ts` | The `settings.action` probe and mount hook that tag the memcurio nav row for the stylesheet's book mark; the observer is scoped to the settings dialog (so it survives a replaced nav) and never observes document.body. |
+| `settings/nav-mark.ts` | The `settings.action` probe and mount hook that tag the memcurio nav row for the stylesheet's book mark; the observer is scoped to the settings dialog (so it survives a replaced nav), with a short-lived waiter when the seat commits before the dialog nav. |
 | `ui/model.ts` | Observable memory UI store (injection preview, write receipts, unread, realtime mode) plus the pure derivations the surfaces read. |
 | `ui/transport.ts` | Same-origin snapshot + SSE client: one stream per page, snapshot-before-subscribe, `?after=` replay, polling fallback, session rebind. |
 | `ui/wire.ts` | Wire vocabulary mirrored from `src/services/projector.ts` / `src/services/snapshot.ts`, with boundary validators (`isUiDelta`, `isUiEventFrame`, `isUiSnapshotResponse`). |
@@ -47,6 +47,10 @@ runtime* constraints and the module map.
 | `ui/guide-row.ts` | The "记忆指南 / Memory guide" row derived from the harness's own `system/message` events (the read-path guide lives in the system prompt). |
 | `ui/tool-rows.ts` | One keyed `tool.call.toolview` row per native memory tool. |
 | `ui/toast.ts` | Transient injection/write notifications. |
+| `ui/contracts.ts` | `declare module` augmentation for the slot map entries this plugin registers (header utilities, chat nodes, tool views). |
+| `ui/icons.ts` | Inline SVG marks (book mark, injection glyph) and the nav-row mask data URL; no icon package. |
+| `ui/locales.ts` | The `memcurio.ui` en/zh dictionary for the transcript rows and toasts. |
+| `ui/styles.ts` | The `memcurio.ui` stylesheet string (indicator, popover, tool rows, toast) mounted by the entry. |
 | `ui/injection-indicator.ts` | Reserved workbench status surface — deliberately **not registered** (the session header carries no memcurio entry, docs/ui.md). |
 
 The memory workbench (M0) is not built yet: see [docs/ui.md](../docs/ui.md) and

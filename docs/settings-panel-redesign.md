@@ -1,5 +1,7 @@
 # memcurio 设置页交互与前端重构提案
 
+> **状态**：设计记录（2026-10），不是契约。设置契约以 [settings.md](settings.md) 为准，呈现契约以 [ui.md](ui.md) 为准；本文 §1 的「现状」指改造前，§1.1 表格的「结论」列同时标注了落地结果。§2 起的方案大部分已落地（见下方「当前实现约束」），未落地的开放项集中在 [todo.md](todo.md)。
+
 ### 当前实现约束
 
 - 三个 seat 全量订阅（face/form/instant）是有意选择；planCache 已消除重复 plan。section 已拆成 `chrome.tsx`（Header/Status/Skeleton）与 `fields.tsx`（四个字段 + Radio/Badge），`section.tsx` 只保留编排/焦点/提交；fields 仍是单文件，后续可按字段再拆。
@@ -9,12 +11,11 @@
 - rebase 只在开关写入恰好把 revision 推进 1 且 form baseline 等于开关前 revision 时发生；否则保留旧 fence，让 Save 报 conflict。
 - 开关可见文字可点击切换；保存结束后焦点回到 footer 状态区；错误字段带 aria-describedby；form 有 aria-labelledby。panel 卸载只丢弃未提交草稿；在途 Save 允许结算，失败保留草稿和错误。字段/开关 reset 后焦点回到对应控件。
 - 控制器只有 `writeField`/`unsetField`/`writeOps` 三条写路径；section 拆成 `chrome.tsx` + `fields.tsx`。
+- 每次写入有 15s 截止（超时 `errTimeout` 并复位 pending/saving），导航标记在「座位先于对话框渲染」时用临时等待器补打。
 
 ### Open work
 
-- rebase 毫秒级窗口的 Host 级原子关联。
-- 真实浏览器/读屏 QA。
-- 真实 Host 的 unset-pinning 集成测试。
+未落地项统一记在 [todo.md](todo.md)（设置页真实浏览器 QA、rebase 毫秒级窗口的 Host 级原子关联、真实 Host 的 unset-pinning 集成验证）。本文不再单独维护清单。
 > 证据基线：本仓库源码 + DSH 0.2.2-alpha.2 安装树中的官方设置包 + 公开设计规范。
 > 限制：未在真实浏览器中截图验证；现状判断来自源码、测试与官方包实现。
 
@@ -382,7 +383,7 @@ provider/model 目录、默认模型、composer 的会话路由，都由 DSH 其
 - 成功：暂存域 footer「已保存」2 秒；即时域行内「已关闭 · 撤销」5 秒。不要用只能靠颜色感知的绿点。
 - 失败文案：可行动，不暴露「宿主 / 设置传输 / 覆盖」等内部词。示例见 4.7。
 - 冲突：保留草稿，显示「这些设置已在别处更新；你的未保存更改仍然保留。」并提供「丢弃草稿」（inline）与「再次保存」（Save 用最新 revision）。这比静默覆盖或丢草稿都好。
-- 重启/新会话：注册工具改过 -> footer 或行内「已保存；重启 DSH 后生效」；存储范围改过 -> 「已保存；对新建会话生效」。不要暗示当前会话已切换。
+- 重启/新会话：注册工具改过 -> 字段常驻「重启后生效」tag（已实现）；footer 的「已保存」不承载重启/新会话语义（未实现按字段区分的尾巴，属可选增强）。不要暗示当前会话已切换。
 
 ### 4.6 高级区
 
@@ -441,7 +442,7 @@ provider/model 目录、默认模型、composer 的会话路由，都由 DSH 其
 
 - 用 form + fieldset/legend（segmented radio）+ label for；Save type=submit。
 - 每个输入 aria-describedby 指向 hint 和/或 error；错误 role=alert；状态 role=status 带可见文字。
-- Switch：role=switch、aria-checked、aria-labelledby（可见标签）、aria-describedby（说明）；标签文字不随状态变；Space/Enter 可切换（button 原生支持）。
+- Switch：原生 checkbox + role=switch、aria-checked、aria-labelledby（可见标签）、aria-describedby（说明）；标签文字不随状态变；Space 可切换（原生 checkbox 语义）；不要用 Enter（原生 checkbox 不响应 Enter）。
 - 让可见标签文字也可点击切换：优先用原生 checkbox + role=switch（label 关联），或给文本容器加点击处理并确保不会与开关双击。
 - Segmented：原生 radio，name 相同，fieldset/legend，方向键由浏览器原生支持。
 - Checkbox：原生 input + label；aria-describedby 指向说明。
@@ -681,11 +682,11 @@ client/settings/
 ## 附录：参考来源
 
 仓库内
-- client/settings/section.ts、controller.ts、locales.ts、styles.ts、nav-mark.ts
-- client/entry.ts、client/ui/switch.ts
+- client/settings/section.tsx、fields.tsx、chrome.tsx、draft.ts、instant.ts、ui-types.ts、controller.ts、locales.ts、styles.ts、nav-mark.ts
+- client/entry.ts（client/ui/switch.ts 已删除）
 - src/plugin/settings.ts（schema/base/volatile）
 - docs/settings.md、docs/ui.md、docs/todo.md
-- tests/client-settings.test.ts、tests/client-panel-render.test.ts
+- tests/client-settings.test.ts、tests/client-settings-form.test.ts、tests/client-panel-render.test.ts、tests/client-nav-mark.test.ts
 - scripts/platform-externals.ts、scripts/build-client.ts
 - 安装树：@deepseek-ai/dsh-client-ui-settings-general/lib/client.js（General 行 CSS、Shell）、dsh-client-ui-settings/lib/types/client/config-form*.d.ts、dsh-client-ui-settings-shell/lib/client.js（SettingsForm 用法）、dsh-client-ui-plugin-manager/README.md（Plugins 配置槽位）、dsh-web-frontend bundle 里的 SettingsForm / SettingsValueField / SettingsFormModel。
 

@@ -82,7 +82,7 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
 - 生效：`injectContext`/预算/路由即时；`scope` 对新会话生效；`registerTools` 重启生效。
 - UI 写入热生效（volatile 原地提交）；手改 YAML 默认也热生效（默认 base 启用 `dsh-hmr`，监视两份用户 patch 并即时 reconcile；禁用/无 HMR 才需要下次启动）；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
 
-面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；运行期 require 为平台 seed 的 `react` + `react/jsx-runtime`，`pack:check` 会校验 require 纯度）。面板分「立即生效」（记忆注入开关）与「配置 · 保存后生效」（预算/范围/模型/工具）两域；暂存表单一次原子写并带 revision 栅栏，失败/冲突保留草稿。被显式覆盖的字段显示「已修改」徽标，可单个或整体恢复默认；批量按钮是「恢复配置默认」，只覆盖表单域 5 个设置键（不含注入开关），隐藏的 storeRetentionDays/storeTrashDays 以页脚提示为准。写入未落地（host 拒绝或 schema 拒绝）时面板在字段旁/footer 报错而非静默成功。
+面板由包的浏览器半侧提供（`dsh.client` 声明 + 预构建 `lib/client.js`，随 tarball 发布；运行期 require 为平台 seed 的 `react` + `react/jsx-runtime`，`pack:check` 会校验 require 纯度）。面板把设置分为「立即生效」（记忆注入开关）与「保存后生效」（预算/范围/模型/工具）两域，被覆盖字段显示「已修改」并可单字段恢复，批量按钮只覆盖表单域 5 个键；写入未落地时在字段旁/footer 报错而不是静默成功。逐域语义、revision 栅栏与生效规则见 [settings.md](settings.md)。
 
 ### 常见问题
 

@@ -14,6 +14,7 @@
 | [ui.md](ui.md) | 记忆 UI 契约：入口与面、host 服务层、写语义铁律、实时性通道、安全与非功能要求 | 客户端/插件贡献者 |
 | [operations.md](operations.md) | 安装、运行/升级与发布操作、DSH 集成面、FAQ、源码开发 | 运维/部署 |
 | [todo.md](todo.md) | 未完成待办（Release Gate R1）、集成/UI 遗留、开放决策 | 所有人（开放工作唯一入口） |
+| [settings-panel-redesign.md](settings-panel-redesign.md) | 设置页双提交域重构的**设计记录**（2026-10，非契约）：问题盘点、方案取舍、交互与可访问性规格 | 客户端/设置面贡献者 |
 
 仓库根的 [README.md](../README.md) 是中文用户入口，[README.en.md](README.en.md) 是对应英文版；[CHANGELOG.md](../CHANGELOG.md) 记录每次发布的行为变化。
 
@@ -22,7 +23,7 @@
 - **只是想用**：根 [README.md](../README.md)（中文）/ [README.en.md](README.en.md)（English）→ [operations.md](operations.md) 的「安装与配置」。
 - **要改引擎/管线**：[architecture.md](architecture.md) → [contract.md](contract.md) → [todo.md](todo.md) 的未完成项。
 - **要改 UI/客户端**：[ui.md](ui.md) → [contract.md](contract.md) 的模块契约 → [todo.md](todo.md)。
-- **要改设置面/表单**：[settings.md](settings.md) → [ui.md](ui.md) 的「入口」与 Settings 面 → [contract.md](contract.md)。
+- **要改设置面/表单**：[settings.md](settings.md) → [ui.md](ui.md) 的「入口」与 Settings 面 → [settings-panel-redesign.md](settings-panel-redesign.md)（设计理由，非契约）→ [contract.md](contract.md)。
 - **要发版**：[operations.md](operations.md) 的「发布流程」→ [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 文档纪律

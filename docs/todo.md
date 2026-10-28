@@ -25,6 +25,9 @@
 - [ ] **`/memory` 客户端唤起、消息级跳转、审计收据客户端映射**：依赖上游能力/适配器。
 - [ ] **web profile 读命中遥测面**：在真实 web profile 会话确认命中只来自插件 `memory_read`/`memory_search`（`tool-fs`/`tool-fs-search` 在该 profile 被 disable）。
 - [ ] **node:sqlite 驱动实跑**：桥/快照测试需要 node >= 22.13 环境；全量测试仍以 bun 为准。
+- [ ] **设置页真实浏览器 QA**：读屏（NVDA/VoiceOver）与键盘走查双提交域、折叠高级区、冲突重试；jsdom 只覆盖 DOM 语义，不含视觉与真实读屏行为。
+- [ ] **设置写入的 Host 级原子关联**：开关写与暂存表单的 rebase 依赖「一次文档变化 +1」的 revision 观察；毫秒级并发窗口目前只做保守拒绝（冲突），Host 若提供命名空间级关联可移除该假设。
+- [ ] **真实 Host 的 unset-pinning 集成验证**：客户端把「user 值等于 decoded base」视为未覆盖（为消掉 Host `set(inherited)` 回写造成的幽灵徽标）；该判定与 Host 文档的 presence 语义相反，需要一次真实 Host 端到端确认，并为「历史上等于 schema 默认的冗余 user 键」提供清理路径（当前只能改 profile patch）。
 
 ## 开放决策（需人工/正式审核，不由实现者单方面决定）
 

@@ -42,8 +42,9 @@
 - **成对规则**：`provider`/`model` 必须同时给出；config-resolution 守卫在 Loader 落盘前拒绝半对与空串（`src/plugin/settings.ts（assertRoutePair）`）。这是本插件的领域规则，不是上游契约。
 - **预算下限**：`injectBudgetTokens >= 128` 由 schema 拒绝（表单只做前置提示）。空值 = `unset`：实际回退顺序是会话所属（按 scope 解析）的 `<store>/config.json` 的 `budget.maxInjectTokens` → 内置 2500；面板只读插件命名空间，所以 hint 写「留空时使用对应记忆存储的配置（内置 2,500）」，不能把它说成全局默认。
 - **等值 pin 的边界**：Host 官方 contract 仍以 user presence 标记 override；本面板为让 reset 徽标/验证符合 Host 的 `set(inherited)` 回写，把“存在且等于 decoded base”视为 inherited。副作用：如果 profile 里已有一个历史上的等值 key，而部署 base 之后发生变化，它可能变成 stale pin；这是 Host 的 unset limitation，需 Host 修复或手动清理 profile patch。
-- **默认来源的边界**：预算与 route 能区分显式 deployment base（预算 hint、route default label）；injection/tools 只显示 `Default: on/off`，因为 `ConfigFormSnapshot.base` 已包含 schema 默认，客户端无法可靠区分“部署显式设置”与“内置默认”。
-- **面板语义**：两提交域；逐字段「已修改 + 恢复默认」；批量按钮是「恢复配置默认」，只覆盖表单域 5 个设置键（不含注入开关）——隐藏的 storeRetentionDays/storeTrashDays 通过 `hiddenOverridden` 在页脚提示但不在这条批量路径里（破坏性生命周期设置仍由部署配置管理）；路由按「跟随会话 / 使用部署默认 / 固定模型」显式选择，固定时两半必填；注册工具是 checkbox +「重启后生效」；失败/冲突保留草稿并在字段与 footer 报错；状态 chip 带文字，不再只靠颜色。细节见 [ui.md](ui.md)。
+- **默认来源的边界**：预算与 route 能区分显式 deployment base（预算 hint、route default label）；injection/tools 只显示 `Default: on/off`，因为 `ConfigFormSnapshot.base` 已包含 schema 默认，客户端无法可靠区分“部署显式设置”与“内置默认”。同理，user 层如果有一个**等于 schema 默认**的历史键（例如 `scope: "workspace"`），它既不算覆盖也不会被面板清除；行为等价于未设置，需要清理时改 profile patch。
+- **写入边界**：每次写入有 15s 截止（`WRITE_DEADLINE_MS`，测试可注入更短值）。超时返回 `errTimeout`、复位 pending/saving，草稿保留；迟到的成功由 Host 镜像通知反映，重试会撞上 revision 栅栏并走冲突路径，不会静默覆盖。这条边界保证“任何写都有界结算”，否则一次悬挂的 RPC 会让面板重开后仍锁死。
+- **面板语义**：两提交域；逐字段「已修改 + 恢复默认」；批量按钮是「恢复配置默认」，只覆盖表单域 5 个设置键（不含注入开关）——隐藏的 storeRetentionDays/storeTrashDays 通过 `hiddenOverridden` 在页脚提示但不在这条批量路径里（破坏性生命周期设置仍由部署配置管理）；路由是二选一：继承默认（默认项的文案随 base 显示为「跟随当前会话」或「使用部署默认」）或「固定模型」，固定时两半必填；注册工具是 checkbox +「重启后生效」；失败/冲突保留草稿并在字段与 footer 报错；状态 chip 带文字，不再只靠颜色。细节见 [ui.md](ui.md)。
 - **`root` 归部署方**：永不进表单，也不做 volatile（避免把数据根写进用户覆盖层）。
 - **文档纪律**：设置契约只写在本文件；operations.md 只保留安装/操作步骤，ui.md 只保留呈现细节。
 
