@@ -105,6 +105,29 @@ describe("readMemory", () => {
     expect(read.truncated).toBe(true);
     expect(read.content.length).toBeGreaterThan(0);
     expect(read.content.length).toBeLessThan(4000);
+    // The same line was only partially returned: retry it with a larger cap.
+    expect(read.nextLineOffset).toBe(1);
+  });
+
+  test("nextLineOffset continues a line-capped read without overlap", async () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `line-${i + 1}`);
+    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n"));
+    const first = await readMemory(dir, { path: "MEMORY.md", lineOffset: 2, maxLines: 3 });
+    expect(first.content).toBe("line-2\nline-3\nline-4");
+    expect(first.nextLineOffset).toBe(5);
+    const second = await readMemory(dir, { path: "MEMORY.md", lineOffset: first.nextLineOffset });
+    expect(second.content.startsWith("line-5\n")).toBe(true);
+  });
+
+  test("nextLineOffset continues a token-capped read at the first dropped line", async () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line-${i + 1}-${"x".repeat(40)}`);
+    writeWorkspaceText(dir, "MEMORY.md", lines.join("\n"));
+    const first = await readMemory(dir, { path: "MEMORY.md", maxTokens: 30 });
+    expect(first.truncated).toBe(true);
+    const returned = first.content.split("\n").length;
+    expect(first.nextLineOffset).toBe(1 + returned);
+    const second = await readMemory(dir, { path: "MEMORY.md", lineOffset: first.nextLineOffset });
+    expect(second.content.split("\n")[0]).toBe(lines[returned]);
   });
 
   test("redacts secrets and counts rollout summary reads as usage", async () => {

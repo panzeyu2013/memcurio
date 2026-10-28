@@ -13,6 +13,10 @@ export interface MemoryReadResult {
     startLineNumber: number;
     content: string;
     truncated: boolean;
+    /** First line not fully returned; pass it back as `lineOffset` to continue.
+     *  Equal to `startLineNumber` only when the first returned line alone exceeds
+     *  `maxTokens` (retry with a larger cap). */
+    nextLineOffset?: number;
 }
 /** List memory workspace entries under an optional path (codex
  *  memories/list semantics): directories and files, hidden entries and

@@ -450,7 +450,7 @@ export interface MemoryListEntry { path: string; type: "file" | "directory" }
 export function listMemory(root, opts?: { path?; maxResults?; cursor? }): Promise<{ path; entries; nextCursor?; truncated }>
   // codex memories/list 语义：path 为空=根；显式 path 拒绝 parent/root/hidden 组件与任意段符号链接；
   //   文件 → 单条目；目录 → 直接子项（隐藏条目/符号链接跳过，按路径排序）；整数 cursor 分页，上限 2000
-export function readMemory(root, opts: { path; lineOffset?; maxLines?; maxTokens? }): Promise<{ path; startLineNumber; content; truncated }>
+export function readMemory(root, opts: { path; lineOffset?; maxLines?; maxTokens? }): Promise<{ path; startLineNumber; content; truncated; nextLineOffset? }>
   // codex memories/read 语义：lineOffset 1-based（0 拒绝）、maxLines 0 拒绝、maxTokens 默认 20000；
   //   行数/token 截断（首行超预算时按 token 截字符）；返回前 re-redactSecrets；
   //   rollout_summaries/ 下文件读取 → registerMemoryUsage（选择窗口遥测）
@@ -495,7 +495,7 @@ export interface Config {
 ```
 memory_search { query, topK? }        → searchMemory；touch 关联 stage1；注入扫描过滤
 memory_list { path?, maxResults?, cursor? }   → listMemory（codex memories/list 语义：隐藏条目/符号链接跳过、整数 cursor 分页、目录/文件条目）
-memory_read { path, lineOffset?, maxLines?, maxTokens? } → readMemory（codex memories/read 语义：1-based 行偏移、行数/token 截断、读取时重新脱敏、rollout 摘要读计入使用遥测）
+memory_read { path, lineOffset?, maxLines?, maxTokens? } → readMemory（codex memories/read 语义：1-based 行偏移、行数/token 截断、截断时返回 `nextLineOffset` 续读（等于 lineOffset 表示单行超 maxTokens，需提高上限）、读取时重新脱敏、rollout 摘要读计入使用遥测）
 memory_remember { content, kind? }    → ad-hoc note（返回 filename；kind 默认 remember，forget/update 由 LLM 整合 agent 应用）；description 与 codex ad_hoc_note 一致：仅在用户明确要求 remember/forget/update 时使用（软门槛，handler 只校验 kind 枚举）
 memory_status {}                      → pipeline 状态
 memory_context {}                     → renderMemoryContext + read path 指引（模型自行检索入口）
@@ -561,8 +561,8 @@ export class MemcurioAdapter {
 ### src/plugin/index.ts + scope.ts（DSH Cordis 插件）
 
 - Cordis 模块：`name = "memcurio"`、`inject: [tools, llm, sessions]`；导出的 `Config` schema 含 scope/injectContext/registerTools/injectBudgetTokens/provider/model/root（hostBridge 不是配置项，桥恒开）。DSH 0.1.7 起该 schema 即 `memcurio` 设置命名空间（键为 profile 条目 id）；命名空间、volatile 字段、持久化目标与可选 `settings` 服务的完整契约见 [settings.md](settings.md)。`scope: workspace`（默认）按 workdir 的 sha256 前 16 hex 派生 `<DSH home>/memcurio/dsh/<key>/` 存储根，无 cwd 会话固定落入 `no-cwd` store；`global` 关闭隔离；`MEMCURIO_ROOT` 为旧/覆盖 env（读取在 plugin apply()，scope.ts 只提供 dshHome 解析与 workspaceStoreRoot）；
-- 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
-- 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾），会话首轮、空库 INIT 摘要落地后的第一步与 `compaction/end` 之后各一次（`staticInjected` 闩只由非空注入置位，空库不闩，避免指南先于摘要出现）；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `memcurio` 等机器消息不进用户证据（防回注 feed-back）；本插件注入消息的 source kind 为合并声明的 `memcurio`，旧日志的 `plugin` kind 仍被识别；
+- 事件接线：session/created、session/event、session/flush、session/disposed → durable 会话生命周期（sessionCreated / messageSeen / toolExecuted / sessionIdle / sessionEnded）；`tools/result` 计入使用遥测；成功的 compaction 与 `compaction/prune` 按 `shadowedSeqs` 剪除证据 part（messageRemoved / messageRemovedByMessage），且只有实际命中证据的 seq 才进入 prune tag（工具结果/注释类 prune 不上报为记忆证据 prune）；`turn/end` 触发 worker drain（citation 遥测只来自 memory_cite 工具，不存在文本收割）；
+- 注入（对齐 codex）：只做上下文窗口快照——`agent/pre-step` 仅在窗口未注入时发一份摘要区块（2500 token 预算，超预算中间截断保头尾；区块用 per-injection nonce 定界并带 data-only 警告，正文无法提前闭合），会话首轮、空库 INIT 摘要落地后的第一步与 `compaction/end` 之后各一次（`staticInjected` 闩只由非空注入置位，空库不闩，避免指南先于摘要出现）；不做每轮检索注入。证据只认 `source.kind === "user"` 与 assistant，`subagent-settled` / `agent-message` / `goal` / `memcurio` 等机器消息不进用户证据（防回注 feed-back）；本插件注入消息的 source kind 为合并声明的 `memcurio`，旧日志的 `plugin` kind 仍被识别；
 - 模型通道：`ctx.llm` 路由封装为 LlmChannel（name="dsh"；优先 config.provider/model 固定，否则跟随会话自身路由——按日志顺序取最后一个路由事件：`model/selection`（下一次请求将使用的选择）或最近一次已应用的 `request/header`；`AgentOptions` 只在此前两者都缺失时作种子，避免部署默认 `deepseek-official` 覆盖会话实际使用的模型）；封装无自有墙钟（宿主 idle watchdog 负责卡死检测），带 2 次传输层重试（仅瞬态 5xx/timeout，abort 不重试），失败经 `failure.code`/`signal.reason` 归一为 WorkerAborted/Timeout/ProviderError；抽取通道透传会话 abort，Phase 2 另用 store 级 `consolidateChannel`（插件生命周期 abort）；无路由/未配置 → LlmExtractProvider unconfigured → durable job 进 blocked（不计 attempts，配置恢复后重新激活）；无可用通道（或结构性无 agent）时整合用 Rule（见 engine.maybeConsolidate）；
 - 生命周期：插件加载时先 drain pending durable jobs（崩溃恢复）；store 会话从磁盘回放事件日志（含 tool 遥测重建）；turn/end 与 store 首个活会话 bootstrap 触发 worker drain + maybeConsolidate（需求驱动，空闲零调用）；会话退休只在 30s 预算内 drain 抽取（超时 abort 在飞抽取调用后 dispose，queue 稍后重试），被 abort 的抽取 job 走 `extractionRelease`（不计 attempts），Phase 2 由 store 级通道继续，退役 store 仍进入休眠清扫范围（只 drain Phase-1，不再驱动 Phase 2）；
 - 事件/worker 双 lane 队列：事件 lane 只做记账/入队（不执行模型），worker lane 单轮上限 8 job，配合 `extractionClaim` 的跨进程 running 上限 8（见「DB schema」）。

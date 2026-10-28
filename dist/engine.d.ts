@@ -134,7 +134,9 @@ export declare class MemcurioAdapter {
      * field; when it arrives after a streamed part, update the stored evidence
      * in place so the final snapshot has the correct user/assistant class. */
     messageRoleKnown(sessionId: string, messageId: string, kind: EvidenceInput["kind"]): void;
-    messageRemoved(sessionId: string, partId: string): void;
+    /** Drop one evidence part; returns whether it existed (callers use this to
+     *  tell an evidence-bearing prune from a tool-result/annotation prune). */
+    messageRemoved(sessionId: string, partId: string): boolean;
     messageRemovedByMessage(sessionId: string, messageId: string): void;
     /** Replace the in-memory message-part view with the authoritative messages
      * returned by the host at idle/close. This repairs missed deltas and removes

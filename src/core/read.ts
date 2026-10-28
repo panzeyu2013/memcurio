@@ -30,6 +30,10 @@ export interface MemoryReadResult {
   startLineNumber: number;
   content: string;
   truncated: boolean;
+  /** First line not fully returned; pass it back as `lineOffset` to continue.
+   *  Equal to `startLineNumber` only when the first returned line alone exceeds
+   *  `maxTokens` (retry with a larger cap). */
+  nextLineOffset?: number;
 }
 
 /** Resolve a workspace-relative memory path the codex way: no parent/root
@@ -178,6 +182,12 @@ export async function readMemory(
   if (fitted.length < contentLines.length) {
     truncated = true;
   }
+  let nextLineOffset: number | undefined;
+  if (truncated) {
+    // Whole lines consumed so far; a partial first line re-reads the same
+    // offset because the remainder of that line was never returned.
+    nextLineOffset = fitted.length > 0 ? start + fitted.length : start;
+  }
   if (fitted.length === 0 && contentLines.length > 0 && maxTokens > 0) {
     // The first line alone exceeds the token budget: keep a token-bounded
     // prefix of it instead of returning nothing.
@@ -217,5 +227,11 @@ export async function readMemory(
       truncated: true,
     };
   }
-  return { path: rel, startLineNumber: start, content: redactSecrets(content).text, truncated };
+  return {
+    path: rel,
+    startLineNumber: start,
+    content: redactSecrets(content).text,
+    truncated,
+    ...(nextLineOffset === undefined ? {} : { nextLineOffset }),
+  };
 }

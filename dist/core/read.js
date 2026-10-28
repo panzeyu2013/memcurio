@@ -147,6 +147,12 @@ export async function readMemory(root, opts) {
     if (fitted.length < contentLines.length) {
         truncated = true;
     }
+    let nextLineOffset;
+    if (truncated) {
+        // Whole lines consumed so far; a partial first line re-reads the same
+        // offset because the remainder of that line was never returned.
+        nextLineOffset = fitted.length > 0 ? start + fitted.length : start;
+    }
     if (fitted.length === 0 && contentLines.length > 0 && maxTokens > 0) {
         // The first line alone exceeds the token budget: keep a token-bounded
         // prefix of it instead of returning nothing.
@@ -185,5 +191,11 @@ export async function readMemory(root, opts) {
             truncated: true,
         };
     }
-    return { path: rel, startLineNumber: start, content: redactSecrets(content).text, truncated };
+    return {
+        path: rel,
+        startLineNumber: start,
+        content: redactSecrets(content).text,
+        truncated,
+        ...(nextLineOffset === undefined ? {} : { nextLineOffset }),
+    };
 }

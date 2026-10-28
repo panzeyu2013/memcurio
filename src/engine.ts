@@ -433,13 +433,16 @@ export class MemcurioAdapter {
     }
   }
 
-  messageRemoved(sessionId: string, partId: string): void {
+  /** Drop one evidence part; returns whether it existed (callers use this to
+   *  tell an evidence-bearing prune from a tool-result/annotation prune). */
+  messageRemoved(sessionId: string, partId: string): boolean {
     const s = this.sessions.get(sessionId);
     if (!s) {
-      return;
+      return false;
     }
-    s.messageEvidence.delete(partId);
+    const removed = s.messageEvidence.delete(partId);
     s.messageCount = s.messageEvidence.size;
+    return removed;
   }
 
   // Reserved engine API: the plugin prunes by partId (messageRemoved);

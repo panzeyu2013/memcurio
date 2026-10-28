@@ -87,12 +87,21 @@ describe("hostBridge plugin wiring (real ctx)", () => {
       data: message,
       surfaceOp: "append",
     } as never);
-    // Prune annotation.
+    // A non-evidence event in the same pruned range: the tool-result pruner
+    // can shadow tool/annotation seqs, which must not surface as evidence
+    // prunes.
     ctx.emit("session/event", session, {
-      type: "compaction/prune",
+      type: "turn/start",
       seq: SessionSeq(1),
       time: Date.now(),
-      data: { shadowedSeqs: [0] },
+      data: { turn: 1 },
+    } as never);
+    // Prune annotation: seq 0 carried evidence, seq 1 did not.
+    ctx.emit("session/event", session, {
+      type: "compaction/prune",
+      seq: SessionSeq(2),
+      time: Date.now(),
+      data: { shadowedSeqs: [0, 1] },
     } as never);
     // Read hit inside the memory workspace.
     const inside = join(memoryWorkspace(root), "rollout_summaries", "rollout-x.md");
@@ -108,6 +117,8 @@ describe("hostBridge plugin wiring (real ctx)", () => {
     expect(kinds).toContain("evidence");
     expect(kinds).toContain("compaction-prune");
     expect(kinds).toContain("usage-tick");
+    const prune = sink.deltas.find((delta) => delta.kind === "compaction-prune");
+    if (prune?.kind === "compaction-prune") expect(prune.seqs).toEqual([0]);
     const evidence = sink.deltas.find((delta) => delta.kind === "evidence");
     if (evidence?.kind === "evidence") {
       expect(evidence.text).toContain("[REDACTED]");
