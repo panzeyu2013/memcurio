@@ -37,8 +37,9 @@ describe("file lock", () => {
   test("withFileLock waits for a live foreign process to release, then acquires", async () => {
     const lockPath = join(dir, "cross.lock");
     // Child holds the lock for HOLD_MS; the parent must observe a wait of at
-    // least HOLD_MS - slack before running.
-    const HOLD_MS = 150;
+    // least HOLD_MS - slack before running. The hold is the observation window
+    // as well, so it must survive a scheduler stall: 150 ms left only ~50 ms.
+    const HOLD_MS = 500;
     const child = Bun.spawn({
       cmd: [
         process.execPath,
@@ -65,7 +66,7 @@ describe("file lock", () => {
       }, { timeoutMs: 5_000 });
       expect(ran).toBe(true);
       // The parent really waited for the holder instead of stealing/re-trying.
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(Math.max(0, HOLD_MS - 50));
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(Math.max(0, HOLD_MS - 100));
     } finally {
       child.kill();
     }

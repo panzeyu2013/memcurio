@@ -60,6 +60,9 @@ export function installDom(
         if (had.get(key) === true) globals[key] = value;
         else delete globals[key];
       }
+      // Restoring the globals leaves the window object (and its timers) alive;
+      // closing it releases those handles in the shared-process runs.
+      dom.window.close();
     },
   };
 }

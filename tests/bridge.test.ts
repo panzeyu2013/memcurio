@@ -112,6 +112,38 @@ describe("session bindings", () => {
 });
 
 describe("tags", () => {
+  test("citation tags emit the node plus one usage tick per key", () => {
+    // The UI timeline joins citations to the usage counters; a bridge that
+    // dropped or duplicated the ticks would silently break it, so the wiring
+    // (not just the projector's pure output) is asserted here.
+    const root = makeStore("citation");
+    const sink = collector();
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
+    bridge.tagCitations("s1", ["dsh|s1", "dsh|s2"]);
+    expect(sink.deltas.map((d) => d.kind)).toEqual(["citation", "usage-tick", "usage-tick"]);
+    expect(sink.deltas[0]).toEqual({
+      kind: "citation",
+      sessionId: "s1",
+      rolloutKeys: ["dsh|s1", "dsh|s2"],
+    });
+    expect(sink.deltas.slice(1).map((d) => (d.kind === "usage-tick" ? d.rolloutKey : ""))).toEqual([
+      "dsh|s1",
+      "dsh|s2",
+    ]);
+  });
+
+  test("an empty citation list emits nothing", () => {
+    const root = makeStore("citation-empty");
+    const sink = collector();
+    const bridge = new HostBridge({ baseRoot: dir });
+    bridge.attachSink(sink);
+    bridge.registerSession({ sessionId: "s1", workdir: "/w", root });
+    bridge.tagCitations("s1", []);
+    expect(sink.deltas).toEqual([]);
+  });
+
   test("injection tags are redacted and flagged duplicate on repeat", () => {
     const root = makeStore("inject");
     const sink = collector();

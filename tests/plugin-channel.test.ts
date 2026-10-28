@@ -117,6 +117,38 @@ describe("dshChannel", () => {
     }
   });
 
+  test("a retry waits for the backoff before re-attempting", async () => {
+    // The backoff is the only thing standing between a failing provider and a
+    // hot retry loop; a delay that returns immediately must be observable.
+    jest.useFakeTimers();
+    let calls = 0;
+    const ctx = {
+      llm: {
+        async *stream() {
+          calls += 1;
+          if (calls === 1) throw Object.assign(new Error("upstream 500"), { status: 500 });
+          yield { type: "finish", reason: { kind: "stop" } } as StreamChunk;
+        },
+      },
+    } as unknown as Context;
+    const channel = plugin.dshChannel(ctx, route, () => undefined);
+    try {
+      const pending = channel.agent("system", [{ role: "user", text: "go" }], []);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(calls).toBe(1);
+      // The first backoff is 250 * 2^1 = 500 ms plus < 500 ms of jitter, so
+      // nothing may retry below 500 ms and the retry must have landed by 1 s.
+      jest.advanceTimersByTime(250);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(calls).toBe(1);
+      jest.advanceTimersByTime(550);
+      await pending;
+      expect(calls).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("a caller abort is typed and never retried", async () => {
     let calls = 0;
     const controller = new AbortController();

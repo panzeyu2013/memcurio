@@ -152,6 +152,32 @@ describe("store gc planner", () => {
     }
   });
 
+  test("the orphan retention boundary is inclusive at exactly N days", () => {
+    // The pass is what deletes memory: moving the comparison by one day must
+    // be visible, so both sides of the boundary are pinned to NOW.
+    const { base, home, cleanup } = setup();
+    try {
+      const DAY = 86_400_000;
+      const at = (msAgo: number): string => new Date(NOW - msAgo).toISOString();
+      const exact = makeStore(base, "bbbb000000000011");
+      recordStoreOrigin(exact, join(home, "worktrees", "repo-1", "exact"), at(30 * DAY));
+      const older = makeStore(base, "bbbb000000000012");
+      recordStoreOrigin(older, join(home, "worktrees", "repo-1", "older"), at(30 * DAY + 1_000));
+      const younger = makeStore(base, "bbbb000000000013");
+      recordStoreOrigin(younger, join(home, "worktrees", "repo-1", "younger"), at(30 * DAY - 1_000));
+      const plan = planStoreGc(base, policy(home, { retentionDays: 30 }), { now: NOW });
+      expect(plan.candidates.map((c) => c.key).sort()).toEqual([
+        "bbbb000000000011",
+        "bbbb000000000012",
+      ]);
+      const reasons = new Map(plan.skipped.map((s) => [s.key, s.reason]));
+      expect(reasons.get("bbbb000000000011")).toBeUndefined();
+      expect(reasons.get("bbbb000000000013")).toBe("too-recent");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("scope=all reclaims paths outside the DSH home", () => {
     const { base, home, cleanup } = setup();
     try {
@@ -1138,9 +1164,9 @@ describe("public API wrappers (src/api.ts)", () => {
     try {
       for (let i = 0; i < 3; i++) {
         appendLifecycleAudit(base, {
-          at: "2026-10-0" + String(i + 1) + "T00:00:00.000Z",
+          at: `2026-10-0${String(i + 1)}T00:00:00.000Z`,
           action: "store.quarantine",
-          key: "k" + String(i),
+          key: `k${String(i)}`,
         });
       }
       expect(integrationLifecycleAudit(base).map((row) => row.key)).toEqual(["k0", "k1", "k2"]);

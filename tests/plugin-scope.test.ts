@@ -15,9 +15,10 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
 import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
-import { sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
+import { readSweptState, sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { bootGcEnabled, dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, sweepBatch, workspaceStoreRoot } from "../src/plugin/scope.js";
 
+import { waitFor } from "./support/async.js";
 import { createTestHost, disposeTestHost } from "./support/host.js";
 import { createTempRoots } from "./support/temp.js";
 
@@ -349,5 +350,44 @@ describe("steady-state sweep", () => {
       await disposeFibers(fibers);
     }
   });
+
+  test("the real interval timer drives the steady-state sweep", async () => {
+    // The fake-clock case above proves the planner; this one proves the wiring:
+    // without it, a removed setTimeout would keep every sweep test green.
+    const root = temporaryRoot();
+    const { ctx, fibers } = await runtime();
+    let pluginFiber: { dispose: () => Promise<void> } | undefined;
+    try {
+      pluginFiber = await ctx.plugin(plugin, {
+        root,
+        injectContext: false,
+        provider: "test",
+        model: "test",
+        storeSweepIntervalMs: 1_000,
+      });
+      const dirty = join(root, "dsh", "timer-store");
+      mkdirSync(join(dirty, "state"), { recursive: true });
+      writeFileSync(join(dirty, "index.sqlite"), "");
+      const firstToken = writeActivityToken(dirty);
+      const sweptToken = (root: string): string => {
+        const state = readSweptState(root);
+        return state.kind === "token" ? state.value : "";
+      };
+      await waitFor(() => sweptToken(dirty) === firstToken, 8_000, 25);
+      expect(sweptToken(dirty)).toBe(firstToken);
+      // A second store can only be swept by a LATER tick (a root is throttled
+      // for 30 min after its pass), so this proves the interval keeps firing —
+      // a one-shot setTimeout would pass the first assertion and fail here.
+      const later = join(root, "dsh", "timer-store-2");
+      mkdirSync(join(later, "state"), { recursive: true });
+      writeFileSync(join(later, "index.sqlite"), "");
+      const secondToken = writeActivityToken(later);
+      await waitFor(() => sweptToken(later) === secondToken, 8_000, 25);
+      expect(sweptToken(later)).toBe(secondToken);
+    } finally {
+      if (pluginFiber) await pluginFiber.dispose();
+      await disposeFibers(fibers);
+    }
+  }, 20_000);
 });
 

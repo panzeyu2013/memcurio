@@ -421,6 +421,27 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(prompts[1]?.user ?? "").toContain("Do not answer with prose only");
   });
 
+  test("a second prose reply ends the run instead of nudging again", async () => {
+    // The nudge is corrective, not a retry loop: a model that keeps answering
+    // in prose must not burn a budget of extra steps.
+    const prompts: Array<{ system: string; user: string }> = [];
+    const provider = new LlmLoopConsolidateProvider(
+      4,
+      scriptedChannel(
+        [
+          { text: "first prose" },
+          { text: "second prose" },
+          { calls: [{ name: "finish", args: { report: "unreachable" } }] },
+        ],
+        prompts,
+      ),
+    );
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(false);
+    expect(result.report).toContain("no tool call");
+    expect(prompts).toHaveLength(2);
+  });
+
   test("the prose nudge replays the host-native turn as well", async () => {
     const native = { marker: "prose-native" };
     const transcripts: AgentTurnMessage[][] = [];

@@ -15,7 +15,7 @@ import { ensureLayout, indexDb } from "../src/core/paths.js";
 import { MAX_HIT_CHARS } from "../src/core/inject.js";
 import { readWorkspaceText, writeWorkspaceText } from "../src/core/workspace.js";
 
-import { daysAgo } from "./support/clock.js";
+import { daysAgo, withTimeZone } from "./support/clock.js";
 
 let dir: string;
 let prevRoot: string | undefined;
@@ -356,18 +356,17 @@ describe("automatic consolidation failure handling", () => {
     // gateway's local timezone would shift note freshness by the UTC offset
     // (round-3 review P2-1). Pin a non-UTC zone so dropping the normalization
     // is caught even on a UTC host.
-    const previousTz = process.env.TZ;
-    try {
-      process.env.TZ = "Asia/Shanghai";
+    const before = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    withTimeZone("Asia/Shanghai", () => {
       expect(parseConsolidationTimestamp("2026-10-11 09:00:00")).toBe(Date.parse("2026-10-11T09:00:00Z"));
       expect(parseConsolidationTimestamp("2026-10-11T09:00:00.000Z")).toBe(
         Date.parse("2026-10-11T09:00:00.000Z"),
       );
       expect(Number.isNaN(parseConsolidationTimestamp("not-a-date"))).toBe(true);
       expect(Number.isNaN(parseConsolidationTimestamp(undefined))).toBe(true);
-    } finally {
-      process.env.TZ = previousTz;
-    }
+    });
+    // The pinned zone must not leak into the files that run after this one.
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(before);
   });
 
   test("an unparseable last timestamp never suppresses a pending note", async () => {
