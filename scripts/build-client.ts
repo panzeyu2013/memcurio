@@ -23,6 +23,10 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { na
 /** Bundle the browser half in memory; returns the exact shipped bytes. */
 export async function buildClientBundle(): Promise<string> {
   const result = await build({
+    // Module banners in the output are relative to the working directory; pin
+    // it so the shipped bytes do not depend on where the build was invoked
+    // from (the drift gate compares them with the committed file).
+    absWorkingDir: root,
     entryPoints: [join(root, "client", "entry.ts")],
     bundle: true,
     format: "cjs",
