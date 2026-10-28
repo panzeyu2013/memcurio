@@ -763,10 +763,19 @@ function clipField(text: string): string {
   if (Buffer.byteLength(text, "utf-8") <= MAX_EXTRACT_FIELD_BYTES) {
     return text;
   }
-  let clipped = text;
-  while (Buffer.byteLength(clipped, "utf-8") > MAX_EXTRACT_FIELD_BYTES && clipped.length > 0) {
-    clipped = clipped.slice(0, -1);
+  // Byte-aware binary search over the prefix length. The previous
+  // trim-one-character loop re-encoded the whole remaining string on every
+  // iteration: O(n²) in the reply size (a 500 KB reply blocked the loop for
+  // ~2.6 s). Each probe here measures one prefix, so the clip is O(n log n)
+  // worst case and byte-exact for multi-byte text.
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= MAX_EXTRACT_FIELD_BYTES) lo = mid;
+    else hi = mid - 1;
   }
+  let clipped = text.slice(0, lo);
   // Never leave a dangling high surrogate at the cut point (it would encode
   // as U+FFFD on write).
   const last = clipped.charCodeAt(clipped.length - 1);

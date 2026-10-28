@@ -141,6 +141,25 @@ describe("parseExtractToolReply", () => {
     expect(Buffer.byteLength(out?.rawMemory ?? "", "utf-8")).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
   });
 
+  test("clips multi-byte text without splitting a code point", () => {
+    // 3-byte CJK and 4-byte surrogate pairs both exceed the byte cap before
+    // their code-unit length does; the byte-aware clip must not leave U+FFFD.
+    const out = parseExtractToolReply(
+      saveReply({
+        rollout_summary: "记".repeat(100_000),
+        rollout_slug: "slug",
+        raw_memory: "😀".repeat(60_000),
+      }),
+      { rolloutKey: "k" },
+    );
+    expect(out).not.toBeNull();
+    for (const field of [out?.rolloutSummary ?? "", out?.rawMemory ?? ""]) {
+      expect(Buffer.byteLength(field, "utf-8")).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
+      expect(field).not.toContain("\uFFFD");
+      expect(field.length).toBeGreaterThan(0);
+    }
+  });
+
   test("injection payloads beyond the truncation point are still rejected", () => {
     // The injection gate scans the FULL payload before truncation: a payload
     // past the 200KB clip would otherwise be cut away and never flagged.
