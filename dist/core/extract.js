@@ -5,6 +5,7 @@ import { indexDb, ensureLayout } from "./paths.js";
 import { publishActivitySafely, readActivityState, settleAfterDrain } from "./store-meta.js";
 import { redactSecrets, repairInjectionLines, sanitizeForInjection } from "./sanitize.js";
 import { pipelineConfig } from "./config.js";
+import { clipUtf8 } from "./utf8.js";
 const MAX_EVIDENCE_ITEMS = 256;
 const MAX_EVIDENCE_TEXT_CHARS = 4000;
 const MAX_EVIDENCE_FIELD_CHARS = 500;
@@ -623,31 +624,7 @@ export async function processExtractionQueue(root, provider, opts = {}) {
  *  rejected reply would burn retries and dead-letter instead. */
 export const MAX_EXTRACT_FIELD_BYTES = 200 * 1024;
 function clipField(text) {
-    if (Buffer.byteLength(text, "utf-8") <= MAX_EXTRACT_FIELD_BYTES) {
-        return text;
-    }
-    // Byte-aware binary search over the prefix length. The previous
-    // trim-one-character loop re-encoded the whole remaining string on every
-    // iteration: O(n²) in the reply size (a 500 KB reply blocked the loop for
-    // ~2.6 s). Each probe here measures one prefix, so the clip is O(n log n)
-    // worst case and byte-exact for multi-byte text.
-    let lo = 0;
-    let hi = text.length;
-    while (lo < hi) {
-        const mid = Math.ceil((lo + hi) / 2);
-        if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= MAX_EXTRACT_FIELD_BYTES)
-            lo = mid;
-        else
-            hi = mid - 1;
-    }
-    let clipped = text.slice(0, lo);
-    // Never leave a dangling high surrogate at the cut point (it would encode
-    // as U+FFFD on write).
-    const last = clipped.charCodeAt(clipped.length - 1);
-    if (last >= 0xd800 && last <= 0xdbff) {
-        clipped = clipped.slice(0, -1);
-    }
-    return clipped;
+    return clipUtf8(text, MAX_EXTRACT_FIELD_BYTES);
 }
 /** Parse the Phase-1 native tool reply into a Stage1Output. Exactly one tool
  *  call is accepted: save_extraction carries the payload and skip_extraction

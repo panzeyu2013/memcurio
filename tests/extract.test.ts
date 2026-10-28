@@ -15,6 +15,7 @@ import {
   stageSession,
 } from "../src/core/extract.js";
 import type { ExtractProvider, ExtractionPolicyReport, RolloutSnapshot, Stage1Output } from "../src/core/extract.js";
+import { utf8ByteLength } from "../src/core/utf8.js";
 import { WorkerAbortedError } from "../src/core/channel.js";
 import type { AgentToolReply, LlmChannel } from "../src/core/channel.js";
 import { ensureLayout } from "../src/core/paths.js";
@@ -127,7 +128,7 @@ describe("parseExtractToolReply", () => {
     expect(parseExtractToolReply(saveReply('{"rollout_summary":"","rollout_slug":"","raw_memory":""}'), { rolloutKey: "k" })).toBeNull();
   });
 
-  test("oversized fields are truncated, never wedging the workspace limit", () => {
+  test("oversized fields fill the byte budget exactly", () => {
     const out = parseExtractToolReply(
       saveReply({
         rollout_summary: "x".repeat(300_000),
@@ -137,8 +138,13 @@ describe("parseExtractToolReply", () => {
       { rolloutKey: "k" },
     );
     expect(out).not.toBeNull();
-    expect(Buffer.byteLength(out?.rolloutSummary ?? "", "utf-8")).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
-    expect(Buffer.byteLength(out?.rawMemory ?? "", "utf-8")).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
+    const summary = out?.rolloutSummary ?? "";
+    const memory = out?.rawMemory ?? "";
+    // Byte-exact, not merely bounded: one more code unit would exceed the cap,
+    // so a clip that trims too far (or backtracks by hand) fails here.
+    expect(utf8ByteLength(summary)).toBe(MAX_EXTRACT_FIELD_BYTES);
+    expect(utf8ByteLength(memory)).toBe(MAX_EXTRACT_FIELD_BYTES);
+    expect(utf8ByteLength(`${summary}x`)).toBeGreaterThan(MAX_EXTRACT_FIELD_BYTES);
   });
 
   test("clips multi-byte text without splitting a code point", () => {
@@ -154,10 +160,61 @@ describe("parseExtractToolReply", () => {
     );
     expect(out).not.toBeNull();
     for (const field of [out?.rolloutSummary ?? "", out?.rawMemory ?? ""]) {
-      expect(Buffer.byteLength(field, "utf-8")).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
-      expect(field).not.toContain("\uFFFD");
+      expect(utf8ByteLength(field)).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
+      // Encoding then decoding must round-trip: a dangling surrogate would come
+      // back as U+FFFD and silently corrupt the stored field. (Checking the JS
+      // string for U+FFFD cannot see that: a lone surrogate is not U+FFFD.)
+      expect(Buffer.from(field, "utf-8").toString("utf-8")).toBe(field);
       expect(field.length).toBeGreaterThan(0);
     }
+  });
+
+  test("a cut inside a surrogate pair drops the dangling high surrogate", () => {
+    // The cap lands 3 bytes after the ASCII run: the next code unit is a high
+    // surrogate whose pair would need 4, so the clip stops on the lone high
+    // surrogate and must drop it rather than encode U+FFFD.
+    const out = parseExtractToolReply(
+      saveReply({
+        rollout_summary: `${"a".repeat(MAX_EXTRACT_FIELD_BYTES - 3)}😀😀😀`,
+        rollout_slug: "slug",
+        raw_memory: "b",
+      }),
+      { rolloutKey: "k" },
+    );
+    expect(out).not.toBeNull();
+    const field = out?.rolloutSummary ?? "";
+    expect(field).toBe("a".repeat(MAX_EXTRACT_FIELD_BYTES - 3));
+    expect(Buffer.from(field, "utf-8").toString("utf-8")).toBe(field);
+  });
+
+  test("lone surrogates are clipped by encoded bytes, not UTF-16 length", () => {
+    // 75k pairs encode to 300 KB (1 + 3 bytes each), so the cap must bite; a
+    // meter that reports 2 bytes per lone surrogate (bun's Buffer.byteLength)
+    // would stop at 204,800 "bytes" and write 273 KB.
+    const raw = "x\uD800".repeat(75_000);
+    const out = parseExtractToolReply(
+      saveReply({ rollout_summary: "x", rollout_slug: "slug", raw_memory: raw }),
+      { rolloutKey: "k" },
+    );
+    expect(out).not.toBeNull();
+    const field = out?.rawMemory ?? "";
+    expect(field.length).toBeGreaterThan(0);
+    expect(field.length).toBeLessThan(raw.length);
+    expect(Buffer.from(field, "utf-8").length).toBeLessThanOrEqual(MAX_EXTRACT_FIELD_BYTES);
+  });
+
+  test("a 1 MB reply is clipped without quadratic work", () => {
+    const started = Date.now();
+    const out = parseExtractToolReply(
+      saveReply({ rollout_summary: "z".repeat(1_000_000), rollout_slug: "slug", raw_memory: "y" }),
+      { rolloutKey: "k" },
+    );
+    const elapsed = Date.now() - started;
+    expect(out).not.toBeNull();
+    expect(utf8ByteLength(out?.rolloutSummary ?? "")).toBe(MAX_EXTRACT_FIELD_BYTES);
+    // The trim-one-character loop took ~7 s on this input; the bisection keeps
+    // the clip linear-ish, so a regression trips this budget long before CI.
+    expect(elapsed).toBeLessThan(3_000);
   });
 
   test("injection payloads beyond the truncation point are still rejected", () => {

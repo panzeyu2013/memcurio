@@ -4,6 +4,7 @@ import { join, relative, resolve } from "node:path";
 
 import { adHocNotesDir, baselineDir, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { atomicWrite, withFileLock } from "./transaction.js";
+import { utf8ByteLength } from "./utf8.js";
 import { createHash } from "node:crypto";
 
 export const MEMORY_DOCS = ["MEMORY.md", "memory_summary.md", "raw_memories.md"] as const;
@@ -69,7 +70,7 @@ export function readWorkspaceText(root: string, rel: string): string {
  *  self-healing path). */
 export function writeWorkspaceText(root: string, rel: string, content: string): void {
   const safe = assertWorkspaceRel(rel);
-  if (Buffer.byteLength(content, "utf-8") > MAX_WORKSPACE_FILE_BYTES) {
+  if (utf8ByteLength(content) > MAX_WORKSPACE_FILE_BYTES) {
     throw new Error(`workspace file exceeds ${MAX_WORKSPACE_FILE_BYTES} byte limit: ${safe}`);
   }
   const path = resolveWorkspacePath(root, safe);

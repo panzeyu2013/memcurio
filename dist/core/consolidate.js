@@ -8,6 +8,7 @@ import { WorkerProviderError, WorkerTimeoutError } from "./channel.js";
 import { ensureLayout, indexDb, memoryWorkspace, resolveWorkspacePath } from "./paths.js";
 import { redactSecrets, sanitizeForInjection } from "./sanitize.js";
 import { assertWorkspaceRel, deleteRolloutSummary, diffWorkspace, listAdHocNoteFiles, listWorkspaceFiles, loadBaseline, MAX_WORKSPACE_FILE_BYTES, readAdHocNoteFile, readWorkspaceText, rolloutSlugs, rolloutSummaryPath, } from "./workspace.js";
+import { clipUtf8, utf8ByteLength } from "./utf8.js";
 export const DEFAULT_PIPELINE_CONFIG = {
     // Codex parity (memories config defaults): 30 unused days drop a stage-1 row
     // from the Phase-2 selection window. maxInputs bounds the NEW pending rows a
@@ -148,11 +149,9 @@ ${status}
 `;
     const footer = "\n```\n";
     const reserve = 160;
-    const budget = Math.max(0, maxBytes - Buffer.byteLength(header, "utf-8") - Buffer.byteLength(footer, "utf-8") - reserve);
+    const budget = Math.max(0, maxBytes - utf8ByteLength(header) - utf8ByteLength(footer) - reserve);
     const clipped = clipUtf8(body, budget);
-    const truncation = Buffer.byteLength(clipped, "utf-8") < Buffer.byteLength(body, "utf-8")
-        ? `\n[workspace diff truncated at ${String(maxBytes)} bytes]\n`
-        : "";
+    const truncation = utf8ByteLength(clipped) < utf8ByteLength(body) ? `\n[workspace diff truncated at ${String(maxBytes)} bytes]\n` : "";
     return `${header}${clipped}${truncation}${footer}`;
 }
 /** Page one workspace file by BYTES. Both page edges are snapped to UTF-8
@@ -187,22 +186,10 @@ export function readFilePage(content, offsetRaw, limitRaw) {
 /** Byte-capped inline section with an explicit marker: a silent truncation
  *  would let the agent believe it saw the whole input. */
 function cappedInline(text, maxBytes, fullPathHint) {
-    if (Buffer.byteLength(text, "utf-8") <= maxBytes) {
+    if (utf8ByteLength(text) <= maxBytes) {
         return text;
     }
     return `${clipUtf8(text, maxBytes)}\n…[truncated to ${String(maxBytes)} bytes; read ${fullPathHint} with the tools for the full text]`;
-}
-/** Byte-bounded UTF-8 prefix that never splits a code point. */
-function clipUtf8(text, maxBytes) {
-    const buf = Buffer.from(text, "utf-8");
-    if (buf.byteLength <= maxBytes) {
-        return text;
-    }
-    let end = Math.max(0, maxBytes);
-    while (end > 0 && ((buf[end] ?? 0) & 0xc0) === 0x80) {
-        end -= 1;
-    }
-    return buf.subarray(0, end).toString("utf-8");
 }
 /** Render raw_memories.md from the selected stage-1 outputs in stable
  *  ascending rollout_key order (never usage-rank order, which would churn the
@@ -228,7 +215,7 @@ export function projectRawMemories(selected, opts = {}) {
     }
     const parts = [];
     const included = [];
-    let bytes = Buffer.byteLength(header, "utf-8") + Buffer.byteLength("Merged stage-1 raw memories (stable ascending rollout-key order):\n\n", "utf-8");
+    let bytes = utf8ByteLength(header) + utf8ByteLength("Merged stage-1 raw memories (stable ascending rollout-key order):\n\n");
     for (const s of ordered) {
         const body = s.rawMemory.trim();
         if (!body) {
@@ -244,7 +231,7 @@ export function projectRawMemories(selected, opts = {}) {
             "",
             body,
         ].join("\n");
-        const blockBytes = Buffer.byteLength(block, "utf-8") + (parts.length ? 2 : 0) + 1;
+        const blockBytes = utf8ByteLength(block) + (parts.length ? 2 : 0) + 1;
         if (bytes + blockBytes > MAX_WORKSPACE_FILE_BYTES) {
             // Truncate mode drops the remaining rows instead of throwing: readers
             // throw above the limit, so an uncapped projection would wedge every
@@ -263,7 +250,7 @@ export function projectRawMemories(selected, opts = {}) {
                 // Reserve the render's trailing newline (and the separator when this
                 // is not the first block) so the published file stays at or below the
                 // workspace cap the read path enforces.
-                const room = Math.max(0, MAX_WORKSPACE_FILE_BYTES - bytes - Buffer.byteLength(marker, "utf-8") - 1 - (parts.length ? 2 : 0));
+                const room = Math.max(0, MAX_WORKSPACE_FILE_BYTES - bytes - utf8ByteLength(marker) - 1 - (parts.length ? 2 : 0));
                 parts.push(`${clipUtf8(block, room)}${marker}`);
                 included.push(s.rolloutKey);
                 break;
@@ -832,19 +819,7 @@ const MAX_EDIT_BYTES = 256 * 1024;
 /** Clip a rendered artifact body to the workspace file limit (readers throw
  *  above it; an oversized file would wedge every consumer). */
 function clipToWorkspaceLimit(text) {
-    if (Buffer.byteLength(text, "utf-8") <= MAX_WORKSPACE_FILE_BYTES) {
-        return text;
-    }
-    let clipped = text;
-    while (Buffer.byteLength(clipped, "utf-8") > MAX_WORKSPACE_FILE_BYTES && clipped.length > 0) {
-        clipped = clipped.slice(0, -1);
-    }
-    // Never leave a dangling high surrogate at the cut point.
-    const last = clipped.charCodeAt(clipped.length - 1);
-    if (last >= 0xd800 && last <= 0xdbff) {
-        clipped = clipped.slice(0, -1);
-    }
-    return clipped;
+    return clipUtf8(text, MAX_WORKSPACE_FILE_BYTES);
 }
 const CONSOLIDATION_EDIT_RE = /^(?:MEMORY\.md|memory_summary\.md|skills\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/SKILL\.md)$/;
 function isConsolidationEditable(rel) {
@@ -1157,7 +1132,7 @@ export class LlmLoopConsolidateProvider {
                     rejected.push({ rel, reason: "target is outside the consolidation edit allowlist" });
                     return { content: "rejected: target is outside the consolidation edit allowlist", isError: true };
                 }
-                if (Buffer.byteLength(content, "utf-8") > MAX_EDIT_BYTES) {
+                if (utf8ByteLength(content) > MAX_EDIT_BYTES) {
                     rejected.push({ rel, reason: "content exceeds size cap" });
                     return { content: "rejected: content exceeds size cap", isError: true };
                 }
@@ -1313,7 +1288,7 @@ function buildConsolidationSystemPrompt(input, prunedResources = [], promptBudge
         "",
         ...sections,
     ].join("\n");
-    const promptBytes = Buffer.byteLength(prompt, "utf-8");
+    const promptBytes = utf8ByteLength(prompt);
     if (promptBytes > promptBudgetBytes) {
         throw new WorkerProviderError(`consolidation prompt exceeds the ${String(promptBudgetBytes)} byte ceiling (${String(promptBytes)} bytes)`, { code: "INPUT_BUDGET_EXCEEDED" });
     }
@@ -1371,7 +1346,7 @@ function validateEdits(edits, opts) {
             throw new Error(`consolidation edit rejected: ${rel} is outside the edit allowlist`);
         }
         const content = e.content;
-        if (Buffer.byteLength(content, "utf-8") > MAX_WORKSPACE_FILE_BYTES) {
+        if (utf8ByteLength(content) > MAX_WORKSPACE_FILE_BYTES) {
             throw new Error(`consolidation edit rejected: ${rel} exceeds the workspace file size limit`);
         }
         const redacted = redactSecrets(content);

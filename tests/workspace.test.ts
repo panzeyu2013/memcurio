@@ -122,6 +122,15 @@ describe("rollout summaries", () => {
     expect(() => writeRolloutSummary(dir, "../x.md", "x")).toThrow();
     expect(() => writeRolloutSummary(dir, "noext", "x")).toThrow();
   });
+
+  test("the write cap counts encoded bytes, lone surrogates included", () => {
+    // 400k lone surrogates encode to 1.2 MB of U+FFFD: a meter that reports 2
+    // bytes each (bun's Buffer.byteLength) would accept them, and the read path
+    // would then throw on the file the writer just produced.
+    const content = "\uD800".repeat(400_000);
+    expect(Buffer.from(content, "utf-8").length).toBeGreaterThan(MAX_WORKSPACE_FILE_BYTES);
+    expect(() => writeWorkspaceText(dir, "MEMORY.md", content)).toThrow(/exceeds/);
+  });
 });
 
 describe("baseline", () => {
