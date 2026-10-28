@@ -53,7 +53,6 @@ export interface ToolsFace {
   baseValue: boolean;
   overridden: boolean;
   dirty: boolean;
-  invalid: boolean;
 }
 
 export interface FormShell {
@@ -167,7 +166,7 @@ export class SettingsFormModel {
     const plan = this.plan();
     this.cache = {
       writable: face.writable,
-      dirty: plan.ops.length > 0 || plan.dirty.size > 0,
+      dirty: plan.dirty.size > 0,
       invalid: plan.errors.size > 0,
       saving: this.saving,
       ...(this.failed === undefined ? {} : { failed: this.failed }),
@@ -219,7 +218,6 @@ export class SettingsFormModel {
       baseValue: face.base.registerTools,
       overridden: plan.overridden.has("registerTools"),
       dirty: plan.dirty.has("registerTools"),
-      invalid: plan.errors.has("registerTools"),
     };
   }
 
@@ -398,12 +396,27 @@ export class SettingsFormModel {
       this.savedAt = Date.now();
       this.armSavedTimer();
     } else {
-      this.failed = outcome.code;
       const latest = this.controller.revision();
       this.conflict = latest !== revision;
       // A real conflict must still leave a working retry: the next Save uses
       // the latest revision and applies the preserved draft explicitly.
       if (this.conflict) this.baselineRevision = latest;
+      // A refusal can arrive after the write landed (or after another editor
+      // produced the same values). When nothing is left to write, "Save again"
+      // stays disabled and the only exit would be discarding a draft the host
+      // already holds: settle on the values the host now reports.
+      this.planCache = null;
+      const remaining = this.plan();
+      if (remaining.ops.length === 0 && remaining.errors.size === 0) {
+        this.drafts.clear();
+        this.baselineRevision = undefined;
+        this.conflict = false;
+        this.savedAt = Date.now();
+        this.armSavedTimer();
+        this.notify();
+        return { ok: true };
+      }
+      this.failed = outcome.code;
     }
     this.notify();
     return outcome;
@@ -431,13 +444,23 @@ export class SettingsFormModel {
   }
 
   private stage(draft: Draft): void {
-    if (this.baselineRevision === undefined) this.baselineRevision = this.controller.revision();
     const key: DraftKey =
       draft.kind === "budget" ? "injectBudgetTokens" : draft.kind === "tools" ? "registerTools" : draft.kind;
     this.drafts.set(key, draft);
     this.failed = undefined;
     this.conflict = false;
     this.clearSaved();
+    // The fence is captured per *pending operation*, not per keystroke: an edit
+    // that lands back on the effective value produces no op, so leaving the
+    // fence at that abandoned edit's revision would make the next, unrelated
+    // Save look stale and report a false conflict.
+    this.planCache = null;
+    const plan = this.plan();
+    if (plan.ops.length === 0 && plan.errors.size === 0) {
+      this.baselineRevision = undefined;
+    } else if (this.baselineRevision === undefined) {
+      this.baselineRevision = this.controller.revision();
+    }
     this.notify();
   }
 

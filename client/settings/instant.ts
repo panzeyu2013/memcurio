@@ -9,6 +9,7 @@
  * The model is framework-free: the panel consumes it through the renderer's
  * observable-hook seat, and tests drive it directly.
  */
+import { ERROR_KEYS } from "./controller.js";
 import type { MemcurioSettingsController, SaveOutcome, SettingsErrorCode } from "./controller.js";
 
 /** One observable switch state. */
@@ -101,7 +102,8 @@ export class InjectionSwitchModel {
 
   /** Apply the switch with an optimistic paint and a verified rollback. */
   async toggle(next: boolean): Promise<SaveOutcome> {
-    if (this.disposed || this.pending || next === this.value) return { ok: true };
+    if (this.disposed || this.pending) return { ok: false, code: ERROR_KEYS.notReady };
+    if (next === this.value) return { ok: true };
     const previous = this.value;
     const beforeRevision = this.controller.revision();
     const generation = ++this.generation;
@@ -134,7 +136,7 @@ export class InjectionSwitchModel {
 
   /** Clear the override and return to the composition base. */
   async reset(): Promise<SaveOutcome> {
-    if (this.disposed || this.pending) return { ok: true };
+    if (this.disposed || this.pending) return { ok: false, code: ERROR_KEYS.notReady };
     const previous = this.value;
     const beforeRevision = this.controller.revision();
     const generation = ++this.generation;
@@ -164,13 +166,29 @@ export class InjectionSwitchModel {
     return outcome;
   }
 
+  /** Drop a stale failure copy. The staged zone calls this after its own
+   *  successful save: two independent error slots are correct, but a resolved
+   *  save must not leave "Save failed" next to "Saved" on the same screen. */
+  clearError(): void {
+    if (this.errorCode === undefined) return;
+    this.errorCode = undefined;
+    this.notify();
+  }
+
   /** Re-apply the value captured before the last accepted change. */
   async undoLast(): Promise<SaveOutcome> {
     const previous = this.undo?.value;
-    if (previous === undefined) return { ok: true };
+    if (previous === undefined) return { ok: false, code: ERROR_KEYS.notReady };
     this.undo = undefined;
     this.notify();
-    return this.toggle(previous);
+    const outcome = await this.toggle(previous);
+    // A refused re-apply leaves the accepted change in place, so the undo
+    // affordance must come back instead of disappearing after one attempt.
+    if (!outcome.ok && !this.disposed) {
+      this.undo = { value: previous };
+      this.notify();
+    }
+    return outcome;
   }
 
   /** Drop timers/listeners with the panel fiber. */

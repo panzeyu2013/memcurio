@@ -26,6 +26,8 @@ import {
 import { SettingsFormModel } from "../client/settings/draft.js";
 import { InjectionSwitchModel } from "../client/settings/instant.js";
 import { MemcurioSettingsSection } from "../client/settings/section.js";
+import { mountStyles } from "../client/settings/styles.js";
+import { foldSnapshot } from "./support/settings-fake.js";
 import type { SettingsKey } from "../client/settings/locales.js";
 import { en, zh } from "../client/settings/locales.js";
 import { en as uiEn, zh as uiZh } from "../client/ui/locales.js";
@@ -81,19 +83,7 @@ class PanelScope implements ConfigFormPort<MemcurioSettingsView> {
   }
 
   private fold(ops: readonly SettingsPathOp[]): void {
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    for (const op of ops) {
-      const field = op.path[0] ?? "";
-      if (op.op === "set") user[field] = op.value;
-      else delete user[field];
-    }
-    const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
-    this.snapshot = {
-      ...this.snapshot,
-      user,
-      value: { ...base, ...(user as Partial<MemcurioSettingsView>) },
-      revision: (this.snapshot.revision ?? 0) + 1,
-    };
+    this.snapshot = foldSnapshot(this.snapshot, ops);
   }
 
   async set(field: string, value: unknown): Promise<boolean> {
@@ -541,7 +531,9 @@ describe("settings panel in jsdom (real react-dom)", () => {
 
     const undo = [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.injectionUndo);
     await click(undo);
-    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBeUndefined();
+    // The Host pins an inherited reset as an equal set (it cannot delete a
+    // lower-layer value), and the panel reports that as not overridden.
+    expect((panel.scope.snapshot.user as Record<string, unknown>).injectContext).toBe(true);
     expect(control.getAttribute("aria-checked")).toBe("true");
     panel.unmount();
 
@@ -844,3 +836,190 @@ describe("settings panel in jsdom (real react-dom)", () => {
     panel.unmount();
   });
 });
+
+/* ------------------------------------------------ 3. post-merge regressions --- */
+
+describe("settings panel regressions", () => {
+  async function settle(ms = 25): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+    });
+  }
+
+  function switchControl(panel: Panel): HTMLInputElement {
+    return panel.container.querySelector(".memcurio-settings-switch") as HTMLInputElement;
+  }
+
+  function budgetInput(panel: Panel): HTMLInputElement {
+    return panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+  }
+
+  function discardButton(panel: Panel): HTMLButtonElement | undefined {
+    return [...panel.container.querySelectorAll("button")].find((button) => button.textContent === en.discard);
+  }
+
+  test("a completed save returns focus to the footer status", async () => {
+    const panel = await mountPanel();
+    const budget = budgetInput(panel);
+    await type(budget, "900");
+    budget.focus();
+    await click(saveButton(panel));
+    await settle();
+    const status = panel.container.querySelector(".memcurio-settings-footer-status-wrap");
+    // Compare identity (not the element) so a failure prints a boolean instead
+    // of serialising the whole jsdom document.
+    expect(document.activeElement === status).toBe(true);
+    expect(status?.textContent).toContain(en.saved);
+    panel.unmount();
+  });
+
+  test("discarding a draft returns focus to the budget field", async () => {
+    const panel = await mountPanel();
+    await type(budgetInput(panel), "900");
+    await click(discardButton(panel));
+    await settle();
+    expect(document.activeElement === budgetInput(panel)).toBe(true);
+    panel.unmount();
+  });
+
+  test("an instant write settles focus back on the switch", async () => {
+    const panel = await mountPanel();
+    const control = switchControl(panel);
+    control.focus();
+    await click(control);
+    await settle();
+    expect(document.activeElement === switchControl(panel)).toBe(true);
+    panel.unmount();
+  });
+
+  test("the switch is disabled while a staged save is in flight", async () => {
+    const panel = await mountPanel();
+    await type(budgetInput(panel), "900");
+    let release: (accepted: boolean) => void = () => undefined;
+    const original = panel.scope.mutate.bind(panel.scope);
+    panel.scope.mutate = (ops, revision) =>
+      new Promise<boolean>((resolve) => {
+        release = (accepted) => {
+          if (accepted) void original(ops, revision);
+          resolve(accepted);
+        };
+      });
+    await click(saveButton(panel));
+    expect(panel.form.shell().saving).toBe(true);
+    expect(switchControl(panel).disabled).toBe(true);
+    expect(panel.container.querySelector("form")?.getAttribute("aria-busy")).toBe("true");
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusSaving);
+    await act(async () => {
+      release(false);
+      await Promise.resolve();
+    });
+    expect(switchControl(panel).disabled).toBe(false);
+    panel.unmount();
+  });
+
+  test("a transport notification during a pending switch write keeps the optimistic paint", async () => {
+    const panel = await mountPanel();
+    const control = switchControl(panel);
+    let release: () => void = () => undefined;
+    const original = panel.scope.set.bind(panel.scope);
+    panel.scope.set = (field, value) =>
+      new Promise<boolean>((resolve) => {
+        release = () => {
+          void original(field, value);
+          resolve(true);
+        };
+      });
+    await click(control);
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    panel.scope.emit(); // unrelated external notification while pending
+    await panel.repaint();
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    panel.unmount();
+  });
+
+  test("Save with a collapsed invalid advanced field expands it and focuses the field", async () => {
+    const panel = await mountPanel();
+    await click(advancedButton(panel));
+    const pin = [...panel.container.querySelectorAll('input[type="radio"]')].find(
+      (input) => (input as HTMLInputElement).value === "pin",
+    );
+    await click(pin);
+    const provider = panel.container.querySelector('input[id$="-provider"]') as HTMLInputElement | null;
+    if (provider === null) throw new Error("no provider input");
+    await type(provider, ""); // a lone half is invalid
+    await click(advancedButton(panel)); // collapse again
+    await click(saveButton(panel));
+    await settle();
+    const panelId = advancedButton(panel).getAttribute("aria-controls") ?? "";
+    expect(document.getElementById(panelId)?.hidden).toBe(false);
+    expect(document.activeElement === panel.container.querySelector('input[id$="-provider"]')).toBe(true);
+    panel.unmount();
+  });
+
+  test("a settled save clears the stale instant failure copy", async () => {
+    const panel = await mountPanel();
+    panel.scope.set = async () => false;
+    await click(switchControl(panel));
+    expect(panel.container.textContent).toContain(en.errNotLanded);
+    await type(budgetInput(panel), "900");
+    await click(saveButton(panel));
+    await settle();
+    expect(panel.container.textContent).not.toContain(en.errNotLanded);
+    expect(panel.container.querySelector(".memcurio-settings-status")?.textContent).toContain(en.statusReadyOn);
+    panel.unmount();
+  });
+
+  test("the status chip reports a failed save over the ready copy", async () => {
+    const panel = await mountPanel();
+    panel.scope.mutate = async () => false;
+    await type(budgetInput(panel), "900");
+    await click(saveButton(panel));
+    await settle(5);
+    const chip = panel.container.querySelector(".memcurio-settings-status");
+    expect(chip?.textContent).toContain(en.statusError);
+    expect(chip?.getAttribute("data-tone")).toBe("error");
+    panel.unmount();
+  });
+
+  test("every rendered settings class has a stylesheet rule", async () => {
+    const panel = await mountPanel();
+    const release = mountStyles();
+    const css = document.getElementById("memcurio-settings-css")?.textContent ?? "";
+    const classes = new Set<string>();
+    for (const element of panel.container.querySelectorAll("[class]")) {
+      for (const name of element.classList) classes.add(name);
+    }
+    const settings = [...classes].filter((name) => name.startsWith("memcurio-settings"));
+    expect(settings.length).toBeGreaterThan(20);
+    expect(settings.filter((name) => !css.includes(`.${name}`))).toEqual([]);
+    release();
+    panel.unmount();
+  });
+});
+
+
+describe("settings panel subscription", () => {
+  test("an external snapshot change repaints through the subscription alone", async () => {
+    const panel = await mountPanel();
+    const budget = panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    expect(budget.value).toBe("");
+    panel.scope.snapshot = {
+      ...panel.scope.snapshot,
+      user: { injectBudgetTokens: 1234 },
+      value: { ...BASE, injectBudgetTokens: 1234 },
+      revision: 6,
+    };
+    panel.scope.emit(); // no manual repaint: the seat subscription must drive it
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect((panel.container.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value).toBe("1234");
+    panel.unmount();
+  });
+});
+

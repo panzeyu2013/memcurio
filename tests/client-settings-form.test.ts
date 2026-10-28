@@ -12,6 +12,7 @@ import {
   type SettingsPathOp,
 } from "../client/settings/controller.js";
 import { SettingsFormModel } from "../client/settings/draft.js";
+import { foldSnapshot } from "./support/settings-fake.js";
 
 const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
@@ -25,6 +26,12 @@ class DraftScope implements ConfigFormPort<MemcurioSettingsView> {
     writable: true,
   };
   readonly mutations: Array<{ ops: readonly SettingsPathOp[]; expectedRevision?: number }> = [];
+  /** The next write never settles, like a hung settings RPC. */
+  hangNext = false;
+  /** The next write rejects, like a dead transport. */
+  rejectNext = false;
+  /** The next mutation lands but answers false (a late read-back refusal). */
+  landButRefuse = false;
   private readonly listeners = new Set<() => void>();
 
   getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
@@ -40,45 +47,37 @@ class DraftScope implements ConfigFormPort<MemcurioSettingsView> {
     for (const listener of this.listeners) listener();
   }
 
-  private fold(ops: readonly SettingsPathOp[]): void {
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    for (const op of ops) {
-      const field = op.path[0] ?? "";
-      if (op.op === "set") user[field] = op.value;
-      else delete user[field];
+  /** One accepted write: the snapshot folds through the Host's reducer. */
+  private write(ops: readonly SettingsPathOp[]): Promise<boolean> | boolean {
+    if (this.hangNext) return new Promise<boolean>(() => undefined);
+    if (this.rejectNext) {
+      this.rejectNext = false;
+      throw new Error("transport down");
     }
-    const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
-    this.snapshot = {
-      ...this.snapshot,
-      user,
-      value: { ...base, ...(user as Partial<MemcurioSettingsView>) },
-      revision: (this.snapshot.revision ?? 0) + 1,
-    };
+    const refused = this.landButRefuse;
+    this.landButRefuse = false;
+    this.snapshot = foldSnapshot(this.snapshot, ops);
+    this.emit();
+    return !refused;
   }
 
   async set(field: string, value: unknown): Promise<boolean> {
-    this.fold([{ op: "set", path: [field], value }]);
-    this.emit();
-    return true;
+    return this.write([{ op: "set", path: [field], value }]);
   }
 
   async unset(field: string): Promise<boolean> {
-    this.fold([{ op: "unset", path: [field] }]);
-    this.emit();
-    return true;
+    return this.write([{ op: "unset", path: [field] }]);
   }
 
   async mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean> {
     this.mutations.push({ ops, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
     if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) return false;
-    this.fold(ops);
-    this.emit();
-    return true;
+    return this.write(ops);
   }
 }
 
-function model(scope: DraftScope): { form: SettingsFormModel; controller: MemcurioSettingsController } {
-  const controller = new MemcurioSettingsController(scope);
+function model(scope: DraftScope, writeDeadlineMs = 50): { form: SettingsFormModel; controller: MemcurioSettingsController } {
+  const controller = new MemcurioSettingsController(scope, { writeDeadlineMs });
   const form = new SettingsFormModel(controller);
   controller.start();
   form.start();
@@ -403,3 +402,110 @@ describe("SettingsFormModel lifecycle and failure", () => {
     expect(scope.mutations).toHaveLength(0);
   });
 });
+
+describe("SettingsFormModel revision fence", () => {
+  test("rebase does not advance the fence when an external write landed first", async () => {
+    const scope = new DraftScope();
+    const { form, controller } = model(scope);
+    form.editBudget("900"); // fence at revision 1
+    // Another editor writes the same namespace before the local switch.
+    scope.snapshot = { ...scope.snapshot, revision: 2 };
+    scope.emit();
+    // The local switch write then advances the revision once more (2 → 3).
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: true });
+    expect(controller.revision()).toBe(3);
+    // 2 is the revision the switch captured before its own write.
+    form.rebase(2);
+    expect(await form.save()).toEqual({ ok: false, code: "errNotLanded" });
+    expect(form.shell().conflict).toBe(true);
+    // The external value was not folded into the form's fence.
+    expect(scope.snapshot.value?.injectContext).toBe(false);
+    expect(scope.mutations.at(-1)?.expectedRevision).toBe(1);
+  });
+
+  test("a local switch write with no external interleaving advances the fence", async () => {
+    const scope = new DraftScope();
+    const { form, controller } = model(scope);
+    form.editBudget("900");
+    const before = controller.revision();
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: true });
+    form.rebase(before);
+    expect(await form.save()).toEqual({ ok: true });
+    expect(scope.mutations.at(-1)?.expectedRevision).toBe((before ?? 0) + 1);
+  });
+});
+
+describe("SettingsFormModel fence release and settlement", () => {
+  test("typing back to the effective value releases the fence", async () => {
+    const scope = new DraftScope();
+    const { form } = model(scope);
+    form.editScope("global");
+    form.editScope("workspace"); // no operation left
+    expect(form.shell().dirty).toBe(false);
+    // An external write lands while the form looks clean.
+    scope.snapshot = { ...scope.snapshot, revision: 5 };
+    scope.emit();
+    form.editBudget("900");
+    expect(await form.save()).toEqual({ ok: true });
+    expect(scope.mutations.at(-1)?.expectedRevision).toBe(5);
+  });
+
+  test("an empty plan is a verified no-op: no wire call, drafts cleared", async () => {
+    const scope = new DraftScope();
+    const { form } = model(scope);
+    form.editScope("workspace"); // equals the effective value and the base
+    expect(form.shell().dirty).toBe(false);
+    expect(await form.save()).toEqual({ ok: true });
+    expect(scope.mutations).toHaveLength(0);
+  });
+
+  test("a refusal the host already landed settles instead of a dead end", async () => {
+    const scope = new DraftScope();
+    const { form } = model(scope);
+    form.editScope("global");
+    scope.landButRefuse = true;
+    expect(await form.save()).toEqual({ ok: true });
+    expect(form.shell().failed).toBeUndefined();
+    expect(form.shell().dirty).toBe(false);
+    expect(form.shell().savedAt).toBeDefined();
+    expect(scope.snapshot.value?.scope).toBe("global");
+  });
+
+  test("a hung write fails on the deadline and leaves the draft retryable", async () => {
+    const scope = new DraftScope();
+    const { form } = model(scope, 10);
+    form.editBudget("900");
+    scope.hangNext = true;
+    expect(await form.save()).toEqual({ ok: false, code: "errTimeout" });
+    expect(form.shell().saving).toBe(false);
+    expect(form.shell().failed).toBe("errTimeout");
+    expect(form.shell().dirty).toBe(true);
+    expect(form.budget().text).toBe("900");
+  });
+});
+
+describe("SettingsFormModel route reset against a pinned base", () => {
+  const PINNED: MemcurioSettingsView = { ...BASE, provider: "deepseek", model: "v4" };
+
+  test("staging the pinned pair in pin mode is a reset, not a set", async () => {
+    const scope = new DraftScope();
+    scope.snapshot = {
+      ...scope.snapshot,
+      base: PINNED,
+      value: { ...PINNED, provider: "other", model: "m1" },
+      user: { provider: "other", model: "m1" },
+    };
+    const { form } = model(scope);
+    expect(form.route().mode).toBe("pin");
+    form.editProvider("deepseek");
+    form.editModel("v4");
+    expect(await form.save()).toEqual({ ok: true });
+    expect(scope.mutations.at(-1)?.ops).toEqual([
+      { op: "unset", path: ["provider"] },
+      { op: "unset", path: ["model"] },
+    ]);
+    expect(scope.snapshot.user).toEqual({ provider: "deepseek", model: "v4" });
+    expect(form.route().overridden).toBe(false);
+  });
+});
+

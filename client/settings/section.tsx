@@ -122,7 +122,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
   const invalidKeys = formModel.invalidKeys();
   const advancedChanged = (route.overridden ? 1 : 0) + (tools.overridden ? 1 : 0);
   const advancedDirty = (route.dirty ? 1 : 0) + (tools.dirty ? 1 : 0);
-  const advancedInvalid = (route.invalid ? 1 : 0) + (tools.invalid ? 1 : 0);
+  const advancedInvalid = route.invalid ? 1 : 0;
   const injectionBaseLabel = face.base.injectContext ? t("injectionOn") : t("injectionOff");
 
   const focusFirstInvalid = (key: string | undefined): void => {
@@ -147,7 +147,11 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
     }
     if (!shell.dirty || shell.saving || instant.pending || !face.writable) return;
     void (async () => {
-      await formModel.save();
+      const outcome = await formModel.save();
+      // The two zones keep independent error slots, but a save that settled
+      // ("Saved") must not leave the switch's failure copy ("Save failed") on
+      // screen at the same time.
+      if (outcome.ok) switchModel.clearError();
       focusStatusSoon();
     })();
   };

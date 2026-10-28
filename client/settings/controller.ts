@@ -122,12 +122,41 @@ export const ERROR_KEYS = {
   notLanded: "errNotLanded",
   notReady: "errNotReady",
   hostRejected: "errHostRejected",
+  timeout: "errTimeout",
 } as const;
 
 export type SettingsErrorCode = (typeof ERROR_KEYS)[keyof typeof ERROR_KEYS];
 
 /** Failure carries a locale key, never an English sentence. */
 export type SaveOutcome = { ok: true } | { ok: false; code: SettingsErrorCode };
+
+/** Upper bound on one transport write. A settings RPC that never settles would
+ *  otherwise leave the models' pending/saving flags set forever, and the panel
+ *  reopens locked with no way out but a page reload. The deadline turns a hung
+ *  call into a locale-keyed failure; a late answer is ignored because the
+ *  models have already settled their state (a retry fences against the newer
+ *  revision and reports a conflict instead of silently overwriting). */
+const WRITE_DEADLINE_MS = 15_000;
+
+type Settled<T> = { kind: "value"; value: T } | { kind: "error"; error: unknown } | { kind: "timeout" };
+
+/** Race one transport call against the deadline without leaking a late
+ *  rejection (an unobserved rejection would surface as an unhandled error). */
+async function settleWithin<T>(work: Promise<T>, ms: number): Promise<Settled<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guarded = work.then(
+    (value): Settled<T> => ({ kind: "value", value }),
+    (error): Settled<T> => ({ kind: "error", error }),
+  );
+  const deadline = new Promise<Settled<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), ms);
+  });
+  try {
+    return await Promise.race([guarded, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 const DEFAULT_VIEW: MemcurioSettingsView = {
   scope: "workspace",
@@ -215,6 +244,9 @@ export function budgetProblem(value: unknown): SettingsErrorCode | undefined {
 /** Settings-panel controller over one namespace scope port. */
 export class MemcurioSettingsController {
   private readonly scope: ConfigFormPort<MemcurioSettingsView>;
+  /** Deadline for one transport write; tests shrink it to exercise the hung
+   *  path without waiting the production bound. */
+  private readonly writeDeadlineMs: number;
   private faceCache: SettingsFace | null = null;
   private readonly listeners = new Set<() => void>();
   /** ONE underlying scope subscription, fanned out to panel listeners. */
@@ -222,8 +254,9 @@ export class MemcurioSettingsController {
   /** Refcount so a redundant start()/dispose pair cannot kill the seat. */
   private starters = 0;
 
-  constructor(scope: ConfigFormPort<MemcurioSettingsView>) {
+  constructor(scope: ConfigFormPort<MemcurioSettingsView>, options: { writeDeadlineMs?: number } = {}) {
     this.scope = scope;
+    this.writeDeadlineMs = options.writeDeadlineMs ?? WRITE_DEADLINE_MS;
   }
 
   /** Attach the transport subscription; returns the disposer (fiber-owned).
@@ -298,13 +331,10 @@ export class MemcurioSettingsController {
       routeProblem(field, value, face.value) ?? (field === "injectBudgetTokens" ? budgetProblem(value) : undefined);
     if (problem) return { ok: false, code: problem };
     const reverts = Object.is(value, face.base[field]);
-    let accepted: boolean;
-    try {
-      accepted = reverts ? await this.scope.unset(field) : await this.scope.set(field, value);
-    } catch {
-      return { ok: false, code: ERROR_KEYS.hostRejected };
-    }
-    if (!accepted || !this.verifyField(field, value, reverts)) {
+    const settled = await this.settle(() => (reverts ? this.scope.unset(field) : this.scope.set(field, value)));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyField(field, value, reverts)) {
       return { ok: false, code: this.refusalKey() };
     }
     this.notify();
@@ -313,13 +343,10 @@ export class MemcurioSettingsController {
 
   /** Low-level clear for the instant zone's "reset to default" action. */
   async unsetField(field: SettingsField): Promise<SaveOutcome> {
-    let accepted: boolean;
-    try {
-      accepted = await this.scope.unset(field);
-    } catch {
-      return { ok: false, code: ERROR_KEYS.hostRejected };
-    }
-    if (!accepted || !this.verifyField(field, undefined, true)) {
+    const settled = await this.settle(() => this.scope.unset(field));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyField(field, undefined, true)) {
       return { ok: false, code: this.refusalKey() };
     }
     this.notify();
@@ -330,17 +357,24 @@ export class MemcurioSettingsController {
    *  the landed user layer, not the host's boolean alone. */
   async writeOps(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<SaveOutcome> {
     if (ops.length === 0) return { ok: true };
-    let accepted: boolean;
-    try {
-      accepted = await this.scope.mutate(ops, expectedRevision);
-    } catch {
-      return { ok: false, code: ERROR_KEYS.hostRejected };
-    }
-    if (!accepted || !this.verifyOps(ops)) {
+    const settled = await this.settle(() => this.scope.mutate(ops, expectedRevision));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyOps(ops)) {
       return { ok: false, code: this.refusalKey() };
     }
     this.notify();
     return { ok: true };
+  }
+
+  /** Run one transport call under the write deadline; a synchronous throw from
+   *  the port is the same refusal as a rejected promise. */
+  private settle<T>(work: () => Promise<T>): Promise<Settled<T>> {
+    try {
+      return settleWithin(work(), this.writeDeadlineMs);
+    } catch (error) {
+      return Promise.resolve({ kind: "error", error } as Settled<T>);
+    }
   }
 
   /** A failed read-back means "host refused" only while the transport is
@@ -352,9 +386,13 @@ export class MemcurioSettingsController {
   /** Post-write verification for one atomic plan: every set landed with that
    *  exact scalar; an unset either removed the entry or was rewritten by the
    *  Host into a set of the inherited/base value (the documented lower-layer
-   *  reset limitation). Assumes the 0.2.x ui-settings mirror has folded the
-   *  accepted write before its promise resolves; revisit if that becomes
-   *  asynchronous. */
+   *  reset limitation). The ui-settings mirror folds an accepted write before
+   *  its promise resolves, with one exception: a write superseded by a later
+   *  one on the same form skips the fold and only records a pending revision.
+   *  The panel serializes its own writes (Save, switch and undo are mutually
+   *  disabled), so that shape is not reachable here; a concurrent editor uses
+   *  a different form instance. If that changes, this read-back must re-read
+   *  instead of trusting the snapshot. */
   private verifyOps(ops: readonly SettingsPathOp[]): boolean {
     const snapshot = this.scope.getSnapshot();
     if (snapshot.status !== "ready") return false;

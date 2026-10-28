@@ -16,11 +16,13 @@ import {
   overriddenFields,
   routeProblem,
   type MemcurioSettingsView,
-  type SettingsField,
   type SettingsPathOp,
   type ConfigFormPort,
   type ConfigFormSnapshotLike,
 } from "../client/settings/controller.js";
+import { SettingsFormModel } from "../client/settings/draft.js";
+import { InjectionSwitchModel } from "../client/settings/instant.js";
+import { foldSnapshot } from "./support/settings-fake.js";
 
 const BASE: MemcurioSettingsView = { scope: "workspace", injectContext: true, registerTools: true };
 
@@ -43,6 +45,12 @@ class FakeScope implements ConfigFormPort<MemcurioSettingsView> {
   /** When false the port answers true even for an unlanded write: only the
    *  controller's own snapshot verification can catch that transport. */
   honest = true;
+  /** The next write never settles, like a hung settings RPC. */
+  hangNext = false;
+  /** The next write rejects, like a dead transport. */
+  rejectNext = false;
+  /** The next mutation lands but answers false (a late read-back refusal). */
+  landButRefuse = false;
   private readonly listeners = new Set<() => void>();
 
   getSnapshot(): ConfigFormSnapshotLike<MemcurioSettingsView> {
@@ -62,47 +70,37 @@ class FakeScope implements ConfigFormPort<MemcurioSettingsView> {
     for (const listener of this.listeners) listener();
   }
 
-  private publish(user: Record<string, unknown>): void {
-    const base = (this.snapshot.base ?? BASE) as MemcurioSettingsView;
-    const value = { ...base, ...(user as Partial<MemcurioSettingsView>) };
-    this.snapshot = {
-      ...this.snapshot,
-      user,
-      value,
-      revision: (this.snapshot.revision ?? 0) + 1,
-    };
+  /** One accepted write: the snapshot folds through the Host's reducer. */
+  private write(ops: readonly SettingsPathOp[]): Promise<boolean> | boolean {
+    if (this.hangNext) return new Promise<boolean>(() => undefined);
+    if (this.rejectNext) {
+      this.rejectNext = false;
+      throw new Error("transport down");
+    }
+    if (!this.landing) return !this.honest;
+    const refused = this.landButRefuse;
+    this.landButRefuse = false;
+    this.snapshot = foldSnapshot(this.snapshot, ops);
+    return !refused;
   }
 
   async set(field: string, value: unknown): Promise<boolean> {
     this.sets.push({ field, value });
-    if (!this.landing) return !this.honest;
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}), [field]: value };
-    this.publish(user);
-    return true;
+    return this.write([{ op: "set", path: [field], value }]);
   }
 
   async unset(field: string): Promise<boolean> {
     this.unsets.push(field);
-    if (!this.landing) return !this.honest;
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    delete user[field];
-    this.publish(user);
-    return true;
+    return this.write([{ op: "unset", path: [field] }]);
   }
 
   async mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean> {
     this.mutations.push(ops);
     this.mutationRevisions.push(expectedRevision);
-    if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) return false;
-    if (!this.landing) return !this.honest;
-    const user = { ...((this.snapshot.user as Record<string, unknown> | undefined) ?? {}) };
-    for (const op of ops) {
-      const field = op.path[0] as SettingsField;
-      if (op.op === "set") user[field] = op.value;
-      else delete user[field];
+    if (expectedRevision !== undefined && expectedRevision !== this.snapshot.revision) {
+      return false;
     }
-    this.publish(user);
-    return true;
+    return this.write(ops);
   }
 }
 
@@ -368,7 +366,10 @@ describe("MemcurioSettingsController", () => {
     expect(outcome).toEqual({ ok: true });
     expect(scope.mutationRevisions).toEqual([7]);
     expect(scope.snapshot.user).toMatchObject({ injectBudgetTokens: 900 });
-    expect((scope.snapshot.user as Record<string, unknown>).registerTools).toBeUndefined();
+    // registerTools is supplied by the composition base, so the Host rewrites
+    // the unset into an equal set of the inherited value instead of deleting
+    // the key; the read-back accepts that pinned form.
+    expect((scope.snapshot.user as Record<string, unknown>).registerTools).toBe(true);
   });
 
   test("a stale writeOps fence is refused without mutating", async () => {
@@ -407,3 +408,126 @@ describe("MemcurioSettingsController", () => {
     expect(await controller.writeOps([{ op: "unset", path: ["scope"] }])).toEqual({ ok: true });
   });
 });
+
+describe("injection switch model (instant zone)", () => {
+  function mountSwitch(scope = new FakeScope()) {
+    const controller = new MemcurioSettingsController(scope, { writeDeadlineMs: 50 });
+    const form = new SettingsFormModel(controller);
+    const switchModel = new InjectionSwitchModel(controller, (before) => form.rebase(before));
+    controller.start();
+    form.start();
+    switchModel.start();
+    return { scope, controller, form, switchModel };
+  }
+
+  test("reset really unsets the override and advances the revision, with an undo target", async () => {
+    const { scope, controller, switchModel } = mountSwitch();
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: true });
+    const revision = controller.revision();
+    expect(await switchModel.reset()).toEqual({ ok: true });
+    expect(scope.unsets).toContain("injectContext");
+    // The composition base supplies the field, so the Host pins the inherited
+    // value instead of deleting the user-layer key.
+    expect(scope.snapshot.user).toEqual({ injectContext: true });
+    expect(controller.revision()).toBe((revision ?? 0) + 1);
+    expect(switchModel.face()).toMatchObject({ value: true, undo: { value: false } });
+  });
+
+  test("undo after a reset restores the override and advances the revision again", async () => {
+    const { scope, controller, switchModel } = mountSwitch();
+    await controller.writeField("injectContext", false);
+    await switchModel.reset();
+    const revision = controller.revision();
+    expect(await switchModel.undoLast()).toEqual({ ok: true });
+    expect(scope.snapshot.user).toEqual({ injectContext: false });
+    expect(controller.revision()).toBe((revision ?? 0) + 1);
+    expect(switchModel.face().value).toBe(false);
+  });
+
+  test("one scope subscription fan-out reaches every panel listener", () => {
+    const { scope, controller } = mountSwitch();
+    const seen: number[] = [];
+    const stopA = controller.subscribe(() => seen.push(1));
+    const stopB = controller.subscribe(() => seen.push(2));
+    scope.snapshot = { ...scope.snapshot, revision: 9 };
+    scope.emit();
+    expect(scope.scopeListeners).toBe(1);
+    expect(seen).toEqual([1, 2]);
+    stopA();
+    stopB();
+  });
+
+  test("clearError drops a stale failure copy without touching the value", async () => {
+    const { scope, switchModel } = mountSwitch();
+    scope.rejectNext = true;
+    await switchModel.toggle(false);
+    expect(switchModel.face()).toMatchObject({ errorCode: ERROR_KEYS.hostRejected, value: true });
+    switchModel.clearError();
+    expect(switchModel.face().errorCode).toBeUndefined();
+    expect(switchModel.face().value).toBe(true);
+  });
+
+  test("a toggle while a write is pending is a refusal, not a false success", async () => {
+    const { scope, switchModel } = mountSwitch();
+    let release: () => void = () => undefined;
+    const original = scope.set.bind(scope);
+    scope.set = (field, value) =>
+      new Promise<boolean>((resolve) => {
+        release = () => {
+          void original(field, value);
+          resolve(true);
+        };
+      });
+    const first = switchModel.toggle(false);
+    expect(await switchModel.toggle(true)).toEqual({ ok: false, code: ERROR_KEYS.notReady });
+    release();
+    expect(await first).toEqual({ ok: true });
+  });
+
+  test("a refused undo restores the undo target", async () => {
+    const { scope, switchModel } = mountSwitch();
+    expect(await switchModel.toggle(false)).toEqual({ ok: true });
+    scope.rejectNext = true;
+    expect(await switchModel.undoLast()).toEqual({ ok: false, code: ERROR_KEYS.hostRejected });
+    expect(switchModel.face().undo).toEqual({ value: true });
+  });
+});
+
+
+describe("transport failures settle instead of hanging", () => {
+  test("a rejecting port is a locale-keyed failure, not an unhandled rejection", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    scope.rejectNext = true;
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.hostRejected });
+    scope.rejectNext = true;
+    expect(await controller.unsetField("injectContext")).toEqual({ ok: false, code: ERROR_KEYS.hostRejected });
+    scope.rejectNext = true;
+    expect(await controller.writeOps([{ op: "set", path: ["injectContext"], value: false }])).toEqual({
+      ok: false,
+      code: ERROR_KEYS.hostRejected,
+    });
+  });
+
+  test("a port that throws synchronously is the same locale-keyed failure", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope);
+    scope.set = (() => {
+      throw new Error("sync boom");
+    }) as never;
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.hostRejected });
+  });
+
+  test("a hung write fails on the deadline instead of freezing the panel", async () => {
+    const scope = new FakeScope();
+    const controller = new MemcurioSettingsController(scope, { writeDeadlineMs: 10 });
+    scope.hangNext = true;
+    expect(await controller.writeField("injectContext", false)).toEqual({ ok: false, code: ERROR_KEYS.timeout });
+    scope.hangNext = true;
+    expect(await controller.writeOps([{ op: "set", path: ["injectContext"], value: false }])).toEqual({
+      ok: false,
+      code: ERROR_KEYS.timeout,
+    });
+  });
+});
+

@@ -92,6 +92,7 @@ export const en = {
   errNotLanded: "Couldn't save: the server didn't accept the change. Try again.",
   errNotReady: "Connection lost; we couldn't confirm the save. Refresh and try again.",
   errHostRejected: "Couldn't reach the settings service. Try again.",
+  errTimeout: "The settings service didn't answer in time; the change is unconfirmed. Try again.",
   errConflict: "Saving failed; the settings may have changed elsewhere. Your draft is still here. Discard it or Save again.",
 
 } as const;
@@ -183,6 +184,7 @@ export const zh = {
   errNotLanded: "保存失败：服务器没有接受这次修改。请重试。",
   errNotReady: "连接中断，无法确认是否保存成功。请刷新后重试。",
   errHostRejected: "无法连接设置服务，请稍后重试。",
+  errTimeout: "设置服务超时未响应，无法确认是否保存。请重试。",
   errConflict: "保存失败：设置可能已在别处更新；你的草稿仍然保留。可丢弃草稿或再次保存。",
 
 } as const;
