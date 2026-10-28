@@ -19,14 +19,14 @@ export const en = {
   stateOff: "Off",
   injectionUndo: "Undo",
 
-  configSection: "Configuration · saved on save",
+  configSection: "Configuration · applies after Save",
   configHint: "Changes here apply after Save. Leaving this page discards unsaved changes.",
 
   budgetLabel: "Injection budget",
   budgetUnit: "tokens",
   budgetHint: "Empty uses the relevant memory store's configuration (built-in default 2,500); minimum 128.",
   budgetMinHint: "Minimum 128.",
-  budgetPlaceholder: "Workspace default",
+  budgetPlaceholder: "Store default",
   budgetBasePlaceholder: "Deployment default",
   budgetBaseHint: "Deployment default: {value}",
   budgetResetTarget: "Reset to default ({value})",
@@ -63,8 +63,8 @@ export const en = {
   reset: "Reset to default",
   resetTarget: "Reset to default ({value})",
   resetAll: "Reset configuration defaults",
-  resetAllHint: "Resets the configuration form fields; data-retention settings remain deployment-managed.",
-  hiddenOverrides: "{count} data-retention setting(s) are managed by the deployment and are not changed here.",
+  resetAllHint: "Resets the configuration form fields; data-retention overrides are managed outside this page.",
+  hiddenOverrides: "{count} data-retention override(s) are not shown here and stay unchanged; manage them in the profile patch.",
   deploymentNote: "Storage location and data-retention settings are managed by the deployment.",
 
   save: "Save",
@@ -156,7 +156,7 @@ export const zh = {
   resetTarget: "恢复默认（{value}）",
   resetAll: "恢复配置默认",
   resetAllHint: "重置配置表单字段；数据回收设置仍由部署配置管理。",
-  hiddenOverrides: "另有 {count} 项数据回收设置由部署配置管理，本页不会改动。",
+  hiddenOverrides: "另有 {count} 项数据回收覆盖不在本页显示、也不会被改动；如需修改请用 profile patch。",
   deploymentNote: "存储位置与数据回收设置由部署配置管理。",
 
   save: "保存",
