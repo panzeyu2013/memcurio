@@ -70,7 +70,11 @@
   "scripts": {
     "build": "bun run scripts/clean-dist.ts && tsc && bun run build:client",
     "prepare": "node scripts/prepare.mjs",
-    "test": "bun test",
+    "test": "bun test --parallel",
+    "test:serial": "bun test --isolate",
+    "test:fast": "bun test",
+    "test:coverage": "bun scripts/check-coverage.ts",
+    "smoke:node": "node scripts/smoke-node-sqlite.mjs",
     "lint": "biome lint src tests scripts client",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "pack:check": "bun run build && bun run scripts/pack-check.ts",

@@ -40,7 +40,7 @@ jobs:
 
       - run: bun run typecheck
       - run: bun run lint
-      - run: bun test
+      - run: bun run test:coverage
       # Explicitly verify the build artifacts exist (prepare only warned).
       - run: test -f dist/plugin/index.js -a -f dist/engine.js -a -f dist/core/db.js -a -f lib/client.js
       - run: bun run pack:check
@@ -60,6 +60,9 @@ jobs:
       - run: bun pm pack --dry-run
       - run: npm pack --dry-run --ignore-scripts --cache /tmp/memcurio-npm-cache
       - run: node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok (node 22):', m.name); })"
+      # The bun suite always selects bun:sqlite; this is the only behavioral
+      # exercise of the node:sqlite driver (node >= 22.13).
+      - run: node scripts/smoke-node-sqlite.mjs
       # Node 24 is the current LTS and the runtime the pinned actions run on:
       # smoke the entry there too, so a node:sqlite drift on either side of the
       # supported floor (>= 22.13) is caught in CI.
