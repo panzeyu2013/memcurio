@@ -357,6 +357,7 @@ async function probeVersion(options: Options): Promise<void> {
     stderr += chunk.toString();
   });
   const readLog = (): string => `${stdout}\n${stderr}`;
+  let leakedPort = false;
   try {
     const log = await waitFor(readLog, (text) => /\?token=[A-Za-z0-9_-]+/.test(text), 90_000);
     const token = /\?token=([A-Za-z0-9_-]+)/.exec(log)?.[1] ?? "";
@@ -379,7 +380,7 @@ async function probeVersion(options: Options): Promise<void> {
     assert(forbidden === "403", `/memcurio/snapshot answered ${forbidden}, expected 403 (token rejected)`);
     assert(readFileSync(forbiddenBody, "utf8").includes("forbidden"), "403 body is not the plugin's forbidden response");
     const head = http(port, "/memcurio/snapshot", ["-I"]);
-    assert(head === "405", `HEAD /memcurio/snapshot answered ${head}, expected 405 (route-specific method guard)`);
+    assert(head === "405", `HEAD /memcurio/snapshot answered ${head}, expected 405 (the plugin handler's method guard)`);
     const snapshotBody = join(options.work, "snapshot.json");
     const snapshot = http(port, "/memcurio/snapshot?session=probe", ["-H", `x-memcurio-token: ${uiToken}`], snapshotBody);
     assert(snapshot === "404", `valid-token snapshot answered ${snapshot}, expected 404 (unknown-session)`);
@@ -409,13 +410,15 @@ async function probeVersion(options: Options): Promise<void> {
     } catch {
       // already gone
     }
-    // A probe must not leave a listener behind for the next run (the port is
-    // free-picked, but CI reuses machines across jobs).
-    if (!(await waitForPortClosed(port, 10_000))) {
-      console.warn(`   warning: 127.0.0.1:${port} still accepts connections after SIGKILL`);
-    }
+    // A probe must not leave a listener behind: --all would pick another port
+    // and mask the leak, and CI reuses machines across jobs. A cleanup failure
+    // on an otherwise successful probe is a hard failure; a probe that already
+    // failed keeps its original error and the listener is reported by the
+    // caller's log.
+    leakedPort = !(await waitForPortClosed(port, 10_000));
     await Bun.write(bootLog, readLog());
   }
+  assert(!leakedPort, `127.0.0.1:${port} still accepts connections after SIGKILL`);
 
   const summary = {
     ok: true,

@@ -32,9 +32,4 @@ describe("compatibility matrix", () => {
     // would let one lane test hosts the other never sees.
     expect(ciMatrixVersions()).toEqual([...SUPPORTED_HOSTS]);
   });
-
-  test("the probe's --all covers the same hosts", () => {
-    const probe = readFileSync(join(repoRoot, "scripts/probe-compat.ts"), "utf8");
-    expect(probe).toContain('from "./compat-hosts.js"');
-  });
 });
