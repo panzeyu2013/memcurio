@@ -20,6 +20,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { connect } from "node:net";
 import { join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -73,18 +74,37 @@ function run(command: string, args: readonly string[], options: RunOptions): str
     env: options.env,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
-    timeout: 300_000,
+    timeout: 600_000,
     // A pipe on stdin that never closes blocks CLIs that probe for a TTY or
     // read a confirmation; every probe command must see EOF instead.
     stdio: options.stream === true ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
   });
-  if (result.error !== undefined) throw result.error;
+  if (result.error !== undefined) {
+    throw new Error(`command failed (${command} ${args.join(" ")}): ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(
       `command failed (exit ${String(result.status)}): ${command} ${args.join(" ")}\n${tail(`${result.stdout ?? ""}\n${result.stderr ?? ""}`)}`,
     );
   }
   return `${result.stdout ?? ""}${result.stderr ?? ""}`;
+}
+
+/**
+ * Run a package install, retrying once on the transient EAGAIN that pnpm's
+ * import stage reports on overlay filesystems when many files are copied
+ * concurrently. The retry reuses the store the first attempt populated, so it
+ * is cheap; a semantic failure (exit 1, missing package) still fails the probe.
+ */
+function install(command: string, args: readonly string[], options: RunOptions): string {
+  try {
+    return run(command, args, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("EAGAIN")) throw error;
+    console.warn("   transient EAGAIN during the package import; retrying once");
+    return run(command, args, options);
+  }
 }
 
 function step(label: string): void {
@@ -109,11 +129,34 @@ async function waitFor(read: () => string, predicate: (text: string) => boolean,
   throw new Error(`timed out after ${timeoutMs}ms waiting for the host`);
 }
 
-function http(port: number, path: string, extra: readonly string[] = []): string {
-  const args = ["-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}", ...extra, `http://127.0.0.1:${port}${path}`];
+function http(port: number, path: string, extra: readonly string[] = [], output = "/dev/null"): string {
+  const args = ["-s", "-m", "10", "-o", output, "-w", "%{http_code}", ...extra, `http://127.0.0.1:${port}${path}`];
   const result = spawnSync("curl", args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
   if (result.error !== undefined) throw result.error;
   return (result.stdout ?? "").trim();
+}
+
+/** Whether anything still accepts TCP connections on the port. */
+function isListening(port: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    const settle = (listening: boolean): void => {
+      socket.destroy();
+      resolvePromise(listening);
+    };
+    socket.setTimeout(500, () => settle(false));
+    socket.once("connect", () => settle(true));
+    socket.once("error", () => settle(false));
+  });
+}
+
+async function waitForPortClosed(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await isListening(port))) return true;
+    await sleep(250);
+  }
+  return !(await isListening(port));
 }
 
 async function main(): Promise<void> {
@@ -171,7 +214,7 @@ async function main(): Promise<void> {
   // The store and the profile live under the same work directory, so hardlink
   // import is both valid and deterministic; the default auto chain falls back
   // to copyfile under this sandbox and intermittently fails with EAGAIN.
-  run(
+  install(
     node,
     [
       dshBin,
@@ -205,7 +248,7 @@ async function main(): Promise<void> {
   // policy is scoped off here; it would otherwise make CI red for a day after
   // every upstream release. The flag applies only to this throwaway profile.
   step("install the host bundles");
-  run(
+  install(
     pnpm,
     [
       "add",
@@ -247,8 +290,14 @@ async function main(): Promise<void> {
     const log = await waitFor(readLog, (text) => /\?token=[A-Za-z0-9_-]+/.test(text), 90_000);
     token = /\?token=([A-Za-z0-9_-]+)/.exec(log)?.[1] ?? "";
     assert(token !== "", "boot log carried no token");
-    const root = http(options.port, `/?token=${token}`, ["-c", jar, "-b", jar, "-L"]);
+    const indexHtml = join(options.work, "index.html");
+    const root = http(options.port, `/?token=${token}`, ["-c", jar, "-b", jar, "-L"], indexHtml);
     assert(root === "200", `web root answered ${root}, expected 200`);
+    const html = readFileSync(indexHtml, "utf8");
+    assert(
+      html.includes("@memcurio/dsh-plugin/client.js"),
+      "boot payload does not register @memcurio/dsh-plugin/client.js",
+    );
     const route = http(options.port, "/memcurio/snapshot?session=probe", ["-H", "x-memcurio-token: bogus"]);
     assert(route === "403", `/memcurio/snapshot answered ${route}, expected 403 (route registered, token rejected)`);
     const unknown = http(options.port, "/memcurio-nope");
@@ -265,6 +314,11 @@ async function main(): Promise<void> {
       if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
     } catch {
       // already gone
+    }
+    // A probe must not leave a listener behind for the next run (the default
+    // port is pid-derived, but CI reuses machines across jobs).
+    if (!(await waitForPortClosed(options.port, 10_000))) {
+      console.warn(`   warning: 127.0.0.1:${options.port} still accepts connections after SIGKILL`);
     }
     await Bun.write(bootLog, readLog());
   }
