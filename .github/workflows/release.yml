@@ -110,7 +110,8 @@ jobs:
       - name: Compatibility matrix (peer floor + sampled lines)
         run: |
           npm install --global pnpm@11.21.0
-          bun scripts/probe-compat.ts --all --clean
+          mkdir -p "$RUNNER_TEMP/bun-cache"
+          bun scripts/probe-compat.ts --all --clean --cache "$RUNNER_TEMP/bun-cache"
 
       - name: Tag/version sanity
         run: |

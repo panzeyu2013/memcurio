@@ -29,10 +29,9 @@ import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
-const repoRoot = resolve(import.meta.dir, "..");
+import { SUPPORTED_HOSTS } from "./compat-hosts.js";
 
-/** The peer floor plus one sample per published line (keep CI's matrix in sync). */
-const SUPPORTED_HOSTS = ["0.2.0-rc.1", "0.2.1-rc.2", "0.2.1-rc.4", "0.2.2-alpha.2"] as const;
+const repoRoot = resolve(import.meta.dir, "..");
 
 const DEFAULT_PORT = 32_000 + (process.pid % 1000);
 
@@ -44,6 +43,8 @@ interface Options {
   all: boolean;
   /** Optional warm bun cache for local runs; CI leaves it empty (project cache). */
   cache: string;
+  /** True when --port was passed, so a busy port is an error instead of a scan. */
+  portExplicit: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -53,11 +54,15 @@ function parseArgs(argv: readonly string[]): Options {
   let clean = false;
   let all = false;
   let cache = "";
+  let portExplicit = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--version") version = argv[++i] ?? "";
     else if (arg === "--work") work = argv[++i] ?? "";
-    else if (arg === "--port") port = Number(argv[++i] ?? DEFAULT_PORT);
+    else if (arg === "--port") {
+      port = Number(argv[++i] ?? DEFAULT_PORT);
+      portExplicit = true;
+    }
     else if (arg === "--cache") cache = argv[++i] ?? "";
     else if (arg === "--all") all = true;
     else if (arg === "--clean") clean = true;
@@ -78,6 +83,7 @@ function parseArgs(argv: readonly string[]): Options {
     clean,
     all,
     cache: cache === "" ? "" : resolve(cache),
+    portExplicit,
   };
 }
 
@@ -207,9 +213,11 @@ function portAvailable(port: number): Promise<boolean> {
   });
 }
 
-/** Pick a free port; pid-derived defaults collide across probes on one machine. */
-async function freePort(start: number): Promise<number> {
-  for (let port = start; port < start + 50 && port <= 65_535; port += 1) {
+/** Pick a free port; an explicit --port must be free, a derived one may scan. */
+async function freePort(start: number, explicit: boolean): Promise<number> {
+  if (await portAvailable(start)) return start;
+  if (explicit) throw new Error(`--port ${start} is already in use`);
+  for (let port = start + 1; port < start + 50 && port <= 65_535; port += 1) {
     if (await portAvailable(port)) return port;
   }
   throw new Error(`no free port in [${start}, ${start + 50})`);
@@ -237,9 +245,9 @@ async function probeVersion(options: Options): Promise<void> {
     DSH_HOME: home,
     // Only the pnpm store is redirected. XDG_CACHE_HOME is deliberately left
     // alone: overriding it gives bun a cold install cache and re-downloads the
-    // whole host tree on every probe. Bun's own cache stays project-local;
-    // sharing one cache across probes makes concurrent/aborted runs contend on
-    // its lock.
+    // whole host tree on every probe. Bun's cache stays project-local unless
+    // --cache supplies a warm directory; --all runs sequentially, so a shared
+    // cache is safe there while concurrent probes would contend on its lock.
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
     npm_config_store_dir: pnpmStore,
@@ -310,7 +318,7 @@ async function probeVersion(options: Options): Promise<void> {
   // (pnpm). Bulk host materialization uses bun: pnpm's hoisted import copies
   // hundreds of files and intermittently fails with EAGAIN on overlay
   // filesystems, while bun's flat tree is both fast and node-resolvable. This
-  // does not weaken the compatibility claim: the plugin is still installed and
+  // does not weaken the boot/route claim: the plugin is still installed and
   // validated by the real pnpm gate above.
   step("install the host bundles");
   install(
@@ -332,7 +340,7 @@ async function probeVersion(options: Options): Promise<void> {
     assert(composed.includes("id: tool-executor-native"), "0.2.2 host composition has no native tool executor");
   }
 
-  const port = await freePort(options.port);
+  const port = await freePort(options.port, options.portExplicit);
   step(`boot the web host on 127.0.0.1:${port}`);
   const child = spawn(node, [dshBin, "--profile", "probe", "--port", String(port), "--no-open"], {
     cwd: cliDir,
@@ -409,12 +417,16 @@ async function probeVersion(options: Options): Promise<void> {
     await Bun.write(bootLog, readLog());
   }
 
+  const summary = {
+    ok: true,
+    version: options.version,
+    port,
+    ...(options.clean ? { cleaned: true } : { tarball, profileDir, bootLog }),
+  };
   if (options.clean) {
     rmSync(options.work, { recursive: true, force: true });
   }
-  console.log(
-    JSON.stringify({ ok: true, version: options.version, tarball, profileDir, bootLog, cleaned: options.clean }, null, 2),
-  );
+  console.log(JSON.stringify(summary, null, 2));
 }
 
 async function main(): Promise<void> {

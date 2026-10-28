@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DSH_VERSION="${DSH_VERSION:-0.2.1-rc.2}"
+DSH_VERSION="${DSH_VERSION:-0.2.2-alpha.2}"
 PROFILE="${PROFILE:-memcurio-probe}"
 PORT="${PORT:-30999}"
 RUNNER="${RUNNER:-bun}"

@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   together; `@deepseek-ai/cordis` follows `~4.0.6-alpha.1`, and the packaged
   manifest's only runtime change is the `@deepseek-ai/schemastery` range
   (`~3.18.6-alpha.1`): on 0.2.2+ the config schema shares the host's copy; on
-  rc.x profiles a nested copy remains, which is inert because the schema only
-  serves this plugin's own config (the settings form is not host-projected).
+  rc.x profiles a nested copy remains; the host recognizes schemastery schemas
+  structurally (`Symbol.for("schemastery")` + `meta`/`type`) and rebuilds form
+  schemas from `toJSON()`, so the second copy is inert.
 - **The test host now composes a tool executor.** 0.2.2-alpha.2 moves tool
   execution out of `dsh-tools` into a plugin (`dsh-base` mounts
   `dsh-tool-executor-native`), and prompt assembly asks that executor for

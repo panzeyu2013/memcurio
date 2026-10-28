@@ -6,7 +6,7 @@
 //
 // Seed table re-read on the DSH 0.1.7-rc.2 upgrade: unchanged except for the
 // added `@deepseek-ai/dsh-client-ui-dockkit` seed. Re-confirmed against the
-// published 0.2.2-alpha.2 frontend bundle (unchanged since 0.2.1-rc.2): it serves eleven specifiers (the nine
+// published 0.2.2-alpha.2 frontend boot table (unchanged since 0.2.1-rc.2): it serves eleven specifiers (the nine
 // below plus `zod` and `@tanstack/react-virtual`); this bundle requires the
 // nine, a subset of the seed table.
 export const PLATFORM_EXTERNALS: readonly string[] = [
