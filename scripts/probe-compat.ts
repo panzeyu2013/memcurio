@@ -385,6 +385,12 @@ async function probeVersion(options: Options): Promise<void> {
     const snapshot = http(port, "/memcurio/snapshot?session=probe", ["-H", `x-memcurio-token: ${uiToken}`], snapshotBody);
     assert(snapshot === "404", `valid-token snapshot answered ${snapshot}, expected 404 (unknown-session)`);
     assert(readFileSync(snapshotBody, "utf8").includes("unknown-session"), "valid-token snapshot is not the unknown-session 404");
+    // The workspace gate's metadata route is registered on every supported
+    // host; an empty profile still answers with the inventory envelope.
+    const workspacesBody = join(options.work, "workspaces.json");
+    const workspaces = http(port, "/memcurio/workspaces", ["-H", `x-memcurio-token: ${uiToken}`], workspacesBody);
+    assert(workspaces === "200", `valid-token workspaces answered ${workspaces}, expected 200`);
+    assert(readFileSync(workspacesBody, "utf8").includes('"workspaces"'), "workspaces body is not the inventory envelope");
 
     // Registration alone does not prove the bundle is served: fetch the
     // revisioned plugin bundle from the boot payload and check its content.
@@ -397,7 +403,7 @@ async function probeVersion(options: Options): Promise<void> {
 
     const unknown = http(port, "/memcurio-nope");
     assert(unknown === "404", `unknown route answered ${unknown}, expected 404`);
-    console.log(`   root=${root} forbidden=${forbidden} head=${head} snapshot=${snapshot} bundle=${bundleStatus} unknown=${unknown}`);
+    console.log(`   root=${root} forbidden=${forbidden} head=${head} snapshot=${snapshot} workspaces=${workspaces} bundle=${bundleStatus} unknown=${unknown}`);
   } finally {
     try {
       if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");

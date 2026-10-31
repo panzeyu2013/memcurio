@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.8/memcurio-dsh-plugin-0.0.8.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.9/memcurio-dsh-plugin-0.0.9.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.8.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.9.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.9.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -81,6 +81,12 @@ Workspaces 面板会写同一份配置；手改时 key 必须是 canonical 路�
 | 卸载 | 用 `dsh` 的插件管理命令移除插件；记忆数据（`＜DSH home＞/memcurio/…`）不会被插件卸载删除，如需清理手动删除对应 store |
 | 契约注意 | DSH 自身是开发者预览：**每次 DSH 升级都要重核 peer 契约**（devDeps 当前对齐 `0.2.2-alpha.2`，peer 范围 `^0.2.0-rc.1` 是下限，0.2.0/0.2.1/0.2.2 三线都能装）。不匹配时 `dsh plugin add` 拒绝安装、boot 时该 bundle 被 disabled/skipped（见“升级”行），此时必须成对升级或回滚。另注意 **bun 的增量 lock 更新不会重解析陈旧的 peer 闭包**（0.2.0-rc.1 升级时实测：只改直接依赖后，`dsh-sandbox` 等 7 个经 peer 引入的包仍停在旧版，`--frozen-lockfile` 会把它固化进 CI）；当前 24 个 `@deepseek-ai/dsh-*` devDependencies 全部显式钉在同一版本（含 `dsh-tool-executor-native`，不再有只经 peer 引入的包），升级后仍须核对 lock/node_modules 零 rc.2 残留 |
 | peer 为何全标 optional | 7 个 `@deepseek-ai/*` peer 一律标 optional：运行期 value import 的 `dsh-tools`/`dsh-llm` 在真实 profile 里由 `dsh-base` 保证存在，标 optional 只为让开发组合（以及 `bun install`）不因缺 peer 失败或装出重复副本。这不代表缺服务可用：`tools`/`llm`/`sessions` 缺失时插件按既有契约等待注入（见 [contract.md](contract.md)） |
+
+### 0.0.8 → 0.0.9 升级注意
+
+- **no-cwd 默认关闭。** 0.0.8 会给没有 header.cwd 的会话共享记忆；0.0.9 默认关闭。要保留旧行为，在 profile patch 的 memcurio 配置里加 workspaceOverrides: { "no-cwd": { enabled: true } }。
+- **软链工作区改用 canonical store 键。** 没有 live provenance 见证的旧 store 不会自动接管：记忆文件仍在旧目录，但该会话会改用新 canonical store。查看 <store>/state/origin.json 的 source（live/backfill，缺字段为旧格式）；需要保留旧数据时，人工确认目标后把旧 store 内容迁到 canonical store，或直接以该 canonical 路径打开会话。
+- **显式关闭会留下 durable fence。** 首次显式关闭后，删掉 override 仍保持关闭；必须再次显式 enabled: true 才能重开（防止路径删除/软链改名回落到默认开启）。
 
 ### 从 DSH Settings 页配置（推荐）
 
@@ -276,7 +282,7 @@ All must be green and `git status --short` empty except the release commit.
    notes gate warns when it has not been).
 2. Run the local pre-flight above.
 3. Push `main` (CI runs the full chain), then tag:
-   `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   `git tag -a vX.Y.Z -m "memcurio vX.Y.Z" && git push origin vX.Y.Z`（历史发布使用 annotated tag）。
 4. The `Release` workflow (`.github/workflows/release.yml`) runs the full
    gate again, verifies tag/version match, composes notes from the
    CHANGELOG, packs the tarball + sha256, refuses to overwrite an existing

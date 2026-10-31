@@ -23,7 +23,7 @@ name: Release
 # `memcurio-dsh-plugin-<version>.tgz` as the GitHub Release asset; users
 # install it directly, e.g.:
 #   dsh plugin --profile <profile> add \
-#     https://github.com/<owner>/memcurio/releases/download/v0.0.2/memcurio-dsh-plugin-0.0.2.tgz
+#     https://github.com/<owner>/memcurio/releases/download/v0.0.9/memcurio-dsh-plugin-0.0.9.tgz
 # To re-enable npm publishing later: uncomment the "Publish to npm" step,
 # add the repository secret NPM_TOKEN, and restore `id-token: write` in
 # `permissions` when using `--provenance`.
@@ -196,6 +196,7 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: v${{ env.PKG_VERSION }}
           name: memcurio v${{ env.PKG_VERSION }}
           body_path: .smoke/release-notes.md
           files: |

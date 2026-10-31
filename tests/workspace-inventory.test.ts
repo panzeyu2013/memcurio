@@ -152,6 +152,30 @@ describe("workspace inventory", () => {
     });
   });
 
+  test("a retargeted link's old row keeps its own policy", () => {
+    const g = createWorkspaceGate({
+      defaultEnabled: () => true,
+      overrides: () => ({}),
+      realpath: (path) => (path === "/link" ? "/r2" : path),
+      platform: "linux",
+    });
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: g,
+      hasEverDisabled: (keys) => keys.includes("/link"),
+      registry: [{ path: "/link" }],
+      stores: [{ key: "old", path: "/base/dsh/old" }],
+      readOrigin: () => ({ workdir: "/link", realpath: "/r1" }),
+      sessions: [],
+      isDirectory: () => true,
+    });
+    const old = inventory.workspaces.find((row) => row.key === "/r1");
+    const current = inventory.workspaces.find((row) => row.key === "/r2");
+    expect(old).toMatchObject({ enabled: true, explicit: false, fenced: false });
+    expect(current).toMatchObject({ enabled: false, explicit: false, fenced: true });
+  });
+
   test("no-cwd never follows the global default", () => {
     const inventory = buildWorkspaceInventory({
       baseRoot: "/base",

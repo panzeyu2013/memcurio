@@ -143,9 +143,15 @@ export function buildWorkspaceInventory(options: BuildWorkspaceInventoryOptions)
     const path = entry.path;
     const missing = path !== undefined && !pathIsDirectory(path, options.isDirectory);
     // Same lookup-key set as runtime adoption (canonical first, original
-    // spelling second). A fence recorded on the original spelling must still
-    // paint the row off after the symlink target changed.
-    const keys = path !== undefined && path !== "" ? gate.lookupKeys(path) : [entry.key];
+    // spelling second) ONLY while the spelling still resolves to this row's
+    // canonical workspace. A retargeted link's old row must not inherit the
+    // new target's policy: it keeps its own key (the current row for that
+    // spelling still sees the fence recorded on the original spelling).
+    const pathKey = path !== undefined && path !== "" ? gate.key(path) : undefined;
+    const keys: string[] =
+      path !== undefined && path !== "" && pathKey === entry.key && path !== entry.key
+        ? [entry.key, path]
+        : [entry.key];
     const explicit = gate.hasOverride(keys);
     const policyEnabled = gate.isKeysEnabled(keys);
     const fenced =

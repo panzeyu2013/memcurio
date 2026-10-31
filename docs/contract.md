@@ -574,7 +574,7 @@ export class MemcurioAdapter {
 ## 测试契约
 
 运行方式（仓库根目录）：
-- `bun run test` = `bun test --parallel`：每个文件独立全局对象，并按 CPU 起多 worker（本机 28 核约 1.4s）。默认入口。
+- `bun run test` = `bun test --parallel`：每个文件独立全局对象，并按 CPU 起多 worker（本机 28 核约 15s）。默认入口。
 - `bun run test:serial` = `bun test --isolate`：单进程串行隔离，排障/对比覆盖率时用。
 - `bun run test:coverage`：串行运行全套并强制覆盖率下限（函数 90% / 行 93%，见 `scripts/check-coverage.ts`）。并行 worker 的覆盖率聚合会低报，因此门禁固定串行。CI 与发布门跑的都是这条命令（比并行慢数倍，预留时长按它算）。
 - `bun run test:shared` = `bun test`：所有文件共享一个进程与全局，比默认入口慢数倍且不隔离；只用于复现「单文件在原环境下的行为」，不要当作快速反馈入口。

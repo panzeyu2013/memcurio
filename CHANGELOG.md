@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-10-31
+
 ### Added
 
 - **Per-workspace memory switches.** `defaultWorkspaceEnabled` and a canonical-path `workspaceOverrides` document let Settings → Memory → Workspaces turn memory on or off for one workspace. A disabled workspace creates no store, injects no summary or read-path guide, hides the seven native tools from that agent (with a handler backstop), skips event/telemetry collection and Phase 1/2, passes the store over in the dormant sweep, and answers `/memcurio/snapshot` with 404 `memory-disabled`. Existing memories are kept; an explicit disable requires an explicit override to re-enable, while a global default-off window can be re-enabled normally. Both start at the current session sequence without replaying seed history, including pre-disable history (durable `disabled`/`defaultOff` fences in `state/workspace-gates.json` survive restarts; a deleted path without an explicit override fails closed). Explicit `enabled:false` stores are added to the GC protected roots. `no-cwd` is a shared bucket and is off by default. The Settings block is metadata-only through `GET /memcurio/workspaces`; it never reads memory content.
 - **Adapter pause/resume.** `MemcurioAdapter.pause()` stops retry timers and autonomous drains without disposing, and `processExtractionQueue`/`stageSession` check the gate before staging or completing so a provider that returns after a disable cannot write memory.
+- **Additive `isPaused` API.** `integrationSearch/List/Read/Remember/Cite` accept an optional `isPaused` predicate; existing signatures are unchanged.
 
-### Fixed
+### Fixed (core)
+
+- **Byte caps are encoder-exact.** Extraction fields, the consolidation prompt clamp, the workspace diff render and the workspace write guard all use one UTF-8 encoder-based counter and clip; a lone surrogate is counted as the three bytes the encoder writes, so a 200 KB cap can no longer accept a 273 KB field or let a write produce a file the read path refuses.
+- **Extraction fields clip in linear time.** The old trim-one-unit loop re-encoded the remaining string each iteration (O(n²), ~2.6 s for 500 KB); a byte-aware bisection clips the same payload in ~133 ms without splitting surrogate pairs.
+
+### Fixed (workspace gate)
 
 - **Reopening a workspace from the panel now works.** Turning a workspace on writes an explicit enabled:true instead of an unset; the ever-disabled fence (and no-cwd's own default) can only be reopened by an explicit enable, so the panel no longer paints "On" while the runtime stays off. Undo writes the previous value explicitly for the same reason; reset-all keeps fenced workspaces honestly off.
 - **The panel paints the host's effective state.** GET /memcurio/workspaces now returns enabled including the ever-disabled fence plus followsDefault/fenced/truncated; policy, override and fence are evaluated with the same canonical+original lookup keys as the runtime (a fence recorded on a symlink's spelling stays visible after retarget); no-cwd rows show Off even when the global default is on, and the 500-row cap sorts before truncating. Reset-all reloads the inventory before painting, so a default-off workspace no longer looks On while the runtime is Off.
@@ -80,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`react`, `react/jsx-runtime`); the panel is split into typed components and
   two framework-free models (`SettingsFormModel`, `InjectionSwitchModel`).
 
-### Fixed
+### Fixed (settings panel)
 
 - **A write can no longer freeze the panel.** Every transport write has a
   15 s deadline: a settings RPC that never settles now answers `errTimeout`,
@@ -113,6 +121,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every click/keydown.** The probe observes only the settings dialog's nav, so
   chat streaming and composer typing no longer schedule page-wide marking
   work.
+
+### Upgrade notes
+
+- **`no-cwd` sessions are off by default.** v0.0.8 kept a shared memory bucket for sessions without `header.cwd`; v0.0.9 gates it off unless explicitly enabled with `workspaceOverrides: { "no-cwd": { enabled: true } }`.
+- **Symlinked workspaces use the canonical store key.** A legacy store without a live provenance witness is not adopted automatically: its files stay on disk, but the session uses the canonical store instead. Inspect `<store>/state/origin.json` (`source: live|backfill`; a missing field is the old format).
+- **An explicit off leaves a durable fence.** After the first explicit disable, removing the override keeps the workspace off; one explicit `enabled:true` is required to reopen it (path deletion/symlink renames must not fall back to default-on).
 
 ## [0.0.8] - 2026-10-28
 

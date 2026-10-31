@@ -23,7 +23,7 @@
 
 ## 2. memcurio 的落点
 
-- **命名空间 = profile entry id = `memcurio`**：`src/plugin/settings.ts:33`（`SETTINGS_NAMESPACE`）与 `client/settings/controller.ts:27`（`NAMESPACE`）同值，且与 `cordis.patch.yml` 的条目 id 一致。
+- **命名空间 = profile entry id = `memcurio`**：`src/plugin/settings.ts:35`（`SETTINGS_NAMESPACE`）与 `client/settings/controller.ts:27`（`NAMESPACE`）同值，且与 `cordis.patch.yml` 的条目 id 一致。
 - **schema**：`Config`（`src/plugin/settings.ts`）就是该命名空间。`.volatile()`：`scope`/`injectContext`/`registerTools`/`injectBudgetTokens`/`provider`/`model`/`defaultWorkspaceEnabled`/`workspaceOverrides`；`root` 非 volatile → 不进表单（部署数据位置）。
 - **生命周期字段**：storeRetentionDays（默认 0，回收关闭）与 storeTrashDays（默认 30）是 volatile；前者只决定“多久没活动的孤儿 store 可被隔离”，后者决定隔离后可恢复的保留期。两者都不影响注入与会话行为。本包自带面板不渲染这两个字段（破坏性开关，按部署配置处理）；通过 profile patch 设置，Loader 仍按 volatile 语义支持运行时改写。另有四个 profile 级键：storeGcScope（dsh-home | all，默认 dsh-home）、storeEmptyStoreHours（空店回收阈值，默认 0 = 关闭）、storeSweepIntervalMs（稳态 sweep 周期，默认 300000 ms，供测试/运维调优）、root（数据位置）。可见度：storeRetentionDays/storeTrashDays 进 settingsView 但面板不渲染（破坏性），storeGcScope/storeEmptyStoreHours 只在 Config（profile patch）；四个键都不影响注入与会话。面板的「恢复配置默认」只覆盖**表单域 5 个设置键**（预算、范围、provider、model、工具；4 个控件）；不含注入开关（它有独立的即时恢复），也不含隐藏的 retention 覆盖；隐藏项通过 `hiddenOverridden` 在页脚提示。（`storeSweepIntervalMs` 与 `root` 同样只走部署配置。）
 - **自带页面**：`installMemcurioSettings`（`src/plugin/settings.ts（installMemcurioSettings）`）用官方形状注册 `configure({ auto: false }, ctx.fiber)`，并订阅 `settings/document-updated` 只处理本命名空间。`settings` 是可选依赖（插件 `inject: [tools, llm, sessions]` 不变）：无该服务时记忆功能照常，只是没有配置页；settings 服务迟加载/被替换/被卸载都不重挂本插件。
@@ -81,7 +81,7 @@
 | 暂存表单草稿/校验/原子计划/失败保留/冲突 | `tests/client-settings-form.test.ts`（预算/路由/范围/工具的 plan、base 值=unset、revision/conflict） |
 | 面板注册与两域渲染/路由成对/可访问性 | `tests/client-settings-panel.test.ts`（即时开关 pending/undo/rollback、预算内联错误、单次 mutate、隐藏生命周期提示、loading/unavailable/read-only） |
 | 导航标记的对话框范围/行重建 | `tests/client-nav-mark.test.ts` |
-| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:117` 的 inject 不含 settings） |
+| 无 settings 服务时照常运行（install 只在服务存在时接线） | `tests/settings.test.ts`（无 provider 的 harness）+ `src/plugin/settings.ts（apply 的 undefined 守卫）` ；**迟到/替换/卸载场景无测试**（结构证据：`src/plugin/index.ts:121` 的 inject 不含 settings） |
 | 客户端 bundle 纯净性与白名单 | `bun run pack:check`、`tests/gates/bundle-drift.test.ts` |
 
 ## 5. 运维要点

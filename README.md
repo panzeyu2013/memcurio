@@ -10,7 +10,7 @@
 
 **不需要额外模型凭据，没有后台 daemon，没有向量数据库**——模型访问走宿主自己的 `ctx.llm` 路由，引擎核心零运行时依赖（`node:sqlite`），唯一运行时依赖是配置面用的 schemastery。
 
-> 状态：开发者预览（v0.0.8，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；孤儿 store 的隔离/恢复/清除（默认关闭，按 profile 开启）已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
+> 状态：开发者预览（v0.0.9，未上 registry，按带校验和的 Release tarball 安装）。自动记忆闭环已可用；孤儿 store 的隔离/恢复/清除（默认关闭，按 profile 开启）已可用；可视化记忆工作台是下一里程碑，见 [docs/todo.md](docs/todo.md)。
 
 ## 核心优点
 
@@ -64,7 +64,7 @@ DSH 生命周期事件（session / pre-step / tools / compaction / turn）
 
 ```bash
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.8/memcurio-dsh-plugin-0.0.8.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.9/memcurio-dsh-plugin-0.0.9.tgz
 ```
 
 从源码构建（开发用）：
@@ -73,8 +73,8 @@ dsh plugin --profile <profile> add \
 git clone https://github.com/panzeyu2013/memcurio && cd memcurio
 bun install --frozen-lockfile
 bun run build          # tsc → dist/ + esbuild → lib/client.js（产物已提交，CI 校验不漂移）
-bun pm pack            # → memcurio-dsh-plugin-0.0.8.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
+bun pm pack            # → memcurio-dsh-plugin-0.0.9.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.9.tgz
 ```
 
 `cordis.patch.yml` 会把插件自动插入 profile，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`，无需手改配置。
@@ -139,7 +139,7 @@ DSH 生态已有其他记忆插件，社区也有通用记忆层。memcurio 的�
 工具链 bun 1.3.14（与 CI 对齐）；发布运行时是 node（CI 有 node 冒烟导入插件入口）。
 
 ```bash
-bun run test          # 全量测试（并行隔离，默认；本机 ~1.4s）
+bun run test          # 全量测试（并行隔离，默认；本机 ~15s）
 bun run test:coverage # CI 门禁：串行 + 覆盖率下限（函数 90 / 行 93）
 bun run test:serial   # 单进程隔离（排障/对比覆盖率）
 bun run smoke:node    # node:sqlite 驱动实跑（node >= 22.13，需 node 在 PATH）

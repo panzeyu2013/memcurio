@@ -10,7 +10,7 @@ English · [简体中文](../README.md)
 
 **No extra model credentials, no background daemon, no vector database** — model access runs exclusively over the harness's own `ctx.llm` route. The engine core has zero runtime dependencies (`node:sqlite`); the only runtime dependency is the schemastery schema library used by the config surface.
 
-> Status: developer preview (v0.0.8, not on a registry yet; install from the checksummed Release tarball). The automatic memory loop is usable; quarantining/restoring/purging orphan stores (off by default, enabled per profile) is available; the visual memory workbench is the next milestone — see [todo.md](todo.md).
+> Status: developer preview (v0.0.9, not on a registry yet; install from the checksummed Release tarball). The automatic memory loop is usable; quarantining/restoring/purging orphan stores (off by default, enabled per profile) is available; the visual memory workbench is the next milestone — see [todo.md](todo.md).
 
 ## Why memcurio
 
@@ -67,7 +67,7 @@ Requires node >= 22.13 (`node:sqlite`, no flag) and a working DSH profile. That 
 
 ```bash
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.8/memcurio-dsh-plugin-0.0.8.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.9/memcurio-dsh-plugin-0.0.9.tgz
 ```
 
 Building from source (development):
@@ -76,8 +76,8 @@ Building from source (development):
 git clone https://github.com/panzeyu2013/memcurio && cd memcurio
 bun install --frozen-lockfile
 bun run build          # tsc → dist/ + esbuild → lib/client.js (artifacts committed; CI guards drift)
-bun pm pack            # → memcurio-dsh-plugin-0.0.8.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
+bun pm pack            # → memcurio-dsh-plugin-0.0.9.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.9.tgz
 ```
 
 `cordis.patch.yml` inserts the plugin into the profile automatically with defaults `scope: workspace` / `injectContext: true` / `registerTools: true`; do not hand-edit the config.
@@ -136,7 +136,7 @@ The DSH ecosystem already has other memory plugins, and the wider community has 
 The dev toolchain runs on bun 1.3.14 (pinned to match CI); the shipped runtime is node (a CI node smoke imports the plugin entry).
 
 ```bash
-bun run test          # full suite (parallel, isolated by file; ~1.4s locally)
+bun run test          # full suite (parallel, isolated by file; ~15s locally)
 bun run test:coverage # CI gate: serial + coverage floors (90% functions / 93% lines)
 bun run test:serial   # single-process isolation (debugging)
 bun run smoke:node    # real node:sqlite exercise (node >= 22.13, node on PATH)
