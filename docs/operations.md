@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.9/memcurio-dsh-plugin-0.0.9.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.10/memcurio-dsh-plugin-0.0.10.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.9.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.9.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.10.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.10.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -45,8 +45,10 @@ bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要
         injectContext: true
         registerTools: true
         # injectBudgetTokens: 2500  # 注入预算下限 128
-        # storeRetentionDays: 30     # 孤儿 store 回收阈值（天）；0 = 关闭（默认 0）
-        # storeTrashDays: 30         # quarantine 保留期（天），到期才 purge
+        # storeRetentionDays: 0.5    # 孤儿 store 回收阈值（天，可用 0.5 = 12h）；0 = 关闭（默认 0.5）
+        # storeTrashDays: 7          # quarantine 保留期（天），到期才 purge（默认 7）
+        # storeEmptyStoreHours: 3   # 空店回收阈值（小时）；0 = 关闭（默认 3）
+        # storeGcScope: all         # dsh-home | all（默认 all）
         # root: /custom/base        # 覆盖 MEMCURIO_ROOT
         # 可选固定 worker 路由；省略两者则跟随会话自身路由（按日志顺序取最后一个
         # 路由事件：model/selection 或已应用的 request/header；AgentOptions 只是创建期默认）：
@@ -88,11 +90,16 @@ Workspaces 面板会写同一份配置；手改时 key 必须是 canonical 路�
 - **软链工作区改用 canonical store 键。** 没有 live provenance 见证的旧 store 不会自动接管：记忆文件仍在旧目录，但该会话会改用新 canonical store。查看 <store>/state/origin.json 的 source（live/backfill，缺字段为旧格式）；需要保留旧数据时，人工确认目标后把旧 store 内容迁到 canonical store，或直接以该 canonical 路径打开会话。
 - **显式关闭会留下 durable fence。** 首次显式关闭后，删掉 override 仍保持关闭；必须再次显式 enabled: true 才能重开（防止路径删除/软链改名回落到默认开启）。
 
+### 0.0.9 → 0.0.10 升级注意
+
+- **回收默认开启。** 0.0.10 默认空店 3 小时、孤儿 12 小时、trash 7 天、scope all；首次启动可能把符合条件（路径已消失/空店）的 store 移入 trash，7 天内可恢复。要退回 0.0.9 的 opt-in 行为：storeRetentionDays: 0 且 storeEmptyStoreHours: 0。
+- **受保护对象不变。** 显式关闭的 workspace、live 会话/lease、global 共享 store、no-cwd 都不会被自动回收；orphan 回收仍要求路径消失 + 两遍确认。
+
 ### 从 DSH Settings 页配置（推荐）
 
 设置面的完整契约（上游 0.1.7 规范、本插件落点、本仓库约定、验证矩阵）见 [settings.md](settings.md)。运维速览：
 
-- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单；生命周期字段 storeRetentionDays / storeTrashDays 是破坏性开关，同样只作为 profile 配置项（不进面板），启用需显式编辑 profile patch。
+- 可调整项 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`；`root`（数据位置）属部署级，不进表单；生命周期字段 storeRetentionDays / storeTrashDays 是破坏性开关，同样只作为 profile 配置项（不进面板）；默认开启，0 可显式关闭，调整仍需编辑 profile patch。
 - 生效：`injectContext`/预算/路由即时；`scope` 对新会话生效；`registerTools` 重启生效。
 - UI 写入热生效（volatile 原地提交）；手改 YAML 默认也热生效（默认 base 启用 `dsh-hmr`，监视两份用户 patch 并即时 reconcile；禁用/无 HMR 才需要下次启动）；被 home patch 或命令行 overlay 覆盖的字段，表单写入会被拒。
 
@@ -157,7 +164,7 @@ A session without a `header.cwd` (the field is optional in DSH) never falls back
 
 A store publishes its dirty token (state/activity) after every checkpoint transaction commits, and state/swept records the token the last drain settled. The dormant sweep reads the three token files (activity, swept, activity-failed) and opens a store only when they disagree, so a settled store is never opened again; a failed token write leaves state/activity-failed, which keeps the store dirty until a later empty drain clears it. Every plugin start performs one bounded full pass (8 stores per tick) that ignores the tokens, once a worker route is known and excluding stores owned by live sessions and bootstrapped roots; a permanently blocked job keeps the store dirty and the pass revisits it until the queue is drained. The sweep never consolidates: Phase 2 stays demand-driven (turn/end, store bootstrap). Reclamation runs on a 6-hour timer and once 60 seconds after apply. The boot pass is skipped when both switches are off and no trash/ directory exists; when it runs it reclaims expired trash and, if enabled, may also quarantine. The operator API exposes a read-only plan, a restore and the lifecycle audit; audit.jsonl rotates at 1 MiB to audit.jsonl.1. Turning the two reclamation switches off stops new isolation but does not freeze trash that is already past storeTrashDays. A queue that has not written its token for seven days no longer blocks an orphan's reclamation. The empty-store tier ignores whether the workspace path still exists by design, but live sessions, session leases and unsettled tokens still block it.
 
-A second, cheaper tier reclaims stores that never produced any memory content (no document, rollout summary or ad-hoc note, no staged rows) once storeEmptyStoreHours is set (default 0 = off). Reclamation is off by default (storeRetentionDays: 0); storeGcScope (profile key, not in the panel) widens the orphan tier from <DSH home>/worktrees to any path when set to all. Stores whose workspace has an explicit workspaceOverrides entry with enabled:false are added to the GC protected roots, so neither the orphan nor the empty tier automatically reclaims them; remove the explicit override or delete the store explicitly to reclaim the space. Removing a workspace from DSH's workspace registry does not delete the folder or the memcurio store; deleting the folder makes the store an orphan subject to the rules above. When enabled, a store is quarantined only if its recorded workspace path (raw and canonical spelling) is gone, its last activity is older than the threshold, it lives under <DSH home>/worktrees/** (unless storeGcScope=all is set in the profile), its tokens are settled, and a live transaction confirms extractionPendingCount() == 0 with no consolidation lease. Quarantine renames the store into <base>/dsh/.trash/ (restorable for storeTrashDays), writes a per-key tombstone, and audits the move; a post-rename re-check rolls the move back if a job appeared in the meantime. Orphan moves require two independent passes (a one-hour confirmation marker), a fresh session lease written by any process blocks the move, and a restore conflict keeps its data for twice the trash window before expiring. Adopting a workspace whose store was quarantined restores it from the trash instead of starting empty.
+A second, cheaper tier reclaims stores that never produced any memory content (no document, rollout summary or ad-hoc note, no staged rows) once storeEmptyStoreHours is set (default 3; 0 = off). Reclamation is on by default (storeRetentionDays: 0.5 = 12h; 0 = off); storeGcScope defaults to all and dsh-home narrows the orphan tier to <DSH home>/worktrees. Stores whose workspace has an explicit workspaceOverrides entry with enabled:false are added to the GC protected roots, so neither the orphan nor the empty tier automatically reclaims them; remove the explicit override or delete the store explicitly to reclaim the space. Removing a workspace from DSH's workspace registry does not delete the folder or the memcurio store; deleting the folder makes the store an orphan subject to the rules above. When enabled, a store is quarantined only if its recorded workspace path (raw and canonical spelling) is gone, its last activity is older than the threshold, it lives under the selected scope (all by default; dsh-home restricts the orphan tier to <DSH home>/worktrees/**), its tokens are settled, and a live transaction confirms extractionPendingCount() == 0 with no consolidation lease. Quarantine renames the store into <base>/dsh/.trash/ (restorable for storeTrashDays), writes a per-key tombstone, and audits the move; a post-rename re-check rolls the move back if a job appeared in the meantime. Orphan moves require two independent passes (a one-hour confirmation marker), a fresh session lease written by any process blocks the move, and a restore conflict keeps its data for twice the trash window before expiring. Adopting a workspace whose store was quarantined restores it from the trash instead of starting empty.
 
 ### Known limitations
 

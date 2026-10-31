@@ -42,8 +42,8 @@ export interface MemcurioSettings {
   injectBudgetTokens?: number;
   provider?: string;
   model?: string;
-  /** Lifecycle GC: minimum age (days) of an orphan store before quarantine.
-   *  0 disables reclamation. */
+  /** Lifecycle GC: minimum idle age (days, fractional allowed; 0.5 = 12h)
+   *  of an orphan store before quarantine. 0 disables reclamation. */
   storeRetentionDays: number;
   /** How long a quarantined store stays restorable before it is purged. */
   storeTrashDays: number;
@@ -71,12 +71,12 @@ export interface Config {
   /** Per-workspace overrides keyed by canonical path (or the reserved
    *  `no-cwd` key). Object shape leaves room for future per-workspace fields. */
   workspaceOverrides?: Volatile<WorkspaceOverrides> | WorkspaceOverrides;
-  /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
-   *  all also reclaims stores whose workspace lived elsewhere. Deployment
-   *  level (not rendered by the panel), like root. */
+  /** Reclamation scope: all (default) also reclaims stores whose workspace
+   *  lived elsewhere; dsh-home keeps the orphan tier inside the DSH worktrees
+   *  tree. Deployment level (not rendered by the panel), like root. */
   storeGcScope?: "dsh-home" | "all";
   /** Reclaim stores that never produced memory content once idle this many
-   *  hours. 0 disables the tier (default). Profile level. */
+   *  hours (default 3; 0 disables the tier). Profile level. */
   storeEmptyStoreHours?: number;
   /** Steady-state sweep cadence in ms (profile level; tests and tuning). */
   storeSweepIntervalMs?: number;
@@ -90,11 +90,12 @@ const entrySchema = Schema.object({
   injectBudgetTokens: Schema.number().step(1).min(128).volatile(),
   provider: Schema.string().volatile(),
   model: Schema.string().volatile(),
-  // Reclamation is destructive, so it ships disabled: an operator opts in.
-  storeRetentionDays: Schema.number().step(1).min(0).max(3650).default(0).volatile(),
-  storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
-  storeGcScope: Schema.union(["dsh-home", "all"] as const).default("dsh-home"),
-  storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(0),
+  // Reclamation is on by default; an explicit 0 disables either tier. The
+  // trash window keeps quarantine recoverable before purge.
+  storeRetentionDays: Schema.number().step(0.5).min(0).max(3650).default(0.5).volatile(),
+  storeTrashDays: Schema.number().step(1).min(0).max(3650).default(7).volatile(),
+  storeGcScope: Schema.union(["dsh-home", "all"] as const).default("all"),
+  storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(3),
   storeSweepIntervalMs: Schema.number().step(1).min(1_000).max(3_600_000).default(300_000),
   defaultWorkspaceEnabled: Schema.boolean().default(true).volatile(),
   workspaceOverrides: Schema.dict(Schema.object({ enabled: Schema.boolean() })).default({}).volatile(),
@@ -154,8 +155,8 @@ export function settingsView(config: Config): MemcurioSettings {
     ...(injectBudgetTokens === undefined ? {} : { injectBudgetTokens }),
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),
-    storeRetentionDays: read(config.storeRetentionDays) ?? 0,
-    storeTrashDays: read(config.storeTrashDays) ?? 30,
+    storeRetentionDays: read(config.storeRetentionDays) ?? 0.5,
+    storeTrashDays: read(config.storeTrashDays) ?? 7,
   };
 }
 

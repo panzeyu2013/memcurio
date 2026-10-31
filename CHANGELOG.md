@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-11-01
+
+### Changed
+
+- **Store reclamation is on by default.** A built-in profile now uses storeRetentionDays=0.5 (12 hours), storeEmptyStoreHours=3, storeTrashDays=7 and storeGcScope=all. An explicit 0 disables the orphan or empty tier; explicit-off workspaces, live sessions/leases, global shared stores and no-cwd remain protected. This reverses 0.0.9's opt-in default; set 0 before starting if a profile must not reclaim.
+
+### Upgrade notes
+
+- On the first start after upgrading, orphan stores whose workspace path is gone and whose last activity is older than 12 hours may be quarantined; empty stores older than 3 hours may be quarantined. Both stay restorable in trash for 7 days. Set storeRetentionDays: 0 and storeEmptyStoreHours: 0 to keep 0.0.9's opt-in behavior.
+
 ## [0.0.9] - 2026-10-31
 
 ### Added

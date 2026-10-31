@@ -38,8 +38,8 @@ export interface MemcurioSettings {
     injectBudgetTokens?: number;
     provider?: string;
     model?: string;
-    /** Lifecycle GC: minimum age (days) of an orphan store before quarantine.
-     *  0 disables reclamation. */
+    /** Lifecycle GC: minimum idle age (days, fractional allowed; 0.5 = 12h)
+     *  of an orphan store before quarantine. 0 disables reclamation. */
     storeRetentionDays: number;
     /** How long a quarantined store stays restorable before it is purged. */
     storeTrashDays: number;
@@ -66,12 +66,12 @@ export interface Config {
     /** Per-workspace overrides keyed by canonical path (or the reserved
      *  `no-cwd` key). Object shape leaves room for future per-workspace fields. */
     workspaceOverrides?: Volatile<WorkspaceOverrides> | WorkspaceOverrides;
-    /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
-     *  all also reclaims stores whose workspace lived elsewhere. Deployment
-     *  level (not rendered by the panel), like root. */
+    /** Reclamation scope: all (default) also reclaims stores whose workspace
+     *  lived elsewhere; dsh-home keeps the orphan tier inside the DSH worktrees
+     *  tree. Deployment level (not rendered by the panel), like root. */
     storeGcScope?: "dsh-home" | "all";
     /** Reclaim stores that never produced memory content once idle this many
-     *  hours. 0 disables the tier (default). Profile level. */
+     *  hours (default 3; 0 disables the tier). Profile level. */
     storeEmptyStoreHours?: number;
     /** Steady-state sweep cadence in ms (profile level; tests and tuning). */
     storeSweepIntervalMs?: number;

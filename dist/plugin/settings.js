@@ -10,11 +10,12 @@ const entrySchema = Schema.object({
     injectBudgetTokens: Schema.number().step(1).min(128).volatile(),
     provider: Schema.string().volatile(),
     model: Schema.string().volatile(),
-    // Reclamation is destructive, so it ships disabled: an operator opts in.
-    storeRetentionDays: Schema.number().step(1).min(0).max(3650).default(0).volatile(),
-    storeTrashDays: Schema.number().step(1).min(0).max(3650).default(30).volatile(),
-    storeGcScope: Schema.union(["dsh-home", "all"]).default("dsh-home"),
-    storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(0),
+    // Reclamation is on by default; an explicit 0 disables either tier. The
+    // trash window keeps quarantine recoverable before purge.
+    storeRetentionDays: Schema.number().step(0.5).min(0).max(3650).default(0.5).volatile(),
+    storeTrashDays: Schema.number().step(1).min(0).max(3650).default(7).volatile(),
+    storeGcScope: Schema.union(["dsh-home", "all"]).default("all"),
+    storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(3),
     storeSweepIntervalMs: Schema.number().step(1).min(1_000).max(3_600_000).default(300_000),
     defaultWorkspaceEnabled: Schema.boolean().default(true).volatile(),
     workspaceOverrides: Schema.dict(Schema.object({ enabled: Schema.boolean() })).default({}).volatile(),
@@ -61,8 +62,8 @@ export function settingsView(config) {
         ...(injectBudgetTokens === undefined ? {} : { injectBudgetTokens }),
         ...(provider === undefined ? {} : { provider }),
         ...(model === undefined ? {} : { model }),
-        storeRetentionDays: read(config.storeRetentionDays) ?? 0,
-        storeTrashDays: read(config.storeTrashDays) ?? 30,
+        storeRetentionDays: read(config.storeRetentionDays) ?? 0.5,
+        storeTrashDays: read(config.storeTrashDays) ?? 7,
     };
 }
 /** Non-empty trimmed half of the worker route. */

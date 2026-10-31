@@ -47,12 +47,23 @@ const disposeFibers = disposeTestHost;
 
 describe("memcurio config schema", () => {
   test("provides the composition defaults and validates every field", () => {
-    expect(settingsView(plugin.Config({}) as never)).toEqual({
+    const defaults = plugin.Config({}) as unknown as {
+      storeRetentionDays: number;
+      storeTrashDays: number;
+      storeGcScope: string;
+      storeEmptyStoreHours: number;
+    };
+    const view = settingsView(plugin.Config({}) as never);
+    expect(view.storeRetentionDays).toBe(0.5);
+    expect(view.storeTrashDays).toBe(7);
+    expect(defaults.storeGcScope).toBe("all");
+    expect(defaults.storeEmptyStoreHours).toBe(3);
+    expect(view).toEqual({
       scope: "workspace",
       injectContext: true,
       registerTools: true,
-      storeRetentionDays: 0,
-      storeTrashDays: 30,
+      storeRetentionDays: 0.5,
+      storeTrashDays: 7,
     });
     expect(() => plugin.Config({ injectContext: "false" } as never)).toThrow();
     expect(() => plugin.Config({ scope: "elsewhere" } as never)).toThrow();
@@ -78,8 +89,8 @@ describe("live settings view", () => {
       scope: "workspace",
       injectContext: true,
       registerTools: true,
-      storeRetentionDays: 0,
-      storeTrashDays: 30,
+      storeRetentionDays: 0.5,
+      storeTrashDays: 7,
     });
     scope = "global";
     budget = 900;
@@ -108,15 +119,15 @@ describe("live settings view", () => {
       scope: "global",
       injectContext: false,
       registerTools: false,
-      storeRetentionDays: 0,
-      storeTrashDays: 30,
+      storeRetentionDays: 0.5,
+      storeTrashDays: 7,
     });
     expect(settingsView({})).toEqual({
       scope: "workspace",
       injectContext: true,
       registerTools: true,
-      storeRetentionDays: 0,
-      storeTrashDays: 30,
+      storeRetentionDays: 0.5,
+      storeTrashDays: 7,
     });
     // The schema accepts `null` for an absent optional half; the view treats
     // it as absent, while falsy scalars remain real values.
@@ -132,8 +143,8 @@ describe("live settings view", () => {
       registerTools: true,
       injectBudgetTokens: 0,
       provider: "",
-      storeRetentionDays: 0,
-      storeTrashDays: 30,
+      storeRetentionDays: 0.5,
+      storeTrashDays: 7,
     });
   });
 });
@@ -174,8 +185,8 @@ describe("settings service wiring", () => {
         scope: "global",
         injectContext: true,
         registerTools: true,
-        storeRetentionDays: 0,
-        storeTrashDays: 30,
+        storeRetentionDays: 0.5,
+        storeTrashDays: 7,
       },
     ]);
   });
@@ -378,7 +389,7 @@ describe("resolved settings behaviour", () => {
 
 describe("pinned worker route rule", () => {
   test("a pinned route requires both non-empty halves", () => {
-    const base = { scope: "workspace" as const, injectContext: true, registerTools: true, storeRetentionDays: 0, storeTrashDays: 30 };
+    const base = { scope: "workspace" as const, injectContext: true, registerTools: true, storeRetentionDays: 0.5, storeTrashDays: 30 };
     expect(pinnedRoute(base)).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p" })).toBeUndefined();
     expect(pinnedRoute({ ...base, provider: "p", model: "" })).toBeUndefined();

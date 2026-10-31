@@ -1327,15 +1327,15 @@ export function apply(ctx, config = {}) {
     /** Reclaim stores whose workspace can never come back. Destructive work is
      *  fenced three ways: a fresh token/depth/lease check inside a write
      *  transaction, a tombstone keyed by store, and a post-rename re-check that
-     *  rolls the move back if work appeared in the meantime. Off by default. */
+     *  rolls the move back if work appeared in the meantime. On by default
+     *  (0 disables either tier). */
     const gcPolicy = () => ({
         retentionDays: live().storeRetentionDays,
         trashDays: live().storeTrashDays,
-        scope: config.storeGcScope === "all" ? "all" : "dsh-home",
+        scope: config.storeGcScope === "dsh-home" ? "dsh-home" : "all",
         dshHomeRoot: dshHome(),
         maxPerRun: STORE_GC_MAX_PER_RUN,
-        // Empty-store reclamation has its own switch; it is off unless configured.
-        emptyStoreHours: config.storeEmptyStoreHours ?? 0,
+        emptyStoreHours: config.storeEmptyStoreHours ?? 3,
     });
     /** GC pins: live sessions plus stores whose workspace has an EXPLICIT
      *  enabled:false override. Default-off (no explicit override) is not a pin;
@@ -1416,9 +1416,9 @@ export function apply(ctx, config = {}) {
     // A process that lives shorter than six hours would otherwise never purge
     // the trash it inherited. Run once after adoption settles, then on the timer.
     const storeGcBoot = setTimeout(() => {
-        // A fresh default install must not create .gc/ or purge anything: run the
-        // boot pass only when reclamation is on or a trash directory already exists.
-        if (!bootGcEnabled(live().storeRetentionDays, config.storeEmptyStoreHours ?? 0, existsSync(join(gcDirs(baseRoot).trash)))) {
+        // Run the boot pass when reclamation is on (the default) or when a trash
+        // directory already exists; an explicit 0/0 pair still skips it.
+        if (!bootGcEnabled(live().storeRetentionDays, config.storeEmptyStoreHours ?? 3, existsSync(join(gcDirs(baseRoot).trash)))) {
             return;
         }
         void runStoreGc("startup").catch(warn);
