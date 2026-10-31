@@ -259,9 +259,10 @@ All must be green and `git status --short` empty except the release commit.
 ### Versioning
 
 - SemVer; the first functional release is **v0.0.1** (developer preview).
-- `package.json#version`, the `CHANGELOG.md` section
-  (`## [X.Y.Z] - YYYY-MM-DD`), and the git tag `vX.Y.Z` MUST agree — the
-  release workflow fails otherwise.
+- `package.json#version` and the git tag `vX.Y.Z` MUST agree — the release
+  workflow fails otherwise. The `CHANGELOG.md` section should carry the same
+  version; note selection for a missing/empty dated section falls back as
+  described below.
 - Notes come from the dated `## [X.Y.Z]` section; when that section is
   missing/empty the workflow falls back to a non-empty `[Unreleased]` block
   (so notes cannot silently lag the tree), and when both are empty it fails.
