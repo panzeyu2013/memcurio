@@ -907,6 +907,13 @@ export function apply(ctx, config = {}) {
     const gateMeta = new WorkspaceGateMeta(baseRoot, {
         warn: (message) => ctx.logger.warn("memcurio: %s", message),
     });
+    /** The single effective per-workspace predicate: live policy AND the
+     *  durable ever-disabled fence (an unreadable marker reports no fence, only
+     *  replay suppression). Every consumer — runtime adoption, sweep, tool
+     *  visibility, inventory — must use this instead of bare isKeysEnabled. */
+    const workspaceEnabled = (keys) => workspaceGate.isKeysEnabled([...keys]) &&
+        !(gateMeta.hasEverDisabled(keys) && !workspaceGate.hasOverride([...keys]));
+    const workspaceEnabledForWorkdir = (workdir) => workspaceEnabled(workspaceGate.lookupKeys(workdir));
     /** Optional workspace registry projection. Kept as a live reader so a
      *  workspace created/deleted after activation is reflected by the panel. */
     let workspaceRegistryReader;
@@ -993,9 +1000,7 @@ export function apply(ctx, config = {}) {
                     const lookup = keys ?? (recordedWorkdir === undefined ? [] : workspaceGate.lookupKeys(recordedWorkdir));
                     if (lookup.length === 0)
                         return undefined;
-                    const enabled = workspaceGate.isKeysEnabled([...lookup]) &&
-                        !(gateMeta.hasEverDisabled(lookup) && !workspaceGate.hasOverride([...lookup]));
-                    return enabled ? root : undefined;
+                    return workspaceEnabled(lookup) ? root : undefined;
                 },
                 isSessionDisabled: (sessionId) => {
                     const runtime = sessions.get(sessionId);
@@ -1009,21 +1014,26 @@ export function apply(ctx, config = {}) {
                     const keys = bridge.policyKeysForSession(sessionId);
                     if (keys === undefined)
                         return false;
-                    const enabled = workspaceGate.isKeysEnabled([...keys]) &&
-                        !(gateMeta.hasEverDisabled(keys) && !workspaceGate.hasOverride([...keys]));
-                    return !enabled;
+                    return !workspaceEnabled(keys);
                 },
-                listWorkspaces: (sessionId) => buildWorkspaceInventory({
-                    baseRoot,
-                    scope: live().scope,
-                    gate: workspaceGate,
-                    ...(sessionId === undefined ? {} : { currentSessionId: sessionId }),
-                    ...(workspaceRegistryReader === undefined ? {} : { registry: workspaceRegistryReader() }),
-                    sessions: [...sessions.values()].map((runtime) => ({
-                        id: runtime.session.id,
-                        cwd: runtime.workdir,
-                    })),
-                }),
+                listWorkspaces: (sessionId) => {
+                    // One marker read per inventory build: the row mapper must not touch
+                    // the file once per workspace (up to the 500-row cap).
+                    const fence = gateMeta.snapshot();
+                    const disabledKeys = new Set(Object.keys(fence.disabled));
+                    return buildWorkspaceInventory({
+                        baseRoot,
+                        scope: live().scope,
+                        gate: workspaceGate,
+                        ...(sessionId === undefined ? {} : { currentSessionId: sessionId }),
+                        ...(workspaceRegistryReader === undefined ? {} : { registry: workspaceRegistryReader() }),
+                        hasEverDisabled: (keys) => keys.some((key) => disabledKeys.has(key)),
+                        sessions: [...sessions.values()].map((runtime) => ({
+                            id: runtime.session.id,
+                            cwd: runtime.workdir,
+                        })),
+                    });
+                },
                 warn,
                 onDispose: () => {
                     uiTransportRegistry.release(mountUiTransport);
@@ -1112,12 +1122,12 @@ export function apply(ctx, config = {}) {
         if (!origin)
             return false;
         if (!origin.workdir)
-            return workspaceGate.isKeyEnabled(NO_CWD_WORKSPACE);
+            return workspaceEnabled([NO_CWD_WORKSPACE]);
         const keys = new Set([
             ...workspaceGate.lookupKeys(origin.realpath || origin.workdir),
             ...workspaceGate.lookupKeys(origin.workdir),
         ]);
-        return workspaceGate.isKeysEnabled([...keys]);
+        return workspaceEnabled([...keys]);
     };
     const openSweepAdapter = (root) => new MemcurioAdapter({
         root,
@@ -1336,8 +1346,13 @@ export function apply(ctx, config = {}) {
             roots.add(runtime.root);
         for (const root of storeRootsUnder(baseRoot)) {
             const origin = readStoreOrigin(root);
-            if (!origin)
+            // Fail closed for a store we cannot attribute: a legacy store may belong
+            // to an explicitly disabled workspace, and reclaiming it before the
+            // startup sweep backfills origin.json would lose that user's memory.
+            if (!origin) {
+                roots.add(root);
                 continue;
+            }
             const keys = origin.workdir
                 ? [...new Set([...workspaceGate.lookupKeys(origin.realpath || origin.workdir), ...workspaceGate.lookupKeys(origin.workdir)])]
                 : [NO_CWD_WORKSPACE];
@@ -1512,6 +1527,22 @@ export function apply(ctx, config = {}) {
             }
         }
     };
+    /** Recompute the per-window injection latch from seed history without
+     *  replaying evidence. A fenced/re-enabled session may already carry this
+     *  window's memcurio message; injecting again would duplicate the summary. */
+    const seedInjectedLatch = (seedEvents) => {
+        let injected = false;
+        for (const event of seedEvents) {
+            const message = messageFromEvent(event);
+            if (message && isMemcurioInjectionMessage(message)) {
+                injected = true;
+            }
+            else if (event.type === "compaction/end" && event.data.error === undefined) {
+                injected = false;
+            }
+        }
+        return injected;
+    };
     /** Turn memory on for a runtime. First adoption creates the store and (for a
      *  workspace that has never been disabled) replays the session snapshot.
      *  Re-enable resumes the paused adapter and deliberately does NOT replay: the
@@ -1524,7 +1555,7 @@ export function apply(ctx, config = {}) {
             return;
         runtime.enabled = true;
         disabledSessionIds.delete(runtime.session.id);
-        runtime.staticInjected = false;
+        runtime.staticInjected = replay ? false : seedInjectedLatch(seedEvents);
         runtime.gateAbort = new AbortController();
         const epoch = ++runtime.gateEpoch;
         runtime.adapter.resume();
@@ -1574,15 +1605,23 @@ export function apply(ctx, config = {}) {
         runtime.pendingCompactions.clear();
         bootstrappedRoots.delete(runtime.root);
         bridge.unregisterSession(runtime.session.id);
+        try {
+            clearSessionLease(runtime.root, process.pid, runtime.session.id);
+        }
+        catch {
+            void 0;
+        }
         // Only a per-workspace explicit off is a durable "ever disabled" fact.
-        // Default-off is a global setting and must not permanently pin a workspace
-        // after the default is turned back on.
+        // The global default-off window is recorded separately; a disable caused
+        // by the fence itself (policy still enabled) or by no-cwd's own default
+        // must not be mislabelled as a default-off observation.
         const explicitOff = workspaceGate.hasOverride(runtime.policyKeys) && !workspaceGate.isKeysEnabled(runtime.policyKeys);
         if (explicitOff) {
             runtime.everDisabled = true;
             gateMeta.markDisabled(runtime.policyKeys);
         }
-        else {
+        else if (workspaceGate.settings().defaultEnabled === false &&
+            !runtime.policyKeys.includes(NO_CWD_WORKSPACE)) {
             gateMeta.markDefaultOff(runtime.policyKeys);
         }
         rememberDisabledSession(runtime.session.id);
@@ -1591,8 +1630,7 @@ export function apply(ctx, config = {}) {
     const syncRuntimeGate = (runtime) => {
         if (runtime.retirement !== undefined)
             return;
-        const want = workspaceGate.isKeysEnabled(runtime.policyKeys) &&
-            !(runtime.everDisabled && !workspaceGate.hasOverride(runtime.policyKeys));
+        const want = workspaceEnabled(runtime.policyKeys) && !runtime.storeMismatch;
         if (want === runtime.enabled)
             return;
         if (want) {
@@ -1605,6 +1643,12 @@ export function apply(ctx, config = {}) {
     /** A workspace may be disabled while no live runtime exists (dormant
      *  session/store). Persist the ever-disabled fence for every known key so a
      *  later resume cannot full-replay an off-period history. */
+    /** The global default-off window only. A no-cwd bucket has its own fixed
+     *  default, and a fenced workspace is still policy-enabled; neither is a
+     *  default-off observation. */
+    const isDefaultOffWindow = (keys) => workspaceGate.settings().defaultEnabled === false &&
+        !keys.includes(NO_CWD_WORKSPACE) &&
+        !workspaceGate.isKeysEnabled(keys);
     const markKnownDisabled = () => {
         for (const session of ctx.sessions.list()) {
             const keys = workspaceGate.lookupKeys(session.header.cwd ?? "");
@@ -1612,7 +1656,7 @@ export function apply(ctx, config = {}) {
             if (explicitOff) {
                 gateMeta.markDisabled(keys);
             }
-            else if (!workspaceGate.isKeysEnabled(keys)) {
+            else if (isDefaultOffWindow(keys)) {
                 gateMeta.markDefaultOff(keys);
             }
         }
@@ -1630,7 +1674,7 @@ export function apply(ctx, config = {}) {
             if (explicitOff) {
                 gateMeta.markDisabled(keys);
             }
-            else if (!workspaceGate.isKeysEnabled(keys)) {
+            else if (isDefaultOffWindow(keys)) {
                 gateMeta.markDefaultOff(keys);
             }
         }
@@ -1670,17 +1714,27 @@ export function apply(ctx, config = {}) {
         }
         const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
         const policyKeys = workspaceGate.lookupKeys(workdir);
+        const origin = readStoreOrigin(root);
+        const storeMismatch = origin !== undefined &&
+            origin.workdir !== "" &&
+            workspaceGate.key(origin.realpath || origin.workdir) !== workspaceGate.key(workdir);
+        if (storeMismatch) {
+            ctx.logger.warn("memcurio: store %s belongs to another canonical workspace; refusing to adopt it for %s", basename(root), workdir);
+        }
         const policyEnabled = workspaceGate.isKeysEnabled(policyKeys);
         const hasOverride = workspaceGate.hasOverride(policyKeys);
         const explicitOff = hasOverride && !policyEnabled;
-        const everDisabled = gateMeta.hasEverDisabled(policyKeys);
-        const everDefaultOff = gateMeta.hasEverDefaultOff(policyKeys);
+        const fence = gateMeta.fence(policyKeys);
+        const everDisabled = fence.everDisabled;
+        const everDefaultOff = fence.everDefaultOff;
         // Fail closed after an EXPLICIT disable unless an explicit override says
         // "on": a deleted path/symlink loses the canonical lookup key and would
         // otherwise fall back to default-on. A default-off workspace without an
         // override is not poisoned by the marker (the default can be turned back
-        // on without an explicit per-workspace switch).
-        const enabled = policyEnabled && !(everDisabled && !hasOverride);
+        // on without an explicit per-workspace switch). An unreadable marker only
+        // suppresses replay (fence.unreadable below); it is not evidence that the
+        // user disabled every workspace.
+        const enabled = workspaceEnabled(policyKeys) && !storeMismatch;
         // A pinned route is read LIVE at every consumption point (fixedRoute);
         // the seed only picks the session's initial fallback route.
         const seededRoute = fixedRoute() ?? latestRoute(seedEvents) ?? lastKnownRoute;
@@ -1727,6 +1781,7 @@ export function apply(ctx, config = {}) {
             policyKeys,
             enabled: false,
             everDisabled,
+            storeMismatch,
             sessionCreated: false,
             enabledFromSeq: lastSeqOf(seedEvents) + 1,
             gateAbort: new AbortController(),
@@ -1741,14 +1796,15 @@ export function apply(ctx, config = {}) {
         };
         sessions.set(session.id, runtime);
         if (enabled) {
-            startRuntime(runtime, seedEvents, !everDisabled && !everDefaultOff);
+            startRuntime(runtime, seedEvents, !fence.unreadable && !everDisabled && !everDefaultOff);
         }
         else {
             adapter.pause();
             if (explicitOff) {
                 gateMeta.markDisabled(policyKeys);
             }
-            else {
+            else if (workspaceGate.settings().defaultEnabled === false &&
+                !policyKeys.includes(NO_CWD_WORKSPACE)) {
                 gateMeta.markDefaultOff(policyKeys);
             }
         }
@@ -2198,7 +2254,7 @@ export function apply(ctx, config = {}) {
                 const entry = entries.get(agent) ?? {};
                 entries.set(agent, entry);
                 const cwd = agent.session.header.cwd ?? "";
-                if (workspaceGate.isWorkdirEnabled(cwd)) {
+                if (workspaceEnabledForWorkdir(cwd)) {
                     entry.restriction?.();
                     entry.restriction = undefined;
                     return;

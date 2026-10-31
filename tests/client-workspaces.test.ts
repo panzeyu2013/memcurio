@@ -24,6 +24,8 @@ function inventory(rowEnabled: boolean): WorkspaceInventory {
         label: "a",
         enabled: rowEnabled,
         explicit: false,
+        followsDefault: true,
+        fenced: false,
         hasStore: true,
         current: true,
         registered: true,
@@ -36,6 +38,8 @@ function inventory(rowEnabled: boolean): WorkspaceInventory {
         label: "b",
         enabled: true,
         explicit: false,
+        followsDefault: true,
+        fenced: false,
         hasStore: false,
         current: false,
         registered: true,
@@ -60,6 +64,7 @@ describe("workspace policy decoding", () => {
   test("decodes the metadata inventory and drops malformed rows", () => {
     const decoded = decodeWorkspaceInventory(inventory(true));
     expect(decoded?.workspaces).toHaveLength(2);
+    expect(decoded?.workspaces[0]).toMatchObject({ followsDefault: true, fenced: false });
     expect(decodeWorkspaceInventory({ workspaces: [{}] })?.workspaces).toEqual([]);
     expect(decodeWorkspaceInventory(null)).toBeUndefined();
   });
@@ -304,5 +309,154 @@ describe("workspace policy model", () => {
     expect(model.face().defaultOverridden).toBe(false);
     expect(model.face().defaultEnabled).toBe(true);
     model.dispose();
+  });
+});
+
+describe("workspace reopening semantics", () => {
+  function rowInventory(row: {
+    enabled: boolean;
+    explicit: boolean;
+    followsDefault: boolean;
+    fenced: boolean;
+  }): WorkspaceInventory {
+    return {
+      at: "2026-10-31T00:00:00.000Z",
+      scope: "workspace",
+      defaultEnabled: true,
+      workspaces: [
+        {
+          key: "/a",
+          path: "/a",
+          label: "a",
+          ...row,
+          hasStore: true,
+          current: true,
+          registered: true,
+          missing: false,
+          sharedStore: false,
+        },
+      ],
+    };
+  }
+
+  test("an explicitly disabled workspace reopens with an explicit set, never unset", async () => {
+    const scope = new FakeSettingsPort({ emitOnLand: true });
+    const controller = new MemcurioSettingsController(scope);
+    await controller.writeWorkspaceOverride("/a", false);
+    const before = scope.mutations.length;
+    const model = new WorkspacePolicyModel(controller, {
+      load: async () =>
+        rowInventory({ enabled: false, explicit: true, followsDefault: false, fenced: false }),
+    });
+    await model.load();
+    const row = model.face().rows[0];
+    if (row === undefined) throw new Error("expected row");
+    expect(row.effective).toBe(false);
+    expect(await model.toggle(row, true)).toEqual({ ok: true });
+    const ops = scope.mutations.at(-1)?.ops;
+    expect(scope.mutations.length).toBe(before + 1);
+    expect(scope.unsets).toEqual([]);
+    expect(ops).toEqual([{ op: "set", path: ["workspaceOverrides", "/a", "enabled"], value: true }]);
+    expect(model.face().rows[0]?.effective).toBe(true);
+    model.dispose();
+  });
+
+  test("a fenced workspace paints off and its ON write is an explicit set", async () => {
+    const scope = new FakeSettingsPort({ emitOnLand: true });
+    const controller = new MemcurioSettingsController(scope);
+    const model = new WorkspacePolicyModel(controller, {
+      load: async () =>
+        rowInventory({ enabled: false, explicit: false, followsDefault: true, fenced: true }),
+    });
+    await model.load();
+    const row = model.face().rows[0];
+    if (row === undefined) throw new Error("expected row");
+    expect(row.effective).toBe(false);
+    expect(row.fenced).toBe(true);
+    expect(await model.toggle(row, true)).toEqual({ ok: true });
+    expect(scope.unsets).toEqual([]);
+    expect(scope.mutations.at(-1)?.ops).toEqual([
+      { op: "set", path: ["workspaceOverrides", "/a", "enabled"], value: true },
+    ]);
+    model.dispose();
+  });
+
+  test("no-cwd paints off even when the global default is on and opens only explicitly", async () => {
+    const scope = new FakeSettingsPort({ emitOnLand: true });
+    const controller = new MemcurioSettingsController(scope);
+    const noCwd: WorkspaceInventory = {
+      at: "2026-10-31T00:00:00.000Z",
+      scope: "workspace",
+      defaultEnabled: true,
+      workspaces: [
+        {
+          key: "no-cwd",
+          label: "No working directory",
+          enabled: false,
+          explicit: false,
+          followsDefault: false,
+          fenced: false,
+          hasStore: true,
+          current: false,
+          registered: true,
+          missing: false,
+          sharedStore: false,
+        },
+      ],
+    };
+    const model = new WorkspacePolicyModel(controller, { load: async () => noCwd });
+    await model.load();
+    const row = model.face().rows[0];
+    if (row === undefined) throw new Error("expected row");
+    expect(row.effective).toBe(false);
+    expect(await model.toggle(row, true)).toEqual({ ok: true });
+    expect(scope.unsets).toEqual([]);
+    expect(scope.mutations.at(-1)?.ops).toEqual([
+      { op: "set", path: ["workspaceOverrides", "no-cwd", "enabled"], value: true },
+    ]);
+    model.dispose();
+  });
+
+  test("undo restores an explicit enable after an explicit off", async () => {
+    const scope = new FakeSettingsPort({ emitOnLand: true });
+    const controller = new MemcurioSettingsController(scope);
+    await controller.writeWorkspaceOverride("/a", true);
+    const model = new WorkspacePolicyModel(controller, { load: async () => inventory(true) });
+    await model.load();
+    const row = model.face().rows[0];
+    if (row === undefined) throw new Error("expected row");
+    await model.toggle(row, false);
+    await model.undoLast();
+    expect(scope.unsets).toEqual([]);
+    expect(scope.mutations.at(-1)?.ops).toEqual([
+      { op: "set", path: ["workspaceOverrides", "/a", "enabled"], value: true },
+    ]);
+    model.dispose();
+  });
+
+  test("one shared write gate rejects a second writer while the first is in flight", async () => {
+    class GatedPort extends FakeSettingsPort {
+      gate: Promise<void> | undefined;
+      override async mutate(ops: Parameters<FakeSettingsPort["mutate"]>[0], expectedRevision?: number): Promise<boolean> {
+        if (this.gate !== undefined) await this.gate;
+        return super.mutate(ops, expectedRevision);
+      }
+    }
+    const scope = new GatedPort({ emitOnLand: true });
+    let release: (() => void) | undefined;
+    scope.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new MemcurioSettingsController(scope);
+    const first = controller.writeWorkspaceOverride("/a", true);
+    expect(controller.busy()).toBe(true);
+    const second = await controller.writeWorkspaceOverride("/b", true);
+    expect(second).toEqual({ ok: false, code: "errNotReady" });
+    release?.();
+    expect(await first).toEqual({ ok: true });
+    expect(controller.busy()).toBe(false);
+    expect(scope.mutations.map((entry) => entry.ops)).toEqual([
+      [{ op: "set", path: ["workspaceOverrides", "/a", "enabled"], value: true }],
+    ]);
   });
 });

@@ -140,8 +140,13 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
   const scope = formModel.scope();
   const route = formModel.route();
   const tools = formModel.tools();
+  // One shared write gate: a workspace toggle and a form save must never
+  // overlap on the same config form (the second fold is lost and read-back
+  // reports a false refusal).
+  // Fields stay editable while any write settles; only the write controls gate
+  // on the shared write flag (a concurrent Save would lose the fold).
   const disabled = !face.writable || shell.saving;
-  const switchDisabled = !face.writable || instant.pending || shell.saving;
+  const switchDisabled = !face.writable || instant.pending || shell.saving || face.busy;
   const invalidKeys = formModel.invalidKeys();
   const advancedChanged = (route.overridden ? 1 : 0) + (tools.overridden ? 1 : 0);
   const advancedDirty = (route.dirty ? 1 : 0) + (tools.dirty ? 1 : 0);
@@ -168,7 +173,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
       focusFirstInvalid(invalidKeys[0]);
       return;
     }
-    if (!shell.dirty || shell.saving || instant.pending || !face.writable) return;
+    if (!shell.dirty || shell.saving || instant.pending || !face.writable || face.busy) return;
     void (async () => {
       const outcome = await formModel.save();
       // The two zones keep independent error slots, but a save that settled
@@ -407,7 +412,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
             <button
               type="button"
               className="memcurio-settings-button"
-              disabled={!face.writable || shell.saving || (shell.overriddenCount === 0 && !shell.dirty)}
+              disabled={!face.writable || shell.saving || face.busy || (shell.overriddenCount === 0 && !shell.dirty)}
               title={t("resetAllHint")}
               onClick={() => {
                 formModel.resetVisible();
@@ -422,7 +427,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
               <button
                 type="button"
                 className="memcurio-settings-button"
-                disabled={shell.saving}
+                disabled={shell.saving || face.busy}
                 onClick={() => {
                   formModel.discard();
                   focusByIdSoon(budgetId);
@@ -434,7 +439,7 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
             <button
               type="submit"
               className="memcurio-settings-button memcurio-settings-button-primary"
-              disabled={!face.writable || shell.saving || instant.pending || !shell.dirty}
+              disabled={!face.writable || shell.saving || instant.pending || face.busy || !shell.dirty}
             >
               {shell.saving ? t("saving") : t("save")}
             </button>

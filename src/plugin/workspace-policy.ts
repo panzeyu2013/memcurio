@@ -105,6 +105,10 @@ export function normalizeWorkspaceKey(
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (trimmed === "") return undefined;
+  // Never alias a distinct spelling onto its trimmed neighbour: setting
+  // "/x/a " must not disable "/x/a". The panel writes canonical keys, so a
+  // padded key is a hand-edited typo and is rejected outright.
+  if (raw !== trimmed) return undefined;
   if (trimmed === NO_CWD_WORKSPACE) return NO_CWD_WORKSPACE;
   if (trimmed.length > MAX_KEY_CHARS || hasControlChars(trimmed)) return undefined;
   const platform = options.platform ?? process.platform;

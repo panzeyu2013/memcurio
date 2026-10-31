@@ -44,13 +44,19 @@ describe("workspace gate metadata", () => {
     expect(raw.disabled["/a"]).toBe(new Date(1000).toISOString());
   });
 
-  test("fails closed when the marker is unreadable", () => {
+  test("an unreadable marker blocks replay without disabling the workspace", () => {
     const base = temp();
     mkdirSync(join(base, "state"), { recursive: true });
     writeFileSync(join(base, "state", "workspace-gates.json"), "{not-json");
     const warnings: string[] = [];
     const meta = new WorkspaceGateMeta(base, { warn: (m) => warnings.push(m) });
-    expect(meta.hasEverDisabled(["/anything"])).toBe(true);
+    expect(meta.fence(["/anything"])).toEqual({
+      everDisabled: false,
+      everDefaultOff: false,
+      unreadable: true,
+    });
+    expect(meta.isUnreadable()).toBe(true);
+    expect(meta.hasEverDisabled(["/anything"])).toBe(false);
     expect(warnings).toHaveLength(1);
   });
 
@@ -73,7 +79,8 @@ describe("workspace gate metadata", () => {
     const meta = new WorkspaceGateMeta(base, { warn: () => undefined });
     meta.markDisabled(["/new"]);
     expect(readFileSync(path, "utf-8")).toBe("{not-json");
-    expect(meta.hasEverDisabled(["/anything"])).toBe(true);
+    expect(meta.isUnreadable()).toBe(true);
+    expect(meta.hasEverDisabled(["/anything"])).toBe(false);
   });
 
   test("merges writes from two instances and re-reads another process's keys", () => {

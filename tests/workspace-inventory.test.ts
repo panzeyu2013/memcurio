@@ -83,4 +83,80 @@ describe("workspace inventory", () => {
     });
     expect(inventory.workspaces[0]).toMatchObject({ key: "/a", enabled: false, explicit: true });
   });
+
+  test("an ever-disabled fence reports effective off without an override", () => {
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: gate({}, true),
+      hasEverDisabled: (keys) => keys.includes("/a"),
+      registry: [{ path: "/a" }, { path: "/b" }],
+      sessions: [],
+      stores: [],
+      isDirectory: () => true,
+    });
+    expect(inventory.workspaces.find((row) => row.key === "/a")).toMatchObject({
+      enabled: false,
+      explicit: false,
+      followsDefault: true,
+      fenced: true,
+    });
+    expect(inventory.workspaces.find((row) => row.key === "/b")).toMatchObject({
+      enabled: true,
+      fenced: false,
+    });
+  });
+
+  test("an explicit off is not double-counted as a fence", () => {
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: gate({ "/a": { enabled: false } }),
+      hasEverDisabled: () => true,
+      registry: [{ path: "/a" }],
+      sessions: [],
+      stores: [],
+      isDirectory: () => true,
+    });
+    expect(inventory.workspaces[0]).toMatchObject({
+      enabled: false,
+      explicit: true,
+      followsDefault: false,
+      fenced: false,
+    });
+  });
+
+  test("no-cwd never follows the global default", () => {
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: gate({}, true),
+      sessions: [{ id: "s1" }],
+      stores: [],
+      isDirectory: () => true,
+    });
+    expect(inventory.workspaces[0]).toMatchObject({
+      key: "no-cwd",
+      enabled: false,
+      explicit: false,
+      followsDefault: false,
+    });
+  });
+
+  test("the row cap sorts first, keeps the current row, and reports truncation", () => {
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: gate({}, true),
+      currentSessionId: "s-current",
+      registry: [{ path: "/a" }, { path: "/b" }, { path: "/c" }],
+      sessions: [{ id: "s-current", cwd: "/c" }],
+      stores: [],
+      isDirectory: () => true,
+      maxEntries: 1,
+    });
+    expect(inventory.workspaces).toHaveLength(1);
+    expect(inventory.workspaces[0]?.key).toBe("/c");
+    expect(inventory.truncated).toBe(true);
+  });
 });

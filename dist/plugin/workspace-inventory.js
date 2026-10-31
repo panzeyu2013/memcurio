@@ -73,16 +73,23 @@ export function buildWorkspaceInventory(options) {
     const currentKey = current === undefined ? undefined : gate.key(current.cwd ?? "");
     const rows = [];
     for (const entry of entries.values()) {
-        if (rows.length >= maxEntries)
-            break;
         const path = entry.path;
         const missing = path !== undefined && !pathIsDirectory(path, options.isDirectory);
+        const explicit = gate.hasOverride([entry.key]);
+        const policyEnabled = gate.isKeyEnabled(entry.key);
+        const fenced = policyEnabled &&
+            explicit === false &&
+            entry.key !== NO_CWD_WORKSPACE &&
+            options.hasEverDisabled?.([entry.key]) === true;
         rows.push({
             key: entry.key,
             ...(path === undefined ? {} : { path }),
             label: entry.label?.trim() || (entry.key === NO_CWD_WORKSPACE ? "No working directory" : basename(path ?? entry.key)),
-            enabled: gate.isKeyEnabled(entry.key),
-            explicit: gate.hasOverride([entry.key]),
+            enabled: policyEnabled && !fenced,
+            explicit,
+            // no-cwd has its own fixed default: it never follows the global switch.
+            followsDefault: !explicit && entry.key !== NO_CWD_WORKSPACE,
+            fenced,
             // A global-scope profile routes every workspace to one shared store; a
             // row without its own origin still has memories there.
             hasStore: entry.hasStore || globalStore,
@@ -92,16 +99,20 @@ export function buildWorkspaceInventory(options) {
             sharedStore: options.scope === "global",
         });
     }
+    // Sort BEFORE the row cap so the current workspace and recently active rows
+    // are never the ones dropped by insertion order.
     rows.sort((a, b) => {
         if (a.current !== b.current)
             return a.current ? -1 : 1;
         return a.label.localeCompare(b.label);
     });
+    const truncated = rows.length > maxEntries;
     return {
         at: new Date().toISOString(),
         scope: options.scope,
         defaultEnabled: gate.settings().defaultEnabled,
         ...(currentKey === undefined ? {} : { currentKey }),
-        workspaces: rows,
+        ...(truncated ? { truncated: true } : {}),
+        workspaces: truncated ? rows.slice(0, maxEntries) : rows,
     };
 }

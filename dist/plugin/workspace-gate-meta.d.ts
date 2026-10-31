@@ -15,6 +15,14 @@ export interface WorkspaceGateMetaOptions {
     warn?: (message: string) => void;
     now?: () => number;
 }
+/** One workspace's durable fence state. `unreadable` is separate from the two
+ *  marker maps: a corrupt marker forbids replay but must not pretend the user
+ *  explicitly disabled every workspace. */
+export interface WorkspaceFence {
+    everDisabled: boolean;
+    everDefaultOff: boolean;
+    unreadable: boolean;
+}
 /**
  * Durable workspace gate metadata.
  *
@@ -37,12 +45,18 @@ export declare class WorkspaceGateMeta {
     private stateDir;
     private filePath;
     private readState;
+    /** Read one fence snapshot for a lookup-key set. An unreadable marker
+     *  reports neither marker: it blocks replay, not the workspace itself. */
+    fence(keys: readonly string[]): WorkspaceFence;
     /** True when any lookup key was explicitly disabled before. An unreadable
-     *  marker fails closed: every key reports "ever disabled". */
+     *  marker reports false (it only suppresses replay; see fence()). */
     hasEverDisabled(keys: readonly string[]): boolean;
     /** True when any key was observed under a global default-off window. Does
      *  not block re-enabling; only suppresses replay. */
     hasEverDefaultOff(keys: readonly string[]): boolean;
+    /** True when the durable marker cannot be read. Callers must suppress
+     *  replay; the workspace itself stays governed by the live policy. */
+    isUnreadable(): boolean;
     /** Record an explicit per-workspace disable observation. Idempotent; best
      *  effort. */
     markDisabled(keys: readonly string[], at?: string): void;

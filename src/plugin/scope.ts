@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { storeDirsUnder } from "../core/store-gc.js";
-import { storeIsDirty } from "../core/store-meta.js";
+import { readStoreOrigin, storeIsDirty } from "../core/store-meta.js";
 
 /** Store key used when a session carries no working directory. The host
  *  process cwd is an arbitrary process fact — keying on it would silently
@@ -57,12 +58,13 @@ export function dirtyStoreRoots(roots: readonly string[]): string[] {
   return roots.filter((root) => storeIsDirty(root));
 }
 
-/** Live (non-retired) session runtimes. A retired runtime keeps its store
- *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
-export function liveSessions<T extends { retired?: boolean }>(runtimes: Iterable<T>): T[] {
+/** Live, enabled session runtimes. A retired runtime keeps its store
+ *  sweepable; a disabled workspace must neither heartbeat a lease nor protect
+ *  its store from GC (an explicit off store is pinned separately by origin). */
+export function liveSessions<T extends { retired?: boolean; enabled?: boolean }>(runtimes: Iterable<T>): T[] {
   const out: T[] = [];
   for (const runtime of runtimes) {
-    if (!runtime.retired) {
+    if (!runtime.retired && runtime.enabled !== false) {
       out.push(runtime);
     }
   }
@@ -114,10 +116,43 @@ export function selectSweepRoots(input: {
     .slice(0, input.maxRoots);
 }
 
+function storeKey(path: string): string {
+  return createHash("sha256").update(path).digest("hex").slice(0, 16);
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Resolve the store used by one DSH workspace without exposing its path.
+ *
+ * Identity is the CANONICAL path: a symlinked working directory must never
+ * inherit another workspace's store when the link is retargeted. The legacy
+ * key (hash of the resolved spelling) is still honoured only when the store's
+ * own origin proves it belongs to the same canonical workspace; otherwise the
+ * session starts from the canonical key instead of reading foreign memory.
+ * Without the origin proof a legacy store stays dormant until the startup
+ * sweep backfills origin.json.
+ */
 export function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string {
   if (scope === "global") return resolve(baseRoot);
   if (!workdir) return join(resolve(baseRoot), "dsh", NO_CWD_STORE_KEY);
   const normalized = resolve(workdir);
-  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-  return join(resolve(baseRoot), "dsh", key);
+  const canonical = canonicalPath(normalized);
+  const legacyKey = storeKey(normalized);
+  const canonicalKey = storeKey(canonical);
+  const dsh = join(resolve(baseRoot), "dsh");
+  if (legacyKey === canonicalKey) return join(dsh, canonicalKey);
+  const legacy = join(dsh, legacyKey);
+  const origin = readStoreOrigin(legacy);
+  if (origin !== undefined) {
+    const originCanonical = canonicalPath(resolve(origin.realpath || origin.workdir));
+    if (originCanonical === canonical) return legacy;
+  }
+  return join(dsh, canonicalKey);
 }

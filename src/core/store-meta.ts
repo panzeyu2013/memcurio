@@ -103,7 +103,14 @@ export function canonicalWorkdir(workdir: string): string {
 }
 
 export function readStoreOrigin(root: string): StoreOrigin | undefined {
-  const raw = readText(originPath(root));
+  let raw: string;
+  try {
+    raw = readText(originPath(root));
+  } catch {
+    // A non-directory root, EACCES, or a transient fs error must read as "no
+    // origin" (the caller's fail-closed path), never as a thrown diagnostic.
+    return undefined;
+  }
   if (!raw) {
     return undefined;
   }

@@ -15,7 +15,7 @@
 
 ## 集成与 UI
 
-- [ ] **Workspace gate 真实 Web E2E**：真实 profile 下按工作区关闭/开启、工具 schema 消失、store 未重建、跨重启不回灌、显式 off 的 GC pin；当前只有 host/client 单测与 fake-port 覆盖。
+- [x] **Workspace gate 真实 Web E2E**：2026-10-31 在真实 DSH 0.2.1-rc.2 web profile 实测：关闭工作区工具 schema 38→31、无注入、无 store 新建、无抽取；重启后 disabled/defaultOff fence 保持；re-enable 从当前 seq 起不回灌；no-cwd 默认关闭；软链重指向不读旧工作区记忆（修复后）。GC pin 的实机触发仍只由单测覆盖。
 - [ ] **Workspace gate 的跨重启精度**：`state/workspace-gates.json` 现在区分 `disabled`（显式关闭，ever-disabled，重开需显式 override）与 `defaultOff`（全局默认关闭窗口，可随默认开启重开但同样阻止历史回灌）。两者都跳过全部 seed replay；若要保留“关闭前历史仍可 replay、只排除关闭区间”，需要按 session seq/时间区间记录 disable/enable。
 - [ ] **Windows / Workspace.path canonical 验证**：policy 用 realpath + Windows 比较折叠，但 `Workspace.path` 是否 canonical 未在真实 Windows 宿主验证。
 - [ ] **暂停态数据浏览/显式删除**：当前关闭态只给设置页元数据；工作台若要查看/导出暂停 store，需要显式只读模式与独立删除确认。

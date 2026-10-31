@@ -27,10 +27,12 @@ export declare function storeRootsUnder(baseRoot: string): string[];
  *  already exists. A fresh default install stays side-effect free. */
 export declare function bootGcEnabled(retentionDays: number, emptyStoreHours: number, trashExists: boolean): boolean;
 export declare function dirtyStoreRoots(roots: readonly string[]): string[];
-/** Live (non-retired) session runtimes. A retired runtime keeps its store
- *  sweepable: it must neither heartbeat a lease nor protect the store from GC. */
+/** Live, enabled session runtimes. A retired runtime keeps its store
+ *  sweepable; a disabled workspace must neither heartbeat a lease nor protect
+ *  its store from GC (an explicit off store is pinned separately by origin). */
 export declare function liveSessions<T extends {
     retired?: boolean;
+    enabled?: boolean;
 }>(runtimes: Iterable<T>): T[];
 /** Resolve the store used by one DSH workspace without exposing its path. */
 /** The wiring behind the sweep: compute dirty roots and select a batch. Kept
@@ -56,4 +58,15 @@ export declare function selectSweepRoots(input: {
     perRootMs: number;
     maxRoots: number;
 }): string[];
+/**
+ * Resolve the store used by one DSH workspace without exposing its path.
+ *
+ * Identity is the CANONICAL path: a symlinked working directory must never
+ * inherit another workspace's store when the link is retargeted. The legacy
+ * key (hash of the resolved spelling) is still honoured only when the store's
+ * own origin proves it belongs to the same canonical workspace; otherwise the
+ * session starts from the canonical key instead of reading foreign memory.
+ * Without the origin proof a legacy store stays dormant until the startup
+ * sweep backfills origin.json.
+ */
 export declare function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "workspace" | "global"): string;

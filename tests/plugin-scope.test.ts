@@ -6,9 +6,10 @@
  * behavior and the sweep planner keeps its own failure surface.
  */
 import { afterEach, describe, expect, jest, test } from "bun:test";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { SessionId } from "@deepseek-ai/dsh-session";
 
@@ -96,6 +97,39 @@ describe("workspaceStoreRoot", () => {
     expect(fallback).toBe(workspaceStoreRoot("/tmp/memcurio", "", "workspace"));
     expect(fallback).not.toBe(workspaceStoreRoot("/tmp/memcurio", process.cwd(), "workspace"));
   });
+
+  test("keys a symlinked workspace by its canonical target and never reuses a foreign store", () => {
+    const base = temporaryRoot();
+    const r1 = join(base, "r1");
+    const r2 = join(base, "r2");
+    const link = join(base, "link");
+    mkdirSync(r1, { recursive: true });
+    mkdirSync(r2, { recursive: true });
+    symlinkSync(r1, link);
+
+    const canonicalR1 = workspaceStoreRoot(base, r1, "workspace");
+    // A fresh symlink resolves to the canonical key, not hash(link).
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(canonicalR1);
+
+    // A pre-existing legacy store without an origin proof must not be reused.
+    const legacyKey = createHash("sha256").update(resolve(link)).digest("hex").slice(0, 16);
+    const legacy = join(base, "dsh", legacyKey);
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "index.sqlite"), "");
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(canonicalR1);
+
+    // With a matching origin the legacy store is honoured (upgrade continuity).
+    recordStoreOrigin(legacy, link);
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(legacy);
+
+    // Retargeting the link changes the canonical workspace: the r1 store is
+    // foreign and must never be served to r2.
+    rmSync(link);
+    symlinkSync(r2, link);
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(
+      workspaceStoreRoot(base, r2, "workspace"),
+    );
+  });
 });
 
 describe("UiTransportRegistry", () => {
@@ -136,8 +170,11 @@ describe("UiTransportRegistry", () => {
 });
 
 describe("liveSessions", () => {
-  test("drops retired runtimes", () => {
-    expect(liveSessions([{ retired: true }, { retired: false }, {}])).toEqual([{ retired: false }, {}]);
+  test("drops retired and disabled runtimes", () => {
+    expect(liveSessions([{ retired: true }, { retired: false }, { enabled: false }, {}])).toEqual([
+      { retired: false },
+      {},
+    ]);
   });
 });
 

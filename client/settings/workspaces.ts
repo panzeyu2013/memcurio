@@ -23,6 +23,8 @@ export interface WorkspaceInventoryEntry {
   label: string;
   enabled: boolean;
   explicit: boolean;
+  followsDefault: boolean;
+  fenced: boolean;
   hasStore: boolean;
   current: boolean;
   registered: boolean;
@@ -50,6 +52,11 @@ function decodeEntry(value: unknown): WorkspaceInventoryEntry | undefined {
     label: typeof value.label === "string" && value.label !== "" ? value.label : value.key,
     enabled: value.enabled === true,
     explicit: value.explicit === true,
+    // Older hosts omit the derived flags: derive followsDefault from explicit
+    // and keep fenced false rather than guessing a permanent fence.
+    followsDefault:
+      typeof value.followsDefault === "boolean" ? value.followsDefault : value.explicit !== true,
+    fenced: value.fenced === true,
     hasStore: value.hasStore === true,
     current: value.current === true,
     registered: value.registered === true,
@@ -112,12 +119,15 @@ export interface WorkspaceRow extends WorkspaceInventoryEntry {
   effective: boolean;
   baseEffective: boolean;
   explicit: boolean;
+  fenced: boolean;
 }
 
 export type WorkspaceStatus = "loading" | "ready" | "error" | "unavailable";
 
 export interface WorkspaceFace {
   status: WorkspaceStatus;
+  /** Another settings write (any zone) is in flight. */
+  busy: boolean;
   rows: WorkspaceRow[];
   defaultEnabled: boolean;
   defaultBaseEnabled: boolean;
@@ -217,6 +227,7 @@ export class WorkspacePolicyModel {
     const optimisticDefault = this.optimistic?.kind === "default" ? this.optimistic.value : undefined;
     this.cache = {
       status: this.status,
+      busy: this.controller.busy?.() === true,
       rows,
       defaultEnabled: optimisticDefault ?? settings.defaultEnabled,
       defaultBaseEnabled: settings.baseDefaultEnabled,
@@ -258,7 +269,9 @@ export class WorkspacePolicyModel {
   }
 
   async toggle(row: WorkspaceRow, next: boolean): Promise<SaveOutcome> {
-    if (this.disposed || this.pending !== undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    if (this.disposed || this.pending !== undefined || this.controller.busy?.() === true) {
+      return { ok: false, code: ERROR_KEYS.notReady };
+    }
     if (next === row.effective) return { ok: true };
     const face = this.controller.workspaceFace();
     const previous = row.effective;
@@ -270,10 +283,18 @@ export class WorkspacePolicyModel {
     this.undo = undefined;
     this.clearSaved();
     this.notify();
+    // Turning ON is always an explicit set: a fenced workspace, no-cwd, or a
+    // workspace whose default is off can only be reopened by an explicit true.
+    // Unsetting would inherit the same off state (and the host keeps the
+    // ever-disabled fence), which used to paint On while memory stayed off.
+    // Turning OFF may drop a redundant user override when off is already the
+    // current default; otherwise it writes an explicit false.
     const outcome =
-      next === face.defaultEnabled && row.explicit
-        ? await this.controller.unsetWorkspaceOverride(row.configKey)
-        : await this.controller.writeWorkspaceOverride(row.configKey, next);
+      next
+        ? await this.controller.writeWorkspaceOverride(row.configKey, true)
+        : face.defaultEnabled === false && row.explicit
+          ? await this.controller.unsetWorkspaceOverride(row.configKey)
+          : await this.controller.writeWorkspaceOverride(row.configKey, false);
     if (this.disposed) return outcome;
     this.pending = undefined;
     this.optimistic = undefined;
@@ -301,7 +322,9 @@ export class WorkspacePolicyModel {
   }
 
   async toggleDefault(next: boolean): Promise<SaveOutcome> {
-    if (this.disposed || this.pending !== undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    if (this.disposed || this.pending !== undefined || this.controller.busy?.() === true) {
+      return { ok: false, code: ERROR_KEYS.notReady };
+    }
     const face = this.controller.workspaceFace();
     const previous = face.defaultEnabled;
     const previousExplicit = face.defaultOverridden;
@@ -337,7 +360,9 @@ export class WorkspacePolicyModel {
 
   async undoLast(): Promise<SaveOutcome> {
     const undo = this.undo;
-    if (undo === undefined || this.pending !== undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    if (undo === undefined || this.pending !== undefined || this.controller.busy?.() === true) {
+      return { ok: false, code: ERROR_KEYS.notReady };
+    }
     const before = this.controller.revision();
     this.pending = {
       kind: undo.kind,
@@ -359,9 +384,11 @@ export class WorkspacePolicyModel {
         ? await this.controller.writeWorkspaceDefault(undo.previous)
         : await this.controller.unsetWorkspaceDefault();
     } else if (undo.key !== undefined) {
-      outcome = undo.previousExplicit
-        ? await this.controller.writeWorkspaceOverride(undo.key, undo.previous)
-        : await this.controller.unsetWorkspaceOverride(undo.key);
+      // Undo restores the previous VALUE explicitly. Unsetting here would hit
+      // the same fence/no-cwd default that makes "unset" mean "still off", so
+      // the undo would silently fail. reset-all remains the way to drop a
+      // redundant override.
+      outcome = await this.controller.writeWorkspaceOverride(undo.key, undo.previous);
     } else {
       outcome = { ok: false, code: ERROR_KEYS.notReady };
     }
@@ -383,7 +410,9 @@ export class WorkspacePolicyModel {
   }
 
   async resetAll(): Promise<SaveOutcome> {
-    if (this.disposed || this.pending !== undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    if (this.disposed || this.pending !== undefined || this.controller.busy?.() === true) {
+      return { ok: false, code: ERROR_KEYS.notReady };
+    }
     const face = this.controller.workspaceFace();
     const keys = face.overriddenKeys;
     if (keys.length === 0 && !face.defaultOverridden) return { ok: true };
@@ -431,12 +460,29 @@ export class WorkspacePolicyModel {
         this.optimistic?.kind === "workspace" && this.optimistic.key === entry.key
           ? this.optimistic.value
           : undefined;
+      // The host inventory is the authority for rows that do not follow the
+      // global default (no-cwd, an explicit override, or an ever-disabled
+      // fence). Recomputing from the default would paint a fenced workspace
+      // "On" while the runtime stays off.
+      let effective: boolean;
+      if (optimistic !== undefined) {
+        effective = optimistic;
+      } else if (value !== undefined) {
+        effective = value.enabled;
+      } else if (entry.fenced) {
+        effective = false;
+      } else if (!entry.followsDefault) {
+        effective = entry.enabled;
+      } else {
+        effective = globalDefault;
+      }
       return {
         ...entry,
         configKey: entry.key,
-        effective: optimistic ?? (value === undefined ? globalDefault : value.enabled),
+        effective,
         baseEffective: baseValue === undefined ? settings.baseDefaultEnabled : baseValue.enabled,
         explicit,
+        fenced: entry.fenced,
       };
     });
     rows.sort((a, b) => {

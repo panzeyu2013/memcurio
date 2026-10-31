@@ -119,6 +119,8 @@ export interface SettingsFaceHook {
 export interface SettingsFace {
   status: "loading" | "ready" | "unavailable";
   writable: boolean;
+  /** A write from any zone is in flight; every other write control is disabled. */
+  busy: boolean;
   /** Legacy Host signal; absent on the `0.2.1` line (see ConfigFormSnapshotLike). */
   mode?: "host" | "memory";
   value: MemcurioSettingsView;
@@ -343,6 +345,7 @@ export class MemcurioSettingsController {
     this.faceCache = {
       status: snapshot.status,
       writable: snapshot.writable,
+      busy: this.busy(),
       // Copied only when the Host supplies it: the `0.2.1` line has no such field.
       ...(snapshot.mode === undefined ? {} : { mode: snapshot.mode }),
       // The Host is authoritative, but a malformed/partial value must not
@@ -372,6 +375,29 @@ export class MemcurioSettingsController {
     return this.scope.getSnapshot().revision;
   }
 
+  /** One shared write gate for every zone: the staged form, the instant
+   *  switches, and the workspace toggles all fold into the same config form.
+   *  Letting two of them overlap loses a fold and makes the second write fail
+   *  read-back verification even though it landed. */
+  private activeWrites = 0;
+
+  busy(): boolean {
+    return this.activeWrites > 0;
+  }
+
+  private beginWrite(): (() => void) | undefined {
+    if (this.activeWrites > 0) return undefined;
+    this.activeWrites += 1;
+    this.notify();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeWrites -= 1;
+      this.notify();
+    };
+  }
+
   /** Low-level single-field write for the instant zone. The switch owns its
    *  own pending/error/undo state; this method only writes and verifies. */
   async writeField(field: SettingsField, value: unknown): Promise<SaveOutcome> {
@@ -380,40 +406,58 @@ export class MemcurioSettingsController {
       routeProblem(field, value, face.value) ?? (field === "injectBudgetTokens" ? budgetProblem(value) : undefined);
     if (problem) return { ok: false, code: problem };
     const reverts = Object.is(value, face.base[field]);
-    const settled = await this.settle(() => (reverts ? this.scope.unset(field) : this.scope.set(field, value)));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyField(field, value, reverts)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => (reverts ? this.scope.unset(field) : this.scope.set(field, value)));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyField(field, value, reverts)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Low-level clear for the instant zone's "reset to default" action. */
   async unsetField(field: SettingsField): Promise<SaveOutcome> {
-    const settled = await this.settle(() => this.scope.unset(field));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyField(field, undefined, true)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => this.scope.unset(field));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyField(field, undefined, true)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Low-level atomic plan write for the staged form. Verification is against
    *  the landed user layer, not the host's boolean alone. */
   async writeOps(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<SaveOutcome> {
     if (ops.length === 0) return { ok: true };
-    const settled = await this.settle(() => this.scope.mutate(ops, expectedRevision));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyOps(ops)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => this.scope.mutate(ops, expectedRevision));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyOps(ops)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Run one transport call under the write deadline; a synchronous throw from
@@ -509,55 +553,79 @@ export class MemcurioSettingsController {
   /** Set one leaf override with read-back verification. */
   async writeWorkspaceOverride(key: string, enabled: boolean): Promise<SaveOutcome> {
     if (key === "") return { ok: false, code: ERROR_KEYS.notReady };
-    const settled = await this.settle(() =>
-      this.scope.mutate([{ op: "set", path: ["workspaceOverrides", key, "enabled"], value: enabled }]),
-    );
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyWorkspaceSet(key, enabled)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() =>
+        this.scope.mutate([{ op: "set", path: ["workspaceOverrides", key, "enabled"], value: enabled }]),
+      );
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyWorkspaceSet(key, enabled)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Remove one override (or accept the host's inherited equal-value rewrite). */
   async unsetWorkspaceOverride(key: string): Promise<SaveOutcome> {
     if (key === "") return { ok: false, code: ERROR_KEYS.notReady };
-    const settled = await this.settle(() => this.scope.mutate([{ op: "unset", path: ["workspaceOverrides", key] }]));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyWorkspaceUnset(key)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => this.scope.mutate([{ op: "unset", path: ["workspaceOverrides", key] }]));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyWorkspaceUnset(key)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Set or clear the default-for-unlisted-workspaces switch. */
   async writeWorkspaceDefault(enabled: boolean): Promise<SaveOutcome> {
     const reverts = enabled === this.workspaceFace().baseDefaultEnabled;
-    const settled = await this.settle(() =>
-      reverts ? this.scope.unset("defaultWorkspaceEnabled") : this.scope.set("defaultWorkspaceEnabled", enabled),
-    );
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyWorkspaceDefault(enabled, reverts)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() =>
+        reverts ? this.scope.unset("defaultWorkspaceEnabled") : this.scope.set("defaultWorkspaceEnabled", enabled),
+      );
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyWorkspaceDefault(enabled, reverts)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   async unsetWorkspaceDefault(): Promise<SaveOutcome> {
-    const settled = await this.settle(() => this.scope.unset("defaultWorkspaceEnabled"));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value || !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => this.scope.unset("defaultWorkspaceEnabled"));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value || !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    this.notify();
-    return { ok: true };
   }
 
   /** Clear the default override and/or every explicit workspace override in
@@ -570,18 +638,24 @@ export class MemcurioSettingsController {
       ...(includeDefault ? [{ op: "unset" as const, path: ["defaultWorkspaceEnabled"] }] : []),
       ...unique.map((key) => ({ op: "unset" as const, path: ["workspaceOverrides", key] })),
     ];
-    const settled = await this.settle(() => this.scope.mutate(ops));
-    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
-    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
-    if (!settled.value) return { ok: false, code: this.refusalKey() };
-    if (includeDefault && !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
-      return { ok: false, code: this.refusalKey() };
+    const release = this.beginWrite();
+    if (release === undefined) return { ok: false, code: ERROR_KEYS.notReady };
+    try {
+      const settled = await this.settle(() => this.scope.mutate(ops));
+      if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+      if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+      if (!settled.value) return { ok: false, code: this.refusalKey() };
+      if (includeDefault && !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      if (!unique.every((key) => this.verifyWorkspaceUnset(key))) {
+        return { ok: false, code: this.refusalKey() };
+      }
+      this.notify();
+      return { ok: true };
+    } finally {
+      release();
     }
-    if (!unique.every((key) => this.verifyWorkspaceUnset(key))) {
-      return { ok: false, code: this.refusalKey() };
-    }
-    this.notify();
-    return { ok: true };
   }
 
   /** Clear every explicit workspace override in one atomic mutation. */

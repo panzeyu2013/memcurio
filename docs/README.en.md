@@ -24,6 +24,7 @@ English · [简体中文](../README.md)
 | **Safe by default** | Injection scanning on write plus re-filtering on read, secret redaction, `0700` directories / `0600` files, workspace confinement, an audit row on every write; `memory_remember` fires only when the user explicitly asks |
 | **CJK and i18n as first-class citizens** | CJK bigram query expansion and a CJK-aware token estimator (Chinese prompts retrieve too); Settings panel and UI copy are localized |
 | **Browser half ships in the package** | Settings "Memory" panel, memory-injection row and seven tool rows in the transcript, injection/write toasts; served over a same-origin `/memcurio` snapshot + SSE route with automatic polling degradation |
+| **Per-workspace switches** | The Settings panel turns memory on/off for each workspace and for new/unlisted workspaces. Off means no injection, no memory tools, no extraction/consolidation and no new store; existing memories are kept. An explicit off is durable across restarts and needs an explicit on to reopen; `no-cwd` is off by default |
 
 ## Design philosophy
 
@@ -82,7 +83,7 @@ dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
 `cordis.patch.yml` inserts the plugin into the profile automatically with defaults `scope: workspace` / `injectContext: true` / `registerTools: true`; do not hand-edit the config.
 
 - Memory data lives under `<DSH home>/memcurio/dsh/<workspace-key>/` (DSH home = configured path → `$DSH_HOME` → `~/.dsh`), one isolated store per workspace.
-- Adjust `scope`, the injection budget and the worker route from the DSH **Settings → Memory** panel; the contract is in [settings.md](settings.md).
+- Adjust `scope`, the injection budget, the worker route and the per-workspace switches from the DSH **Settings → Memory** panel; the contract is in [settings.md](settings.md).
 - Verify an install by having the model call `memory_status`; it reports the current store and pipeline state.
 
 Upgrade, rollback, uninstall and FAQ: [operations.md](operations.md).
@@ -102,7 +103,7 @@ Upgrade, rollback, uninstall and FAQ: [operations.md](operations.md).
 ## Data and configuration
 
 - **Memory data**: under `<DSH home>/memcurio/dsh/<workspace-key>/` — `memory/` (Markdown source of truth), `index.sqlite` (stage-1, index, audit, jobs, lease) and `config.json`.
-- **Plugin config**: `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model` in the profile entry; prefer the Settings page.
+- **Plugin config**: `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model` / `defaultWorkspaceEnabled` / `workspaceOverrides` in the profile entry; prefer the Settings page (including the **Workspaces** block).
 - **Environment**: `DSH_HOME`, `MEMCURIO_ROOT` (override the data base), `MEMCURIO_LLM_PROVIDER=none` (disable LLM consolidation; falls back to the deterministic rule provider).
 
 ## Related projects and positioning

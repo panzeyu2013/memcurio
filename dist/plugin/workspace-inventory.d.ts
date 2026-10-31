@@ -18,6 +18,10 @@ export interface WorkspaceInventoryEntry {
     label: string;
     enabled: boolean;
     explicit: boolean;
+    /** No override and governed by the global default (false for no-cwd). */
+    followsDefault?: boolean;
+    /** An ever-disabled fence blocks reopening until an explicit enable. */
+    fenced?: boolean;
     hasStore: boolean;
     current: boolean;
     registered: boolean;
@@ -29,6 +33,8 @@ export interface WorkspaceInventory {
     scope: "workspace" | "global";
     defaultEnabled: boolean;
     currentKey?: string;
+    /** True when the row limit hid entries (the current row is always sorted in). */
+    truncated?: boolean;
     workspaces: WorkspaceInventoryEntry[];
 }
 export interface BuildWorkspaceInventoryOptions {
@@ -47,6 +53,9 @@ export interface BuildWorkspaceInventoryOptions {
         realpath?: string;
     } | undefined;
     isDirectory?: (path: string) => boolean;
+    /** Durable ever-disabled fence reader (false when the marker is unreadable:
+     *  an unreadable marker suppresses replay, not the workspace). */
+    hasEverDisabled?: (keys: readonly string[]) => boolean;
     maxEntries?: number;
 }
 /** Build the metadata-only workspace inventory served to the Settings panel.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -78,6 +78,29 @@ describe("workspace memory gate", () => {
       const result = await statusFor(host.session);
       expect(result.isError).toBe(true);
       if (result.isError) expect(result.error.message).toContain("disabled for this workspace");
+    } finally {
+      host.detach();
+      await host.fiber.dispose();
+      await disposeTestHost(host.fibers);
+    }
+  });
+
+  test("an unreadable marker blocks replay without disabling the workspace", async () => {
+    const base = temp();
+    const workdir = join(base, "workspace");
+    mkdirSync(workdir, { recursive: true });
+    mkdirSync(join(base, "state"), { recursive: true });
+    const markerPath = join(base, "state", "workspace-gates.json");
+    writeFileSync(markerPath, "{not-json");
+    const host = await boot({}, workdir, base);
+    hostCtx = host.ctx;
+    try {
+      const store = workspaceStoreRoot(base, workdir, "workspace");
+      expect(existsSync(indexDb(store))).toBe(true);
+      const result = await statusFor(host.session);
+      expect(result.isError).toBe(false);
+      // The marker is corrupt but must not be clobbered with an empty document.
+      expect(readFileSync(markerPath, "utf-8")).toBe("{not-json");
     } finally {
       host.detach();
       await host.fiber.dispose();
@@ -205,6 +228,45 @@ describe("workspace memory gate", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       const bridge = hostBridgeForRoot(base);
       expect(bridge?.evidenceSnapshot("seeded-session") ?? []).toHaveLength(0);
+      await fiber.dispose();
+    } finally {
+      await disposeTestHost(host.fibers);
+    }
+  });
+
+  test("a fenced session keeps the once-per-window injection latch", async () => {
+    const base = temp();
+    const workdir = join(base, "workspace");
+    mkdirSync(workdir, { recursive: true });
+    const key = workspaceLookupKeys(workdir)[0] as string;
+    new WorkspaceGateMeta(base).markDisabled([key]);
+    const host = await createTestHost();
+    try {
+      const injected = createUserMessage({
+        content: [{ type: "text", text: "an earlier memory summary" }],
+        source: { kind: "memcurio" },
+      });
+      const session = {
+        id: SessionId("latched-session"),
+        header: { cwd: workdir },
+        snapshotEvents: () => [
+          { type: "user/message", seq: 0, time: Date.now(), data: injected },
+        ],
+      };
+      const fiber = await host.ctx.plugin(plugin, {
+        root: base,
+        scope: "workspace",
+        workspaceOverrides: { [key]: { enabled: true } },
+      } as never);
+      host.ctx.emit("session/created", session as never);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      writeWorkspaceText(workspaceStoreRoot(base, workdir, "workspace"), "memory_summary.md", "# Summary\n\nAlready injected in this window.\n");
+      const step = preStepPayload(session);
+      const decision = await host.ctx.waterfall(step.carrier as never, "agent/pre-step", step.payload as never, step.next);
+      if (decision.kind !== "enter") throw new Error("expected enter");
+      // The seed already carried this window's memcurio message: injecting the
+      // summary again would duplicate it.
+      expect(decision.messages).toHaveLength(1);
       await fiber.dispose();
     } finally {
       await disposeTestHost(host.fibers);

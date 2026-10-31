@@ -31,6 +31,7 @@ afterEach(() => {
 function face(overrides: Partial<WorkspaceFace> = {}): WorkspaceFace {
   return {
     status: "ready",
+    busy: false,
     scope: "workspace",
     defaultEnabled: true,
     defaultBaseEnabled: true,
@@ -42,6 +43,8 @@ function face(overrides: Partial<WorkspaceFace> = {}): WorkspaceFace {
         label: "Alpha",
         enabled: false,
         explicit: true,
+        followsDefault: false,
+        fenced: false,
         hasStore: true,
         current: true,
         registered: true,
@@ -57,6 +60,8 @@ function face(overrides: Partial<WorkspaceFace> = {}): WorkspaceFace {
         label: "Beta",
         enabled: true,
         explicit: false,
+        followsDefault: true,
+        fenced: false,
         hasStore: false,
         current: false,
         registered: true,

@@ -48,14 +48,18 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 
 ### Workspace gate 元数据
 
-policy key 是 canonical 绝对路径（`no-cwd` 为保留值），与 store 目录的 `sha256(resolve(workdir))[:16]` **解耦**。除 store 外的唯一 gate 状态在：
+policy key 是 canonical 绝对路径（`no-cwd` 为保留值）；store 目录同样以 canonical realpath 派生（`sha256(realpath(resolve(workdir)))[:16]`）。旧版按 `sha256(resolve(workdir))` 生成的 store 只在其 `state/origin.json` 证明属于同一 canonical 工作区时才复用，否则使用 canonical 键的新 store——软链重指向不会把旧工作区的记忆交给新目标。除 store 外的唯一 gate 状态在：
 
 ```
 <DSH home>/memcurio/state/workspace-gates.json
-{ "version": 1, "disabled": { "<canonical path>": "<ISO timestamp>" } }
+{
+  "version": 1,
+  "disabled":  { "<canonical path>": "<ISO timestamp>" },
+  "defaultOff": { "<canonical path>": "<ISO timestamp>" }
+}
 ```
 
-它分别记“该工作区曾被显式关闭”（`disabled`，需显式开启才能重开）和“曾经处于全局默认关闭窗口”（`defaultOff`，可直接随默认开启重开，但同样阻止历史回灌）；文件不可读时 fail closed（不 replay），不存任何记忆内容。显式关闭的 store 另由 GC 的 protected roots 保护。
+它分别记“该工作区曾被显式关闭”（`disabled`，需显式开启才能重开）和“曾经处于全局默认关闭窗口”（`defaultOff`，可直接随默认开启重开，但同样阻止历史回灌）；文件不可读时只抑制 replay（不把工作区判为关闭），且写入拒绝用空文档覆盖损坏文件；它不存任何记忆内容。显式关闭的 store 另由 GC 的 protected roots 保护，没有 origin 的旧 store 在补 origin 前也按 fail-closed 保护。
 
 ## 模块地图
 

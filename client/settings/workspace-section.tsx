@@ -57,7 +57,11 @@ function WorkspaceRowView(props: {
         </div>
         {!row.effective ? (
           <p id={hintId} className="memcurio-settings-hint">
-            {row.explicit ? t("workspacesProtected") : t("workspacesOffHint")}
+            {row.fenced
+              ? t("workspacesFencedHint")
+              : row.explicit
+                ? t("workspacesProtected")
+                : t("workspacesOffHint")}
           </p>
         ) : null}
       </div>
@@ -89,7 +93,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps): ReactElement {
   const baseId = useId().replace(/:/g, "");
   const hintId = `${baseId}-workspaces-hint`;
   const pending = face.pending !== undefined;
-  const disabled = !writable || pending;
+  const disabled = !writable || pending || face.busy;
   const current = face.rows.find((row) => row.current);
   const others = face.rows.filter((row) => !row.current);
   const defaultPending = face.pending?.kind === "default";
@@ -187,7 +191,12 @@ export function WorkspaceSection(props: WorkspaceSectionProps): ReactElement {
         {face.status === "error" ? (
           <p className="memcurio-settings-error" role="alert">
             {t("workspacesLoadError")}{" "}
-            <button type="button" className="memcurio-settings-link" disabled={pending} onClick={() => void model.refresh()}>
+            <button
+              type="button"
+              className="memcurio-settings-link"
+              disabled={pending || face.busy}
+              onClick={() => void model.refresh()}
+            >
               {t("workspacesRefresh")}
             </button>
           </p>
@@ -201,7 +210,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps): ReactElement {
           <button
             type="button"
             className="memcurio-settings-link"
-            disabled={pending || face.status === "loading" || face.status === "unavailable"}
+            disabled={pending || face.busy || face.status === "loading" || face.status === "unavailable"}
             onClick={() => void model.refresh()}
           >
             {t("workspacesRefresh")}
@@ -224,7 +233,12 @@ export function WorkspaceSection(props: WorkspaceSectionProps): ReactElement {
         ) : null}
         {face.undo !== undefined ? (
           <p className="memcurio-settings-status-line" role="status">
-            <button type="button" className="memcurio-settings-link" disabled={disabled} onClick={() => void model.undoLast()}>
+            <button
+              type="button"
+              className="memcurio-settings-link"
+              disabled={disabled}
+              onClick={() => void model.undoLast()}
+            >
               {t("workspacesUndo")}
             </button>
           </p>

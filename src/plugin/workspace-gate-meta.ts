@@ -33,6 +33,15 @@ interface ReadState {
   unreadable: boolean;
 }
 
+/** One workspace's durable fence state. `unreadable` is separate from the two
+ *  marker maps: a corrupt marker forbids replay but must not pretend the user
+ *  explicitly disabled every workspace. */
+export interface WorkspaceFence {
+  everDisabled: boolean;
+  everDefaultOff: boolean;
+  unreadable: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -108,20 +117,34 @@ export class WorkspaceGateMeta {
     }
   }
 
-  /** True when any lookup key was explicitly disabled before. An unreadable
-   *  marker fails closed: every key reports "ever disabled". */
-  hasEverDisabled(keys: readonly string[]): boolean {
+  /** Read one fence snapshot for a lookup-key set. An unreadable marker
+   *  reports neither marker: it blocks replay, not the workspace itself. */
+  fence(keys: readonly string[]): WorkspaceFence {
     const state = this.readState();
-    if (state.unreadable) return true;
-    return keys.some((key) => Object.hasOwn(state.document.disabled, key));
+    if (state.unreadable) return { everDisabled: false, everDefaultOff: false, unreadable: true };
+    return {
+      everDisabled: keys.some((key) => Object.hasOwn(state.document.disabled, key)),
+      everDefaultOff: keys.some((key) => Object.hasOwn(state.document.defaultOff, key)),
+      unreadable: false,
+    };
+  }
+
+  /** True when any lookup key was explicitly disabled before. An unreadable
+   *  marker reports false (it only suppresses replay; see fence()). */
+  hasEverDisabled(keys: readonly string[]): boolean {
+    return this.fence(keys).everDisabled;
   }
 
   /** True when any key was observed under a global default-off window. Does
    *  not block re-enabling; only suppresses replay. */
   hasEverDefaultOff(keys: readonly string[]): boolean {
-    const state = this.readState();
-    if (state.unreadable) return true;
-    return keys.some((key) => Object.hasOwn(state.document.defaultOff, key));
+    return this.fence(keys).everDefaultOff;
+  }
+
+  /** True when the durable marker cannot be read. Callers must suppress
+   *  replay; the workspace itself stays governed by the live policy. */
+  isUnreadable(): boolean {
+    return this.readState().unreadable;
   }
 
   /** Record an explicit per-workspace disable observation. Idempotent; best
