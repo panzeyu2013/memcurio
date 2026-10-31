@@ -1885,8 +1885,9 @@ function stageRevision(idx: Index): string {
 export async function runConsolidation(
   root: string,
   provider: ConsolidateProvider,
-  opts: { execute: boolean; config?: Partial<PipelineConfig> },
+  opts: { execute: boolean; config?: Partial<PipelineConfig>; isPaused?: () => boolean },
 ): Promise<ConsolidationRunResult> {
+  if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
   ensureLayout(root);
   if (!opts.execute) {
     const plan = await planConsolidation(root, opts.config);
@@ -1918,11 +1919,13 @@ export async function runConsolidation(
     recoverPendingGenerations(root, generationMarkerFromMeta(idx.metaGet("consolidation_generation")));
     const beforePlanStageRevision = stageRevision(idx);
     await planConsolidation(root, opts.config, { adopt: true, settle: true });
+    if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
     const afterPlanStageRevision = stageRevision(idx);
     if (beforePlanStageRevision !== afterPlanStageRevision) {
       throw new ConsolidationContentionError("consolidation inputs changed while planning; retry");
     }
     const freshPlan = await planConsolidation(root, opts.config, { adopt: true, settle: true });
+    if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
     if (stageRevision(idx) !== afterPlanStageRevision) {
       throw new ConsolidationContentionError("consolidation inputs changed after artifact sync; retry");
     }
@@ -1946,6 +1949,7 @@ export async function runConsolidation(
     // same files. The baseline is deliberately untouched here — only the
     // commit below advances it, so a failed provider leaves the workspace diff
     // that drives the next retry intact.
+    if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
     syncArtifacts(root, freshPlan);
     // Codex-style extension-resource retention, BEFORE the provider sees the
     // workspace (alignment F2): the pruned resources are surfaced in the
@@ -1972,6 +1976,9 @@ export async function runConsolidation(
       prunedResources,
     };
     const result = await provider.consolidate(input);
+    // The provider can finish after a workspace disable. Never commit an
+    // off-period consolidation; the staged inputs stay for the next run.
+    if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
     if (!idx.consolidationRenew(WORKSPACE_WRITE_LEASE_KEY, owner, new Date().toISOString(), WORKSPACE_WRITE_LEASE_MS)) {
       throw new ConsolidationContentionError("consolidation lease lost before commit; retry");
     }

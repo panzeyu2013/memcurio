@@ -32,6 +32,10 @@ export interface BridgeSessionInfo {
     sessionId: string;
     workdir: string;
     root: string;
+    /** Canonical/original policy keys captured at adoption. Keeping them lets a
+     *  retired-session snapshot re-check the live policy even after the path (and
+     *  therefore realpath) has disappeared. */
+    policyKeys?: readonly string[];
 }
 export declare class HostBridge {
     private readonly baseRoot;
@@ -55,6 +59,10 @@ export declare class HostBridge {
      *  still resolve its own session — a last-writer-wins map would 404 every
      *  other session's snapshot. */
     private readonly sessionRoots;
+    /** session id -> raw workdir. The plugin's resolveRoot fallback re-checks the
+     *  live workspace policy for a session whose runtime has already retired. */
+    private readonly sessionWorkdirs;
+    private readonly sessionPolicyKeys;
     /** Root registered most recently (snapshot fallback without a session);
      *  tracked explicitly because re-registering a root keeps its Map order. */
     private lastRoot;
@@ -81,6 +89,14 @@ export declare class HostBridge {
     }): void;
     /** Session identity facts (label map + session per root). */
     registerSession(info: BridgeSessionInfo): void;
+    /** Remove one session binding (disable/retire). The label/workdir maps are
+     *  kept for any other session of the same store; the transport uses the
+     *  binding map, not the label map, to authorize a snapshot. */
+    unregisterSession(sessionId: string): void;
+    /** Raw workdir bound to one session (used by the policy fallback). */
+    workdirForSession(sessionId: string): string | undefined;
+    /** Policy lookup keys captured at adoption (canonical + original). */
+    policyKeysForSession(sessionId: string): readonly string[] | undefined;
     labelFor(root: string): string | undefined;
     /** Store root that registered one session (browser transport binding). */
     rootForSession(sessionId: string): string | undefined;

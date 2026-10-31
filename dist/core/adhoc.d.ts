@@ -19,7 +19,9 @@ export declare function ensureAdHocInstructions(root: string): void;
  *  the model never edits memory files directly during sessions. The content
  *  cap lives in core so every entry point (plugin tools, future host services) shares it. */
 export declare const MAX_ADHOC_NOTE_CHARS = 20000;
-export declare function addAdHocNote(root: string, content: string, kind?: AdHocKind): Promise<AdHocNote>;
+export declare function addAdHocNote(root: string, content: string, kind?: AdHocKind, options?: {
+    isPaused?: () => boolean;
+}): Promise<AdHocNote>;
 export declare function listAdHocNotes(root: string): Promise<AdHocNote[]>;
 export interface PendingAdHocNotesOptions {
     /** Adopt orphan note files as pending remember notes. The execute path

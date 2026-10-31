@@ -58,5 +58,14 @@ export declare function dshChannel(ctx: Context, route: () => {
     provider: string;
     model: string;
 } | undefined, abortSignal: () => AbortSignal | undefined, hardCapMs?: number): LlmChannel;
+/** The seven native tool names. The agent gate denies exactly this set; the
+ *  tool handlers use the same policy as a backstop when per-agent restrictions
+ *  are unavailable. */
+export declare const MEMORY_TOOL_NAMES: readonly ["memory_search", "memory_list", "memory_read", "memory_remember", "memory_status", "memory_context", "memory_cite"];
+/** Pure tool-gate predicate (also exercised by the regression suite). */
+export declare function toolGateOpen(state: {
+    enabled: boolean;
+    gateEpoch: number;
+}, epoch: number): boolean;
 /** Register Memcurio lifecycle hooks and native DSH tools. */
 export declare function apply(ctx: Context, config?: Config): void;

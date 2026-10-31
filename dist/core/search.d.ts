@@ -19,7 +19,9 @@ export interface MemoryHit {
  *  stage1_outputs and received a usage bump); unknown keys/citations are
  *  silently dropped. Callers that surface usage to a UI should only
  *  propagate the returned keys. */
-export declare function registerMemoryUsage(root: string, rels: readonly string[]): Promise<string[]>;
+export declare function registerMemoryUsage(root: string, rels: readonly string[], options?: {
+    isPaused?: () => boolean;
+}): Promise<string[]>;
 /** Line-oriented search over the memory workspace. Two passes make the
  *  ranking skilled rather than merely literal: the first collects candidate
  *  lines plus the document frequency of every query term, the second scores
@@ -31,6 +33,7 @@ export declare function registerMemoryUsage(root: string, rels: readonly string[
  *  stats so the selection window tracks real reuse. */
 export declare function searchMemory(root: string, query: string, topK: number, opts?: {
     trackUsage?: boolean;
+    isPaused?: () => boolean;
 }): Promise<{
     hits: MemoryHit[];
     blocked: number;

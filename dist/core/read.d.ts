@@ -36,4 +36,5 @@ export declare function readMemory(root: string, opts: {
     maxLines?: number;
     maxTokens?: number;
     trackUsage?: boolean;
+    isPaused?: () => boolean;
 }): Promise<MemoryReadResult>;

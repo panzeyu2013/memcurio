@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ProjectedDelta } from "../services/projector.js";
 import type { HostBridge } from "./bridge.js";
+import type { WorkspaceInventory } from "./workspace-inventory.js";
 /** Route prefix the browser half calls; duplicated in `client/ui/wire.ts`. */
 export declare const UI_BASE_PATH = "/memcurio";
 /** Boot-payload global carrying `{ basePath, token }` (client reads it). */
@@ -10,6 +11,12 @@ export interface UiTransportOptions {
     bridge: HostBridge;
     /** Session id → store root (bridge registry); undefined = default root. */
     resolveRoot: (sessionId: string | undefined) => string | undefined;
+    /** Metadata-only workspace inventory for the Settings panel. Optional:
+     *  compositions without it simply 404 the route. */
+    listWorkspaces?: (sessionId?: string) => WorkspaceInventory | Promise<WorkspaceInventory>;
+    /** Distinguish a session whose workspace is explicitly paused from an
+     *  unknown session (both resolve to no root). Optional. */
+    isSessionDisabled?: (sessionId: string) => boolean;
     /** Diagnostics sink; must never throw. */
     warn: (error: unknown) => void;
     /** Called once the route/sink effect is torn down (plugin unload/reload). */

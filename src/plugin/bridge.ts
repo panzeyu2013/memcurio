@@ -62,10 +62,16 @@ export interface HostBridgeOptions {
   injectBudgetTokens?: number;
 }
 
+const MAX_SESSION_BINDINGS = 10_000;
+
 export interface BridgeSessionInfo {
   sessionId: string;
   workdir: string;
   root: string;
+  /** Canonical/original policy keys captured at adoption. Keeping them lets a
+   *  retired-session snapshot re-check the live policy even after the path (and
+   *  therefore realpath) has disappeared. */
+  policyKeys?: readonly string[];
 }
 
 /** Audit actions that mutate durable memory and therefore surface as
@@ -130,6 +136,10 @@ export class HostBridge {
    *  still resolve its own session — a last-writer-wins map would 404 every
    *  other session's snapshot. */
   private readonly sessionRoots = new Map<string, string>();
+  /** session id -> raw workdir. The plugin's resolveRoot fallback re-checks the
+   *  live workspace policy for a session whose runtime has already retired. */
+  private readonly sessionWorkdirs = new Map<string, string>();
+  private readonly sessionPolicyKeys = new Map<string, readonly string[]>();
   /** Root registered most recently (snapshot fallback without a session);
    *  tracked explicitly because re-registering a root keeps its Map order. */
   private lastRoot: string | undefined;
@@ -185,7 +195,36 @@ export class HostBridge {
     this.workdirs.set(info.root, info.workdir);
     this.sessionsByRoot.set(info.root, info.sessionId);
     this.sessionRoots.set(info.sessionId, info.root);
+    this.sessionWorkdirs.set(info.sessionId, info.workdir);
+    if (info.policyKeys !== undefined) this.sessionPolicyKeys.set(info.sessionId, info.policyKeys);
     this.lastRoot = info.root;
+    if (this.sessionRoots.size > MAX_SESSION_BINDINGS) {
+      const oldest = this.sessionRoots.keys().next().value;
+      if (oldest !== undefined) this.unregisterSession(oldest);
+    }
+  }
+
+  /** Remove one session binding (disable/retire). The label/workdir maps are
+   *  kept for any other session of the same store; the transport uses the
+   *  binding map, not the label map, to authorize a snapshot. */
+  unregisterSession(sessionId: string): void {
+    const root = this.sessionRoots.get(sessionId);
+    this.sessionRoots.delete(sessionId);
+    this.sessionWorkdirs.delete(sessionId);
+    this.sessionPolicyKeys.delete(sessionId);
+    if (root !== undefined && this.sessionsByRoot.get(root) === sessionId) {
+      this.sessionsByRoot.delete(root);
+    }
+  }
+
+  /** Raw workdir bound to one session (used by the policy fallback). */
+  workdirForSession(sessionId: string): string | undefined {
+    return this.sessionWorkdirs.get(sessionId);
+  }
+
+  /** Policy lookup keys captured at adoption (canonical + original). */
+  policyKeysForSession(sessionId: string): readonly string[] | undefined {
+    return this.sessionPolicyKeys.get(sessionId);
   }
 
   labelFor(root: string): string | undefined {

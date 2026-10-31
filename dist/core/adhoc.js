@@ -72,7 +72,9 @@ function slugify(content) {
  *  the model never edits memory files directly during sessions. The content
  *  cap lives in core so every entry point (plugin tools, future host services) shares it. */
 export const MAX_ADHOC_NOTE_CHARS = 20_000;
-export async function addAdHocNote(root, content, kind = "remember") {
+export async function addAdHocNote(root, content, kind = "remember", options = {}) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     const cleaned = content.trim();
     if (!cleaned) {
         throw new Error("ad-hoc note content must not be empty");
@@ -105,6 +107,8 @@ export async function addAdHocNote(root, content, kind = "remember") {
         }
         throw new Error(`ad-hoc note rejected: contains an injection pattern (${flags.flags[0] ?? "unsafe"})`);
     }
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     const now = new Date();
     ensureLayout(root);
     const id = newEntryId();
@@ -121,17 +125,38 @@ export async function addAdHocNote(root, content, kind = "remember") {
         applied: false,
     };
     writeAdHocNoteFile(root, filename, redacted.text);
+    if (options.isPaused?.()) {
+        // The gate closed between the check and the file write: roll the note file
+        // back instead of leaving an orphaned memory artifact.
+        try {
+            deleteAdHocNoteFile(root, filename);
+        }
+        catch {
+            // The caller still sees the disabled error; a cleanup failure is logged
+            // by the eventual consistency sweep.
+        }
+        throw new Error("memcurio: memory is disabled for this workspace");
+    }
     let idx;
     try {
         const opened = await Index.create(indexDb(root));
         idx = opened;
+        let pausedInside = false;
         opened.withTransaction(() => {
+            // A disable can land during Index.create; do not commit the note/audit
+            // after the late file-write gate.
+            if (options.isPaused?.()) {
+                pausedInside = true;
+                return;
+            }
             opened.noteAdd(note);
             opened.audit("adhoc.note", kind, filename);
             if (redacted.redacted) {
                 opened.audit("warn.redacted", kind, `secret redacted in note ${filename}`);
             }
         });
+        if (pausedInside)
+            throw new Error("memcurio: memory is disabled for this workspace");
     }
     catch (err) {
         // Do not leave a note file with no corresponding SQLite row when opening

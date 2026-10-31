@@ -39,6 +39,7 @@ import { SettingsNavProbe } from "./settings/nav-mark.js";
 import { MemcurioSettingsSection } from "./settings/section.js";
 import { SettingsFormModel } from "./settings/draft.js";
 import { InjectionSwitchModel } from "./settings/instant.js";
+import { WorkspacePolicyModel, createWorkspaceInventoryClient } from "./settings/workspaces.js";
 import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.js";
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
@@ -133,6 +134,10 @@ export function apply(ctx: Context): void {
   const controller = new MemcurioSettingsController(scope);
   const formModel = new SettingsFormModel(controller);
   const switchModel = new InjectionSwitchModel(controller, (before) => formModel.rebase(before));
+  const workspaceClient = createWorkspaceInventoryClient({ sessionId: () => currentSessionId(ctx) });
+  const workspaceModel = new WorkspacePolicyModel(controller, workspaceClient, (before) => {
+    formModel.rebase(before);
+  });
 
   // External edits (the profile patch touched on disk) already reload the
   // shared settings mirror inside ui-settings; the form derives from that
@@ -143,10 +148,13 @@ export function apply(ctx: Context): void {
     const stopController = controller.start();
     const stopForm = formModel.start();
     const stopSwitch = switchModel.start();
+    const stopWorkspace = workspaceModel.start();
     return () => {
+      stopWorkspace();
       stopSwitch();
       stopForm();
       stopController();
+      workspaceModel.dispose();
       switchModel.dispose();
       formModel.dispose();
     };
@@ -171,6 +179,7 @@ export function apply(ctx: Context): void {
           },
           formModel,
           switchModel,
+          workspace: { useWorkspace: workspaceModel.faceHook(), model: workspaceModel },
         }),
       },
       MemcurioSettingsSection,

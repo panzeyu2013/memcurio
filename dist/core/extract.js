@@ -439,6 +439,10 @@ class LeaseFencedError extends Error {
 /** Process one durable job. A crashed worker leaves `processing` with an
  *  expired lease; the next call to extractionClaim reclaims it. */
 export async function processExtractionQueue(root, provider, opts = {}) {
+    // A paused workspace must not even materialize the memory layout. Check
+    // before ensureLayout and again before the commit.
+    if (opts.isPaused?.())
+        return { status: "paused" };
     ensureLayout(root);
     // Snapshot the dirty token BEFORE the claim: any enqueue that commits after
     // this point publishes a different token, so settling against this snapshot
@@ -512,39 +516,80 @@ export async function processExtractionQueue(root, provider, opts = {}) {
         void renew();
     }, Math.max(100, Math.floor(leaseMs / 3)));
     renewTimer.unref?.();
-    try {
-        const snapshot = snapshotFromJob(job);
-        const out = await provider.extract(snapshot);
-        const final = out ? normalizeStageOutput(out, snapshot) : null;
+    const releasePausedClaim = async () => {
         const idx = await Index.create(indexDb(root));
-        let staged = false;
+        let released = false;
         try {
             idx.withTransaction(() => {
-                const checkedAt = new Date().toISOString();
-                if (leaseLost || !claimed.claimToken || !idx.extractionLeaseOwned(claimed.jobId, claimed.claimToken, checkedAt)) {
-                    throw new LeaseFencedError();
+                released = idx.extractionRelease(claimed.jobId, "workspace memory disabled", claimed.claimToken ?? "", new Date().toISOString());
+                if (released) {
+                    idx.audit("extract.queue_released", claimed.host, `${claimed.jobId} (paused; provider=${claimed.provider})`);
                 }
-                if (final) {
-                    staged = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
-                    idx.audit(staged ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
-                }
-                else {
-                    idx.audit("extract.noop", snapshot.host, snapshot.sessionId || snapshot.workdir || "-");
-                }
-                // Re-read the wall clock immediately before the fenced ack. If a very
-                // slow SQLite write crossed the lease boundary, both the stage write
-                // and this completion are rolled back instead of letting an expired
-                // worker commit a result.
-                const completedAt = new Date().toISOString();
-                if (!idx.extractionComplete(claimed.jobId, completedAt, claimed.claimToken, pipelineConfig(root).retentionDays)) {
-                    throw new LeaseFencedError();
-                }
-                idx.audit("extract.queue_complete", claimed.host, `${claimed.jobId} (${claimed.sourceEvent}; provider=${claimed.provider})`);
             });
         }
         finally {
             idx.close();
         }
+        return released ? { status: "paused", jobId: claimed.jobId } : { status: "fenced", jobId: claimed.jobId };
+    };
+    try {
+        if (opts.isPaused?.())
+            return await releasePausedClaim();
+        const snapshot = snapshotFromJob(job);
+        const out = await provider.extract(snapshot);
+        // The provider may have returned after the workspace was disabled: release
+        // the claim instead of staging an off-period memory.
+        if (opts.isPaused?.())
+            return await releasePausedClaim();
+        const final = out ? normalizeStageOutput(out, snapshot) : null;
+        const idx = await Index.create(indexDb(root));
+        let staged = false;
+        let pausedInside = false;
+        try {
+            if (opts.isPaused?.()) {
+                pausedInside = true;
+            }
+            else {
+                idx.withTransaction(() => {
+                    // The provider returned before this transaction opened; a disable can
+                    // land in the gap between the last check and Index.create. Re-check
+                    // inside the write transaction, before any stage row exists.
+                    if (opts.isPaused?.()) {
+                        pausedInside = true;
+                        return;
+                    }
+                    const checkedAt = new Date().toISOString();
+                    if (leaseLost || !claimed.claimToken || !idx.extractionLeaseOwned(claimed.jobId, claimed.claimToken, checkedAt)) {
+                        throw new LeaseFencedError();
+                    }
+                    if (final) {
+                        if (opts.isPaused?.()) {
+                            pausedInside = true;
+                            return;
+                        }
+                        staged = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
+                        idx.audit(staged ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
+                    }
+                    else {
+                        idx.audit("extract.noop", snapshot.host, snapshot.sessionId || snapshot.workdir || "-");
+                    }
+                    // Re-read the wall clock immediately before the fenced ack. If a very
+                    // slow SQLite write crossed the lease boundary, both the stage write
+                    // and this completion are rolled back instead of letting an expired
+                    // worker commit a result.
+                    const completedAt = new Date().toISOString();
+                    if (!idx.extractionComplete(claimed.jobId, completedAt, claimed.claimToken, pipelineConfig(root).retentionDays)) {
+                        throw new LeaseFencedError();
+                    }
+                    idx.audit("extract.queue_complete", claimed.host, `${claimed.jobId} (${claimed.sourceEvent}; provider=${claimed.provider})`);
+                });
+            }
+        }
+        finally {
+            idx.close();
+        }
+        if (pausedInside)
+            return await releasePausedClaim();
         return { status: "completed", jobId: claimed.jobId, staged };
     }
     catch (err) {
@@ -720,13 +765,23 @@ export function parseExtractToolReply(reply, fallback, report) {
  *  in the state DB (never directly in the memory workspace — artifacts are
  *  synced by Phase 2). Returns the staged output, or null when the provider
  *  decided nothing was worth remembering. */
-export async function stageSession(root, snapshot, provider) {
+export async function stageSession(root, snapshot, provider, options = {}) {
+    if (options.isPaused?.())
+        return null;
     ensureLayout(root);
     const out = await provider.extract(snapshot);
+    if (options.isPaused?.())
+        return null;
     if (!out) {
+        if (options.isPaused?.())
+            return null;
         const idx = await Index.create(indexDb(root));
         try {
-            idx.audit("extract.noop", snapshot.host, snapshot.sessionId || snapshot.workdir || "-");
+            idx.withTransaction(() => {
+                if (options.isPaused?.())
+                    return;
+                idx.audit("extract.noop", snapshot.host, snapshot.sessionId || snapshot.workdir || "-");
+            });
         }
         finally {
             idx.close();
@@ -735,17 +790,28 @@ export async function stageSession(root, snapshot, provider) {
     }
     const final = normalizeStageOutput(out, snapshot);
     const idx = await Index.create(indexDb(root));
+    let skipped = false;
     try {
         // Same fenced transaction as the durable queue path: the stage write and
-        // its audit either commit together or not at all.
-        let applied = false;
-        idx.withTransaction(() => {
-            applied = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
-            idx.audit(applied ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
-        });
+        // its audit either commit together or not at all. Re-check the gate inside
+        // the transaction so a disable during Index.create cannot stage.
+        if (options.isPaused?.()) {
+            skipped = true;
+        }
+        else {
+            let applied = false;
+            idx.withTransaction(() => {
+                if (options.isPaused?.()) {
+                    skipped = true;
+                    return;
+                }
+                applied = idx.stageUpsert({ ...final, sourceEvent: snapshot.sourceEvent });
+                idx.audit(applied ? "extract.staged" : "extract.stale", snapshot.host, `${final.rolloutKey} (${final.rolloutSlug})`);
+            });
+        }
     }
     finally {
         idx.close();
     }
-    return final;
+    return skipped ? null : final;
 }

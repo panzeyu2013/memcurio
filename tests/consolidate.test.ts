@@ -310,6 +310,32 @@ describe("RuleConsolidateProvider", () => {
     expect(plan.notes).toHaveLength(1);
   });
 
+  test("a disable during the provider does not commit the result", async () => {
+    await addAdHocNote(dir, "不应提交的 provider 暂停内容", "remember");
+    const base = new RuleConsolidateProvider();
+    let paused = false;
+    const provider: ConsolidateProvider = {
+      name: base.name,
+      async consolidate(input: ConsolidateInput): Promise<ConsolidateResult> {
+        const result = await base.consolidate(input);
+        paused = true;
+        return result;
+      },
+    };
+    await expect(
+      runConsolidation(dir, provider, { execute: true, isPaused: () => paused }),
+    ).rejects.toThrow(/consolidation paused/);
+    expect(readWorkspaceText(dir, "MEMORY.md")).not.toContain("不应提交的 provider 暂停内容");
+  });
+
+  test("a paused consolidation refuses before commit", async () => {
+    await addAdHocNote(dir, "不应提交的暂停内容", "remember");
+    await expect(
+      runConsolidation(dir, new RuleConsolidateProvider(), { execute: true, isPaused: () => true }),
+    ).rejects.toThrow(/consolidation paused/);
+    expect(readWorkspaceText(dir, "MEMORY.md")).not.toContain("不应提交的暂停内容");
+  });
+
   test("an in-place edit of an applied note re-merges on the next consolidation", async () => {
     await addAdHocNote(dir, "第一次内容", "remember");
     await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true });

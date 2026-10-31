@@ -27,6 +27,7 @@
  */
 import type { Context, Volatile } from "@deepseek-ai/cordis";
 import Schema from "@deepseek-ai/schemastery";
+import { type WorkspaceOverrides } from "./workspace-policy.js";
 /** Settings namespace: the profile entry id carried by this package's patch. */
 export declare const SETTINGS_NAMESPACE = "memcurio";
 /** Resolved settings value (composition base merged with the profile override). */
@@ -58,6 +59,13 @@ export interface Config {
     model?: Volatile<string | undefined> | string;
     storeRetentionDays?: Volatile<number> | number;
     storeTrashDays?: Volatile<number> | number;
+    /** Default for workspaces without an explicit override. Real workspaces are
+     *  ON by default; no-cwd is a separate shared bucket and stays OFF unless
+     *  explicitly enabled. */
+    defaultWorkspaceEnabled?: Volatile<boolean> | boolean;
+    /** Per-workspace overrides keyed by canonical path (or the reserved
+     *  `no-cwd` key). Object shape leaves room for future per-workspace fields. */
+    workspaceOverrides?: Volatile<WorkspaceOverrides> | WorkspaceOverrides;
     /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
      *  all also reclaims stores whose workspace lived elsewhere. Deployment
      *  level (not rendered by the panel), like root. */
@@ -74,6 +82,16 @@ export interface Config {
  *  nameable across the resolved dependency tree (TS2742); the runtime value
  *  is `entrySchema`, which resolves to the volatile-wrapped object above. */
 export declare const Config: Schema<Config>;
+/** Public live read of one config field (used by the workspace policy gate,
+ *  which must not re-normalize on every event). */
+export declare function configField<T>(ref: Volatile<T> | T | undefined): T | undefined;
+/** Normalized workspace-policy view. Kept separate from settingsView so the
+ *  existing form contract and its exact-shape tests stay stable. */
+export interface WorkspacePolicySettingsView {
+    defaultEnabled: boolean;
+    overrides: WorkspaceOverrides;
+}
+export declare function workspacePolicyView(config: Config): WorkspacePolicySettingsView;
 /** One plain read of the live settings (volatile references read fresh). */
 export declare function settingsView(config: Config): MemcurioSettings;
 /** Cross-field rule the schema cannot express: a fixed worker route needs BOTH

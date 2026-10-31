@@ -24,6 +24,28 @@ describe("addAdHocNote", () => {
     await expect(addAdHocNote(dir, "x".repeat(20_001), "remember")).rejects.toThrow(/at most 20000 characters/);
   });
 
+  test("a paused commit writes no note file", async () => {
+    const before = listAdHocNoteFiles(dir);
+    await expect(addAdHocNote(dir, "should not land", "remember", { isPaused: () => true })).rejects.toThrow(
+      /disabled for this workspace/,
+    );
+    expect(listAdHocNoteFiles(dir)).toEqual(before);
+  });
+
+  test("a pause inside the final transaction leaves no note file or row", async () => {
+    const before = listAdHocNoteFiles(dir);
+    let calls = 0;
+    await expect(
+      addAdHocNote(dir, "transaction race", "remember", {
+        isPaused: () => {
+          calls += 1;
+          return calls > 2;
+        },
+      }),
+    ).rejects.toThrow(/disabled for this workspace/);
+    expect(listAdHocNoteFiles(dir)).toEqual(before);
+  });
+
   test("writes a note file with a valid timestamp filename", async () => {
     const note = await addAdHocNote(dir, "记住：用户喜欢简洁的回答", "remember");
     expect(note.kind).toBe("remember");

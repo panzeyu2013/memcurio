@@ -237,7 +237,14 @@ export function installUiTransport(ctx, options) {
         // another workspace's store: 404 makes the client retry instead.
         const root = options.resolveRoot(parsed.sessionId);
         if (root === undefined) {
-            sendJson(res, 404, { error: parsed.sessionId === undefined ? "no-store" : "unknown-session" });
+            const disabled = parsed.sessionId !== undefined && options.isSessionDisabled?.(parsed.sessionId) === true;
+            sendJson(res, 404, {
+                error: parsed.sessionId === undefined
+                    ? "no-store"
+                    : disabled
+                        ? "memory-disabled"
+                        : "unknown-session",
+            });
             return;
         }
         // Capture the version BEFORE the asynchronous build: a delta landing
@@ -327,6 +334,20 @@ export function installUiTransport(ctx, options) {
             }
             if (sub === "/events") {
                 handleEvents(req, res, url);
+                return;
+            }
+            if (sub === "/workspaces") {
+                const parsed = parseSessionParam(url);
+                if (parsed.malformed === true) {
+                    sendJson(res, 400, { error: "malformed-session" });
+                    return;
+                }
+                if (options.listWorkspaces === undefined) {
+                    sendJson(res, 404, { error: "not-found" });
+                    return;
+                }
+                const inventory = await options.listWorkspaces(parsed.sessionId);
+                sendJson(res, 200, inventory);
                 return;
             }
             sendJson(res, 404, { error: "not-found" });

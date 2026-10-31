@@ -46,6 +46,17 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 
 现状约束：cwd 由 MEMORY.md 块的 `applies_to: cwd=...` 承载，不使用命名空间（ns）、`§` 条目格式、INDEX.md、SESSION.md、COMPACT.md、USER.md。模型访问仅来自宿主注入的 `ctx.llm` 通道；`MEMCURIO_LLM_PROVIDER=none` 保留为 Phase-2 熔断门禁（`src/engine.ts`）。memcurio 只作为 DeepSeek Harness 的 Cordis 插件分发（仓库根单包 `@memcurio/dsh-plugin`），没有独立 CLI/MCP/HTTP LLM 通道。
 
+### Workspace gate 元数据
+
+policy key 是 canonical 绝对路径（`no-cwd` 为保留值），与 store 目录的 `sha256(resolve(workdir))[:16]` **解耦**。除 store 外的唯一 gate 状态在：
+
+```
+<DSH home>/memcurio/state/workspace-gates.json
+{ "version": 1, "disabled": { "<canonical path>": "<ISO timestamp>" } }
+```
+
+它分别记“该工作区曾被显式关闭”（`disabled`，需显式开启才能重开）和“曾经处于全局默认关闭窗口”（`defaultOff`，可直接随默认开启重开，但同样阻止历史回灌）；文件不可读时 fail closed（不 replay），不存任何记忆内容。显式关闭的 store 另由 GC 的 protected roots 保护。
+
 ## 模块地图
 
 ```
@@ -88,7 +99,10 @@ src/
 ├── plugin/
 │   ├── index.ts        DSH Cordis 插件（事件接线、记忆注入、7 个原生工具（含 memory_cite）、ctx.llm 通道封装（BlockAssembler 组装 + native 原样回放）、settings live 读取）
 │   ├── bridge.ts       host 桥接层（store 注册表、事件打标 → 投影器、审计尾/任务行 diff、快照入口、sink 可挂接；恒开 + live configure）
-│   ├── settings.ts     插件 entry 配置 schema（= `memcurio` 设置命名空间：volatile live 视图、路由成对校验、可选 settings 服务接线）
+│   ├── settings.ts     插件 entry 配置 schema（= `memcurio` 设置命名空间：volatile live 视图、路由成对校验、可选 settings 服务接线、defaultWorkspaceEnabled/workspaceOverrides）
+│   ├── workspace-policy.ts   canonical path/no-cwd 策略、override 归一化、live gate（默认 + 逐工作区）
+│   ├── workspace-gate-meta.ts  ever-disabled 持久标记（跨重启不 replay）
+│   ├── workspace-inventory.ts  元数据 inventory（registry/session/store/override 合并）
 │   └── scope.ts        workspace 作用域隔离（<DSH home>/memcurio/dsh/<workspace-key>/ 派生；DSH home = 配置 → $DSH_HOME → ~/.dsh）
 client/                浏览器半侧：entry.ts + settings/*（Settings 面板）+ ui/*（注入/写入可见性、wire 词汇、传输客户端），`dsh.client` + `lib/client.js`（记忆工作台 M0 见 docs/todo.md）
 docs/
@@ -141,6 +155,20 @@ SYSTEM PROMPT（与工具 schema 同区，order 2950）：read_path 指南的**�
 使用遥测：read 类工具 filePath 命中 + grep/rg/search/list 的 args.path 目录读（按子目录内记忆文件计数）+ shell 工具命令串词法解析（白名单只读命令、绝不执行）+ memory_cite 原生调用 + search/read 命中
   → 引用 rollout_summaries 的 stage1 usage_count / last_usage（选择窗口依据）
 ```
+
+### Workspace gate 路径
+
+```
+Settings / profile patch: defaultWorkspaceEnabled + workspaceOverrides
+  → volatile commit / loader/volatile-update
+  → WorkspaceGate.refresh()（canonical + original lookup，no-cwd 独立默认）
+  → reconcile: live runtime enable/disable + per-agent tools.restrict + bridge/snapshot gate
+  → disabled: adapter.pause()（不建 store、不注入、不采集、不跑 Phase 1/2、dormant sweep 跳过）
+  → re-enable: adapter.resume()，从当前 seq 起采集，不 replay 种子历史（包括关闭前）；路径删除且无显式 override 时 fail closed
+  → 显式 off store 加入 GC protected roots（orphan/empty 两档都不自动回收）
+```
+
+`MemcurioAdapter.pause()/resume()` 是核心层唯一的 gate 接口；`processExtractionQueue` 在 provider 返回后、stage/complete 前再用 `isPaused` 检查一次并 release claim，避免“关闭后仍落 stage”。
 
 ### 遗忘路径
 

@@ -128,7 +128,7 @@ export declare function queueExtraction(root: string, snapshot: RolloutSnapshot,
     snapshot: RolloutSnapshot;
 }>;
 export interface QueueProcessResult {
-    status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced";
+    status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced" | "paused";
     jobId?: string;
     staged?: boolean;
     retryInMs?: number;
@@ -138,6 +138,7 @@ export interface QueueProcessResult {
 export declare function processExtractionQueue(root: string, provider: ExtractProvider, opts?: {
     maxAttempts?: number;
     leaseMs?: number;
+    isPaused?: () => boolean;
 }): Promise<QueueProcessResult>;
 /** Hard cap per extract field. Anything larger is truncated rather than
  *  rejected: an overlong reply must never wedge the pipeline (the read path
@@ -163,4 +164,6 @@ export declare function parseExtractToolReply(reply: AgentToolReply, fallback: P
  *  in the state DB (never directly in the memory workspace — artifacts are
  *  synced by Phase 2). Returns the staged output, or null when the provider
  *  decided nothing was worth remembering. */
-export declare function stageSession(root: string, snapshot: RolloutSnapshot, provider: ExtractProvider): Promise<Stage1Output | null>;
+export declare function stageSession(root: string, snapshot: RolloutSnapshot, provider: ExtractProvider, options?: {
+    isPaused?: () => boolean;
+}): Promise<Stage1Output | null>;

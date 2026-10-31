@@ -20,22 +20,60 @@ function asLayer(value: unknown): UserLayer {
   return value !== null && typeof value === "object" ? (value as UserLayer) : {};
 }
 
+function member(value: unknown, key: string): unknown {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as UserLayer)[key]
+    : undefined;
+}
+
+function setAt(root: UserLayer, path: readonly string[], value: unknown): void {
+  let node = root;
+  for (const key of path.slice(0, -1)) {
+    const child = node[key];
+    if (child === null || typeof child !== "object" || Array.isArray(child)) node[key] = {};
+    node = node[key] as UserLayer;
+  }
+  const last = path[path.length - 1];
+  if (last !== undefined) node[last] = value;
+}
+
+function unsetAt(root: UserLayer, path: readonly string[]): void {
+  let node: unknown = root;
+  for (const key of path.slice(0, -1)) {
+    node = member(node, key);
+    if (node === undefined) return;
+  }
+  const last = path[path.length - 1];
+  if (last !== undefined && node !== null && typeof node === "object" && !Array.isArray(node)) {
+    delete (node as UserLayer)[last];
+  }
+}
+
+function inheritedAt(base: unknown, path: readonly string[]): unknown {
+  let node: unknown = base;
+  for (const key of path) {
+    node = member(node, key);
+    if (node === undefined) return undefined;
+  }
+  return node;
+}
+
 /** Reduce one plan against the user layer the way the Host does. */
 export function applyHostOps(
   user: UserLayer | undefined,
   base: unknown,
   ops: readonly SettingsPathOp[],
 ): UserLayer {
-  const inherited = asLayer(base);
-  const next: UserLayer = { ...(user ?? {}) };
+  // Structured clone so nested workspace maps do not alias the caller's layer.
+  const next: UserLayer = structuredClone(user ?? {});
   for (const op of ops) {
-    const field = op.path[0] ?? "";
     if (op.op === "set") {
-      next[field] = op.value;
+      setAt(next, op.path, op.value);
       continue;
     }
-    if (Object.hasOwn(inherited, field)) next[field] = inherited[field];
-    else delete next[field];
+    const inherited = inheritedAt(base, op.path);
+    if (inherited === undefined) unsetAt(next, op.path);
+    else setAt(next, op.path, inherited);
   }
   return next;
 }

@@ -138,7 +138,14 @@ export async function listMemory(
  *  reads of rollout summary files count as usage for the selection window. */
 export async function readMemory(
   root: string,
-  opts: { path: string; lineOffset?: number; maxLines?: number; maxTokens?: number; trackUsage?: boolean },
+  opts: {
+    path: string;
+    lineOffset?: number;
+    maxLines?: number;
+    maxTokens?: number;
+    trackUsage?: boolean;
+    isPaused?: () => boolean;
+  },
 ): Promise<MemoryReadResult> {
   if (opts.lineOffset === 0) {
     throw new Error("line_offset must be >= 1");
@@ -216,8 +223,13 @@ export async function readMemory(
   // Usage counts a genuine memory REUSE: a read whose content the injection
   // scan blocks never reaches the model, so it must not inflate telemetry.
   // UI previews opt out explicitly (trackUsage:false).
-  if (verdict.safe && rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
-    await registerMemoryUsage(root, [rel]);
+  if (
+    verdict.safe &&
+    rel.startsWith("rollout_summaries/") &&
+    opts.trackUsage !== false &&
+    opts.isPaused?.() !== true
+  ) {
+    await registerMemoryUsage(root, [rel], { isPaused: opts.isPaused });
   }
   if (!verdict.safe) {
     return {

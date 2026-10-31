@@ -22,7 +22,7 @@ import { createTempRoots } from "./support/temp.js";
 import type { TestHost } from "./support/host.js";
 import { writeWorkspaceText } from "../src/core/workspace.js";
 import { hostBridgeForRoot } from "../src/plugin/index.js";
-import { installMemcurioSettings, pinnedRoute, settingsView } from "../src/plugin/settings.js";
+import { installMemcurioSettings, pinnedRoute, settingsView, workspacePolicyView } from "../src/plugin/settings.js";
 
 const plugin = await import("../src/plugin/index.js");
 
@@ -89,6 +89,17 @@ describe("live settings view", () => {
       injectBudgetTokens: 900,
       provider: "p",
       model: "m",
+    });
+  });
+
+  test("the resolved workspace policy view normalizes overrides", () => {
+    const config = plugin.Config({
+      defaultWorkspaceEnabled: false,
+      workspaceOverrides: { "/a": { enabled: false }, "no-cwd": { enabled: true } },
+    }) as never;
+    expect(workspacePolicyView(config)).toEqual({
+      defaultEnabled: false,
+      overrides: { "/a": { enabled: false }, "no-cwd": { enabled: true } },
     });
   });
 

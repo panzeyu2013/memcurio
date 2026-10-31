@@ -95,6 +95,27 @@ async function startHarness(): Promise<Harness> {
   const transport = installUiTransport(ctx, {
     bridge: fakeBridge as unknown as HostBridge,
     resolveRoot: (sessionId) => (sessionId === undefined ? "/root/default" : sessionId === "s1" ? "/root/s1" : undefined),
+    isSessionDisabled: (sessionId) => sessionId === "disabled",
+    listWorkspaces: async (sessionId) => ({
+      at: "2026-10-31T00:00:00.000Z",
+      scope: "workspace",
+      defaultEnabled: true,
+      ...(sessionId === undefined ? {} : { currentKey: sessionId === "s1" ? "/root/s1" : "/root/default" }),
+      workspaces: [
+        {
+          key: sessionId === "s1" ? "/root/s1" : "/root/default",
+          path: sessionId === "s1" ? "/root/s1" : "/root/default",
+          label: "root",
+          enabled: true,
+          explicit: false,
+          hasStore: true,
+          current: true,
+          registered: true,
+          missing: false,
+          sharedStore: false,
+        },
+      ],
+    }),
     warn: () => undefined,
   });
   await waitFor(() => handler !== undefined);
@@ -136,10 +157,27 @@ describe("memory transport route", () => {
     expect((await fetch(`${harness.base}/memcurio/snapshot`, { headers: { "x-memcurio-token": "nope" } })).status).toBe(403);
   });
 
+  test("serves the metadata-only workspace inventory", async () => {
+    const response = await authorized("/memcurio/workspaces?session=s1");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      currentKey?: string;
+      workspaces: Array<{ key: string; path?: string; hasStore: boolean }>;
+    };
+    expect(body.currentKey).toBe("/root/s1");
+    expect(body.workspaces).toHaveLength(1);
+    expect(body.workspaces[0]?.hasStore).toBe(true);
+    expect((await fetch(`${harness.base}/memcurio/workspaces`)).status).toBe(403);
+    expect((await authorized("/memcurio/workspaces?session=")).status).toBe(400);
+  });
+
   test("resolves sessions strictly: valid 200, unknown 404, malformed 400", async () => {
     const known = (await (await authorized("/memcurio/snapshot?session=s1")).json()) as { snapshot: { store: { root: string } } };
     expect(known.snapshot.store.root).toBe("/root/s1");
     expect((await authorized("/memcurio/snapshot?session=unknown")).status).toBe(404);
+    const disabled = await authorized("/memcurio/snapshot?session=disabled");
+    expect(disabled.status).toBe(404);
+    expect((await disabled.json()) as { error: string }).toEqual({ error: "memory-disabled" });
     expect((await authorized("/memcurio/snapshot?session=")).status).toBe(400);
   });
 

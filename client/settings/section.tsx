@@ -19,8 +19,15 @@ import type { SettingsFormModel } from "./draft.js";
 import type { InjectionSwitchModel } from "./instant.js";
 import { Header, Skeleton, statusOf } from "./chrome.js";
 import { BudgetField, ChangedBadge, RouteField, ScopeField, ToolsField, focusByIdSoon } from "./fields.js";
-import type { FaceHook, FormSeatHook, InstantSeatHook, SectionT } from "./ui-types.js";
+import type { FaceHook, FormSeatHook, InstantSeatHook, SectionT, WorkspaceSeatHook } from "./ui-types.js";
 import { remarkSettingsNavRow } from "./nav-mark.js";
+import { WorkspaceSection } from "./workspace-section.js";
+import type { WorkspacePolicyModel } from "./workspaces.js";
+
+export interface WorkspaceSectionSeat {
+  useWorkspace: WorkspaceSeatHook;
+  model: WorkspacePolicyModel;
+}
 
 export interface MemcurioSectionProps {
   t: SectionT;
@@ -29,11 +36,27 @@ export interface MemcurioSectionProps {
   useInstant: InstantSeatHook;
   formModel: SettingsFormModel;
   switchModel: InjectionSwitchModel;
+  /** Optional so existing compositions/tests render the original page. */
+  workspace?: WorkspaceSectionSeat;
 }
 
 /** The panel: instant injection switch + staged configuration form. */
+function WorkspaceSlot(props: {
+  t: SectionT;
+  seat: WorkspaceSectionSeat;
+  writable: boolean;
+}): ReactElement {
+  const face = props.seat.useWorkspace((snapshot) => snapshot);
+  // Lazy: the settings page is the only consumer; the app shell must not call
+  // the inventory route on every page load.
+  useEffect(() => {
+    void props.seat.model.load();
+  }, [props.seat.model]);
+  return <WorkspaceSection t={props.t} face={face} model={props.seat.model} writable={props.writable} />;
+}
+
 export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactElement {
-  const { t, useFace, useForm, useInstant, formModel, switchModel } = props;
+  const { t, useFace, useForm, useInstant, formModel, switchModel, workspace } = props;
   const face = useFace((snapshot) => snapshot);
   const shell = useForm((snapshot) => snapshot);
   const instant = useInstant((snapshot) => snapshot);
@@ -292,6 +315,10 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
           ) : null}
         </div>
       </div>
+
+      {workspace !== undefined ? (
+        <WorkspaceSlot t={t} seat={workspace} writable={face.writable && !shell.saving} />
+      ) : null}
 
       <form
         className="memcurio-settings-form"

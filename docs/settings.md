@@ -24,7 +24,7 @@
 ## 2. memcurio 的落点
 
 - **命名空间 = profile entry id = `memcurio`**：`src/plugin/settings.ts:33`（`SETTINGS_NAMESPACE`）与 `client/settings/controller.ts:27`（`NAMESPACE`）同值，且与 `cordis.patch.yml` 的条目 id 一致。
-- **schema**：`Config`（`src/plugin/settings.ts`）就是该命名空间。`.volatile()`：`scope`/`injectContext`/`registerTools`/`injectBudgetTokens`/`provider`/`model`；`root` 非 volatile → 不进表单（部署数据位置）。
+- **schema**：`Config`（`src/plugin/settings.ts`）就是该命名空间。`.volatile()`：`scope`/`injectContext`/`registerTools`/`injectBudgetTokens`/`provider`/`model`/`defaultWorkspaceEnabled`/`workspaceOverrides`；`root` 非 volatile → 不进表单（部署数据位置）。
 - **生命周期字段**：storeRetentionDays（默认 0，回收关闭）与 storeTrashDays（默认 30）是 volatile；前者只决定“多久没活动的孤儿 store 可被隔离”，后者决定隔离后可恢复的保留期。两者都不影响注入与会话行为。本包自带面板不渲染这两个字段（破坏性开关，按部署配置处理）；通过 profile patch 设置，Loader 仍按 volatile 语义支持运行时改写。另有四个 profile 级键：storeGcScope（dsh-home | all，默认 dsh-home）、storeEmptyStoreHours（空店回收阈值，默认 0 = 关闭）、storeSweepIntervalMs（稳态 sweep 周期，默认 300000 ms，供测试/运维调优）、root（数据位置）。可见度：storeRetentionDays/storeTrashDays 进 settingsView 但面板不渲染（破坏性），storeGcScope/storeEmptyStoreHours 只在 Config（profile patch）；四个键都不影响注入与会话。面板的「恢复配置默认」只覆盖**表单域 5 个设置键**（预算、范围、provider、model、工具；4 个控件）；不含注入开关（它有独立的即时恢复），也不含隐藏的 retention 覆盖；隐藏项通过 `hiddenOverridden` 在页脚提示。（`storeSweepIntervalMs` 与 `root` 同样只走部署配置。）
 - **自带页面**：`installMemcurioSettings`（`src/plugin/settings.ts（installMemcurioSettings）`）用官方形状注册 `configure({ auto: false }, ctx.fiber)`，并订阅 `settings/document-updated` 只处理本命名空间。`settings` 是可选依赖（插件 `inject: [tools, llm, sessions]` 不变）：无该服务时记忆功能照常，只是没有配置页；settings 服务迟加载/被替换/被卸载都不重挂本插件。
 - **浏览器侧**：`ctx.configForms.get<MemcurioSettingsView>('memcurio')`（`client/entry.ts`）。控制器读 `status`/`value`/`base`/`user`/`writable`，由 `user` 值与 decoded base 的**比较**判定“已覆盖”（存在且不等于 base；Host 对 lower-layer unset 会改写成等值 set）；值等于 composition base 时发 `unset`（恢复继承）而不是钉一个相同值。面板分两个提交域（`client/settings/section.tsx`）：
@@ -36,6 +36,26 @@
 - **持久化**：写经由 ui-settings 的共享镜像与写队列落到活动 profile patch；磁盘上的外部改动由该镜像重载，本插件不再多接一个 remote 监听。
 - **生效语义**：`injectContext`/`injectBudgetTokens`/`provider`/`model` 即时（volatile 引用原地更新，不重挂插件）；`scope` 只对新会话生效；`registerTools` 需要重启（volatile 写入不重跑 `apply`）。
 - **worker 路由**：`provider`/`model` 是可选的固定 worker 路由（固定优先）；省略则跟随会话自身路由——**按日志顺序取最后一个路由事件**（`model/selection`，或已应用的 `request/header`；后者代表该轮实际使用的路由），与上游投影 `next = pending ?? lastUsed` 在正常序列下等价。`AgentOptions` 只在日志里没有任何路由事件时作种子（上游 controller 此时回落"当前部署默认"；差异只在部署默认随后变更且会话从未发过请求时可见，worker 调用不可达）。见 [contract.md](contract.md) 的模型通道条目。
+
+### 2.1 按工作区开关记忆（workspace gate）
+
+- **字段**：`defaultWorkspaceEnabled`（volatile boolean，默认 `true`）与 `workspaceOverrides`（volatile dict；key 为 canonical 绝对路径或保留值 `no-cwd`，value 为 `{ enabled: boolean }`）。两者都不进自动生成表单；Workspaces 区块由本包面板渲染。
+- **默认**：真实工作区跟随 `defaultWorkspaceEnabled`；`no-cwd` 是共享桶，**默认关闭**，只能用显式 `{ enabled: true }` 开启。
+- **优先级**：`registerTools=false` 全局关闭工具；`injectContext=false` 全局关闭自动注入；`workspace off` 对该工作区关闭注入、工具、抽取/整合与新建 store；`scope` 只决定存储布局。详见下表。
+- **关闭语义**：不注入、不注册可见的记忆工具（`agent.ctx.tools.restrict`，未知工具名/无 agents 服务时由 handler 兜底拒绝）、不采集消息/工具命中/compaction、不跑 Phase 1/2、不新建 store、`/memcurio/snapshot` 404。已存 markdown/SQLite 不动；显式关闭的 store 在 GC 计划里作为 protected root，不被 orphan/empty 档自动回收。`defaultWorkspaceEnabled:false` 会写独立的 `defaultOff` fence：重启后恢复默认开启时可以正常重开，但不会 replay 默认关闭期间的历史。显式 `enabled:false` 另写 `disabled` fence，且需要显式开启 override 才能重开。重新开启需要显式 override（避免路径删除/软链改名后回落默认开启），从当前 seq 起采集，不 replay 任何种子历史（包括关闭前）；跨重启由 `<base>/state/workspace-gates.json` 的 ever-disabled 标记继续阻止回灌。
+- **写入**：Workspaces 开关是叶子级即时写；默认行写 `defaultWorkspaceEnabled`，每个工作区写 `set ["workspaceOverrides", key, "enabled"]`，恢复默认发 `unset ["workspaceOverrides", key]`（Host 对 inherited 的等值回写被读回校验接受）。控制器新增 `workspaceFace()`/`writeWorkspaceOverride`/`unsetWorkspaceOverride`/`writeWorkspaceDefault`/`unsetWorkspaceDefault`/`resetWorkspaceOverrides`，与既有 `SettingsFace` 分离，避免改变表单契约。
+- **热更新**：`settings/document-updated` 只在 describe 时发；手改 profile patch/HMR 必须靠插件顶层 ctx 的 `loader/volatile-update`。两者都触发 `workspaceGate.refresh()` 与 live runtime/agent reconcile。
+- **inventory**：`GET /memcurio/workspaces?session=<id>`（同源 token/loopback/Host/Origin 守卫，GET only）返回 path/label/enabled/explicit/hasStore/current/registered/missing/sharedStore 元数据，**不读记忆正文/不打开 SQLite**；`ctx.workspaceRegistry` 可选，缺失时用 live sessions + store origin + overrides。
+- **路径身份**：policy 用 canonical realpath（original 兜底，Windows 比较折叠）；路径移动后旧 key 成为 orphan，需要重新设置。store 目录仍是 `sha256(resolve(workdir))[:16]`，policy key 与 store key 解耦。
+- **GC**：默认 `storeRetentionDays=0`、`storeEmptyStoreHours=0`，不会自动回收；显式关闭的 store 会被 pin。关闭不是删除/遗忘，也不阻止人工删除；`scope: global` 下关闭只 gate 该会话，共享 store 仍可能服务其他工作区。
+
+| 设置 | 自动注入 | 记忆工具 | 抽取/整合 | 首次建 store |
+|---|---|---|---|---|
+| `scope` | 不变 | 不变 | 不变 | 决定布局 |
+| `injectContext=false` | 全关 | 不变 | 不变 | 仍建 |
+| `registerTools=false` | 不变 | 全关 | 不变 | 仍建 |
+| workspace `enabled:false` | 该工作区关 | 该工作区关 | 该工作区关 | 不建 |
+| `defaultWorkspaceEnabled=false` | 未覆盖工作区关 | 同上 | 同上 | 不建 |
 
 ## 3. 本仓库自己的约定（非上游要求）
 

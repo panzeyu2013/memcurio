@@ -127,6 +127,13 @@ const CSS = `
 .memcurio-settings-link:disabled { opacity: 0.4; cursor: default; }
 .memcurio-settings-link:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 1px; }
 
+.memcurio-settings-workspaces { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.memcurio-settings-workspace-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); }
+.memcurio-settings-workspace-row:first-child { border-top: 0; }
+.memcurio-settings-workspace-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.memcurio-settings-workspace-path { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.memcurio-settings-workspace-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
 .memcurio-settings-skeleton { display: flex; flex-direction: column; gap: 12px; padding-top: 8px; }
 .memcurio-settings-skeleton-bar { display: block; height: 34px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-3); animation: memcurio-settings-pulse 1.4s ease-in-out infinite; }
 .memcurio-settings-skeleton-bar:nth-child(2) { width: 72%; }

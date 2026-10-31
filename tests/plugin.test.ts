@@ -11,6 +11,7 @@ import { createTestHost, disposeTestHost, executeOne } from "./support/host.js";
 import { createTempRoots } from "./support/temp.js";
 import { Index } from "../src/core/db.js";
 import { ensureLayout, indexDb, memoryWorkspace } from "../src/core/paths.js";
+import { recordStoreOrigin } from "../src/core/store-meta.js";
 import { settingsView } from "../src/plugin/settings.js";
 import * as api from "../src/api.js";
 import { workspaceStoreRoot } from "../src/plugin/scope.js";
@@ -531,6 +532,7 @@ describe("DSH plugin contract", () => {
     const workdir = join(root, "dormant-ws");
     const store = workspaceStoreRoot(root, workdir, "workspace");
     ensureLayout(store);
+    recordStoreOrigin(store, workdir);
     const seed = await Index.create(indexDb(store));
     try {
       seed.stageUpsert({

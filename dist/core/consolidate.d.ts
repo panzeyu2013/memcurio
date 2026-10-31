@@ -267,4 +267,5 @@ export declare function withWorkspaceWriteLease<T>(root: string, work: (idx: Ind
 export declare function runConsolidation(root: string, provider: ConsolidateProvider, opts: {
     execute: boolean;
     config?: Partial<PipelineConfig>;
+    isPaused?: () => boolean;
 }): Promise<ConsolidationRunResult>;

@@ -37,12 +37,16 @@ export { workspaceStoreRoot } from "./scope.js";
 import { renderReadPathInstructions } from "../core/inject.js";
 import { sanitizeForInjection } from "../core/sanitize.js";
 import { indexDb, memoryWorkspace } from "../core/paths.js";
-import { clearSessionLease, pruneSessionLeases, sessionLeaseActive, touchSessionLease } from "../core/store-meta.js";
+import { clearSessionLease, pruneSessionLeases, readStoreOrigin, sessionLeaseActive, touchSessionLease } from "../core/store-meta.js";
 import { readWorkspaceText } from "../core/workspace.js";
 import { HostBridge } from "./bridge.js";
-import { assertRoutePair, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
+import { assertRoutePair, configField, guardConfigResolution, installMemcurioSettings, pinnedRoute, settingsView } from "./settings.js";
 import type { Config, MemcurioSettings } from "./settings.js";
 import { installUiTransport } from "./ui-transport.js";
+import { NO_CWD_WORKSPACE, createWorkspaceGate, type WorkspaceGate } from "./workspace-policy.js";
+import { WorkspaceGateMeta } from "./workspace-gate-meta.js";
+import { buildWorkspaceInventory, type WorkspaceRegistryEntryLike } from "./workspace-inventory.js";
+import type {} from "@deepseek-ai/cordis-plugin-loader";
 
 declare module "@deepseek-ai/dsh-llm" {
   /** DSH is a merge-extensible source vocabulary with no shared catch-all
@@ -121,11 +125,50 @@ export const inject = ["tools", "llm", "sessions"];
 // Loader reads `Config` from the plugin module.
 export { Config } from "./settings.js";
 
+/** Structural slices of the agent registry used by the per-agent tool gate. */
+interface AgentScopeLike {
+  tools?: {
+    restrict?: (filter: { deny: string[] }) => () => void;
+  };
+}
+interface AgentLike {
+  id: string;
+  session: { header: { cwd?: string } };
+  ctx?: AgentScopeLike;
+}
+interface AgentRegistryLike {
+  list?(): readonly AgentLike[];
+  roots?(): readonly AgentLike[];
+  get?(id: string): AgentLike | undefined;
+}
+interface AgentGateContext {
+  on(event: string, listener: (payload: unknown) => unknown): () => void;
+}
+
 interface SessionRuntime {
   session: Session;
   adapter: MemcurioAdapter;
   root: string;
   workdir: string;
+  /** Canonical policy lookup keys (canonical first, original fallback). */
+  policyKeys: string[];
+  /** Whether memory is currently on for this workspace. Disabled runtimes keep
+   *  a paused adapter (no store I/O) so re-enabling can resume in-session. */
+  enabled: boolean;
+  /** True once adapter.sessionCreated ran for this runtime. */
+  sessionCreated: boolean;
+  /** Live events at or below this seq are pre-enable history and are dropped. */
+  enabledFromSeq: number;
+  /** Aborted when the workspace is disabled, cancelling in-flight worker calls;
+   *  replaced with a fresh controller on every enable. */
+  gateAbort: AbortController;
+  /** This workspace has been observed disabled at least once. Until an explicit
+   *  override says "on", a missing lookup key must fail closed (path deletion /
+   *  symlink spelling changes would otherwise fall back to default-on). */
+  everDisabled: boolean;
+  /** Monotonic enable/disable epoch; queued adoption tasks compare it so a
+   *  task from a previous enablement cannot write after a disable. */
+  gateEpoch: number;
   /** Event lane: fast checkpoint/event tasks (messageSeen, toolExecuted,
    *  sessionIdle, adoption). pre-step, flush and memory tools wait on this;
    *  it never contains model calls, so it drains in bounded I/O time. */
@@ -728,12 +771,69 @@ function requireSession(exec: ToolExecution, sessions: Map<string, SessionRuntim
   return runtime;
 }
 
-async function runTool<T>(runtime: SessionRuntime, exec: ToolRunContext, operation: () => Promise<T>): Promise<T> {
+/** The seven native tool names. The agent gate denies exactly this set; the
+ *  tool handlers use the same policy as a backstop when per-agent restrictions
+ *  are unavailable. */
+export const MEMORY_TOOL_NAMES = [
+  "memory_search",
+  "memory_list",
+  "memory_read",
+  "memory_remember",
+  "memory_status",
+  "memory_context",
+  "memory_cite",
+] as const;
+
+/** Handler-level authority check: even if schema visibility failed (no agents
+ *  service, older host, PTC edge), a disabled workspace cannot read or write
+ *  memory through a native tool. */
+function requireMemoryEnabled(exec: ToolExecution, gate: WorkspaceGate): void {
+  const agent = exec.agent;
+  if (agent === undefined) return;
+  const cwd = agent.session.header.cwd ?? "";
+  if (!gate.isWorkdirEnabled(cwd)) {
+    throw new Error("memcurio: memory is disabled for this workspace");
+  }
+}
+
+function requireEnabledSession(
+  exec: ToolExecution,
+  sessions: Map<string, SessionRuntime>,
+  gate: WorkspaceGate,
+): SessionRuntime {
+  requireMemoryEnabled(exec, gate);
+  return requireSession(exec, sessions);
+}
+
+/** Pure tool-gate predicate (also exercised by the regression suite). */
+export function toolGateOpen(state: { enabled: boolean; gateEpoch: number }, epoch: number): boolean {
+  return state.enabled && state.gateEpoch === epoch;
+}
+
+async function runTool<T>(
+  runtime: SessionRuntime,
+  exec: ToolRunContext,
+  operation: (isGateOpen: () => boolean) => Promise<T>,
+): Promise<T> {
   exec.signal.throwIfAborted();
+  const epoch = runtime.gateEpoch;
+  const isGateOpen = (): boolean => toolGateOpen(runtime, epoch);
   await awaitRuntime(runtime);
   exec.signal.throwIfAborted();
-  const result = await operation();
+  // The gate can close while the event lane is draining. Re-check both the
+  // state and the epoch: a disable→enable cycle during the wait must not let a
+  // call from the old window touch the store.
+  if (!isGateOpen()) {
+    throw new Error("memcurio: memory is disabled for this workspace");
+  }
+  const result = await operation(isGateOpen);
   exec.signal.throwIfAborted();
+  // A read operation may have been in flight when the workspace was disabled;
+  // never hand its contents to the model. Write operations additionally pass
+  // the same epoch-aware predicate into their store write.
+  if (!isGateOpen()) {
+    throw new Error("memcurio: memory is disabled for this workspace");
+  }
   return result;
 }
 
@@ -799,6 +899,7 @@ function registerMemoryTools(
   /** Live inject-budget accessor: the tool must preview what real injection
    *  would use, not the config-file base. */
   injectBudget: () => number | undefined,
+  gate: WorkspaceGate,
 ): void {
   ctx.tools.register(defineTool({
     name: "memory_search",
@@ -808,11 +909,12 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const runtime = requireSession(exec, sessions);
-      return runTool(runtime, exec, async () => JSON.stringify(await integrationSearch(
+      const runtime = requireEnabledSession(exec, sessions, gate);
+      return runTool(runtime, exec, async (gateOpen) => JSON.stringify(await integrationSearch(
         runtime.root,
         stringArg(args.query, "query", true, 10_000) ?? "",
         integerArg(args.topK, "topK", 200, 200),
+        { isPaused: () => !gateOpen() },
       )));
     },
   }));
@@ -825,11 +927,12 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const runtime = requireSession(exec, sessions);
-      return runTool(runtime, exec, async () => JSON.stringify(await integrationList(runtime.root, {
+      const runtime = requireEnabledSession(exec, sessions, gate);
+      return runTool(runtime, exec, async (gateOpen) => JSON.stringify(await integrationList(runtime.root, {
         path: stringArg(args.path, "path", false, 1_000) ?? "",
         maxResults: integerArg(args.maxResults, "maxResults", 2_000, 2_000),
         cursor: stringArg(args.cursor, "cursor", false, 100),
+        isPaused: () => !gateOpen(),
       })));
     },
   }));
@@ -847,9 +950,9 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const runtime = requireSession(exec, sessions);
+      const runtime = requireEnabledSession(exec, sessions, gate);
       const rel = stringArg(args.path, "path", true, 1_000) ?? "";
-      return runTool(runtime, exec, async () => {
+      return runTool(runtime, exec, async (gateOpen) => {
         // Tag only after the read succeeded: a failed/nonexistent read must
         // not emit a UI usage tick the engine never counted.
         const text = JSON.stringify(await integrationRead(runtime.root, {
@@ -857,8 +960,9 @@ function registerMemoryTools(
           lineOffset: integerArg(args.lineOffset, "lineOffset", 1),
           maxLines: integerArg(args.maxLines, "maxLines", undefined, 10_000),
           maxTokens: integerArg(args.maxTokens, "maxTokens", undefined, 20_000),
+          isPaused: () => !gateOpen(),
         }));
-        if (rel) {
+        if (rel && gateOpen()) {
           bridge.tagToolReadHits(runtime.session.id, "memory_read", [rel]);
         }
         return text;
@@ -877,17 +981,18 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const runtime = requireSession(exec, sessions);
-      return runTool(runtime, exec, async () => {
+      const runtime = requireEnabledSession(exec, sessions, gate);
+      return runTool(runtime, exec, async (gateOpen) => {
         const result = JSON.stringify(await integrationRemember(
           runtime.root,
           stringArg(args.content, "content", true, 20_000) ?? "",
           noteKindArg(args.kind),
+          { isPaused: () => !gateOpen() },
         ));
         // The note is durable when integrationRemember returns; push the new
         // receipt immediately instead of waiting for the turn/end drain, so
         // the "memory was written" toast lands with the tool card.
-        void bridge.refresh(runtime.root).catch(() => undefined);
+        if (gateOpen()) void bridge.refresh(runtime.root).catch(() => undefined);
         return result;
       });
     },
@@ -900,7 +1005,7 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
-      const runtime = requireSession(exec, sessions);
+      const runtime = requireEnabledSession(exec, sessions, gate);
       return runTool(runtime, exec, async () => JSON.stringify(await integrationStatus(runtime.root)));
     },
   }));
@@ -913,7 +1018,7 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
-      const runtime = requireSession(exec, sessions);
+      const runtime = requireEnabledSession(exec, sessions, gate);
       return runTool(runtime, exec, async () => JSON.stringify(await integrationContext(runtime.root, injectBudget())));
     },
   }));
@@ -929,15 +1034,17 @@ function registerMemoryTools(
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const runtime = requireSession(exec, sessions);
+      const runtime = requireEnabledSession(exec, sessions, gate);
       const entries = stringArrayArg(args.entries, "entries", 100, 500);
       const rolloutIds = stringArrayArg(args.rolloutIds, "rolloutIds", 100, 200);
       if (!entries.length && !rolloutIds.length) {
         throw new TypeError("memory_cite requires at least one entry or rolloutId");
       }
-      return runTool(runtime, exec, async () => {
-        const { counted } = await integrationCite(runtime.root, [...entries, ...rolloutIds]);
-        if (counted.length) {
+      return runTool(runtime, exec, async (gateOpen) => {
+        const { counted } = await integrationCite(runtime.root, [...entries, ...rolloutIds], {
+          isPaused: () => !gateOpen(),
+        });
+        if (counted.length && gateOpen()) {
           // Only the refs the engine actually counted reach the UI timeline:
           // unknown keys are dropped by registerMemoryUsage.
           bridge.tagCitations(runtime.session.id, counted);
@@ -960,6 +1067,17 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // MEMCURIO_ROOT env keep overriding for legacy/dev/test isolation.
   const baseRoot = config.root ?? process.env.MEMCURIO_ROOT ?? memcurioBaseRoot();
   const sessions = new Map<string, SessionRuntime>();
+  /** Sessions retired while their workspace was disabled. The runtime is gone,
+   *  so the transport needs this small set to return memory-disabled rather
+   *  than unknown-session. */
+  const disabledSessionIds = new Set<string>();
+  const rememberDisabledSession = (sessionId: string): void => {
+    disabledSessionIds.add(sessionId);
+    if (disabledSessionIds.size > 10_000) {
+      const oldest = disabledSessionIds.values().next().value;
+      if (oldest !== undefined) disabledSessionIds.delete(oldest);
+    }
+  };
   // Host bridge for the memory workbench (design §5/§8): tags events and
   // diffs store changes. Always on (product decision 2026-09-16: no user case
   // needs the data plane off, so it is not a setting); a profile without a web
@@ -978,6 +1096,35 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
    *  across operations): a volatile write from the Settings page is observed
    *  here without a plugin remount. */
   const live = (): MemcurioSettings => settingsView(config);
+  /** Workspace policy reads the raw volatile fields, not settingsView: the
+   *  gate caches normalization by raw object identity and is refreshed by the
+   *  settings/loader events below. */
+  const workspaceGate = createWorkspaceGate({
+    defaultEnabled: () => configField(config.defaultWorkspaceEnabled),
+    overrides: () => configField(config.workspaceOverrides),
+  });
+  const gateMeta = new WorkspaceGateMeta(baseRoot, {
+    warn: (message) => ctx.logger.warn("memcurio: %s", message),
+  });
+  /** Optional workspace registry projection. Kept as a live reader so a
+   *  workspace created/deleted after activation is reflected by the panel. */
+  let workspaceRegistryReader: (() => readonly WorkspaceRegistryEntryLike[]) | undefined;
+  ctx.inject(["workspaceRegistry"], (scoped) => {
+    const registry = (scoped as unknown as {
+      workspaceRegistry?: { list?: () => readonly WorkspaceRegistryEntryLike[] };
+    }).workspaceRegistry;
+    if (registry?.list === undefined) return undefined;
+    workspaceRegistryReader = () => registry.list?.() ?? [];
+    return () => {
+      workspaceRegistryReader = undefined;
+    };
+  });
+  let agentReconcile: (() => void) | undefined;
+  /** Assigned after the runtime helpers exist; settings events can fire during
+   *  activation only after this callback is stable. */
+  let reconcileWorkspacePolicy = (): void => {
+    workspaceGate.refresh();
+  };
   // Configuration surface (0.1.7): the profile config is the composition
   // base; an entry in the active profile patch is the user override the
   // Settings page writes. The shipped panel replaces the generated page.
@@ -985,6 +1132,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   installMemcurioSettings(ctx, config, {
     onChange: (next) => {
       bridge.configure({ scope: next.scope, injectBudgetTokens: next.injectBudgetTokens });
+      reconcileWorkspacePolicy();
       // Warn once per changed behaviour (the settings service commits on
       // every write, even for unrelated fields).
       if (next.scope !== lastWarned.scope) {
@@ -997,6 +1145,11 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       }
     },
   });
+  // settings/document-updated only fires on describe(); hand-edited profile
+  // patches and HMR arrive through loader/volatile-update. This listener must
+  // live on the plugin's top-level ctx (the loader only notifies the owning
+  // fiber), hence it is installed here rather than inside a child inject.
+  ctx.on("loader/volatile-update", () => reconcileWorkspacePolicy());
 
   /** Pinned worker route from the live entry config, when one is set. */
   const fixedRoute = (): { provider: string; model: string } | undefined => pinnedRoute(live());
@@ -1015,7 +1168,58 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         bridge,
         // Sessions resolve strictly (the transport 404s an unknown id);
         // session-less reads (settings page) fall back to the latest store.
-        resolveRoot: (sessionId) => (sessionId === undefined ? bridge.defaultRoot() : bridge.rootForSession(sessionId)),
+        // A disabled runtime is never exposed through the browser data plane.
+        resolveRoot: (sessionId) => {
+          if (sessionId === undefined) {
+            const root = bridge.defaultRoot();
+            if (root === undefined) return undefined;
+            for (const runtime of sessions.values()) {
+              if (runtime.root === root && runtime.enabled) return root;
+            }
+            return undefined;
+          }
+          const runtime = sessions.get(sessionId);
+          if (runtime !== undefined) return runtime.enabled ? runtime.root : undefined;
+          // A retired session has no runtime; re-check the live policy from the
+          // workdir captured at registration. This keeps an enabled retired
+          // session browsable while denying one whose workspace was later off.
+          const root = bridge.rootForSession(sessionId);
+          const keys = bridge.policyKeysForSession(sessionId);
+          const recordedWorkdir = bridge.workdirForSession(sessionId);
+          if (root === undefined) return undefined;
+          const lookup = keys ?? (recordedWorkdir === undefined ? [] : workspaceGate.lookupKeys(recordedWorkdir));
+          if (lookup.length === 0) return undefined;
+          const enabled =
+            workspaceGate.isKeysEnabled([...lookup]) &&
+            !(gateMeta.hasEverDisabled(lookup) && !workspaceGate.hasOverride([...lookup]));
+          return enabled ? root : undefined;
+        },
+        isSessionDisabled: (sessionId) => {
+          const runtime = sessions.get(sessionId);
+          if (runtime !== undefined) return !runtime.enabled;
+          if (disabledSessionIds.has(sessionId)) return true;
+          // A retired enabled session may outlive its runtime. Re-evaluate its
+          // captured policy so "enabled → retire → workspace off" is still a
+          // memory-disabled 404, not unknown-session.
+          const keys = bridge.policyKeysForSession(sessionId);
+          if (keys === undefined) return false;
+          const enabled =
+            workspaceGate.isKeysEnabled([...keys]) &&
+            !(gateMeta.hasEverDisabled(keys) && !workspaceGate.hasOverride([...keys]));
+          return !enabled;
+        },
+        listWorkspaces: (sessionId) =>
+          buildWorkspaceInventory({
+            baseRoot,
+            scope: live().scope,
+            gate: workspaceGate,
+            ...(sessionId === undefined ? {} : { currentSessionId: sessionId }),
+            ...(workspaceRegistryReader === undefined ? {} : { registry: workspaceRegistryReader() }),
+            sessions: [...sessions.values()].map((runtime) => ({
+              id: runtime.session.id,
+              cwd: runtime.workdir,
+            })),
+          }),
         warn,
         onDispose: () => {
           uiTransportRegistry.release(mountUiTransport);
@@ -1047,17 +1251,17 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     void runtime.adapter
       .requeuePolicyRejectedExtractions()
       .then((revived) => {
+        if (!runtime.enabled) return undefined;
         if (revived > 0) {
           ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
         }
         return runtime.adapter.processPendingExtractions();
       })
-      .then(() => runtime.adapter.maybeConsolidate())
+      .then(() => (runtime.enabled ? runtime.adapter.maybeConsolidate() : undefined))
+      .then(() => (runtime.enabled ? bridge.refresh(runtime.root) : undefined))
       .catch(warn);
-    // Baseline seeding: one audit-tail + queue read per store, so historic
-    // receipts can never replay once a browser attaches (the bridge is always
-    // on; this runs even in profiles with no web server).
-    void bridge.refresh(runtime.root).catch(warn);
+    // Baseline seeding runs after the drain and is gated at that boundary; a
+    // disable during the chain must not publish store diffs for this session.
   };
 
   /** Store-scoped worker abort: Phase 2 and dormant sweeps use it instead of
@@ -1067,6 +1271,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   const storeAbort = new AbortController();
   ctx.effect(() => () => {
     storeAbort.abort("memcurio: plugin disposed");
+    disabledSessionIds.clear();
   }, "memcurio store worker abort");
 
   /** Drain stores whose session retired without finishing its durable work.
@@ -1089,6 +1294,48 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // One sweep batch at a time: the startup ticks fire every 500ms and must not
   // stack a second batch (and its SQLite/LLM work) on top of the previous one.
   let sweepInFlight = false;
+  /** Whether the policy allows background work for one store root. Workspace
+   *  scoped stores are classified by their recorded canonical path; no-cwd has
+   *  its own default; a store without origin metadata is left eligible. The
+   *  global store (baseRoot) is not enumerated by storeRootsUnder anyway. */
+  const storeRootPolicyEnabled = (root: string): boolean => {
+    if (resolve(root) === resolve(baseRoot)) return true;
+    const origin = readStoreOrigin(root);
+    // No origin means we cannot prove the store is still enabled. A live
+    // adoption will backfill it; a dormant store must fail closed rather than
+    // be drained for a possibly-disabled workspace.
+    if (!origin) return false;
+    if (!origin.workdir) return workspaceGate.isKeyEnabled(NO_CWD_WORKSPACE);
+    const keys = new Set<string>([
+      ...workspaceGate.lookupKeys(origin.realpath || origin.workdir),
+      ...workspaceGate.lookupKeys(origin.workdir),
+    ]);
+    return workspaceGate.isKeysEnabled([...keys]);
+  };
+  const openSweepAdapter = (root: string): MemcurioAdapter =>
+    new MemcurioAdapter({
+      root,
+      host: "dsh",
+      durableQueue: true,
+      pauseWhen: () => !storeRootPolicyEnabled(root),
+      injectBudgetTokens: () => live().injectBudgetTokens,
+      toolPreset: DSH_TOOL_PRESET,
+      channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal, pipelineConfig(root).workerCallHardCapMs),
+      consolidateChannel: dshChannel(
+        ctx,
+        () => fixedRoute() ?? lastKnownRoute,
+        () => storeAbort.signal,
+        pipelineConfig(root).workerCallHardCapMs,
+      ),
+      log: (level, message, details) => {
+        if (level === "warn" || level === "error") {
+          ctx.logger[level](`memcurio[${level}]: ${message}`, details);
+        } else {
+          ctx.logger.debug(`memcurio[${level}]: ${message}`, details);
+        }
+      },
+    });
+
   const sweepDormantStores = (reason: string): void => {
     if (sweepInFlight) {
       return;
@@ -1100,7 +1347,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     // Zombie leases (a crashed process never cleared its file) are garbage; the
     // pass does real work only once a route exists, so prune here.
     for (const root of storeRootsUnder(baseRoot)) {
-      pruneSessionLeases(root, Date.now());
+      if (storeRootPolicyEnabled(root)) pruneSessionLeases(root, Date.now());
     }
     const now = Date.now();
     // Never drain a store a live session owns: its own adapter is already
@@ -1110,8 +1357,13 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     );
     const allRoots = storeRootsUnder(baseRoot).filter(
       // A fresh lease means another process is draining this store; two
-      // workers would fence each other's claims.
-      (root) => !bootstrappedRoots.has(root) && !activeRoots.has(root) && !sessionLeaseActive(root),
+      // workers would fence each other's claims. A store without origin is
+      // still visited for metadata backfill, but never drained in that pass.
+      (root) =>
+        (readStoreOrigin(root) === undefined || storeRootPolicyEnabled(root)) &&
+        !bootstrappedRoots.has(root) &&
+        !activeRoots.has(root) &&
+        !sessionLeaseActive(root),
     );
     // The dirty token (activity != swept) is the ONLY reason a store is opened
     // in steady state: an orphan store's token never changes again, and a live
@@ -1150,35 +1402,33 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     ctx.logger.debug(`memcurio: sweep scanned=${String(allRoots.length)} dirty=${String(dirty.length)} opened=${String(roots.length)} fullPass=${String(startupPass)} (${reason})`);
     void (async () => {
       for (const root of roots) {
-        const adapter = new MemcurioAdapter({
-          root,
-          host: "dsh",
-          durableQueue: true,
-          injectBudgetTokens: () => live().injectBudgetTokens,
-          toolPreset: DSH_TOOL_PRESET,
-          channel: dshChannel(ctx, () => fixedRoute() ?? lastKnownRoute, () => storeAbort.signal, pipelineConfig(root).workerCallHardCapMs),
-          consolidateChannel: dshChannel(
-            ctx,
-            () => fixedRoute() ?? lastKnownRoute,
-            () => storeAbort.signal,
-            pipelineConfig(root).workerCallHardCapMs,
-          ),
-          log: (level, message, details) => {
-            if (level === "warn" || level === "error") {
-              ctx.logger[level](`memcurio[${level}]: ${message}`, details);
-            } else {
-              ctx.logger.debug(`memcurio[${level}]: ${message}`, details);
-            }
-          },
-        });
+        // The batch was selected before the async loop; a workspace can be
+        // disabled while earlier stores drain. Re-check before opening each
+        // store and again before every model/work boundary. A no-origin store
+        // is backfilled from its sessions table first, then classified; an
+        // enabled store may drain in the same pass.
+        if (readStoreOrigin(root) === undefined) {
+          const backfill = openSweepAdapter(root);
+          try {
+            await backfill.ensureStoreOrigin();
+          } catch (error) {
+            warn(error);
+          } finally {
+            backfill.dispose();
+          }
+        }
+        if (readStoreOrigin(root) === undefined) continue;
+        if (!storeRootPolicyEnabled(root)) continue;
+        const adapter = openSweepAdapter(root);
         try {
-          // Stores created before the marker (or with a failed write) get their
-          // origin backfilled here, on the pass that already opens them.
+          if (!storeRootPolicyEnabled(root)) continue;
           await adapter.ensureStoreOrigin();
+          if (!storeRootPolicyEnabled(root)) continue;
           const revived = await adapter.requeuePolicyRejectedExtractions();
           if (revived > 0) {
             ctx.logger.debug(`memcurio: requeued ${String(revived)} policy-rejected extraction job(s)`);
           }
+          if (!storeRootPolicyEnabled(root)) continue;
           await adapter.processPendingExtractions(STORE_SWEEP_DRAIN_LIMIT);
           // Phase 2 is NOT driven from this sweep: codex parity means the only
           // drivers are user-activity triggers (turn/end, store bootstrap).
@@ -1269,6 +1519,23 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     emptyStoreHours: config.storeEmptyStoreHours ?? 0,
   });
 
+  /** GC pins: live sessions plus stores whose workspace has an EXPLICIT
+   *  enabled:false override. Default-off (no explicit override) is not a pin;
+   *  it must not permanently disable reclamation for every unlisted path. */
+  const protectedGcRoots = (): Set<string> => {
+    const roots = new Set<string>();
+    for (const runtime of liveSessions(sessions.values())) roots.add(runtime.root);
+    for (const root of storeRootsUnder(baseRoot)) {
+      const origin = readStoreOrigin(root);
+      if (!origin) continue;
+      const keys = origin.workdir
+        ? [...new Set([...workspaceGate.lookupKeys(origin.realpath || origin.workdir), ...workspaceGate.lookupKeys(origin.workdir)])]
+        : [NO_CWD_WORKSPACE];
+      if (workspaceGate.isExplicitlyDisabled(keys)) roots.add(root);
+    }
+    return roots;
+  };
+
   const runStoreGc = async (reason: string): Promise<void> => {
     const policy = gcPolicy();
     // The timer must not create .gc/ on a default install: skip when both
@@ -1280,11 +1547,13 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     ) {
       return;
     }
+    // One scan for the whole pass: isProtected is called per candidate and
+    // must not re-read every store origin.
+    const pinnedRoots = protectedGcRoots();
     const result = await executeStoreGc(baseRoot, policy, {
       now: Date.now(),
-      protectedRoots: new Set(liveSessions(sessions.values()).map((runtime) => runtime.root)),
-      isProtected: (dir) =>
-        liveSessions(sessions.values()).some((runtime) => runtime.root === dir) || sessionLeaseActive(dir),
+      protectedRoots: pinnedRoots,
+      isProtected: (dir) => pinnedRoots.has(dir) || sessionLeaseActive(dir),
       inspect: async (dir) => {
         try {
           const idx = await Index.create(indexDb(dir));
@@ -1346,9 +1615,233 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     clearTimeout(storeGcBoot);
   }, "memcurio store gc boot pass");
 
+  /** A recreated workspace path must reclaim its quarantined memory instead
+   *  of silently starting empty. This runs only on first adoption with memory
+   *  enabled: a disabled workspace must not move or inspect a store. */
+  const restoreAdoptedStore = (runtime: SessionRuntime): void => {
+    try {
+      const adopted = restoreTombstonedStore(baseRoot, basename(runtime.root));
+      if (adopted && "restoredTo" in adopted) {
+        appendLifecycleAudit(baseRoot, {
+          at: new Date().toISOString(),
+          action: "store.restore_on_adopt",
+          key: basename(runtime.root),
+          workdir: runtime.workdir,
+          entry: adopted.restoredTo,
+        });
+        ctx.logger.warn("memcurio: restored quarantined store for %s from %s", runtime.workdir, adopted.restoredTo);
+      } else if (adopted && "conflict" in adopted) {
+        appendLifecycleAudit(baseRoot, {
+          at: new Date().toISOString(),
+          action: "store.restore_conflict",
+          key: basename(runtime.root),
+          workdir: runtime.workdir,
+          existing: adopted.existing,
+        });
+      }
+    } catch (error) {
+      warn(error);
+    }
+  };
+
+  const lastSeqOf = (events: readonly SessionEvent[]): number =>
+    events.length === 0 ? 0 : Number(events[events.length - 1]?.seq ?? 0);
+
+  /** Replay a session snapshot into a freshly adopted adapter. The epoch check
+   *  makes a disable (or a newer enable) stop a replay that is already queued:
+   *  no evidence from a closed gate may be persisted. */
+  const replaySeedEvents = async (
+    runtime: SessionRuntime,
+    seedEvents: readonly SessionEvent[],
+    epoch: number,
+  ): Promise<void> => {
+    const session = runtime.session;
+    const adapter = runtime.adapter;
+    const workdir = runtime.workdir;
+    const toolCalls = new Map<string, { name: string; arguments: unknown }>();
+    for (const event of seedEvents) {
+      if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+      const message = messageFromEvent(event);
+      if (message) {
+        if (isConversationMessage(message)) {
+          const evidence = messageEvidence(message);
+          await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
+          bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
+        } else if (isMemcurioInjectionMessage(message)) {
+          // The replayed prefix already carries this window's snapshot.
+          runtime.staticInjected = true;
+        }
+      } else if (event.type === "tool/call") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(event.data.arguments);
+        } catch {
+          parsed = undefined;
+        }
+        toolCalls.set(event.data.callId, { name: event.data.name, arguments: parsed });
+      } else if (event.type === "tool/result") {
+        // Rebuild tool telemetry + tool evidence for pre-restart activity.
+        if (event.data.error === undefined) {
+          const call = toolCalls.get(toolCallIdOf(event.data.message));
+          if (call) {
+            const details = toolDetails(call.arguments);
+            if (details?.filePath && !isAbsolute(details.filePath)) details.filePath = resolve(workdir, details.filePath);
+            if (details?.path && !isAbsolute(details.path)) details.path = resolve(workdir, details.path);
+            await adapter.toolExecuted(session.id, call.name, details);
+          }
+        }
+      } else if (event.type === "compaction/summary") {
+        runtime.pendingCompactions.set(event.data.compactionId, {
+          summary: textFromContent(event.data.summary),
+          shadowedSeqs: event.data.shadowedSeqs,
+        });
+      } else if (event.type === "compaction/end") {
+        if (event.data.error === undefined) {
+          await settleCompaction(runtime, session.id, event.data.compactionId);
+          runtime.staticInjected = false;
+        }
+      } else if (event.type === "compaction/prune") {
+        const pruned = pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
+        if (pruned.length > 0) bridge.tagPrune(session.id, pruned);
+      }
+    }
+  };
+
+  /** Turn memory on for a runtime. First adoption creates the store and (for a
+   *  workspace that has never been disabled) replays the session snapshot.
+   *  Re-enable resumes the paused adapter and deliberately does NOT replay: the
+   *  off-period conversation must not be back-filled. */
+  const startRuntime = (
+    runtime: SessionRuntime,
+    seedEvents: readonly SessionEvent[],
+    replay: boolean,
+  ): void => {
+    // A disabled retire may have disposed the adapter and installed a
+    // retirement promise while a settings enable is still in flight. Never
+    // resurrect that runtime.
+    if (runtime.retirement !== undefined) return;
+    runtime.enabled = true;
+    disabledSessionIds.delete(runtime.session.id);
+    runtime.staticInjected = false;
+    runtime.gateAbort = new AbortController();
+    const epoch = ++runtime.gateEpoch;
+    runtime.adapter.resume();
+    if (!runtime.sessionCreated || !existsSync(indexDb(runtime.root))) {
+      // First adoption restores a quarantined store. A re-enable also restores
+      // it if GC moved the store away while memory was off (default-off stores
+      // are not pinned); the adapter has no long-lived SQLite handle.
+      restoreAdoptedStore(runtime);
+    }
+    runtime.enabledFromSeq = replay ? 0 : lastSeqOf(seedEvents) + 1;
+    bridge.registerSession({
+      sessionId: runtime.session.id,
+      workdir: runtime.workdir,
+      root: runtime.root,
+      policyKeys: runtime.policyKeys,
+    });
+    bootstrapRoot(runtime);
+    if (!runtime.sessionCreated) {
+      void enqueue(runtime, async () => {
+        if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+        await runtime.adapter.sessionCreated(runtime.session.id, runtime.workdir, "dsh");
+        if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+        runtime.sessionCreated = true;
+        if (replay) await replaySeedEvents(runtime, seedEvents, epoch);
+      }, warn);
+    }
+    if (runtime.route && !routeAnnounced) {
+      routeAnnounced = true;
+      sweepDormantStores("route");
+    }
+    agentReconcile?.();
+  };
+
+  /** Turn memory off without disposing the adapter: in-session evidence from
+   *  before the flip is retained for a later re-enable, while every worker call
+   *  and queued write is gated. The store is not touched. */
+  const disableRuntime = (runtime: SessionRuntime): void => {
+    if (!runtime.enabled) return;
+    runtime.enabled = false;
+    runtime.staticInjected = false;
+    runtime.gateEpoch += 1;
+    runtime.gateAbort.abort("memcurio: workspace memory disabled");
+    runtime.adapter.pause();
+    runtime.pendingCompactions.clear();
+    bootstrappedRoots.delete(runtime.root);
+    bridge.unregisterSession(runtime.session.id);
+    // Only a per-workspace explicit off is a durable "ever disabled" fact.
+    // Default-off is a global setting and must not permanently pin a workspace
+    // after the default is turned back on.
+    const explicitOff =
+      workspaceGate.hasOverride(runtime.policyKeys) && !workspaceGate.isKeysEnabled(runtime.policyKeys);
+    if (explicitOff) {
+      runtime.everDisabled = true;
+      gateMeta.markDisabled(runtime.policyKeys);
+    } else {
+      gateMeta.markDefaultOff(runtime.policyKeys);
+    }
+    rememberDisabledSession(runtime.session.id);
+    agentReconcile?.();
+  };
+
+  const syncRuntimeGate = (runtime: SessionRuntime): void => {
+    if (runtime.retirement !== undefined) return;
+    const want =
+      workspaceGate.isKeysEnabled(runtime.policyKeys) &&
+      !(runtime.everDisabled && !workspaceGate.hasOverride(runtime.policyKeys));
+    if (want === runtime.enabled) return;
+    if (want) {
+      startRuntime(runtime, runtime.session.snapshotEvents(), false);
+    } else {
+      disableRuntime(runtime);
+    }
+  };
+
+  /** A workspace may be disabled while no live runtime exists (dormant
+   *  session/store). Persist the ever-disabled fence for every known key so a
+   *  later resume cannot full-replay an off-period history. */
+  const markKnownDisabled = (): void => {
+    for (const session of ctx.sessions.list()) {
+      const keys = workspaceGate.lookupKeys(session.header.cwd ?? "");
+      const explicitOff = workspaceGate.hasOverride(keys) && !workspaceGate.isKeysEnabled(keys);
+      if (explicitOff) {
+        gateMeta.markDisabled(keys);
+      } else if (!workspaceGate.isKeysEnabled(keys)) {
+        gateMeta.markDefaultOff(keys);
+      }
+    }
+    for (const root of storeRootsUnder(baseRoot)) {
+      const origin = readStoreOrigin(root);
+      if (!origin?.workdir) continue;
+      const keys = [
+        ...new Set([
+          ...workspaceGate.lookupKeys(origin.realpath || origin.workdir),
+          ...workspaceGate.lookupKeys(origin.workdir),
+        ]),
+      ];
+      const explicitOff = workspaceGate.hasOverride(keys) && !workspaceGate.isKeysEnabled(keys);
+      if (explicitOff) {
+        gateMeta.markDisabled(keys);
+      } else if (!workspaceGate.isKeysEnabled(keys)) {
+        gateMeta.markDefaultOff(keys);
+      }
+    }
+  };
+
+  reconcileWorkspacePolicy = (): void => {
+    workspaceGate.refresh();
+    markKnownDisabled();
+    for (const runtime of [...sessions.values()]) syncRuntimeGate(runtime);
+    agentReconcile?.();
+  };
+  reconcileWorkspacePolicy();
+
   const ensureSession = (session: Session): SessionRuntime => {
     const existing = sessions.get(session.id);
-    if (existing) return existing;
+    if (existing) {
+      syncRuntimeGate(existing);
+      return existing;
+    }
     // DSH 0.1.2-rc.1 dropped the Session.events getter for snapshotEvents():
     // the log is read once at adoption (any constructor seed), and everything
     // appended later arrives over the live session/event path. The FULL
@@ -1372,32 +1865,18 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       );
     }
     const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
-    // A recreated workspace path must reclaim its quarantined memory instead of
-    // silently starting from an empty store (the recreate-after-quarantine
-    // data-loss chain).
-    try {
-      const adopted = restoreTombstonedStore(baseRoot, basename(root));
-      if (adopted && "restoredTo" in adopted) {
-        appendLifecycleAudit(baseRoot, {
-          at: new Date().toISOString(),
-          action: "store.restore_on_adopt",
-          key: basename(root),
-          workdir,
-          entry: adopted.restoredTo,
-        });
-        ctx.logger.warn("memcurio: restored quarantined store for %s from %s", workdir, adopted.restoredTo);
-      } else if (adopted && "conflict" in adopted) {
-        appendLifecycleAudit(baseRoot, {
-          at: new Date().toISOString(),
-          action: "store.restore_conflict",
-          key: basename(root),
-          workdir,
-          existing: adopted.existing,
-        });
-      }
-    } catch (error) {
-      warn(error);
-    }
+    const policyKeys = workspaceGate.lookupKeys(workdir);
+    const policyEnabled = workspaceGate.isKeysEnabled(policyKeys);
+    const hasOverride = workspaceGate.hasOverride(policyKeys);
+    const explicitOff = hasOverride && !policyEnabled;
+    const everDisabled = gateMeta.hasEverDisabled(policyKeys);
+    const everDefaultOff = gateMeta.hasEverDefaultOff(policyKeys);
+    // Fail closed after an EXPLICIT disable unless an explicit override says
+    // "on": a deleted path/symlink loses the canonical lookup key and would
+    // otherwise fall back to default-on. A default-off workspace without an
+    // override is not poisoned by the marker (the default can be turned back
+    // on without an explicit per-workspace switch).
+    const enabled = policyEnabled && !(everDisabled && !hasOverride);
     // A pinned route is read LIVE at every consumption point (fixedRoute);
     // the seed only picks the session's initial fallback route.
     const seededRoute = fixedRoute() ?? latestRoute(seedEvents) ?? lastKnownRoute;
@@ -1411,18 +1890,26 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       durableQueue: true,
       injectBudgetTokens: () => live().injectBudgetTokens,
       toolPreset: DSH_TOOL_PRESET,
+      // A per-workspace disable aborts an in-flight Phase 2 before commit; a
+      // global store is shared and must keep serving other workspaces.
+      consolidatePaused: () => live().scope !== "global" && !workspaceGate.isKeysEnabled(policyKeys),
       channel: dshChannel(
         ctx,
         () => fixedRoute() ?? runtime.route ?? lastKnownRoute,
-        () => runtime.abort.signal,
+        () => AbortSignal.any([runtime.abort.signal, runtime.gateAbort.signal]),
         pipelineConfig(root).workerCallHardCapMs,
       ),
       // Phase 2 is store-scoped: the plugin-lifetime abort (not the session's)
       // keeps a consolidation alive across session retirement.
+      // Workspace-scoped stores belong to this workspace, so a disable may
+      // abort an in-flight consolidation. A global store is shared and must
+      // keep serving other workspaces.
       consolidateChannel: dshChannel(
         ctx,
         () => fixedRoute() ?? runtime.route ?? lastKnownRoute,
-        () => storeAbort.signal,
+        () => live().scope === "global"
+          ? storeAbort.signal
+          : AbortSignal.any([storeAbort.signal, runtime.gateAbort.signal]),
         pipelineConfig(root).workerCallHardCapMs,
       ),
       // Preserve warn/error levels: flattening them to debug would hide real
@@ -1442,6 +1929,13 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       adapter,
       root,
       workdir,
+      policyKeys,
+      enabled: false,
+      everDisabled,
+      sessionCreated: false,
+      enabledFromSeq: lastSeqOf(seedEvents) + 1,
+      gateAbort: new AbortController(),
+      gateEpoch: 0,
       queue: Promise.resolve(),
       workerQueue: Promise.resolve(),
       staticInjected: false,
@@ -1451,75 +1945,43 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       retireAttempts: 0,
     };
     sessions.set(session.id, runtime);
-    bridge.registerSession({ sessionId: session.id, workdir, root });
-    bootstrapRoot(runtime);
-    // A route just became known: dormant stores can now drain. Runs after this
-    // session is registered, so its own (bootstrapped) store is excluded.
-    // Only the transition "no route known" -> "route known" needs a sweep:
-    // every later session would just re-scan the directory.
-    if (seededRoute && !routeAnnounced) {
-      routeAnnounced = true;
-      sweepDormantStores("route");
-    }
-    void enqueue(runtime, async () => {
-      await adapter.sessionCreated(session.id, workdir, "dsh");
-      // Seed summaries live in the SAME map the live handler consumes, so a
-      // compaction whose summary was persisted pre-restart and whose end
-      // arrives live still pairs (and prunes) correctly.
-      const toolCalls = new Map<string, { name: string; arguments: unknown }>();
-      for (const event of seedEvents) {
-        const message = messageFromEvent(event);
-        if (message) {
-          if (isConversationMessage(message)) {
-            const evidence = messageEvidence(message);
-            await adapter.messageSeen(session.id, partIdFor(event.type, event.seq), evidence);
-            bridge.tagEvidence(session.id, partIdFor(event.type, event.seq), evidence.kind, evidence.text);
-          } else if (isMemcurioInjectionMessage(message)) {
-            // The replayed prefix already carries this window's snapshot.
-            runtime.staticInjected = true;
-          }
-        } else if (event.type === "tool/call") {
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(event.data.arguments);
-          } catch {
-            parsed = undefined;
-          }
-          toolCalls.set(event.data.callId, { name: event.data.name, arguments: parsed });
-        } else if (event.type === "tool/result") {
-          // Rebuild tool telemetry + tool evidence for pre-restart activity.
-          if (event.data.error === undefined) {
-            const call = toolCalls.get(toolCallIdOf(event.data.message));
-            if (call) {
-              const details = toolDetails(call.arguments);
-              if (details?.filePath && !isAbsolute(details.filePath)) details.filePath = resolve(workdir, details.filePath);
-              if (details?.path && !isAbsolute(details.path)) details.path = resolve(workdir, details.path);
-              await adapter.toolExecuted(session.id, call.name, details);
-            }
-          }
-        } else if (event.type === "compaction/summary") {
-          runtime.pendingCompactions.set(event.data.compactionId, {
-            summary: textFromContent(event.data.summary),
-            shadowedSeqs: event.data.shadowedSeqs,
-          });
-        } else if (event.type === "compaction/end") {
-          if (event.data.error === undefined) {
-            await settleCompaction(runtime, session.id, event.data.compactionId);
-            // A completed compaction opens a new window: snapshots replayed
-            // after it re-latch, earlier ones no longer count.
-            runtime.staticInjected = false;
-          }
-        } else if (event.type === "compaction/prune") {
-          const pruned = pruneShadowedEvidence(adapter, session.id, event.data.shadowedSeqs);
-          if (pruned.length > 0) bridge.tagPrune(session.id, pruned);
-        }
+    if (enabled) {
+      startRuntime(runtime, seedEvents, !everDisabled && !everDefaultOff);
+    } else {
+      adapter.pause();
+      if (explicitOff) {
+        gateMeta.markDisabled(policyKeys);
+      } else {
+        gateMeta.markDefaultOff(policyKeys);
       }
-    }, warn);
+    }
     return runtime;
   };
 
   const retireSession = (runtime: SessionRuntime): Promise<void> => {
     if (runtime.retirement) return runtime.retirement;
+    // A disabled (or never-adopted) workspace must not checkpoint: sessionEnded
+    // would persist the off-period evidence. Dispose the paused adapter and
+    // release the lease instead.
+    if (!runtime.enabled || !runtime.sessionCreated) {
+      runtime.enabled = false;
+      rememberDisabledSession(runtime.session.id);
+      runtime.gateEpoch += 1;
+      runtime.adapter.pause();
+      runtime.adapter.dispose();
+      bridge.unregisterSession(runtime.session.id);
+      const retirement = Promise.resolve().then(() => {
+        try {
+          clearSessionLease(runtime.root, process.pid, runtime.session.id);
+        } catch {
+          void 0;
+        }
+        if (sessions.get(runtime.session.id) === runtime) sessions.delete(runtime.session.id);
+        bootstrappedRoots.delete(runtime.root);
+      });
+      runtime.retirement = retirement;
+      return retirement;
+    }
     // The final checkpoint (sessionEnded) is durable and event-lane. The
     // worker lane then drains pending extractions within the retire budget;
     // automatic Phase 2 is store-scoped and keeps running on the plugin lane.
@@ -1663,13 +2125,23 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       runtime.route = route;
       lastKnownRoute = route;
     }
+    if (!runtime.enabled) return;
+    // Live events from a turn that started before the enable point are not
+    // memory evidence for the newly enabled window.
+    if (Number(event.seq) < runtime.enabledFromSeq) return;
     const message = messageFromEvent(event);
     if (message) {
       if (isConversationMessage(message)) {
         const partId = partIdFor(event.type, event.seq);
         const evidence = messageEvidence(message);
-        void enqueue(runtime, () => runtime.adapter.messageSeen(session.id, partId, evidence), warn);
-        bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
+        const epoch = runtime.gateEpoch;
+        void enqueue(runtime, async () => {
+          if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+          await runtime.adapter.messageSeen(session.id, partId, evidence);
+          if (runtime.enabled && runtime.gateEpoch === epoch) {
+            bridge.tagEvidence(session.id, partId, evidence.kind, evidence.text);
+          }
+        }, warn);
       }
     } else if (event.type === "turn/end") {
       // The idle checkpoint is a fast durable write (event lane, awaited by
@@ -1678,9 +2150,13 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       // never stalls the next pre-step or a flush boundary.
       const idle = enqueue(runtime, () => runtime.adapter.sessionIdle(session.id), warn);
       void enqueueWorker(runtime, async () => {
+        if (!runtime.enabled) return;
         await idle.catch(() => undefined);
+        if (!runtime.enabled) return;
         await runtime.adapter.processPendingExtractions();
+        if (!runtime.enabled) return;
         await runtime.adapter.maybeConsolidate();
+        if (!runtime.enabled) return;
         // Deliver queue/audit diffs produced by this drain (turn/end lane).
         await bridge.refresh(runtime.root).catch(warn);
       }, warn);
@@ -1695,12 +2171,16 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         // The compaction opens a new context window; the log rewrite may have
         // dropped the injected memory message, so the next pre-step injects
         // the (possibly newer) summary once more.
-        void enqueue(runtime, () => settleCompaction(runtime, session.id, event.data.compactionId), warn);
+        void enqueue(runtime, async () => {
+          if (!runtime.enabled) return;
+          await settleCompaction(runtime, session.id, event.data.compactionId);
+        }, warn);
       }
     } else if (event.type === "compaction/prune") {
       // Model-free prune: the shadowed messages are gone from the surface
       // (no summary to preserve them), so their evidence parts go too.
       void enqueue(runtime, async () => {
+        if (!runtime.enabled) return;
         const pruned = pruneShadowedEvidence(runtime.adapter, session.id, event.data.shadowedSeqs);
         if (pruned.length > 0) bridge.tagPrune(session.id, pruned);
       }, warn);
@@ -1711,6 +2191,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     const session = exec.agent?.session;
     if (!session || result.isError) return;
     const runtime = ensureSession(session);
+    if (!runtime.enabled) return;
     const details = toolDetails(exec.arguments);
     // DSH's read/grep/glob resolve relative paths against the session
     // workspace, and models typically pass them that way. The engine counts
@@ -1725,16 +2206,21 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     // engine's own telemetry counts — the snapshot usage face stays the
     // reconciliation truth). Path -> rollout resolution stays a host-side
     // concern documented in the projector.
-    if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
-      const readPath = details?.filePath ?? details?.path;
-      if (readPath && isAbsolute(readPath)) {
-        bridge.tagToolReadHit(session.id, exec.name, readPath, runtime.root);
+    const epoch = runtime.gateEpoch;
+    void enqueue(runtime, async () => {
+      if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+      await runtime.adapter.toolExecuted(session.id, exec.name, details);
+      if (!runtime.enabled || runtime.gateEpoch !== epoch) return;
+      if (DSH_TOOL_PRESET.readTools.includes(exec.name)) {
+        const readPath = details?.filePath ?? details?.path;
+        if (readPath && isAbsolute(readPath)) {
+          bridge.tagToolReadHit(session.id, exec.name, readPath, runtime.root);
+        }
+      } else if (DSH_TOOL_PRESET.shellTools.includes(exec.name) && details?.command) {
+        const rels = shellMemoryFileRels(details.command, runtime);
+        if (rels.length > 0) bridge.tagToolReadHits(session.id, exec.name, rels);
       }
-    } else if (DSH_TOOL_PRESET.shellTools.includes(exec.name) && details?.command) {
-      const rels = shellMemoryFileRels(details.command, runtime);
-      if (rels.length > 0) bridge.tagToolReadHits(session.id, exec.name, rels);
-    }
-    void enqueue(runtime, () => runtime.adapter.toolExecuted(session.id, exec.name, details), warn);
+    }, warn);
   }, { global: true });
 
   ctx.on("session/flush", async (session) => {
@@ -1775,7 +2261,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   const storeHasInjectableSummary = (sessionId: string | undefined): boolean => {
     if (sessionId === undefined) return false;
     const runtime = sessions.get(sessionId);
-    if (runtime === undefined) return false;
+    if (runtime === undefined || !runtime.enabled) return false;
     try {
       const summary = readWorkspaceText(runtime.root, "memory_summary.md");
       if (summary.trim() === "") return false;
@@ -1814,7 +2300,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     if (decision.kind !== "enter" || payload.signal.aborted) return decision;
     if (!live().injectContext) return decision;
       const runtime = ensureSession(payload.agent.session);
-      if (runtime.retirement) return decision;
+      if (!runtime.enabled || runtime.retirement) return decision;
       const agentRoute = payload.agent.options?.provider && payload.agent.options.model
         ? { provider: payload.agent.options.provider, model: payload.agent.options.model }
         : undefined;
@@ -1859,7 +2345,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       // window open lets guide and data arrive on the same step; a non-empty
       // snapshot latches it as before, so steady-state steps never re-inject
       // and only a compaction opens the next window.
-      if (!staticPiece) return decision;
+      if (!staticPiece || !runtime.enabled) return decision;
       runtime.staticInjected = true;
       bridge.tagInjection(runtime.session.id, staticPiece, live().injectBudgetTokens);
     return { ...decision, messages: [...decision.messages, memoryMessage(staticPiece)] };
@@ -1869,8 +2355,77 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // composition base), and every read below goes through `live()` so volatile
   // Settings edits are honored.
   if (live().registerTools) {
-    registerMemoryTools(ctx, sessions, bridge, () => live().injectBudgetTokens);
+    registerMemoryTools(ctx, sessions, bridge, () => live().injectBudgetTokens, workspaceGate);
     memoryToolsRegistered = true;
+    // Per-agent visibility gate. Handler checks above are the authority; this
+    // removes the schemas entirely for disabled workspaces when the host
+    // exposes an agent registry. Listener failures must never veto agent
+    // creation, so every adoption is contained and the listener returns
+    // undefined.
+    ctx.inject(["agents"], (scoped) => {
+      const agents = (scoped as unknown as { agents?: AgentRegistryLike }).agents;
+      if (agents === undefined) return undefined;
+      const gate = scoped as unknown as AgentGateContext;
+      const entries = new Map<AgentLike, { restriction?: () => void }>();
+      const sync = (agent: AgentLike): void => {
+        const entry = entries.get(agent) ?? {};
+        entries.set(agent, entry);
+        const cwd = agent.session.header.cwd ?? "";
+        if (workspaceGate.isWorkdirEnabled(cwd)) {
+          entry.restriction?.();
+          entry.restriction = undefined;
+          return;
+        }
+        if (entry.restriction !== undefined) return;
+        const names = MEMORY_TOOL_NAMES.filter((name) => ctx.tools.get(name) !== undefined);
+        if (names.length === 0) return;
+        try {
+          entry.restriction = agent.ctx?.tools?.restrict?.({ deny: [...names] });
+        } catch (error) {
+          warn(error);
+        }
+      };
+      const adopt = (agent: AgentLike): void => {
+        try {
+          sync(agent);
+        } catch (error) {
+          // One bad agent must not fail its own creation or the boot scan.
+          warn(error);
+        }
+      };
+      const offCreated = gate.on("agent/created", (payload) => {
+        const agent = (payload as { agent?: AgentLike } | undefined)?.agent;
+        if (agent !== undefined) adopt(agent);
+        return undefined;
+      });
+      const offDisposed = gate.on("agent/disposed", (payload) => {
+        const agent = (payload as { agent?: AgentLike } | undefined)?.agent;
+        if (agent !== undefined) entries.delete(agent);
+      });
+      agentReconcile = () => {
+        for (const agent of entries.keys()) adopt(agent);
+      };
+      // Adopt existing agents only after the listeners are armed.
+      try {
+        const existing = agents.list?.() ?? agents.roots?.() ?? [];
+        for (const agent of existing) adopt(agent);
+      } catch (error) {
+        warn(error);
+      }
+      return () => {
+        agentReconcile = undefined;
+        offCreated();
+        offDisposed();
+        for (const entry of entries.values()) {
+          try {
+            entry.restriction?.();
+          } catch (error) {
+            warn(error);
+          }
+        }
+        entries.clear();
+      };
+    });
   }
 
   // Adopting a session bootstraps its store exactly once (see bootstrapRoot):

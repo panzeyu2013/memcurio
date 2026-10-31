@@ -29,6 +29,8 @@ import type { Context, Volatile } from "@deepseek-ai/cordis";
 import Schema from "@deepseek-ai/schemastery";
 import type {} from "@deepseek-ai/dsh-settings";
 
+import { normalizeWorkspaceOverrides, type WorkspaceOverrides } from "./workspace-policy.js";
+
 /** Settings namespace: the profile entry id carried by this package's patch. */
 export const SETTINGS_NAMESPACE = "memcurio";
 
@@ -62,6 +64,13 @@ export interface Config {
   model?: Volatile<string | undefined> | string;
   storeRetentionDays?: Volatile<number> | number;
   storeTrashDays?: Volatile<number> | number;
+  /** Default for workspaces without an explicit override. Real workspaces are
+   *  ON by default; no-cwd is a separate shared bucket and stays OFF unless
+   *  explicitly enabled. */
+  defaultWorkspaceEnabled?: Volatile<boolean> | boolean;
+  /** Per-workspace overrides keyed by canonical path (or the reserved
+   *  `no-cwd` key). Object shape leaves room for future per-workspace fields. */
+  workspaceOverrides?: Volatile<WorkspaceOverrides> | WorkspaceOverrides;
   /** Reclamation scope: dsh-home keeps it inside the DSH worktrees tree;
    *  all also reclaims stores whose workspace lived elsewhere. Deployment
    *  level (not rendered by the panel), like root. */
@@ -87,6 +96,8 @@ const entrySchema = Schema.object({
   storeGcScope: Schema.union(["dsh-home", "all"] as const).default("dsh-home"),
   storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(0),
   storeSweepIntervalMs: Schema.number().step(1).min(1_000).max(3_600_000).default(300_000),
+  defaultWorkspaceEnabled: Schema.boolean().default(true).volatile(),
+  workspaceOverrides: Schema.dict(Schema.object({ enabled: Schema.boolean() })).default({}).volatile(),
 });
 
 /** The one settings schema: the Loader validates every write with it and the
@@ -109,6 +120,26 @@ function isVolatileLike(value: unknown): value is { get(): unknown } {
 function read<T>(ref: Volatile<T> | T | undefined): T | undefined {
   const value = isVolatileLike(ref) ? (ref.get() as T | undefined) : ref;
   return value == null ? undefined : value;
+}
+
+/** Public live read of one config field (used by the workspace policy gate,
+ *  which must not re-normalize on every event). */
+export function configField<T>(ref: Volatile<T> | T | undefined): T | undefined {
+  return read(ref);
+}
+
+/** Normalized workspace-policy view. Kept separate from settingsView so the
+ *  existing form contract and its exact-shape tests stay stable. */
+export interface WorkspacePolicySettingsView {
+  defaultEnabled: boolean;
+  overrides: WorkspaceOverrides;
+}
+
+export function workspacePolicyView(config: Config): WorkspacePolicySettingsView {
+  return {
+    defaultEnabled: configField(config.defaultWorkspaceEnabled) !== false,
+    overrides: normalizeWorkspaceOverrides(configField(config.workspaceOverrides)),
+  };
 }
 
 /** One plain read of the live settings (volatile references read fresh). */

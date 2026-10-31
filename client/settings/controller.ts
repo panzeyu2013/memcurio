@@ -91,6 +91,25 @@ export interface ConfigFormPort<T> {
   mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean>;
 }
 
+/** One stored per-workspace override (mirrors the host Config shape). */
+export interface WorkspaceOverrideValue {
+  enabled: boolean;
+}
+
+export interface WorkspacePolicyView {
+  defaultEnabled: boolean;
+  overrides: Record<string, WorkspaceOverrideValue>;
+}
+
+/** Workspace section face: effective value plus the raw user/base layers the
+ *  override badges and reset actions need. */
+export interface WorkspacePolicyFace extends WorkspacePolicyView {
+  baseDefaultEnabled: boolean;
+  baseOverrides: Record<string, WorkspaceOverrideValue>;
+  defaultOverridden: boolean;
+  overriddenKeys: string[];
+}
+
 /** Observable seat consumed by the panel through the `hooks` compartment. */
 export interface SettingsFaceHook {
   getSnapshot(): SettingsFace;
@@ -163,6 +182,36 @@ const DEFAULT_VIEW: MemcurioSettingsView = {
   injectContext: true,
   registerTools: true,
 };
+
+function hasControlChars(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function workspaceOverridesOf(raw: unknown): Record<string, WorkspaceOverrideValue> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const entries: Array<[string, WorkspaceOverrideValue]> = [];
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "" || key.length > 4_096 || hasControlChars(key)) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const enabled = (value as { enabled?: unknown }).enabled;
+    if (typeof enabled !== "boolean") continue;
+    entries.push([key, { enabled }]);
+  }
+  return Object.fromEntries(entries);
+}
+
+/** Decode the workspace policy section of a config-form value/base. */
+export function decodeWorkspacePolicy(raw: unknown): WorkspacePolicyView {
+  const record = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return {
+    defaultEnabled: record.defaultWorkspaceEnabled !== false,
+    overrides: workspaceOverridesOf(record.workspaceOverrides),
+  };
+}
 
 /** Structural narrowing of a wire section (never throws on odd shapes). */
 export function decodeSettings(raw: unknown): MemcurioSettingsView {
@@ -428,6 +477,150 @@ export class MemcurioSettingsController {
       return Object.hasOwn(base, field) && Object.is(layer[field], base[field]);
     }
     return Object.hasOwn(layer, field) && Object.is(layer[field], value);
+  }
+
+  /** Workspace section face. Kept separate from SettingsFace so the staged
+   *  form's exact contract is unchanged. */
+  workspaceFace(): WorkspacePolicyFace {
+    const snapshot = this.scope.getSnapshot();
+    const value = decodeWorkspacePolicy(snapshot.value ?? snapshot.base);
+    const base = decodeWorkspacePolicy(snapshot.base);
+    const user =
+      snapshot.user !== null && typeof snapshot.user === "object" && !Array.isArray(snapshot.user)
+        ? (snapshot.user as Record<string, unknown>)
+        : {};
+    const userOverrides = workspaceOverridesOf(user.workspaceOverrides);
+    const overriddenKeys = Object.keys(userOverrides).filter(
+      (key) => base.overrides[key]?.enabled !== userOverrides[key]?.enabled,
+    );
+    const defaultOverridden =
+      Object.hasOwn(user, "defaultWorkspaceEnabled") &&
+      Boolean(user.defaultWorkspaceEnabled) !== base.defaultEnabled;
+    return {
+      defaultEnabled: value.defaultEnabled,
+      overrides: value.overrides,
+      baseDefaultEnabled: base.defaultEnabled,
+      baseOverrides: base.overrides,
+      defaultOverridden,
+      overriddenKeys,
+    };
+  }
+
+  /** Set one leaf override with read-back verification. */
+  async writeWorkspaceOverride(key: string, enabled: boolean): Promise<SaveOutcome> {
+    if (key === "") return { ok: false, code: ERROR_KEYS.notReady };
+    const settled = await this.settle(() =>
+      this.scope.mutate([{ op: "set", path: ["workspaceOverrides", key, "enabled"], value: enabled }]),
+    );
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyWorkspaceSet(key, enabled)) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    this.notify();
+    return { ok: true };
+  }
+
+  /** Remove one override (or accept the host's inherited equal-value rewrite). */
+  async unsetWorkspaceOverride(key: string): Promise<SaveOutcome> {
+    if (key === "") return { ok: false, code: ERROR_KEYS.notReady };
+    const settled = await this.settle(() => this.scope.mutate([{ op: "unset", path: ["workspaceOverrides", key] }]));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyWorkspaceUnset(key)) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    this.notify();
+    return { ok: true };
+  }
+
+  /** Set or clear the default-for-unlisted-workspaces switch. */
+  async writeWorkspaceDefault(enabled: boolean): Promise<SaveOutcome> {
+    const reverts = enabled === this.workspaceFace().baseDefaultEnabled;
+    const settled = await this.settle(() =>
+      reverts ? this.scope.unset("defaultWorkspaceEnabled") : this.scope.set("defaultWorkspaceEnabled", enabled),
+    );
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyWorkspaceDefault(enabled, reverts)) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    this.notify();
+    return { ok: true };
+  }
+
+  async unsetWorkspaceDefault(): Promise<SaveOutcome> {
+    const settled = await this.settle(() => this.scope.unset("defaultWorkspaceEnabled"));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value || !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    this.notify();
+    return { ok: true };
+  }
+
+  /** Clear the default override and/or every explicit workspace override in
+   *  one atomic mutation. Reset-all must not leave a half-reset policy when the
+   *  second write fails. */
+  async resetWorkspacePolicy(keys: readonly string[], includeDefault: boolean): Promise<SaveOutcome> {
+    const unique = [...new Set(keys.filter((key) => key !== ""))];
+    if (unique.length === 0 && !includeDefault) return { ok: true };
+    const ops = [
+      ...(includeDefault ? [{ op: "unset" as const, path: ["defaultWorkspaceEnabled"] }] : []),
+      ...unique.map((key) => ({ op: "unset" as const, path: ["workspaceOverrides", key] })),
+    ];
+    const settled = await this.settle(() => this.scope.mutate(ops));
+    if (settled.kind === "timeout") return { ok: false, code: ERROR_KEYS.timeout };
+    if (settled.kind === "error") return { ok: false, code: ERROR_KEYS.hostRejected };
+    if (!settled.value) return { ok: false, code: this.refusalKey() };
+    if (includeDefault && !this.verifyWorkspaceDefault(this.workspaceFace().baseDefaultEnabled, true)) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    if (!unique.every((key) => this.verifyWorkspaceUnset(key))) {
+      return { ok: false, code: this.refusalKey() };
+    }
+    this.notify();
+    return { ok: true };
+  }
+
+  /** Clear every explicit workspace override in one atomic mutation. */
+  async resetWorkspaceOverrides(keys: readonly string[]): Promise<SaveOutcome> {
+    return this.resetWorkspacePolicy(keys, false);
+  }
+
+  private verifyWorkspaceSet(key: string, enabled: boolean): boolean {
+    const snapshot = this.scope.getSnapshot();
+    if (snapshot.status !== "ready") return false;
+    const user = snapshot.user !== null && typeof snapshot.user === "object" && !Array.isArray(snapshot.user)
+      ? (snapshot.user as Record<string, unknown>)
+      : {};
+    return workspaceOverridesOf(user.workspaceOverrides)[key]?.enabled === enabled;
+  }
+
+  private verifyWorkspaceUnset(key: string): boolean {
+    const snapshot = this.scope.getSnapshot();
+    if (snapshot.status !== "ready") return false;
+    const user = snapshot.user !== null && typeof snapshot.user === "object" && !Array.isArray(snapshot.user)
+      ? (snapshot.user as Record<string, unknown>)
+      : {};
+    const current = workspaceOverridesOf(user.workspaceOverrides)[key];
+    if (current === undefined) return true;
+    const base = decodeWorkspacePolicy(snapshot.base);
+    return base.overrides[key]?.enabled === current.enabled;
+  }
+
+  private verifyWorkspaceDefault(value: boolean, reverts: boolean): boolean {
+    const snapshot = this.scope.getSnapshot();
+    if (snapshot.status !== "ready") return false;
+    const user = snapshot.user !== null && typeof snapshot.user === "object" && !Array.isArray(snapshot.user)
+      ? (snapshot.user as Record<string, unknown>)
+      : {};
+    if (reverts) {
+      if (!Object.hasOwn(user, "defaultWorkspaceEnabled")) return true;
+      return Boolean(user.defaultWorkspaceEnabled) === decodeWorkspacePolicy(snapshot.base).defaultEnabled;
+    }
+    return Object.hasOwn(user, "defaultWorkspaceEnabled") && user.defaultWorkspaceEnabled === value;
   }
 
   private notify(): void {

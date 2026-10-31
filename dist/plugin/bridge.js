@@ -27,6 +27,7 @@ import { redactSecrets } from "../core/sanitize.js";
 import { createProjector } from "../services/projector.js";
 import { buildSnapshot } from "../services/snapshot.js";
 import { isWritePathAction } from "../services/write-path.js";
+const MAX_SESSION_BINDINGS = 10_000;
 /** Audit actions that mutate durable memory and therefore surface as
  *  memory-list updates (all others only produce receipts or nothing). */
 function memoryKindForAction(action) {
@@ -88,6 +89,10 @@ export class HostBridge {
      *  still resolve its own session — a last-writer-wins map would 404 every
      *  other session's snapshot. */
     sessionRoots = new Map();
+    /** session id -> raw workdir. The plugin's resolveRoot fallback re-checks the
+     *  live workspace policy for a session whose runtime has already retired. */
+    sessionWorkdirs = new Map();
+    sessionPolicyKeys = new Map();
     /** Root registered most recently (snapshot fallback without a session);
      *  tracked explicitly because re-registering a root keeps its Map order. */
     lastRoot;
@@ -138,7 +143,35 @@ export class HostBridge {
         this.workdirs.set(info.root, info.workdir);
         this.sessionsByRoot.set(info.root, info.sessionId);
         this.sessionRoots.set(info.sessionId, info.root);
+        this.sessionWorkdirs.set(info.sessionId, info.workdir);
+        if (info.policyKeys !== undefined)
+            this.sessionPolicyKeys.set(info.sessionId, info.policyKeys);
         this.lastRoot = info.root;
+        if (this.sessionRoots.size > MAX_SESSION_BINDINGS) {
+            const oldest = this.sessionRoots.keys().next().value;
+            if (oldest !== undefined)
+                this.unregisterSession(oldest);
+        }
+    }
+    /** Remove one session binding (disable/retire). The label/workdir maps are
+     *  kept for any other session of the same store; the transport uses the
+     *  binding map, not the label map, to authorize a snapshot. */
+    unregisterSession(sessionId) {
+        const root = this.sessionRoots.get(sessionId);
+        this.sessionRoots.delete(sessionId);
+        this.sessionWorkdirs.delete(sessionId);
+        this.sessionPolicyKeys.delete(sessionId);
+        if (root !== undefined && this.sessionsByRoot.get(root) === sessionId) {
+            this.sessionsByRoot.delete(root);
+        }
+    }
+    /** Raw workdir bound to one session (used by the policy fallback). */
+    workdirForSession(sessionId) {
+        return this.sessionWorkdirs.get(sessionId);
+    }
+    /** Policy lookup keys captured at adoption (canonical + original). */
+    policyKeysForSession(sessionId) {
+        return this.sessionPolicyKeys.get(sessionId);
     }
     labelFor(root) {
         return this.labels.get(root);

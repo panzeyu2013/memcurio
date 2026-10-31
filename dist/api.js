@@ -20,8 +20,12 @@ async function withIndex(root, run) {
     }
 }
 export async function integrationSearch(root, query, topK = 10, options = {}) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     return withIndex(root, async (index) => {
         const result = await searchMemory(root, query, topK, options);
+        if (options.isPaused?.())
+            throw new Error("memcurio: memory is disabled for this workspace");
         const safeQuery = redactSecrets(query).text;
         index.audit("integration.search", "-", `${safeQuery} -> ${result.hits.length} hits`);
         return {
@@ -34,21 +38,31 @@ export async function integrationSearch(root, query, topK = 10, options = {}) {
     });
 }
 export async function integrationList(root, options = {}) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     return withIndex(root, async (index) => {
         const result = await listMemory(root, options);
+        if (options.isPaused?.())
+            throw new Error("memcurio: memory is disabled for this workspace");
         index.audit("integration.list", "-", `${options.path ?? "(root)"} -> ${result.entries.length} entries`);
         return result;
     });
 }
 export async function integrationRead(root, options) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     return withIndex(root, async (index) => {
         const result = await readMemory(root, options);
+        if (options.isPaused?.())
+            throw new Error("memcurio: memory is disabled for this workspace");
         index.audit("integration.read", "-", `${result.path} @${result.startLineNumber}`);
         return result;
     });
 }
-export async function integrationRemember(root, content, kind = "remember") {
-    return withIndex(root, async () => addAdHocNote(root, content, kind));
+export async function integrationRemember(root, content, kind = "remember", options = {}) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
+    return withIndex(root, async () => addAdHocNote(root, content, kind, options));
 }
 export async function integrationStatus(root) {
     return withIndex(root, (index) => {
@@ -113,9 +127,13 @@ export async function integrationContext(root, budgetTokens) {
  *  tool call carries (memory-file locators and/or bare rollout ids) and audit
  *  the outcome. Returns the rollout keys actually counted (unknown refs are
  *  dropped by registerMemoryUsage). */
-export async function integrationCite(root, refs) {
+export async function integrationCite(root, refs, options = {}) {
+    if (options.isPaused?.())
+        throw new Error("memcurio: memory is disabled for this workspace");
     return withIndex(root, async (index) => {
-        const counted = await registerMemoryUsage(root, refs);
+        const counted = await registerMemoryUsage(root, refs, { isPaused: options.isPaused });
+        if (options.isPaused?.())
+            throw new Error("memcurio: memory is disabled for this workspace");
         index.audit("integration.cite", "-", `${refs.length} ref(s) -> ${counted.length} counted`);
         return { counted };
     });

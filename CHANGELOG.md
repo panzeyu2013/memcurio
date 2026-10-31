@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-workspace memory switches.** `defaultWorkspaceEnabled` and a canonical-path `workspaceOverrides` document let Settings → Memory → Workspaces turn memory on or off for one workspace. A disabled workspace creates no store, injects no summary or read-path guide, hides the seven native tools from that agent (with a handler backstop), skips event/telemetry collection and Phase 1/2, passes the store over in the dormant sweep, and answers `/memcurio/snapshot` with 404 `memory-disabled`. Existing memories are kept; an explicit disable requires an explicit override to re-enable, while a global default-off window can be re-enabled normally. Both start at the current session sequence without replaying seed history, including pre-disable history (durable `disabled`/`defaultOff` fences in `state/workspace-gates.json` survive restarts; a deleted path without an explicit override fails closed). Explicit `enabled:false` stores are added to the GC protected roots. `no-cwd` is a shared bucket and is off by default. The Settings block is metadata-only through `GET /memcurio/workspaces`; it never reads memory content.
+- **Adapter pause/resume.** `MemcurioAdapter.pause()` stops retry timers and autonomous drains without disposing, and `processExtractionQueue`/`stageSession` check the gate before staging or completing so a provider that returns after a disable cannot write memory.
+
 ### Changed
 
 - **The controller's legacy write API is gone.** `save/reset/resetAll/saveRoute/resetRoute`, the global `busy/errorCode` face fields and the legacy tests were removed; the instant switch and the staged form now drive only `writeField`/`unsetField`/`writeOps`, so route pairing and reset semantics have one implementation. The settings section was split into `chrome.tsx` and `fields.tsx` for reviewability.

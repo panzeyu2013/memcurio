@@ -2,6 +2,7 @@ import type { SettingsFace } from "./controller.js";
 import type { FormShell } from "./draft.js";
 import type { InstantFace } from "./instant.js";
 import type { SettingsKey } from "./locales.js";
+import type { WorkspaceFace } from "./workspaces.js";
 
 export type SectionT = (key: SettingsKey, params?: Record<string, unknown>) => string;
 
@@ -13,3 +14,5 @@ export interface FaceHook {
 export type FormSeatHook = <T>(selector: (snapshot: FormShell) => T) => T;
 
 export type InstantSeatHook = <T>(selector: (snapshot: InstantFace) => T) => T;
+
+export type WorkspaceSeatHook = <T>(selector: (snapshot: WorkspaceFace) => T) => T;

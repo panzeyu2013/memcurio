@@ -50,6 +50,7 @@ import type { Context } from "@deepseek-ai/cordis";
 
 import type { ProjectedDelta } from "../services/projector.js";
 import type { HostBridge } from "./bridge.js";
+import type { WorkspaceInventory } from "./workspace-inventory.js";
 
 /** Route prefix the browser half calls; duplicated in `client/ui/wire.ts`. */
 export const UI_BASE_PATH = "/memcurio";
@@ -73,6 +74,12 @@ export interface UiTransportOptions {
   bridge: HostBridge;
   /** Session id → store root (bridge registry); undefined = default root. */
   resolveRoot: (sessionId: string | undefined) => string | undefined;
+  /** Metadata-only workspace inventory for the Settings panel. Optional:
+   *  compositions without it simply 404 the route. */
+  listWorkspaces?: (sessionId?: string) => WorkspaceInventory | Promise<WorkspaceInventory>;
+  /** Distinguish a session whose workspace is explicitly paused from an
+   *  unknown session (both resolve to no root). Optional. */
+  isSessionDisabled?: (sessionId: string) => boolean;
   /** Diagnostics sink; must never throw. */
   warn: (error: unknown) => void;
   /** Called once the route/sink effect is torn down (plugin unload/reload). */
@@ -292,7 +299,16 @@ export function installUiTransport(ctx: Context, options: UiTransportOptions): U
     // another workspace's store: 404 makes the client retry instead.
     const root = options.resolveRoot(parsed.sessionId);
     if (root === undefined) {
-      sendJson(res, 404, { error: parsed.sessionId === undefined ? "no-store" : "unknown-session" });
+      const disabled =
+        parsed.sessionId !== undefined && options.isSessionDisabled?.(parsed.sessionId) === true;
+      sendJson(res, 404, {
+        error:
+          parsed.sessionId === undefined
+            ? "no-store"
+            : disabled
+              ? "memory-disabled"
+              : "unknown-session",
+      });
       return;
     }
     // Capture the version BEFORE the asynchronous build: a delta landing
@@ -381,6 +397,20 @@ export function installUiTransport(ctx: Context, options: UiTransportOptions): U
       }
       if (sub === "/events") {
         handleEvents(req, res, url);
+        return;
+      }
+      if (sub === "/workspaces") {
+        const parsed = parseSessionParam(url);
+        if (parsed.malformed === true) {
+          sendJson(res, 400, { error: "malformed-session" });
+          return;
+        }
+        if (options.listWorkspaces === undefined) {
+          sendJson(res, 404, { error: "not-found" });
+          return;
+        }
+        const inventory = await options.listWorkspaces(parsed.sessionId);
+        sendJson(res, 200, inventory);
         return;
       }
       sendJson(res, 404, { error: "not-found" });

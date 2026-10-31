@@ -158,6 +158,22 @@ describe("searchMemory", () => {
 });
 
 describe("registerMemoryUsage return semantics (acceptance round)", () => {
+  test("a paused usage write returns no counted keys", async () => {
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.stageUpsert({
+        rolloutKey: "test|known",
+        rawMemory: "x",
+        rolloutSummary: "y",
+        rolloutSlug: "known",
+        sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+      });
+    } finally {
+      idx.close();
+    }
+    expect(await registerMemoryUsage(dir, ["test|known"], { isPaused: () => true })).toEqual([]);
+  });
+
   test("returns only keys actually counted; unknown keys and MEMORY.md lines vanish", async () => {
     const artifactFilename = artifactFilenameForId(artifactIdForRolloutKey("test|known"));
     writeRolloutSummary(dir, artifactFilename, "known recap\\n");

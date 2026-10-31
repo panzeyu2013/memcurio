@@ -84,6 +84,14 @@ export interface AdapterOptions {
      * model runs in the durable worker. Direct core callers retain the legacy
      * inline behavior unless they opt in. */
     durableQueue?: boolean;
+    /** Optional external pause predicate (e.g. a dormant sweep re-checking the
+     *  live workspace policy). Evaluated at every commit boundary in addition to
+     *  the adapter's explicit pause() flag. */
+    pauseWhen?: () => boolean;
+    /** Phase-2 commit predicate. Workspace-scoped adapters pass their live gate;
+     *  global-scope adapters omit it so one workspace cannot cancel the shared
+     *  store's consolidation. */
+    consolidatePaused?: () => boolean;
 }
 export declare class MemcurioAdapter {
     #private;
@@ -118,12 +126,24 @@ export declare class MemcurioAdapter {
      *  dead-letter path for a non-model reason. The durable queue waits for
      *  the next live session's drain instead. */
     private disposed;
+    /** Workspace memory gate: a paused adapter keeps its in-memory session
+     *  evidence but performs no autonomous work and no checkpoint writes. */
+    private paused;
+    private readonly pauseWhen;
+    private readonly consolidatePaused;
     constructor(opts?: AdapterOptions);
     state(sessionId: string): SessionState | undefined;
     /** Stop this adapter's autonomous work. Harness adapters call this when the
      *  session they serve is retired: pending jobs stay durable in SQLite and
      *  are drained by the next live session's adapter instead. */
     dispose(): void;
+    /** Pause autonomous work without disposing: the durable queue keeps its
+     *  jobs, the in-memory evidence survives, and no timer remains armed. */
+    pause(): void;
+    /** Resume a paused adapter. The plugin bootstraps the drain; this method only
+     *  re-opens the gates so a scheduled wake can run. */
+    resume(): void;
+    isPaused(): boolean;
     sessionCreated(sessionId: string, workdir: string, host: string): Promise<void>;
     messageSeen(sessionId: string, partId: string, details?: {
         kind?: EvidenceInput["kind"];
@@ -284,7 +304,7 @@ export declare class MemcurioAdapter {
     private scheduleNextWake;
 }
 interface QueueDrainResult {
-    status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced";
+    status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced" | "paused";
     jobId?: string;
     staged?: boolean;
     retryInMs?: number;

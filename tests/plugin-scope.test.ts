@@ -15,7 +15,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
 import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
-import { readSweptState, sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
+import { readSweptState, recordStoreOrigin, sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { bootGcEnabled, dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, sweepBatch, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 import { waitFor } from "./support/async.js";
@@ -328,9 +328,13 @@ describe("steady-state sweep", () => {
       });
       const settled = join(root, "dsh", "settled-store");
       const dirty = join(root, "dsh", "dirty-store");
-      for (const dir of [settled, dirty]) {
+      const noOrigin = join(root, "dsh", "no-origin-store");
+      for (const dir of [settled, dirty, noOrigin]) {
         mkdirSync(join(dir, "state"), { recursive: true });
         writeFileSync(join(dir, "index.sqlite"), "");
+        if (dir !== noOrigin) {
+          recordStoreOrigin(dir, join(root, "workspaces", dir.slice(dir.lastIndexOf("/") + 1)));
+        }
       }
       const token = writeActivityToken(settled);
       writeSweptToken(settled, token);
@@ -343,6 +347,7 @@ describe("steady-state sweep", () => {
         await Promise.resolve();
       }
       expect(existsSync(join(dirty, "state", "swept"))).toBe(true);
+      expect(existsSync(join(noOrigin, "state", "swept"))).toBe(false);
       expect(statSync(settledSwept).mtimeMs).toBe(before);
     } finally {
       jest.useRealTimers();
@@ -368,6 +373,7 @@ describe("steady-state sweep", () => {
       const dirty = join(root, "dsh", "timer-store");
       mkdirSync(join(dirty, "state"), { recursive: true });
       writeFileSync(join(dirty, "index.sqlite"), "");
+      recordStoreOrigin(dirty, join(root, "workspaces", "timer-store"));
       const firstToken = writeActivityToken(dirty);
       const sweptToken = (root: string): string => {
         const state = readSweptState(root);
@@ -381,6 +387,7 @@ describe("steady-state sweep", () => {
       const later = join(root, "dsh", "timer-store-2");
       mkdirSync(join(later, "state"), { recursive: true });
       writeFileSync(join(later, "index.sqlite"), "");
+      recordStoreOrigin(later, join(root, "workspaces", "timer-store-2"));
       const secondToken = writeActivityToken(later);
       await waitFor(() => sweptToken(later) === secondToken, 8_000, 25);
       expect(sweptToken(later)).toBe(secondToken);

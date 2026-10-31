@@ -7,6 +7,7 @@ export type { HarnessToolPreset } from "./engine.js";
 export type { AgentFinish, AgentToolReply, AgentTurnMessage, LlmChannel, ToolCallRequest, ToolSpec, } from "./core/channel.js";
 export declare function integrationSearch(root: string, query: string, topK?: number, options?: {
     trackUsage?: boolean;
+    isPaused?: () => boolean;
 }): Promise<{
     hits: {
         content: string;
@@ -21,6 +22,7 @@ export declare function integrationList(root: string, options?: {
     path?: string;
     maxResults?: number;
     cursor?: string;
+    isPaused?: () => boolean;
 }): Promise<import("./core/read.js").MemoryListResult>;
 export declare function integrationRead(root: string, options: {
     path: string;
@@ -28,8 +30,11 @@ export declare function integrationRead(root: string, options: {
     maxLines?: number;
     maxTokens?: number;
     trackUsage?: boolean;
+    isPaused?: () => boolean;
 }): Promise<import("./core/read.js").MemoryReadResult>;
-export declare function integrationRemember(root: string, content: string, kind?: AdHocNote["kind"]): Promise<AdHocNote>;
+export declare function integrationRemember(root: string, content: string, kind?: AdHocNote["kind"], options?: {
+    isPaused?: () => boolean;
+}): Promise<AdHocNote>;
 export declare function integrationStatus(root: string): Promise<{
     root: string;
     stage1: {
@@ -69,7 +74,9 @@ export declare function integrationContext(root: string, budgetTokens?: number):
  *  tool call carries (memory-file locators and/or bare rollout ids) and audit
  *  the outcome. Returns the rollout keys actually counted (unknown refs are
  *  dropped by registerMemoryUsage). */
-export declare function integrationCite(root: string, refs: readonly string[]): Promise<{
+export declare function integrationCite(root: string, refs: readonly string[], options?: {
+    isPaused?: () => boolean;
+}): Promise<{
     counted: string[];
 }>;
 /** Read-only reclamation inventory. The caller supplies the policy because the

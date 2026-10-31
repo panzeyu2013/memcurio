@@ -23,6 +23,7 @@
 | **渐进式披露，而非每轮灌上下文** | `memory_summary.md` 每个上下文窗口至多注入一次（会话首轮 / compaction 后 / 空库 INIT 落地后），2500 token 预算、超预算中间截断；空库一个 token 都不发；模型用七个原生工具按需检索 |
 | **默认安全** | 写入注入扫描 + 读出再过滤、密钥脱敏、目录 `0700` / 文件 `0600`、工作区围栏、逐次写入审计；`memory_remember` 只在用户显式要求时触发 |
 | **中文与多语言一等公民** | CJK bigram 检索扩展 + CJK 感知 token 估算（中文提示词同样检索得到）；Settings 面板与界面文案 i18n |
+| **按工作区开关记忆** | Settings → Memory → Workspaces 可按 canonical 路径关闭/开启某个工作区的记忆；关闭后不注入、不提供记忆工具、不后台抽取/整合、不新建 store，已存记忆保留；显式关闭的 store 还会被 GC 保护 |
 | **浏览器半侧随包发布** | Settings「记忆」面板、会话转录的记忆注入行与七个工具行、注入/写入 Toast；同源 `/memcurio` snapshot + SSE，断流自动降级轮询 |
 
 ## 设计理念
@@ -79,7 +80,13 @@ dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
 `cordis.patch.yml` 会把插件自动插入 profile，默认 `scope: workspace` / `injectContext: true` / `registerTools: true`，无需手改配置。
 
 - 记忆数据在 `<DSH home>/memcurio/dsh/<workspace 密钥>/`（DSH home = 配置路径 → `$DSH_HOME` → `~/.dsh`），每个工作区一个隔离 store。
-- 在 DSH **Settings → Memory** 面板调整 `scope`、注入预算、worker 路由等，契约见 [docs/settings.md](docs/settings.md)。
+- 在 DSH **Settings → Memory** 面板调整 `scope`、注入预算、worker 路由与 **Workspaces** 开关，契约见 [docs/settings.md](docs/settings.md)。
+- `workspaceOverrides` 的 key 是 canonical 绝对路径（`no-cwd` 为保留值），value 为 `{ enabled: boolean }`；默认 `defaultWorkspaceEnabled: true`，无 cwd 的共享桶默认关闭。示例：
+  ```yaml
+  workspaceOverrides:
+    "/root/projects/alpha":
+      enabled: false
+  ```
 - 验证安装：让模型调用 `memory_status`，应返回当前 store 与管线状态。
 
 升级、回滚、卸载与 FAQ 见 [docs/operations.md](docs/operations.md)。
@@ -99,7 +106,7 @@ dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.8.tgz
 ## 数据与配置
 
 - **记忆数据**：`<DSH home>/memcurio/dsh/<workspace 密钥>/` 下的 `memory/`（Markdown 真源）、`index.sqlite`（stage-1、索引、审计、任务、租约）与 `config.json`。
-- **插件配置**：profile 内的 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model`，推荐在 Settings 页修改。
+- **插件配置**：profile 内的 `scope` / `injectContext` / `registerTools` / `injectBudgetTokens` / `provider` / `model` / `defaultWorkspaceEnabled` / `workspaceOverrides`，推荐在 Settings 页修改。
 - **环境变量**：`DSH_HOME`、`MEMCURIO_ROOT`（覆盖数据基目录）、`MEMCURIO_LLM_PROVIDER=none`（禁用 LLM 整合，回落确定性 rule provider）。
 
 ## 同类项目与定位

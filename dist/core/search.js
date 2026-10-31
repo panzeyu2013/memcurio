@@ -25,7 +25,9 @@ const MAX_HITS_PER_FILE = 3;
  *  stage1_outputs and received a usage bump); unknown keys/citations are
  *  silently dropped. Callers that surface usage to a UI should only
  *  propagate the returned keys. */
-export async function registerMemoryUsage(root, rels) {
+export async function registerMemoryUsage(root, rels, options = {}) {
+    if (options.isPaused?.())
+        return [];
     const usedKeys = new Set();
     // Bare rollout keys dedupe per call too: the same key twice in one citation
     // block is one reference, not two (artifact filenames already dedupe via
@@ -212,14 +214,14 @@ export async function searchMemory(root, query, topK, opts = {}) {
     // broad query with topK=8 bumped 11 stage rows while showing 6 files, and
     // the refreshed last_usage extended their retention window too. UI previews
     // must never inflate real telemetry: opt out via trackUsage:false.
-    if (opts.trackUsage !== false) {
+    if (opts.trackUsage !== false && opts.isPaused?.() !== true) {
         const usedRels = [];
         for (const hit of hits) {
             if (hit.pending)
                 continue;
             usedRels.push(hit.rel.startsWith("rollout_summaries/") ? hit.rel : hit.content);
         }
-        await registerMemoryUsage(root, usedRels);
+        await registerMemoryUsage(root, usedRels, { isPaused: opts.isPaused });
     }
     return { hits, blocked };
 }

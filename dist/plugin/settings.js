@@ -1,4 +1,5 @@
 import Schema from "@deepseek-ai/schemastery";
+import { normalizeWorkspaceOverrides } from "./workspace-policy.js";
 /** Settings namespace: the profile entry id carried by this package's patch. */
 export const SETTINGS_NAMESPACE = "memcurio";
 const entrySchema = Schema.object({
@@ -15,6 +16,8 @@ const entrySchema = Schema.object({
     storeGcScope: Schema.union(["dsh-home", "all"]).default("dsh-home"),
     storeEmptyStoreHours: Schema.number().step(1).min(0).max(8760).default(0),
     storeSweepIntervalMs: Schema.number().step(1).min(1_000).max(3_600_000).default(300_000),
+    defaultWorkspaceEnabled: Schema.boolean().default(true).volatile(),
+    workspaceOverrides: Schema.dict(Schema.object({ enabled: Schema.boolean() })).default({}).volatile(),
 });
 /** The one settings schema: the Loader validates every write with it and the
  *  settings service projects the volatile fields into the configuration form.
@@ -34,6 +37,17 @@ function isVolatileLike(value) {
 function read(ref) {
     const value = isVolatileLike(ref) ? ref.get() : ref;
     return value == null ? undefined : value;
+}
+/** Public live read of one config field (used by the workspace policy gate,
+ *  which must not re-normalize on every event). */
+export function configField(ref) {
+    return read(ref);
+}
+export function workspacePolicyView(config) {
+    return {
+        defaultEnabled: configField(config.defaultWorkspaceEnabled) !== false,
+        overrides: normalizeWorkspaceOverrides(configField(config.workspaceOverrides)),
+    };
 }
 /** One plain read of the live settings (volatile references read fresh). */
 export function settingsView(config) {

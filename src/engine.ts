@@ -269,6 +269,14 @@ export interface AdapterOptions {
    * model runs in the durable worker. Direct core callers retain the legacy
    * inline behavior unless they opt in. */
   durableQueue?: boolean;
+  /** Optional external pause predicate (e.g. a dormant sweep re-checking the
+   *  live workspace policy). Evaluated at every commit boundary in addition to
+   *  the adapter's explicit pause() flag. */
+  pauseWhen?: () => boolean;
+  /** Phase-2 commit predicate. Workspace-scoped adapters pass their live gate;
+   *  global-scope adapters omit it so one workspace cannot cancel the shared
+   *  store's consolidation. */
+  consolidatePaused?: () => boolean;
 }
 
 export class MemcurioAdapter {
@@ -303,6 +311,11 @@ export class MemcurioAdapter {
    *  dead-letter path for a non-model reason. The durable queue waits for
    *  the next live session's drain instead. */
   private disposed = false;
+  /** Workspace memory gate: a paused adapter keeps its in-memory session
+   *  evidence but performs no autonomous work and no checkpoint writes. */
+  private paused = false;
+  private readonly pauseWhen: (() => boolean) | undefined;
+  private readonly consolidatePaused: (() => boolean) | undefined;
 
   constructor(opts: AdapterOptions = {}) {
     this.root = resolve(opts.root ?? coreRoot());
@@ -317,6 +330,8 @@ export class MemcurioAdapter {
     this.host = opts.host ?? "";
     this.injectBudgetTokens = opts.injectBudgetTokens;
     this.durableQueue = opts.durableQueue === true;
+    this.pauseWhen = opts.pauseWhen;
+    this.consolidatePaused = opts.consolidatePaused;
   }
 
   state(sessionId: string): SessionState | undefined {
@@ -328,12 +343,42 @@ export class MemcurioAdapter {
    *  are drained by the next live session's adapter instead. */
   dispose(): void {
     this.disposed = true;
+    this.paused = false;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
       this.retryDueAt = undefined;
     }
     this.workspaceListCache = undefined;
+  }
+
+  /** Pause autonomous work without disposing: the durable queue keeps its
+   *  jobs, the in-memory evidence survives, and no timer remains armed. */
+  pause(): void {
+    if (this.disposed) return;
+    this.paused = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+      this.retryDueAt = undefined;
+    }
+  }
+
+  /** Resume a paused adapter. The plugin bootstraps the drain; this method only
+   *  re-opens the gates so a scheduled wake can run. */
+  resume(): void {
+    if (this.disposed) return;
+    this.paused = false;
+  }
+
+  isPaused(): boolean {
+    if (this.paused || this.disposed) return true;
+    try {
+      return this.pauseWhen?.() === true;
+    } catch {
+      // A throwing policy predicate must fail closed.
+      return true;
+    }
   }
 
   async sessionCreated(sessionId: string, workdir: string, host: string): Promise<void> {
@@ -388,6 +433,7 @@ export class MemcurioAdapter {
     partId: string,
     details?: { kind?: EvidenceInput["kind"]; text?: string; messageId?: string },
   ): Promise<void> {
+    if (this.isPaused()) return;
     const s = this.sessions.get(sessionId);
     if (!s) {
       // Events can legitimately race ahead of session.created (plugin loaded
@@ -535,6 +581,7 @@ export class MemcurioAdapter {
     tool: string,
     details?: { filePath?: string; path?: string; command?: string },
   ): Promise<void> {
+    if (this.isPaused()) return;
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("debug", "toolExecuted: unknown session, ignoring", { sessionId, tool });
@@ -812,6 +859,7 @@ export class MemcurioAdapter {
   }
 
   async sessionIdle(sessionId: string): Promise<void> {
+    if (this.isPaused()) return;
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("warn", "sessionIdle: unknown session, ignoring", { sessionId });
@@ -840,6 +888,7 @@ export class MemcurioAdapter {
   }
 
   async sessionCompacted(sessionId: string, summary?: string): Promise<void> {
+    if (this.isPaused()) return;
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("warn", "sessionCompacted: unknown session, ignoring", { sessionId });
@@ -853,6 +902,7 @@ export class MemcurioAdapter {
   }
 
   async sessionEnded(sessionId: string): Promise<{ staged: boolean; queued: boolean }> {
+    if (this.paused || this.disposed) return { staged: false, queued: false };
     const s = this.sessions.get(sessionId);
     if (!s) {
       this.log("warn", "sessionEnded: unknown session, ignoring", { sessionId });
@@ -886,7 +936,9 @@ export class MemcurioAdapter {
       }
     } else {
       try {
-        staged = (await stageSession(this.root, snapshot, this.extract)) !== null;
+        staged = (await stageSession(this.root, snapshot, this.extract, {
+          isPaused: () => this.isPaused(),
+        })) !== null;
       } catch (err) {
         this.log("warn", "session staging failed", { sessionId, error: String(err) });
       }
@@ -1074,7 +1126,7 @@ export class MemcurioAdapter {
   }
 
   async requeuePolicyRejectedExtractions(): Promise<number> {
-    if (!this.durableQueue || this.disposed) {
+    if (!this.durableQueue || this.isPaused()) {
       return 0;
     }
     const idx = await Index.create(indexDb(this.root));
@@ -1104,7 +1156,7 @@ export class MemcurioAdapter {
   }
 
   async processPendingExtractions(limit = 8, deadline?: number): Promise<QueueDrainResult[]> {
-    if (!this.durableQueue || this.disposed) {
+    if (!this.durableQueue || this.isPaused()) {
       return [];
     }
     if (this.workerPromise) {
@@ -1113,6 +1165,7 @@ export class MemcurioAdapter {
     const work = (async (): Promise<QueueDrainResult[]> => {
       const results: QueueDrainResult[] = [];
       let blocked = false;
+      let paused = false;
       for (let i = 0; i < limit; i += 1) {
         // Dispose can land while a drain is in flight (retire aborts the
         // session and disposes the adapter). Re-check every iteration: racing
@@ -1127,11 +1180,17 @@ export class MemcurioAdapter {
         if (deadline !== undefined && Date.now() >= deadline) {
           break;
         }
-        const result = await processExtractionQueue(this.root, this.extract);
+        const result = await processExtractionQueue(this.root, this.extract, {
+          isPaused: () => this.isPaused(),
+        });
         if (result.status === "empty") {
           break;
         }
         results.push(result);
+        if (result.status === "paused") {
+          paused = true;
+          break;
+        }
         if (result.status === "blocked") {
           // Configuration changes (a usable route appearing) reactivate this
           // provider; the slow probe is the safety net for the case where no
@@ -1147,7 +1206,7 @@ export class MemcurioAdapter {
         if (result.status === "retry") {
         }
       }
-      if (!blocked) {
+      if (!blocked && !paused) {
         await this.scheduleNextWake();
       }
       return results;
@@ -1192,6 +1251,7 @@ export class MemcurioAdapter {
    *  test distinguish "merged into the in-flight run" from "lost the workspace
    *  lease downstream". */
   maybeConsolidate(): Promise<void> {
+    if (this.isPaused()) return Promise.resolve();
     const existing = CONSOLIDATION_IN_FLIGHT.get(this.root);
     if (existing !== undefined) {
       return existing;
@@ -1221,7 +1281,7 @@ export class MemcurioAdapter {
 
   private async runMaybeConsolidate(): Promise<void> {
     const root = this.root;
-    if (this.disposed) {
+    if (this.isPaused()) {
       return;
     }
     // A pending forget/update note is only consumable with a usable model
@@ -1396,7 +1456,11 @@ export class MemcurioAdapter {
       // Codex parity: a failed run leaves selection, notes and the baseline
       // untouched (no rule-provider commit), so the materialized workspace diff
       // keeps the work pending; the outer catch arms the failure backoff.
-      await runConsolidation(root, provider, { execute: true, config: cfg });
+      await runConsolidation(root, provider, {
+        execute: true,
+        config: cfg,
+        ...(this.consolidatePaused === undefined ? {} : { isPaused: this.consolidatePaused }),
+      });
       const idx3 = await Index.create(indexDb(root));
       try {
         idx3.metaSet("consolidation_auto_last", new Date().toISOString());
@@ -1709,7 +1773,7 @@ export class MemcurioAdapter {
   }
 
   private scheduleRetry(delayMs: number): void {
-    if (this.disposed) {
+    if (this.isPaused()) {
       return;
     }
     const delay = Math.max(100, Math.min(delayMs, 60 * 60_000));
@@ -1750,7 +1814,7 @@ export class MemcurioAdapter {
 }
 
 interface QueueDrainResult {
-  status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced";
+  status: "empty" | "blocked" | "completed" | "retry" | "dead" | "fenced" | "paused";
   jobId?: string;
   staged?: boolean;
   retryInMs?: number;

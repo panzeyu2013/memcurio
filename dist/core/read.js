@@ -180,8 +180,11 @@ export async function readMemory(root, opts) {
     // Usage counts a genuine memory REUSE: a read whose content the injection
     // scan blocks never reaches the model, so it must not inflate telemetry.
     // UI previews opt out explicitly (trackUsage:false).
-    if (verdict.safe && rel.startsWith("rollout_summaries/") && opts.trackUsage !== false) {
-        await registerMemoryUsage(root, [rel]);
+    if (verdict.safe &&
+        rel.startsWith("rollout_summaries/") &&
+        opts.trackUsage !== false &&
+        opts.isPaused?.() !== true) {
+        await registerMemoryUsage(root, [rel], { isPaused: opts.isPaused });
     }
     if (!verdict.safe) {
         return {
