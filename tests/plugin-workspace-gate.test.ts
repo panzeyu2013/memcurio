@@ -312,6 +312,62 @@ describe("workspace memory gate", () => {
     }
   });
 
+  test("a re-enabled workspace drops late off-window events without replay", async () => {
+    const base = temp();
+    const workdir = join(base, "workspace");
+    mkdirSync(workdir, { recursive: true });
+    const key = workspaceLookupKeys(workdir)[0] as string;
+    const pre = createUserMessage({ content: [{ type: "text", text: "pre-enable-history" }], source: { kind: "user" } });
+    const off = createUserMessage({ content: [{ type: "text", text: "off-window-marker" }], source: { kind: "user" } });
+    let events: unknown[] = [{ type: "user/message", seq: 0, time: Date.now(), data: pre }];
+    const session = {
+      id: SessionId("replay-late-session"),
+      header: { cwd: workdir },
+      snapshotEvents: () => events,
+    };
+    const host = await createTestHost();
+    hostCtx = host.ctx;
+    let overrides: Record<string, { enabled: boolean }> = {};
+    const config = {
+      root: base,
+      scope: "workspace",
+      defaultWorkspaceEnabled: { get: () => true },
+      workspaceOverrides: { get: () => overrides },
+    };
+    const wrapper = {
+      inject: plugin.inject,
+      apply: (ctx2: Context) => {
+        plugin.apply(ctx2, config as never);
+      },
+    };
+    let fiber: { dispose: () => Promise<void> } | undefined;
+    const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      fiber = (await host.ctx.plugin(wrapper as never, {} as never)) as unknown as { dispose: () => Promise<void> };
+      host.ctx.emit("session/created", session as never);
+      await wait(50);
+      overrides = { [key]: { enabled: false } };
+      (host.ctx.emit as unknown as (name: string) => void)("loader/volatile-update");
+      await wait(50);
+      events = [...events, { type: "user/message", seq: 6, time: Date.now(), data: off }];
+      overrides = { [key]: { enabled: true } };
+      (host.ctx.emit as unknown as (name: string) => void)("loader/volatile-update");
+      await wait(50);
+      (host.ctx.emit as unknown as (name: string, ...args: unknown[]) => void)("session/event", session, {
+        type: "user/message",
+        seq: 6,
+        time: Date.now(),
+        data: off,
+      });
+      await wait(100);
+      const evidence = hostBridgeForRoot(base)?.evidenceSnapshot("replay-late-session") ?? [];
+      expect(evidence.some((entry) => JSON.stringify(entry).includes("off-window-marker"))).toBe(false);
+    } finally {
+      await fiber?.dispose();
+      await disposeTestHost(host.fibers);
+    }
+  });
+
   test("a deleted path with an ever-disabled marker fails closed", async () => {
     const base = temp();
     const workdir = join(base, "workspace");

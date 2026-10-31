@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,8 +44,10 @@ const staged: Stage1Output = {
 
 class FakeProvider implements ExtractProvider {
   readonly name = "fake";
+  calls = 0;
   constructor(private readonly out: Stage1Output | null) {}
   async extract(): Promise<Stage1Output | null> {
+    this.calls += 1;
     return this.out;
   }
 }
@@ -64,14 +66,29 @@ async function enqueue(): Promise<void> {
 describe("extraction commit gate", () => {
   test("isPaused before the claim leaves the job pending and stages nothing", async () => {
     await enqueue();
-    const result = await processExtractionQueue(dir, new FakeProvider(staged), { isPaused: () => true });
+    const provider = new FakeProvider(staged);
+    const result = await processExtractionQueue(dir, provider, { isPaused: () => true });
     expect(result.status).toBe("paused");
+    // The gate must run before the provider: merely releasing a claim later
+    // would still spend a model call and materialize the store layout.
+    expect(provider.calls).toBe(0);
     const idx = await Index.create(indexDb(dir));
     try {
       expect(idx.stageList()).toHaveLength(0);
       expect(idx.extractionList("pending")).toHaveLength(1);
     } finally {
       idx.close();
+    }
+  });
+
+  test("isPaused at entry does not materialize the store layout", async () => {
+    const fresh = mkdtempSync(join(tmpdir(), "memcurio-pause-fresh-"));
+    try {
+      const result = await processExtractionQueue(fresh, new FakeProvider(staged), { isPaused: () => true });
+      expect(result.status).toBe("paused");
+      expect(existsSync(join(fresh, "state"))).toBe(false);
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
     }
   });
 
@@ -116,8 +133,10 @@ describe("extraction commit gate", () => {
   });
 
   test("stageSession refuses to write while paused", async () => {
-    const out = await stageSession(dir, snapshot, new FakeProvider(staged), { isPaused: () => true });
+    const provider = new FakeProvider(staged);
+    const out = await stageSession(dir, snapshot, provider, { isPaused: () => true });
     expect(out).toBeNull();
+    expect(provider.calls).toBe(0);
     const idx = await Index.create(indexDb(dir));
     try {
       expect(idx.stageList()).toHaveLength(0);

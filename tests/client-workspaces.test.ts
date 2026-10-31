@@ -95,6 +95,21 @@ describe("workspace controller writes", () => {
     expect(controller.workspaceFace().defaultEnabled).toBe(true);
   });
 
+  test("a workspace write the host silently drops is a notLanded refusal", async () => {
+    const scope = new FakeSettingsPort({ emitOnLand: true });
+    scope.landing = false;
+    scope.honest = false;
+    const controller = new MemcurioSettingsController(scope);
+    expect(await controller.writeWorkspaceOverride("/a", true)).toEqual({
+      ok: false,
+      code: "errNotLanded",
+    });
+    expect(await controller.writeWorkspaceDefault(false)).toEqual({
+      ok: false,
+      code: "errNotLanded",
+    });
+  });
+
   test("resets explicit overrides in one mutation", async () => {
     const scope = new FakeSettingsPort({ emitOnLand: true });
     const controller = new MemcurioSettingsController(scope);
