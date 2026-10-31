@@ -126,6 +126,32 @@ describe("workspace inventory", () => {
     });
   });
 
+  test("a fence on the original spelling paints the canonical row off", () => {
+    const g = createWorkspaceGate({
+      defaultEnabled: () => true,
+      overrides: () => ({}),
+      realpath: (path) => (path === "/link" ? "/r2" : path),
+      platform: "linux",
+    });
+    const inventory = buildWorkspaceInventory({
+      baseRoot: "/base",
+      scope: "workspace",
+      gate: g,
+      hasEverDisabled: (keys) => keys.includes("/link"),
+      registry: [{ path: "/link" }],
+      sessions: [],
+      stores: [],
+      isDirectory: () => true,
+    });
+    expect(inventory.workspaces[0]).toMatchObject({
+      key: "/r2",
+      enabled: false,
+      explicit: false,
+      followsDefault: true,
+      fenced: true,
+    });
+  });
+
   test("no-cwd never follows the global default", () => {
     const inventory = buildWorkspaceInventory({
       baseRoot: "/base",

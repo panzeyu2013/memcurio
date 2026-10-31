@@ -427,6 +427,12 @@ export class WorkspacePolicyModel {
     this.pending = undefined;
     if (outcome.ok) {
       this.undo = undefined;
+      // Reset removed the explicit overrides; the cached inventory still shows
+      // their old followsDefault/enabled flags. Reload it before painting, or a
+      // default-off workspace would keep looking On while the runtime is Off.
+      this.inventory = undefined;
+      await this.load();
+      if (this.disposed) return outcome;
       this.savedAt = Date.now();
       this.armTimers();
       this.onAccepted?.(before);

@@ -162,10 +162,6 @@ interface SessionRuntime {
   /** Aborted when the workspace is disabled, cancelling in-flight worker calls;
    *  replaced with a fresh controller on every enable. */
   gateAbort: AbortController;
-  /** This workspace has been observed disabled at least once. Until an explicit
-   *  override says "on", a missing lookup key must fail closed (path deletion /
-   *  symlink spelling changes would otherwise fall back to default-on). */
-  everDisabled: boolean;
   /** The chosen store directory belongs to a different canonical workspace
    *  (a symlink retarget raced adoption). Never adopt it; the workspace stays
    *  memory-disabled until the store selection can be proven safe. */
@@ -1540,13 +1536,9 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     for (const runtime of liveSessions(sessions.values())) roots.add(runtime.root);
     for (const root of storeRootsUnder(baseRoot)) {
       const origin = readStoreOrigin(root);
-      // Fail closed for a store we cannot attribute: a legacy store may belong
-      // to an explicitly disabled workspace, and reclaiming it before the
-      // startup sweep backfills origin.json would lose that user's memory.
-      if (!origin) {
-        roots.add(root);
-        continue;
-      }
+      // planStoreGc already reports no-origin stores as skipped; no extra pin
+      // is needed here (the origin is backfilled by the startup sweep).
+      if (!origin) continue;
       const keys = origin.workdir
         ? [...new Set([...workspaceGate.lookupKeys(origin.realpath || origin.workdir), ...workspaceGate.lookupKeys(origin.workdir)])]
         : [NO_CWD_WORKSPACE];
@@ -1816,7 +1808,6 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     const explicitOff =
       workspaceGate.hasOverride(runtime.policyKeys) && !workspaceGate.isKeysEnabled(runtime.policyKeys);
     if (explicitOff) {
-      runtime.everDisabled = true;
       gateMeta.markDisabled(runtime.policyKeys);
     } else if (
       workspaceGate.settings().defaultEnabled === false &&
@@ -1917,7 +1908,11 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
     const policyKeys = workspaceGate.lookupKeys(workdir);
     const origin = readStoreOrigin(root);
+    // A shared global store intentionally carries one origin while serving
+    // every workspace; the canonical-identity fence applies to per-workspace
+    // stores only.
     const storeMismatch =
+      live().scope !== "global" &&
       origin !== undefined &&
       origin.workdir !== "" &&
       workspaceGate.key(origin.realpath || origin.workdir) !== workspaceGate.key(workdir);
@@ -1996,7 +1991,6 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
       workdir,
       policyKeys,
       enabled: false,
-      everDisabled,
       storeMismatch,
       sessionCreated: false,
       enabledFromSeq: lastSeqOf(seedEvents) + 1,

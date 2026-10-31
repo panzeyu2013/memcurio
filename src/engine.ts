@@ -418,7 +418,7 @@ export class MemcurioAdapter {
     // Origin is the lifecycle record GC needs: the canonical workspace path a
     // store belongs to. Best effort — a failed write only delays reclamation.
     try {
-      recordStoreOrigin(root, workdir, state.startedAt);
+      recordStoreOrigin(root, workdir, state.startedAt, "live");
       // Cross-process fence: a GC in another process must see that this store
       // has a live session even when it never looks at our in-memory map.
       touchSessionLease(root, process.pid, sessionId);
@@ -1114,7 +1114,7 @@ export class MemcurioAdapter {
           "SELECT workdir, MAX(COALESCE(ended_at, started_at)) AS last_at FROM sessions WHERE workdir IS NOT NULL AND workdir != '' GROUP BY workdir ORDER BY last_at DESC LIMIT 1",
         )[0];
         if (row?.workdir) {
-          recordStoreOrigin(this.root, row.workdir, row.last_at ?? new Date().toISOString());
+          recordStoreOrigin(this.root, row.workdir, row.last_at ?? new Date().toISOString(), "backfill");
         }
       }
       if (activity.kind !== "token" && idx.extractionPendingCount() > 0) {

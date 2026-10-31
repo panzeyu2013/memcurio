@@ -48,7 +48,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 
 ### Workspace gate 元数据
 
-policy key 是 canonical 绝对路径（`no-cwd` 为保留值）；store 目录同样以 canonical realpath 派生（`sha256(realpath(resolve(workdir)))[:16]`）。旧版按 `sha256(resolve(workdir))` 生成的 store 只在其 `state/origin.json` 证明属于同一 canonical 工作区时才复用，否则使用 canonical 键的新 store——软链重指向不会把旧工作区的记忆交给新目标。除 store 外的唯一 gate 状态在：
+policy key 是 canonical 绝对路径（`no-cwd` 为保留值）；store 目录同样以 canonical realpath 派生（`sha256(realpath(resolve(workdir)))[:16]`）。旧版按 `sha256(resolve(workdir))` 生成的 store 只在其 `state/origin.json` 提供可信 provenance（`source:"live"` 的首个见证；非软链拼写下 realpath 与 workdir 相同）且属于同一 canonical 工作区时才复用；`source:"backfill"` 的启动回填只记录历史拼写，不作为软链证明。否则使用 canonical 键的新 store——软链重指向、dangling 目标重建与 origin 回填都不会把旧工作区的记忆交给新目标。除 store 外的唯一 gate 状态在：
 
 ```
 <DSH home>/memcurio/state/workspace-gates.json

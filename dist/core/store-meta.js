@@ -100,6 +100,7 @@ export function readStoreOrigin(root) {
             realpath: parsed.realpath,
             firstSeenAt: parsed.firstSeenAt,
             lastActivityAt: parsed.lastActivityAt,
+            ...(parsed.source === "live" || parsed.source === "backfill" ? { source: parsed.source } : {}),
         };
     }
     catch {
@@ -129,15 +130,23 @@ function maxIso(a, b) {
 }
 /** Record (or refresh) the origin of one store. Idempotent: firstSeenAt is
  *  preserved and lastActivityAt only moves forward. */
-export function recordStoreOrigin(root, workdir, at = new Date().toISOString()) {
+export function recordStoreOrigin(root, workdir, at = new Date().toISOString(), source = "live") {
     const existing = readStoreOrigin(root);
     const canonical = canonicalWorkdir(workdir);
+    // The first witness is the identity. A later call must not re-canonicalize a
+    // symlink after it was retargeted: that would rewrite provenance to the new
+    // target and let the old store pass the canonical check.
     const origin = {
         version: ORIGIN_VERSION,
-        workdir,
-        realpath: canonical,
+        workdir: existing?.workdir ?? workdir,
+        realpath: existing?.realpath ?? canonical,
         firstSeenAt: existing?.firstSeenAt ?? at,
         lastActivityAt: maxIso(existing?.lastActivityAt, at),
+        ...(existing !== undefined
+            ? existing.source === undefined
+                ? {}
+                : { source: existing.source }
+            : { source }),
     };
     writeStoreOrigin(root, origin);
     return origin;

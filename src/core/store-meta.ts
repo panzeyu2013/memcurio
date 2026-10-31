@@ -30,6 +30,11 @@ import { atomicWrite } from "./transaction.js";
 
 export const ORIGIN_VERSION = 1 as const;
 
+/** Where the store's identity came from: a live session witness is proof; a
+ *  backfill from the sessions table only records a historical spelling and
+ *  must not certify a symlink's current target. */
+export type StoreOriginSource = "live" | "backfill";
+
 /** Shape of state/origin.json: the workspace a store was created for. */
 export interface StoreOrigin {
   version: typeof ORIGIN_VERSION;
@@ -39,6 +44,8 @@ export interface StoreOrigin {
   realpath: string;
   firstSeenAt: string;
   lastActivityAt: string;
+  /** Absent on files written before provenance was recorded. */
+  source?: StoreOriginSource;
 }
 
 /** One token state as read from disk. `absent` means "never written"; `torn`
@@ -131,6 +138,7 @@ export function readStoreOrigin(root: string): StoreOrigin | undefined {
       realpath: parsed.realpath,
       firstSeenAt: parsed.firstSeenAt,
       lastActivityAt: parsed.lastActivityAt,
+      ...(parsed.source === "live" || parsed.source === "backfill" ? { source: parsed.source } : {}),
     };
   } catch {
     return undefined;
@@ -166,15 +174,24 @@ export function recordStoreOrigin(
   root: string,
   workdir: string,
   at = new Date().toISOString(),
+  source: StoreOriginSource = "live",
 ): StoreOrigin {
   const existing = readStoreOrigin(root);
   const canonical = canonicalWorkdir(workdir);
+  // The first witness is the identity. A later call must not re-canonicalize a
+  // symlink after it was retargeted: that would rewrite provenance to the new
+  // target and let the old store pass the canonical check.
   const origin: StoreOrigin = {
     version: ORIGIN_VERSION,
-    workdir,
-    realpath: canonical,
+    workdir: existing?.workdir ?? workdir,
+    realpath: existing?.realpath ?? canonical,
     firstSeenAt: existing?.firstSeenAt ?? at,
     lastActivityAt: maxIso(existing?.lastActivityAt, at),
+    ...(existing !== undefined
+      ? existing.source === undefined
+        ? {}
+        : { source: existing.source }
+      : { source }),
   };
   writeStoreOrigin(root, origin);
   return origin;

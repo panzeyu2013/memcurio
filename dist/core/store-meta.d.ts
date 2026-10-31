@@ -22,6 +22,10 @@
  *  state/activity-failed, which the dirty check treats as dirty until a later
  *  settle clears it. */
 export declare const ORIGIN_VERSION: 1;
+/** Where the store's identity came from: a live session witness is proof; a
+ *  backfill from the sessions table only records a historical spelling and
+ *  must not certify a symlink's current target. */
+export type StoreOriginSource = "live" | "backfill";
 /** Shape of state/origin.json: the workspace a store was created for. */
 export interface StoreOrigin {
     version: typeof ORIGIN_VERSION;
@@ -31,6 +35,8 @@ export interface StoreOrigin {
     realpath: string;
     firstSeenAt: string;
     lastActivityAt: string;
+    /** Absent on files written before provenance was recorded. */
+    source?: StoreOriginSource;
 }
 /** One token state as read from disk. `absent` means "never written"; `torn`
  *  means the file exists but does not hold a full token (mid-write, truncated,
@@ -60,7 +66,7 @@ export declare function readStoreOrigin(root: string): StoreOrigin | undefined;
 export declare function writeStoreOrigin(root: string, origin: StoreOrigin): void;
 /** Record (or refresh) the origin of one store. Idempotent: firstSeenAt is
  *  preserved and lastActivityAt only moves forward. */
-export declare function recordStoreOrigin(root: string, workdir: string, at?: string): StoreOrigin;
+export declare function recordStoreOrigin(root: string, workdir: string, at?: string, source?: StoreOriginSource): StoreOrigin;
 /** Move lastActivityAt forward without rewriting the rest of the record. */
 export declare function touchStoreOriginActivity(root: string, at?: string): void;
 /** A fresh opaque token. Ordering is irrelevant: only equality with the

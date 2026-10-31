@@ -75,12 +75,16 @@ export function buildWorkspaceInventory(options) {
     for (const entry of entries.values()) {
         const path = entry.path;
         const missing = path !== undefined && !pathIsDirectory(path, options.isDirectory);
-        const explicit = gate.hasOverride([entry.key]);
-        const policyEnabled = gate.isKeyEnabled(entry.key);
+        // Same lookup-key set as runtime adoption (canonical first, original
+        // spelling second). A fence recorded on the original spelling must still
+        // paint the row off after the symlink target changed.
+        const keys = path !== undefined && path !== "" ? gate.lookupKeys(path) : [entry.key];
+        const explicit = gate.hasOverride(keys);
+        const policyEnabled = gate.isKeysEnabled(keys);
         const fenced = policyEnabled &&
             explicit === false &&
             entry.key !== NO_CWD_WORKSPACE &&
-            options.hasEverDisabled?.([entry.key]) === true;
+            options.hasEverDisabled?.(keys) === true;
         rows.push({
             key: entry.key,
             ...(path === undefined ? {} : { path }),

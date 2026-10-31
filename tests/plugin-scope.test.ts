@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -16,7 +16,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { Index } from "../src/core/db.js";
 import { indexDb } from "../src/core/paths.js";
 import { quarantineStore, readTombstone } from "../src/core/store-gc.js";
-import { readSweptState, recordStoreOrigin, sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
+import { readStoreOrigin, readSweptState, recordStoreOrigin, sessionLeaseActive, writeActivityToken, writeSweptToken } from "../src/core/store-meta.js";
 import { bootGcEnabled, dirtyStoreRoots, dshHome, liveSessions, memcurioBaseRoot, selectSweepRoots, storeRootsUnder, sweepBatch, workspaceStoreRoot } from "../src/plugin/scope.js";
 
 import { waitFor } from "./support/async.js";
@@ -129,6 +129,54 @@ describe("workspaceStoreRoot", () => {
     expect(workspaceStoreRoot(base, link, "workspace")).toBe(
       workspaceStoreRoot(base, r2, "workspace"),
     );
+  });
+
+  test("backfilled or moved origins never certify a legacy store", () => {
+    const base = temporaryRoot();
+    const r1 = join(base, "r1");
+    const r2 = join(base, "r2");
+    mkdirSync(r1, { recursive: true });
+    mkdirSync(r2, { recursive: true });
+
+    // A backfilled origin only records a historical spelling: when the link is
+    // retargeted, the old store must not be reused.
+    const link = join(base, "link");
+    symlinkSync(r1, link);
+    const legacy = join(base, "dsh", createHash("sha256").update(resolve(link)).digest("hex").slice(0, 16));
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "index.sqlite"), "");
+    recordStoreOrigin(legacy, link, "2026-10-31T00:00:00.000Z", "backfill");
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(workspaceStoreRoot(base, r1, "workspace"));
+    rmSync(link);
+    symlinkSync(r2, link);
+    expect(workspaceStoreRoot(base, link, "workspace")).toBe(workspaceStoreRoot(base, r2, "workspace"));
+
+    // A live witness is honoured, and a later call must not rewrite its
+    // canonical target after the link moves.
+    const liveLink = join(base, "live-link");
+    symlinkSync(r1, liveLink);
+    const liveLegacy = join(base, "dsh", createHash("sha256").update(resolve(liveLink)).digest("hex").slice(0, 16));
+    mkdirSync(liveLegacy, { recursive: true });
+    writeFileSync(join(liveLegacy, "index.sqlite"), "");
+    recordStoreOrigin(liveLegacy, liveLink);
+    expect(workspaceStoreRoot(base, liveLink, "workspace")).toBe(liveLegacy);
+    rmSync(liveLink);
+    symlinkSync(r2, liveLink);
+    recordStoreOrigin(liveLegacy, liveLink);
+    expect(readStoreOrigin(liveLegacy)?.realpath).toBe(realpathSync(r1));
+    expect(workspaceStoreRoot(base, liveLink, "workspace")).toBe(workspaceStoreRoot(base, r2, "workspace"));
+
+    // A dangling target at creation leaves the plain spelling in realpath;
+    // once recreated it is a symlink and must not become proof.
+    const dangling = join(base, "dangling");
+    symlinkSync(join(base, "missing-target"), dangling);
+    const danglingLegacy = join(base, "dsh", createHash("sha256").update(resolve(dangling)).digest("hex").slice(0, 16));
+    mkdirSync(danglingLegacy, { recursive: true });
+    writeFileSync(join(danglingLegacy, "index.sqlite"), "");
+    recordStoreOrigin(danglingLegacy, dangling);
+    rmSync(dangling);
+    symlinkSync(r1, dangling);
+    expect(workspaceStoreRoot(base, dangling, "workspace")).toBe(workspaceStoreRoot(base, r1, "workspace"));
   });
 });
 

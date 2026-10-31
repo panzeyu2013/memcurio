@@ -1346,13 +1346,10 @@ export function apply(ctx, config = {}) {
             roots.add(runtime.root);
         for (const root of storeRootsUnder(baseRoot)) {
             const origin = readStoreOrigin(root);
-            // Fail closed for a store we cannot attribute: a legacy store may belong
-            // to an explicitly disabled workspace, and reclaiming it before the
-            // startup sweep backfills origin.json would lose that user's memory.
-            if (!origin) {
-                roots.add(root);
+            // planStoreGc already reports no-origin stores as skipped; no extra pin
+            // is needed here (the origin is backfilled by the startup sweep).
+            if (!origin)
                 continue;
-            }
             const keys = origin.workdir
                 ? [...new Set([...workspaceGate.lookupKeys(origin.realpath || origin.workdir), ...workspaceGate.lookupKeys(origin.workdir)])]
                 : [NO_CWD_WORKSPACE];
@@ -1617,7 +1614,6 @@ export function apply(ctx, config = {}) {
         // must not be mislabelled as a default-off observation.
         const explicitOff = workspaceGate.hasOverride(runtime.policyKeys) && !workspaceGate.isKeysEnabled(runtime.policyKeys);
         if (explicitOff) {
-            runtime.everDisabled = true;
             gateMeta.markDisabled(runtime.policyKeys);
         }
         else if (workspaceGate.settings().defaultEnabled === false &&
@@ -1715,7 +1711,11 @@ export function apply(ctx, config = {}) {
         const root = workspaceStoreRoot(baseRoot, workdir, live().scope);
         const policyKeys = workspaceGate.lookupKeys(workdir);
         const origin = readStoreOrigin(root);
-        const storeMismatch = origin !== undefined &&
+        // A shared global store intentionally carries one origin while serving
+        // every workspace; the canonical-identity fence applies to per-workspace
+        // stores only.
+        const storeMismatch = live().scope !== "global" &&
+            origin !== undefined &&
             origin.workdir !== "" &&
             workspaceGate.key(origin.realpath || origin.workdir) !== workspaceGate.key(workdir);
         if (storeMismatch) {
@@ -1780,7 +1780,6 @@ export function apply(ctx, config = {}) {
             workdir,
             policyKeys,
             enabled: false,
-            everDisabled,
             storeMismatch,
             sessionCreated: false,
             enabledFromSeq: lastSeqOf(seedEvents) + 1,

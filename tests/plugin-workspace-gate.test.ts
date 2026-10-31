@@ -85,6 +85,45 @@ describe("workspace memory gate", () => {
     }
   });
 
+  test("global scope shares one store across workspaces without a canonical fence", async () => {
+    const base = temp();
+    const a = join(base, "a");
+    const b = join(base, "b");
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    const host = await createTestHost();
+    hostCtx = host.ctx;
+    const sessionA = host.ctx.sessions.prepare(SessionId("global-a"), { meta: { cwd: a } });
+    const detachA = host.ctx.sessions.enter(sessionA);
+    host.ctx.sessions.announce(sessionA);
+    let fiber: { dispose: () => Promise<void> } | undefined;
+    let detachB: (() => void) | undefined;
+    try {
+      fiber = (await host.ctx.plugin(plugin, { root: base, scope: "global" } as never)) as unknown as {
+        dispose: () => Promise<void>;
+      };
+      await host.ctx.sessions.flush(sessionA);
+      // The shared store now records workspace A as its origin. A second
+      // workspace must still be served: global scope intentionally shares it.
+      const sessionB = host.ctx.sessions.prepare(SessionId("global-b"), { meta: { cwd: b } });
+      detachB = host.ctx.sessions.enter(sessionB);
+      host.ctx.sessions.announce(sessionB);
+      await host.ctx.sessions.flush(sessionB);
+      const result = await executeOne(host.ctx, {
+        callId: ToolCallId("global-b-status"),
+        name: "memory_status",
+        arguments: {},
+        agent: { session: sessionB },
+      });
+      expect(result.isError).toBe(false);
+    } finally {
+      detachB?.();
+      detachA();
+      await fiber?.dispose();
+      await disposeTestHost(host.fibers);
+    }
+  });
+
   test("an unreadable marker blocks replay without disabling the workspace", async () => {
     const base = temp();
     const workdir = join(base, "workspace");

@@ -434,6 +434,52 @@ describe("workspace reopening semantics", () => {
     model.dispose();
   });
 
+  test("reset-all reloads the inventory before painting the fallback state", async () => {
+    const scope = new FakeSettingsPort({
+      emitOnLand: true,
+      base: {
+        scope: "workspace",
+        injectContext: true,
+        registerTools: true,
+        defaultWorkspaceEnabled: false,
+      } as never,
+    });
+    const controller = new MemcurioSettingsController(scope);
+    await controller.writeWorkspaceOverride("/a", true);
+    let fresh = false;
+    const client = {
+      load: async (): Promise<WorkspaceInventory> => ({
+        at: "2026-10-31T00:00:00.000Z",
+        scope: "workspace",
+        defaultEnabled: false,
+        workspaces: [
+          {
+            key: "/a",
+            path: "/a",
+            label: "a",
+            enabled: !fresh,
+            explicit: !fresh,
+            followsDefault: fresh,
+            fenced: false,
+            hasStore: true,
+            current: true,
+            registered: true,
+            missing: false,
+            sharedStore: false,
+          },
+        ],
+      }),
+    };
+    const model = new WorkspacePolicyModel(controller, client);
+    await model.load();
+    expect(model.face().rows[0]?.effective).toBe(true);
+    fresh = true;
+    expect(await model.resetAll()).toEqual({ ok: true });
+    expect(model.face().rows[0]?.followsDefault).toBe(true);
+    expect(model.face().rows[0]?.effective).toBe(false);
+    model.dispose();
+  });
+
   test("one shared write gate rejects a second writer while the first is in flight", async () => {
     class GatedPort extends FakeSettingsPort {
       gate: Promise<void> | undefined;

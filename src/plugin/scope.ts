@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -128,6 +128,23 @@ function canonicalPath(path: string): string {
   }
 }
 
+/** A canonical witness must be a real, non-symlink path. A dangling target at
+ *  store creation left the plain spelling in origin.realpath; resolving that
+ *  spelling after the link is recreated would falsely certify the new target. */
+function trustedOrigin(origin: {
+  workdir: string;
+  realpath: string;
+  source?: "live" | "backfill";
+}): boolean {
+  if (origin.realpath === "") return false;
+  try {
+    if (lstatSync(origin.realpath).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  return origin.source === "live" || origin.realpath === origin.workdir;
+}
+
 /**
  * Resolve the store used by one DSH workspace without exposing its path.
  *
@@ -150,7 +167,7 @@ export function workspaceStoreRoot(baseRoot: string, workdir: string, scope: "wo
   if (legacyKey === canonicalKey) return join(dsh, canonicalKey);
   const legacy = join(dsh, legacyKey);
   const origin = readStoreOrigin(legacy);
-  if (origin !== undefined) {
+  if (origin !== undefined && trustedOrigin(origin)) {
     const originCanonical = canonicalPath(resolve(origin.realpath || origin.workdir));
     if (originCanonical === canonical) return legacy;
   }
