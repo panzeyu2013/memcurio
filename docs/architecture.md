@@ -33,7 +33,7 @@ Harness 层          DeepSeek Harness（唯一宿主；Cordis 生命周期）
 <DSH home>/memcurio/dsh/<workspace-key>/     （scope: global 则为 <DSH home>/memcurio/）
 ├── memory/                          # 记忆工作区（Markdown 真源）
 │   ├── MEMORY.md                    # 手册：# Task Group 块（可 grep、模型自组织）
-│   ├── memory_summary.md            # v1 头；非空时每个上下文窗口注入一次；User Profile / User preferences / General Tips / What's in Memory
+│   ├── memory_summary.md            # v1 头；非空时每窗口注入一次；四段 + 预算 ≤ maxInjectTokens-42 token 的写后契约；User Profile / User preferences / General Tips / What's in Memory
 │   ├── raw_memories.md              # Phase 1 输出的机械合并（Phase 2 输入，稳定升序）
 │   ├── rollout_summaries/rollout-<artifact-id>.md  # 稳定 ID；slug 仅作展示字段
 │   ├── skills/                      # 可选：模型创建的可复用流程包

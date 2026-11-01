@@ -40,6 +40,7 @@ export const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string> = new Set([
   "consolidate.auto_aborted",
   "consolidate.auto_unavailable",
   "consolidate.auto_contended",
+  "consolidate.auto_exhausted",
 ]);
 
 /** True when one audit action label names a durable memory write. */

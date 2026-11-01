@@ -73,6 +73,13 @@ export declare const MAX_AGENT_HISTORY_BYTES = 2500000;
 export declare class ConsolidationContentionError extends Error {
     constructor(message: string);
 }
+/** Thrown when the post-run artifact set violates the memory_summary.md
+ *  contract (codex phase2.rs:406-418 "failed_invalid_artifacts"). The run is
+ *  not committed and the baseline is not advanced, so the same diff is retried
+ *  instead of freezing an invalid artifact into the baseline. */
+export declare class ConsolidationSummaryError extends Error {
+    constructor(message: string);
+}
 export declare function renderPhase2DiffFile(diff: ReadonlyArray<WorkspaceDiff>, maxBytes?: number): string;
 export interface ReadFilePage {
     content: string;
@@ -184,6 +191,10 @@ export interface ConsolidateInput {
      *  provider sees the workspace (codex-style): the agent must remove
      *  MEMORY.md content supported only by these resources. */
     prunedResources?: string[];
+    /** Injection budget the read path will apply to memory_summary.md. The
+     *  writer must fit inside the body share of exactly this number; the engine
+     *  passes the live value, tests may omit it (default applied by the runner). */
+    injectBudgetTokens?: number;
 }
 export interface ConsolidateEdit {
     rel: string;
@@ -222,7 +233,11 @@ export declare class RuleConsolidateProvider implements ConsolidateProvider {
  *  them would leave dangling references that brick the next LLM
  *  consolidation (provenance validation checks file existence). */
 export declare function removeBlocksCitingOnly(memory: string, deleted: Set<string>, report: string[]): string;
-export declare function refreshSummaryIndex(summary: string, memory: string): string;
+/** Keep the routing section in sync with MEMORY.md WITHOUT clobbering a model
+ *  written one. Rebuild only when the section is missing, carries the engine's
+ *  own `- <group>: see MEMORY.md` lines and no longer covers the groups, or
+ *  exceeds the budget-derived line bound; a model/topic index is left alone. */
+export declare function refreshSummaryIndex(summary: string, memory: string, maxInjectTokens?: number): string;
 /** A bounded tool loop that lets the LLM read the workspace and write memory
  *  docs directly (codex Phase-2 style), with engine-side validation on every
  *  write: workspace confinement, size caps, secret and injection scanning. */
@@ -268,4 +283,7 @@ export declare function runConsolidation(root: string, provider: ConsolidateProv
     execute: boolean;
     config?: Partial<PipelineConfig>;
     isPaused?: () => boolean;
+    /** Live injection budget (plugin settings override included). The runner
+     *  resolves it once so every gate below shares one number. */
+    injectBudgetTokens?: number;
 }): Promise<ConsolidationRunResult>;

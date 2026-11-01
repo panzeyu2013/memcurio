@@ -109,6 +109,11 @@ const AUTO_CONSOLIDATE_INTERNAL_RETRY_MS = 6 * 60 * 60 * 1000;
 /** Consecutive automatic-failure bookkeeping (observability only: codex's
  *  phase-2 claim deliberately does not gate on a retry budget). */
 const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
+/** Consecutive automatic failures before the trigger pauses itself. Codex's
+ *  phase-2 job never gives up (retry_remaining is written but never read);
+ *  its stage-1 worker does stop at the exhausted budget. Without a stop here a
+ *  single invalid artifact pins every turn to a failing Phase-2 run. */
+const AUTO_CONSOLIDATE_MAX_ATTEMPTS = 3;
 const AUTO_CONSOLIDATE_RETRY_AT_KEY = "consolidation_auto_retry_at";
 const AUTO_CONSOLIDATE_KIND_KEY = "consolidation_auto_kind";
 const AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY = "consolidation_note_retry_at";
@@ -1302,6 +1307,7 @@ export class MemcurioAdapter {
       const cfg = pipelineConfig(root);
       const idx = await Index.create(indexDb(root));
       let cooldownMs: number | undefined;
+      let exhausted = false;
       try {
         // A1-extra: retention cleanup must not depend on a successful
         // consolidation commit. Pruned-but-never-selected stage-1 rows are
@@ -1353,6 +1359,19 @@ export class MemcurioAdapter {
         const last = idx.metaGet("consolidation_auto_last");
         const failed = idx.metaGet("consolidation_auto_failed");
         const now = Date.now();
+        // New input resets the failure budget (codex stage-1 resets
+        // retry_remaining when the watermark advances). A fresh actionable
+        // note or an unselected stage row means the inputs changed since the
+        // failures, so the next attempt deserves the full budget again.
+        let attempts = Number.parseInt(idx.metaGet(AUTO_CONSOLIDATE_ATTEMPTS_KEY) ?? "0", 10);
+        if (!Number.isFinite(attempts) || attempts < 0) attempts = 0;
+        const freshInput =
+          idx.noteList().some(actionableNote) ||
+          idx.stageList().some((row) => row.status === "pending" && !row.selectedForPhase2);
+        if (freshInput && attempts > 0) {
+          idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, "0");
+          attempts = 0;
+        }
         // Codex parity: the success cooldown is wall-clock and is NOT bypassed
         // by pending volume or aging backlog. Only a user-requested note
         // (remember/forget/update) may consolidate inside the cooldown — that
@@ -1391,7 +1410,17 @@ export class MemcurioAdapter {
             cooldownMs = AUTO_CONSOLIDATE_COOLDOWN_MS - elapsed;
           }
         }
-        if (cooldownMs === undefined) {
+        if (cooldownMs === undefined && attempts >= AUTO_CONSOLIDATE_MAX_ATTEMPTS) {
+          // Repeated failures with no new input: pause the automatic trigger
+          // instead of re-running a deterministic failure on every turn/end.
+          // A new note or stage row resets the budget above; the runbook
+          // (docs/operations.md) documents the manual reset.
+          exhausted = true;
+          if (attempts === AUTO_CONSOLIDATE_MAX_ATTEMPTS) {
+            idx.audit("consolidate.auto_exhausted", "-", `attempts=${String(attempts)}; waiting for new input`);
+          }
+        }
+        if (cooldownMs === undefined && !exhausted) {
           // retry_at is an absolute deadline; legacy stores only have the
           // failure timestamp, so fall back to failed + retry delay.
           const retryAtRaw = idx.metaGet(AUTO_CONSOLIDATE_RETRY_AT_KEY);
@@ -1408,6 +1437,12 @@ export class MemcurioAdapter {
         }
       } finally {
         idx.close();
+      }
+      if (exhausted) {
+        this.log("warn", "automatic consolidation paused after repeated failures", {
+          attempts: AUTO_CONSOLIDATE_MAX_ATTEMPTS,
+        });
+        return;
       }
       if (cooldownMs !== undefined) {
         this.log("debug", "automatic consolidation in cooldown", { retryInMs: cooldownMs });
@@ -1459,6 +1494,9 @@ export class MemcurioAdapter {
       await runConsolidation(root, provider, {
         execute: true,
         config: cfg,
+        // The live injection budget (plugin settings override included) is the
+        // only number the writer gates may use: config.json can disagree.
+        injectBudgetTokens: this.#injectionBudget(),
         ...(this.consolidatePaused === undefined ? {} : { isPaused: this.consolidatePaused }),
       });
       const idx3 = await Index.create(indexDb(root));

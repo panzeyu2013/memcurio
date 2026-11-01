@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **memory_summary.md is now a budgeted contract, not a free-form digest.** The injected summary has a hard token budget (injection budget minus the 42-token injection framing, 2,458 by default) plus a shape contract: first line exactly `v1`, the four headings present, no rollout paths. The write path refuses an over-budget write with the exact overage in the tool result, the pre-commit gate re-validates the final workspace (so an untouched legacy summary fails the run instead of being frozen into the baseline), and the no-op fast path re-validates first — an invalid summary with no other work now forces a repair run instead of short-circuiting. The routing index is bounded by the budget and is only rebuilt when it is missing, stale for the engine's own `- <group>: see MEMORY.md` lines, or over the bound, so the rule fallback no longer overwrites a model-written topic index. CONSOLIDATION audit rows now carry `summary_tokens=<used>/<budget>`.
+
+### Fixed
+
+- **A failing Phase-2 no longer retries forever unnoticed.** The automatic trigger reads its own failure counter and pauses after 3 consecutive failures with no new input, auditing `consolidate.auto_exhausted` once; a fresh note or stage row resets the budget (codex stage-1 semantics). Previously the counter was written but never read, so one invalid artifact (or a 25-step loop) kept every turn pinned to the same failing run.
+
 ## [0.0.10] - 2026-11-01
 
 ### Changed

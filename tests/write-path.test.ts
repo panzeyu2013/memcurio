@@ -49,6 +49,7 @@ const KNOWN_NO_WRITE_ACTIONS = [
   "consolidate.auto_aborted",
   "consolidate.auto_unavailable",
   "consolidate.auto_contended",
+  "consolidate.auto_exhausted",
 ] as const;
 
 /** Every write-path-prefixed action the sources emit, extracted below. A new
@@ -63,6 +64,7 @@ const PINNED_PREFIX_ACTIONS = [
   "consolidate.auto",
   "consolidate.auto_aborted",
   "consolidate.auto_contended",
+  "consolidate.auto_exhausted",
   "consolidate.auto_failed",
   "consolidate.auto_unavailable",
   "consolidate.done",

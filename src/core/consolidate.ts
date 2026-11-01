@@ -32,6 +32,13 @@ import {
 } from "./workspace.js";
 import type { WorkspaceDiff } from "./workspace.js";
 import { clipUtf8, utf8ByteLength } from "./utf8.js";
+import {
+  DEFAULT_MAX_INJECT_TOKENS,
+  estimateTokens,
+  memorySummaryViolation,
+  summaryBodyBudget,
+  summaryIndexMaxLines,
+} from "./budget.js";
 
 export interface PipelineConfig {
   maxUnusedDays: number;
@@ -130,6 +137,17 @@ export class ConsolidationContentionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConsolidationContentionError";
+  }
+}
+
+/** Thrown when the post-run artifact set violates the memory_summary.md
+ *  contract (codex phase2.rs:406-418 "failed_invalid_artifacts"). The run is
+ *  not committed and the baseline is not advanced, so the same diff is retried
+ *  instead of freezing an invalid artifact into the baseline. */
+export class ConsolidationSummaryError extends Error {
+  constructor(message: string) {
+    super(`consolidation rejected: ${message}`);
+    this.name = "ConsolidationSummaryError";
   }
 }
 
@@ -611,6 +629,10 @@ export interface ConsolidateInput {
    *  provider sees the workspace (codex-style): the agent must remove
    *  MEMORY.md content supported only by these resources. */
   prunedResources?: string[];
+  /** Injection budget the read path will apply to memory_summary.md. The
+   *  writer must fit inside the body share of exactly this number; the engine
+   *  passes the live value, tests may omit it (default applied by the runner). */
+  injectBudgetTokens?: number;
 }
 
 export interface ConsolidateEdit {
@@ -741,11 +763,12 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
     // an existing handbook) — a pristine store stays untouched.
     const hasRealWork =
       input.notes.some((n) => n.kind === "remember") || rawDiff !== undefined || memory.trim() !== "";
+    const ruleBudget = input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
     if (hasRealWork && !summary?.startsWith("v1")) {
-      summary = renderMinimalSummary(memory);
+      summary = renderMinimalSummary(memory, ruleBudget);
       report.push("memory_summary.md regenerated (missing or schema-incompatible)");
     } else if (hasRealWork && summary.startsWith("v1")) {
-      summary = refreshSummaryIndex(summary, memory);
+      summary = refreshSummaryIndex(summary, memory, ruleBudget);
       report.push("memory_summary.md index refreshed");
     }
 
@@ -970,16 +993,27 @@ export function removeBlocksCitingOnly(memory: string, deleted: Set<string>, rep
   return out.join("\n");
 }
 
-function renderMinimalSummary(memory: string): string {
+function renderIndexLines(groups: string[], maxLines: number): string[] {
+  if (!groups.length) {
+    return ["- (no memory yet; run memcurio remember or let sessions consolidate)"];
+  }
+  const shown = groups.slice(0, maxLines);
+  const lines = shown.map((g) => `- ${g}: see MEMORY.md "# Task Group: ${g}"`);
+  const hidden = groups.length - shown.length;
+  if (hidden > 0) {
+    lines.push(`- older topics: see MEMORY.md (${String(hidden)} more Task Group(s))`);
+  }
+  return lines;
+}
+
+function renderMinimalSummary(memory: string, maxInjectTokens: number = DEFAULT_MAX_INJECT_TOKENS): string {
   // Group names are copied out of MEMORY.md into the summary index; redact
   // them here so a secret that survived in a user-authored header can never
   // ride into memory_summary.md (the edit still passes validateEdits later).
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)]
     .map((m) => redactSecrets(m[1] ?? "").text)
     .filter(Boolean);
-  const indexLines = groups.length
-    ? groups.map((g) => `- ${g}: see MEMORY.md "# Task Group: ${g}"`)
-    : ["- (no memory yet; run memcurio remember or let sessions consolidate)"];
+  const indexLines = renderIndexLines(groups, summaryIndexMaxLines(maxInjectTokens));
   return [
     "v1",
     "",
@@ -1000,15 +1034,36 @@ function renderMinimalSummary(memory: string): string {
   ].join("\n");
 }
 
-export function refreshSummaryIndex(summary: string, memory: string): string {
+/** Keep the routing section in sync with MEMORY.md WITHOUT clobbering a model
+ *  written one. Rebuild only when the section is missing, carries the engine's
+ *  own `- <group>: see MEMORY.md` lines and no longer covers the groups, or
+ *  exceeds the budget-derived line bound; a model/topic index is left alone. */
+export function refreshSummaryIndex(
+  summary: string,
+  memory: string,
+  maxInjectTokens: number = DEFAULT_MAX_INJECT_TOKENS,
+): string {
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
-  const indexLines = groups.map((g) => `- ${g}: see MEMORY.md "# Task Group: ${g}"`);
+  const maxLines = summaryIndexMaxLines(maxInjectTokens);
   const marker = "## What's in Memory";
   const idx = summary.indexOf(marker);
   if (idx < 0) {
     return summary;
   }
   const head = summary.slice(0, idx).trimEnd();
+  const existing = summary
+    .slice(idx)
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "));
+  const ours = existing.every((line) => line.includes('see MEMORY.md "# Task Group: '));
+  const covered = new Set(existing.map((line) => /^- (.+?): see MEMORY\.md/.exec(line)?.[1]).filter((name): name is string => Boolean(name)));
+  const inSync = groups.length === covered.size && groups.every((group) => covered.has(group));
+  if (existing.length > 0 && (!ours || (inSync && existing.length <= maxLines))) {
+    return summary;
+  }
+  const indexLines = renderIndexLines(groups, maxLines);
   return `${head}\n\n${marker}\n\n### ad hoc\n\n${indexLines.join("\n")}\n`;
 }
 
@@ -1367,6 +1422,16 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
           rejected.push({ rel, reason: "secret redacted (rewrite without secrets)" });
           return { content: "rejected: content contained secrets; rewrite with [REDACTED]", isError: true };
         }
+        // Codex V2 gate at the earliest possible point (workspace.rs:118-129):
+        // the model must learn the violation from the tool result, not from a
+        // failed run it never sees.
+        if (rel === "memory_summary.md") {
+          const violation = memorySummaryViolation(content, input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS);
+          if (violation) {
+            rejected.push({ rel, reason: violation.reason });
+            return { content: `rejected: ${violation.reason}`, isError: true };
+          }
+        }
         const existing = edits.findIndex((e) => e.rel === rel);
         if (existing >= 0) {
           edits[existing] = { rel, content };
@@ -1468,6 +1533,9 @@ function buildConsolidationSystemPrompt(
       ...prunedResources.map((rel) => `- ${rel}`),
     );
   }
+  const promptBudget = input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
+  const summaryCap = summaryBodyBudget(promptBudget);
+  const indexLineCap = summaryIndexMaxLines(promptBudget);
   const prompt = [
     "## Memory Writing Agent: Phase 2 (Consolidation)",
     "",
@@ -1495,14 +1563,15 @@ function buildConsolidationSystemPrompt(
     "  header lines, '## Task N' sections with task-local '### rollout_summary_files' (citing only",
     "  the rollout_summaries/<file>.md that support THAT task) and '### keywords', plus block-level",
     "  '## User preferences' / '## Reusable knowledge' / '## Failures and how to do differently'.",
-    "- memory_summary.md: must start with exactly 'v1'; dense cross-task summary with",
-    "  '## User Profile', '## User preferences', '## General Tips', '## What's in Memory' index.",
-    "  It is prompt-loaded context and a routing layer, not a handbook: each index line routes to a",
-    "  MEMORY.md '# Task Group' by topic + keywords + one-line signal. When you name the target,",
-    "  name it exactly as the header reads - never a truncated header, an ordinal ('the second",
-    "  group'), or a bare 'Task N'. Never put rollout paths or rollout ids here - provenance belongs",
-    "  in MEMORY.md. When rewriting, strip rollout references already present, and keep the file",
-    "  inside the injection budget (long summaries are middle-truncated).",
+    `- memory_summary.md: injected verbatim into every new session; a routing layer, not a handbook.`,
+    `  First line exactly 'v1'; HARD budget ${String(summaryCap)} tokens (the window middle-truncates beyond it).`,
+    "  Sections: '## User Profile' (stable traits), '## User preferences' (actionable defaults,",
+    "  hard rules first), '## General Tips' (environment facts), \"## What's in Memory\"",
+    `  (<=${String(indexLineCap)} routing lines: '- <topic>: <keywords> - <when to search here>').`,
+    "  NEVER write here: progress/status ('in progress', 'pending', 'not pushed', 'awaiting",
+    "  decision', 'blocked'), dates, commit ids, version/tag state, test-count deltas, per-run",
+    "  tallies. A future session that reads a frozen status acts on a stale fact.",
+    "  Never put rollout paths or rollout ids here - provenance belongs in MEMORY.md.",
     "- raw_memories.md: mechanical Phase-1 merge (input; do not edit).",
     "- rollout_summaries/rollout-<artifact-id>.md: per-session recaps (input; do not edit).",
     "- skills/<name>/SKILL.md: optional reusable procedures.",
@@ -1525,14 +1594,21 @@ function buildConsolidationSystemPrompt(
     "  Never emit an uncited durable fact.",
     "- Forgetting: files deleted in the diff mean their memory support is gone; surgically remove",
     "  only the MEMORY.md blocks/sections uniquely supported by deleted inputs. Keep mixed blocks,",
-    "  removing only stale references.",
+    "  removing only stale references. Do NOT delete a block merely because its content looks",
+    "  stale: a raw input that falls back into a later batch re-creates it.",
+    "- Budget first: when memory_summary.md is near the cap, cut routing detail and stale state",
+    "  before compressing durable rules; never drop a hard constraint to make room.",
+    "- Only-what-happened test: a sentence that merely explains what this run did belongs in the",
+    "  rollout summary; durable memory keeps what changes the NEXT run's behavior.",
+    "- Routing lines name durable subjects (a pipeline, a subsystem, a workflow), never a run, date",
+    "  or batch; do not copy a Task Group header that carries dates or versions.",
     "- Apply pending notes: remember notes add knowledge; forget notes remove the targeted content;",
     "  update notes rewrite the targeted content in place.",
     "- Facts derived from ad-hoc notes must carry the tag [ad-hoc note] in MEMORY.md.",
     "- Reduce noise: remove stale, duplicated, or low-signal blocks and bullets; let signal decide",
     "  granularity (do not target fixed counts). Drop rollout references from memory_summary.md.",
-    "- Ordering: surface the most useful and most recently-updated validated memories near the top of",
-    "  MEMORY.md and memory_summary.md.",
+    "- Ordering: surface the most useful validated memories near the top; recency alone is not a",
+    "  signal (a stale-but-new block is still stale).",
     "- Keep concise, searchable original wording when the source already has it; never rewrite it into smoother-but-distorted prose.",
     "- Keep distinctive nouns and verbatim strings that future grep/search may use.",
     "- Keep uncertainty/speculation markers from the source; never rewrite speculation as fact.",
@@ -1885,9 +1961,17 @@ function stageRevision(idx: Index): string {
 export async function runConsolidation(
   root: string,
   provider: ConsolidateProvider,
-  opts: { execute: boolean; config?: Partial<PipelineConfig>; isPaused?: () => boolean },
+  opts: {
+    execute: boolean;
+    config?: Partial<PipelineConfig>;
+    isPaused?: () => boolean;
+    /** Live injection budget (plugin settings override included). The runner
+     *  resolves it once so every gate below shares one number. */
+    injectBudgetTokens?: number;
+  },
 ): Promise<ConsolidationRunResult> {
   if (opts.isPaused?.()) throw new Error("consolidation paused: workspace memory is disabled");
+  const injectBudget = opts.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
   ensureLayout(root);
   if (!opts.execute) {
     const plan = await planConsolidation(root, opts.config);
@@ -1941,7 +2025,18 @@ export async function runConsolidation(
     // row that fell out of the window leaves no artifacts to diff). The early
     // return still runs the finally block, which releases the lease and clears
     // the renew timer.
-    if (freshPlan.diff.length === 0 && freshPlan.notes.length === 0 && freshPlan.pruned.length === 0) {
+    // Codex parity (phase2.rs:131-135): a no-op is only a no-op when the
+    // artifact set is already valid. An invalid summary with no other work must
+    // still reach the agent, otherwise a legacy oversized file stays frozen
+    // forever (and is middle-truncated on every injection).
+    const existingSummary = readWorkspaceText(root, "memory_summary.md");
+    const existingViolation = memorySummaryViolation(existingSummary, injectBudget);
+    if (
+      freshPlan.diff.length === 0 &&
+      freshPlan.notes.length === 0 &&
+      freshPlan.pruned.length === 0 &&
+      existingViolation === null
+    ) {
       return { plan: freshPlan, result: null, applied: false, message: "no changes: nothing to consolidate" };
     }
     // Codex parity (sync_workspace_inputs): stage the plan's artifacts on disk
@@ -1974,6 +2069,7 @@ export async function runConsolidation(
       notes: freshPlan.notes.map((n) => ({ kind: n.kind, filename: n.filename, content: n.content })),
       memoryRoot: memoryWorkspace(root),
       prunedResources,
+      injectBudgetTokens: injectBudget,
     };
     const result = await provider.consolidate(input);
     // The provider can finish after a workspace disable. Never commit an
@@ -2021,7 +2117,7 @@ export async function runConsolidation(
           providerEdits.splice(index, 1);
         }
       }
-      providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter) });
+      providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter, injectBudget) });
       summaryInitialized = true;
     }
     const edits = validateEdits(providerEdits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
@@ -2031,6 +2127,15 @@ export async function runConsolidation(
     const afterWorkspace = virtualArtifactWorkspace(root, freshPlan);
     for (const edit of edits) {
       afterWorkspace[edit.rel] = { present: true, content: edit.content };
+    }
+    // Codex parity (phase2.rs:406-418): the artifact SET is what the next
+    // session reads, so the effective files are validated before a generation
+    // exists. An untouched-but-invalid summary fails the run here (baseline
+    // untouched) instead of being committed as if it were fine.
+    const effectiveSummary = afterWorkspace["memory_summary.md"]?.content ?? "";
+    const effectiveViolation = memorySummaryViolation(effectiveSummary, injectBudget);
+    if (effectiveViolation) {
+      throw new ConsolidationSummaryError(effectiveViolation.reason);
     }
     generation = prepareGeneration(
       root,
@@ -2082,10 +2187,11 @@ export async function runConsolidation(
         // Codex-style extension-resource retention.
         const resourcesPruned = pruneExtensionResources(root, opts.config?.resourceRetentionDays ?? DEFAULT_PIPELINE_CONFIG.resourceRetentionDays).length;
         idx.metaSet("consolidation_generation", generation?.id ?? "");
+        const summaryTokens = estimateTokens(effectiveSummary.trim());
         idx.audit(
           "consolidate.done",
           "-",
-          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}${summaryInitialized ? ", init=memory_summary.md" : ""}`,
+          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}, summary_tokens=${String(summaryTokens)}/${String(summaryBodyBudget(injectBudget))}${summaryInitialized ? ", init=memory_summary.md" : ""}`,
         );
         for (const r of result.rejected) {
           idx.audit("consolidate.rejected", r.rel, r.reason);

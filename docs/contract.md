@@ -366,7 +366,8 @@ export class RuleConsolidateProvider implements ConsolidateProvider {}
   //    diff 碎片（段头缺失）由 pendingSlug 兜底；只有 body 真正开始（见过标题行）的块才成立，
   //    纯 frontmatter 碎片不得产出幻影块抢占 citation；citation 引用已存在 → 跳过（不重复追加）；
   // 3) 剪除清理：MEMORY.md 中引用已剪除 rollout_summary 文件名的块（rollout_summary_files 行只含已删文件）整块删除；
-  // 4) memory_summary.md：缺失或首行不是 v1 → 重建最小结构（v1 / User Profile（无档案占位）/ User preferences（空）/ General Tips（空）/ What's in Memory（列出 MEMORY.md 全部 Task Group 标题））；
+  // 4) memory_summary.md：缺失或首行不是 v1 → 重建最小结构（v1 / User Profile（无档案占位）/ User preferences（空）/ General Tips（空）/ What's in Memory（列出 MEMORY.md Task Group 标题，行数由预算推导 ≤ summaryIndexMaxLines））；
+  //    存在且 v1：索引段只在「缺失 / 引擎自产行不再覆盖全部组 / 超过行数上界」时重建，模型写的主题式索引原样保留（避免 rule 路径每轮抹掉）；
   //    存在且 v1 且无 note 无 raw 变更 → 不改（churn 最小化）；
   // 5) 永不发明事实；rejected 恒空；report = 动作计数列表。
 export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
@@ -388,12 +389,17 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // INIT 兜底：runConsolidation 在 provider 返回后计算「本次运行后」的 memory_summary.md——
   // 首行不是 v1（缺失/空/被写成空串/schema 不符）时，丢弃 provider 的摘要 edit 并补一条最小 v1
   // 摘要（renderMinimalSummary；与 provider edits 一起过 validateEdits 的密钥/注入/大小/v1 头校验），
-  // 审计行 consolidate.done 记 init=memory_summary.md，run message 带 "(memory_summary.md initialized)"；
+  // 审计行 consolidate.done 记 init=memory_summary.md 与 summary_tokens=<used>/<budget>，run message 带 "(memory_summary.md initialized)"；
   // 使「首条记忆」的引导链（摘要 → 指南 → 注入）不依赖模型的自觉（rule 路径本就自行 regen）。
   // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、INIT 模式、红action），
   // 含降噪条款：删除 stale/重复/低信号内容、不设固定数量目标、最有用的记忆排前、摘要索引清理失效主题；
   // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
-  // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；校验 memory_summary 若存在首行须为 "v1"。
+  // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；
+  // memory_summary.md 契约（codex V2 的 gate，本地按 token 而非字节）：首行必须整行等于 "v1"、
+  // 四个标题存在、不得含 rollout 路径、estimateTokens ≤ summaryBodyBudget(maxInjectTokens)（默认 2500-42=2458）。
+  // 三道闸：write_file 阶段直接拒绝（工具结果带超限 token 数，模型可在本轮收敛）→ 提交前对「最终工作区」
+  // （含未改写的存量文件）再校验一次（ConsolidationSummaryError，基线不推进、下一轮重试）→ no-op 判定前也校验
+  // （无 diff 但摘要不合规时不短路，强制进入 agent 修复）。
 export interface PipelineConfig {
   maxUnusedDays: number;         // 默认 30（stage1 选择窗口，对齐 codex max_unused_days）
   maxInputs: number;             // 默认 256（单批新进 stage1 上限；codex 的 max_raw_memories_for_consolidation 限整批重选窗口，memcurio 增量为整批保留已选行）
