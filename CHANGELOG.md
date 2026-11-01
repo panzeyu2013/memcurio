@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-11-01
+
 ### Changed
 
 - **memory_summary.md is a budgeted contract, not a free-form digest.** The injected summary has a hard token budget (injection budget minus the 42-token framing; 2,458 by default) and one contract evaluation shared by every gate: an exact `v1` first line, the four sections outside fenced code, no concrete `rollout_summaries/<file>.md` pointer, and the body inside the budget. The tool gate stages the losslessly repaired text and rejects only what a model must fix; the pre-commit gate validates the effective workspace file, so an untouched legacy summary is repaired and committed instead of failing the run; the routing index is budget-rendered with exact anchors (a name too long to fit loses its anchor rather than emitting an unsearchable key) and a model-written topic index is preserved.
@@ -18,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The deterministic writer never fails on a summary it cannot repair.** The rule provider is exempt by capability, not by violation code: an unresolved rollout pointer or an over-budget body is audited (`summary_unresolved(...)` in `consolidate.done`) and the store keeps consolidating; its structural repairs persist on the next run, and a handbook with no summary is initialized instead of being treated as a no-op.
 - **The failure pause engages, is bounded and is visible.** The counter resets only for input newer than the last failure, pauses after 3 failures with no new input, audits `consolidate.auto_exhausted` once, and allows one probe after 6 hours (`consolidate.auto_reprobe`) so a manual repair or a new build is not blocked by hand-editing store meta. `consolidation()` and `integrationStatus` report `paused`; a successful run clears the flag.
 - **A failing Phase-2 no longer pins every turn/end on the same run.** The automatic trigger reads its own failure counter (previously written but never read); one deterministic failure, a 25-step loop or an oversized request used to retry forever.
+
+### Upgrade notes
+
+- The first consolidation after upgrading may rewrite `memory_summary.md`: a legacy file is repaired in place (header/sections only, no content dropped) and a model route may be asked to fit it into the budget. Stores without a model route keep consolidating; an over-budget or pointer-bearing summary is audited (`summary_unresolved`) instead of failing. Back up `memory/memory_summary.md` (and `.baseline/memory_summary.md`) before the first run if the file matters.
+- A store that was previously stuck in a failure loop may show `paused` until the next input or until the 6-hour probe; no store meta editing is required.
+- Blocks are never deleted for looking stale: only blocks whose rollout evidence is gone are removed (a raw input that returns in a later batch would re-create them).
 
 ### Notes
 

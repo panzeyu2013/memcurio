@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.10/memcurio-dsh-plugin-0.0.10.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.11/memcurio-dsh-plugin-0.0.11.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.10.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.10.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.11.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.11.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -89,6 +89,13 @@ Workspaces 面板会写同一份配置；手改时 key 必须是 canonical 路�
 - **no-cwd 默认关闭。** 0.0.8 会给没有 header.cwd 的会话共享记忆；0.0.9 默认关闭。要保留旧行为，在 profile patch 的 memcurio 配置里加 workspaceOverrides: { "no-cwd": { enabled: true } }。
 - **软链工作区改用 canonical store 键。** 没有 live provenance 见证的旧 store 不会自动接管：记忆文件仍在旧目录，但该会话会改用新 canonical store。查看 <store>/state/origin.json 的 source（live/backfill，缺字段为旧格式）；需要保留旧数据时，人工确认目标后把旧 store 内容迁到 canonical store，或直接以该 canonical 路径打开会话。
 - **显式关闭会留下 durable fence。** 首次显式关闭后，删掉 override 仍保持关闭；必须再次显式 enabled: true 才能重开（防止路径删除/软链改名回落到默认开启）。
+
+### 0.0.10 → 0.0.11 升级注意
+
+- **摘要有了写后契约。** 首次整合会就地修复 `memory_summary.md` 的标题结构（只补/改首行与缺失段落，不删正文），随后要求它落在注入预算内（默认 2,458 token）。有模型通道时会要求模型压缩一次；没有模型通道的安装不会被判失败，超预算或含 rollout 指针只记 `summary_unresolved` 审计，注入侧仍按中间截断处理。升级前建议备份 `memory/memory_summary.md` 与 `.baseline/memory_summary.md`。
+- **失败会暂停。** 连续 3 次失败且没有更新的输入后自动触发暂停，状态以 `paused` 暴露；6 小时后允许一次探针（`consolidate.auto_reprobe`），成功一次即恢复并清零。无需手改 store meta；确需立即恢复时按上文「Consolidation pause and manual reset」清理 5 个 meta 键。
+- **请求超限不再直接失败。** Phase-2 请求触到 2.5 MB 上限时会先丢弃最旧的工具交换继续跑；此前这类 store 会稳定报 `INPUT_BUDGET_EXCEEDED`。
+- **任务块不会因"看起来过期"被删。** 只有证据（rollout 摘要）被删的块才会移除；raw 输入在后续批次回流时块会被重建，所以不要依赖"删了就会消失"。
 
 ### 0.0.9 → 0.0.10 升级注意
 
