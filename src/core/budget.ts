@@ -204,73 +204,20 @@ export const SUMMARY_HEADINGS = [
   "## What's in Memory",
 ] as const;
 
-export type SummaryViolation = { code: "shape" | "budget"; reason: string };
+export type SummaryViolation = { code: "rollout" | "budget"; reason: string };
 
-/** First line must be exactly `v1` (codex workspace.rs:105-109 compares the
- *  whole line; a prefix check lets "v1.1" through). */
-export function isExactSummaryHeader(content: string): boolean {
-  return content.split("\n", 1)[0] === "v1";
+export interface SummaryEvaluation {
+  /** The content after the lossless structural repair (BOM/CRLF/header/sections). */
+  normalized: string;
+  /** null when normalized already satisfies the contract. */
+  violation: SummaryViolation | null;
 }
 
-/** Structural + budget contract for one memory_summary.md body. Empty content
- *  is allowed: the INIT path replaces it with a minimal valid summary. */
-export function memorySummaryViolation(content: string, maxInjectTokens: number): SummaryViolation | null {
-  if (!content.trim()) {
-    return null;
-  }
-  if (!isExactSummaryHeader(content)) {
-    return { code: "shape", reason: "memory_summary.md first line must be exactly 'v1'" };
-  }
-  // Headings inside a fenced block are examples, not structure: a contract
-  // pasted into a code sample must not satisfy the gate.
-  const structural: string[] = [];
-  let fenced = false;
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("```")) {
-      fenced = !fenced;
-      continue;
-    }
-    if (!fenced) {
-      structural.push(trimmed);
-    }
-  }
-  const missing = SUMMARY_HEADINGS.filter((heading) => !structural.includes(heading));
-  if (missing.length > 0) {
-    return { code: "shape", reason: `memory_summary.md is missing required heading(s): ${missing.join(", ")}` };
-  }
-  if (/rollout_summaries[\\/]/.test(content)) {
-    return { code: "shape", reason: "memory_summary.md must not carry rollout paths (provenance belongs in MEMORY.md)" };
-  }
-  const body = summaryBodyBudget(maxInjectTokens);
-  const used = estimateTokens(content.trim());
-  if (used > body) {
-    return {
-      code: "budget",
-      reason: `memory_summary.md is over budget (${String(used)} > ${String(body)} tokens; cut ${String(used - body)})`,
-    };
-  }
-  return null;
-}
-
-/** Index lines the routing section may spend under a given injection budget.
- *  Codex V1 says "do not target a fixed count" (consolidation.md:192-193); a
- *  fixed 10 would drop groups once a store carries more (fleet max is 24). The
- *  bound therefore follows the budget: ~200 tokens per routing line, 3..12. */
-export function summaryIndexMaxLines(maxInjectTokens: number): number {
-  const body = summaryBodyBudget(maxInjectTokens);
-  return Math.max(3, Math.min(12, Math.floor(body / 200)));
-}
-
-/** Deterministic, content-preserving repair of the summary framing.
- *  Structure only: it never truncates prose or drops a section, so it is safe
- *  to run on a legacy file written before the contract existed (codex V1 never
- *  had one). Budget violations are NOT repaired here — only the writer that can
- *  re-ask a model is allowed to compress. */
-export function normalizeSummaryStructure(content: string): string {
-  if (!content.trim()) {
-    return content;
-  }
+/** Single structural parse shared by the normalizer and the validator. Headings
+ *  inside fenced code are examples, not structure (a contract pasted into a
+ *  sample must not satisfy the gate), and the header is normalized to exactly
+ *  `v1` (codex workspace.rs:105-109 compares the whole line). */
+function parseSummary(content: string): { normalized: string; structural: Set<string> } {
   let text = content;
   if (text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1);
@@ -283,14 +230,70 @@ export function normalizeSummaryStructure(content: string): string {
     // No version line at all: prepend one instead of rejecting the file.
     lines.unshift("v1", "");
   }
-  text = lines.join("\n");
-  const present = new Set(lines.map((line) => line.trim()));
-  const missing = SUMMARY_HEADINGS.filter((heading) => !present.has(heading));
-  if (missing.length === 0) {
-    return text;
+  let normalized = lines.join("\n");
+  const structural = new Set<string>();
+  let fenced = false;
+  for (const line of normalized.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced) {
+      structural.add(trimmed);
+    }
   }
-  // Append-only: missing sections arrive empty and nothing is rewritten.
-  return `${text.trimEnd()}\n\n${missing.map((heading) => `${heading}\n`).join("\n")}`;
+  const missing = SUMMARY_HEADINGS.filter((heading) => !structural.has(heading));
+  if (missing.length > 0) {
+    // Append-only: missing sections arrive empty and nothing is rewritten.
+    normalized = `${normalized.trimEnd()}\n\n${missing.map((heading) => `${heading}\n`).join("\n")}`;
+    for (const heading of missing) {
+      structural.add(heading);
+    }
+  }
+  return { normalized, structural };
+}
+
+/** Deterministic, content-preserving repair (see parseSummary). Budget
+ *  violations are NOT repaired: only a writer that can re-ask a model may
+ *  compress. */
+export function normalizeSummaryStructure(content: string): string {
+  if (!content.trim()) {
+    return content;
+  }
+  return parseSummary(content).normalized;
+}
+
+/** The one contract decision: normalize first, then report what a model still
+ *  has to fix. Every caller (tool gate, commit gate, no-op probe, engine work
+ *  check, purge) must use this shape instead of re-deriving it. */
+export function evaluateSummary(content: string, maxInjectTokens: number): SummaryEvaluation {
+  if (!content.trim()) {
+    return { normalized: content, violation: null };
+  }
+  const { normalized, structural } = parseSummary(content);
+  // Fenced samples are documentation, not provenance: only an unfenced line can
+  // carry a real rollout pointer.
+  if ([...structural].some((line) => /rollout_summaries[\\/]/.test(line))) {
+    return {
+      normalized,
+      violation: { code: "rollout", reason: "memory_summary.md must not carry rollout paths (provenance belongs in MEMORY.md)" },
+    };
+  }
+  const body = summaryBodyBudget(maxInjectTokens);
+  const used = estimateTokens(normalized.trim());
+  if (used > body) {
+    return {
+      normalized,
+      violation: { code: "budget", reason: `memory_summary.md is over budget (${String(used)} > ${String(body)} tokens; cut ${String(used - body)})` },
+    };
+  }
+  return { normalized, violation: null };
+}
+
+/** Convenience: the violation only (see {@link evaluateSummary}). */
+export function memorySummaryViolation(content: string, maxInjectTokens: number): SummaryViolation | null {
+  return evaluateSummary(content, maxInjectTokens).violation;
 }
 
 /** A deletion must never make the injected summary bigger: an operation that

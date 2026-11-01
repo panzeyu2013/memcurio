@@ -31,26 +31,25 @@ export declare function summaryBodyBudget(maxInjectTokens: number): number;
  *  not order — an order check only manufactures retries). */
 export declare const SUMMARY_HEADINGS: readonly ["## User Profile", "## User preferences", "## General Tips", "## What's in Memory"];
 export type SummaryViolation = {
-    code: "shape" | "budget";
+    code: "rollout" | "budget";
     reason: string;
 };
-/** First line must be exactly `v1` (codex workspace.rs:105-109 compares the
- *  whole line; a prefix check lets "v1.1" through). */
-export declare function isExactSummaryHeader(content: string): boolean;
-/** Structural + budget contract for one memory_summary.md body. Empty content
- *  is allowed: the INIT path replaces it with a minimal valid summary. */
-export declare function memorySummaryViolation(content: string, maxInjectTokens: number): SummaryViolation | null;
-/** Index lines the routing section may spend under a given injection budget.
- *  Codex V1 says "do not target a fixed count" (consolidation.md:192-193); a
- *  fixed 10 would drop groups once a store carries more (fleet max is 24). The
- *  bound therefore follows the budget: ~200 tokens per routing line, 3..12. */
-export declare function summaryIndexMaxLines(maxInjectTokens: number): number;
-/** Deterministic, content-preserving repair of the summary framing.
- *  Structure only: it never truncates prose or drops a section, so it is safe
- *  to run on a legacy file written before the contract existed (codex V1 never
- *  had one). Budget violations are NOT repaired here — only the writer that can
- *  re-ask a model is allowed to compress. */
+export interface SummaryEvaluation {
+    /** The content after the lossless structural repair (BOM/CRLF/header/sections). */
+    normalized: string;
+    /** null when normalized already satisfies the contract. */
+    violation: SummaryViolation | null;
+}
+/** Deterministic, content-preserving repair (see parseSummary). Budget
+ *  violations are NOT repaired: only a writer that can re-ask a model may
+ *  compress. */
 export declare function normalizeSummaryStructure(content: string): string;
+/** The one contract decision: normalize first, then report what a model still
+ *  has to fix. Every caller (tool gate, commit gate, no-op probe, engine work
+ *  check, purge) must use this shape instead of re-deriving it. */
+export declare function evaluateSummary(content: string, maxInjectTokens: number): SummaryEvaluation;
+/** Convenience: the violation only (see {@link evaluateSummary}). */
+export declare function memorySummaryViolation(content: string, maxInjectTokens: number): SummaryViolation | null;
 /** A deletion must never make the injected summary bigger: an operation that
  *  removes data cannot be allowed to push a store over its write budget. The
  *  previous summary is kept instead; the next consolidation re-derives the

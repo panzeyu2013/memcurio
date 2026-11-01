@@ -69,17 +69,19 @@ describe("memory_summary.md write contract", () => {
     expect(result.rejected.some((entry) => entry.rel === "memory_summary.md")).toBe(true);
   });
 
-  test("a summary whose first line is v1.1 is rejected", async () => {
-    // All four headings present: only the header check may reject this, so a
-    // prefix-only implementation cannot pass by accident.
+  test("a v1.1 header is repaired on write instead of rejected", async () => {
+    // All four headings present: only the header is wrong, and the structural
+    // repair is deterministic, so the gate stages "v1" rather than making the
+    // model hand-fix what the engine would fix anyway.
     const content =
       "v1.1\n\n## User Profile\n\n- x\n\n## User preferences\n\n- y\n\n## General Tips\n\n## What's in Memory\n\n- t\n";
     const result = await provider([
       { calls: [{ name: "write_file", args: { rel: "memory_summary.md", content } }] },
       { calls: [{ name: "finish", args: { report: "wrote" } }] },
     ]).consolidate({ ...input(), injectBudgetTokens: BUDGET });
-    expect(result.edits.find((edit) => edit.rel === "memory_summary.md")).toBeUndefined();
-    expect(result.rejected.some((entry) => entry.rel === "memory_summary.md")).toBe(true);
+    const staged = result.edits.find((edit) => edit.rel === "memory_summary.md");
+    expect(staged?.content.startsWith("v1\n")).toBe(true);
+    expect(staged?.content.startsWith("v1.1")).toBe(false);
   });
 });
 
@@ -101,6 +103,32 @@ describe("structural normalization (legacy files)", () => {
     }
   });
 });
+
+
+  test("a rollout path in a legacy summary does not fail the rule writer", async () => {
+    writeWorkspaceText(
+      dir,
+      "memory_summary.md",
+      "v1\n\n## User Profile\n\n- p\n\n## User preferences\n\n## General Tips\n\n## What's in Memory\n\n- old: see rollout_summaries/abc.md\n",
+    );
+    writeWorkspaceText(dir, "raw_memories.md", "# Raw Memories\n\nNo raw memories yet.\n");
+    saveBaseline(dir);
+    await addAdHocNote(dir, "remember rollout", "remember");
+    const result = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true, injectBudgetTokens: BUDGET });
+    expect(result.applied).toBe(true);
+    expect(readWorkspaceText(dir, "memory_summary.md")).toContain("rollout_summaries/abc.md");
+  });
+
+  test("headings that only exist inside a fenced block are repaired", async () => {
+    const { evaluateSummary } = await import("../src/core/budget.js");
+    const fencedOnly =
+      "v1\n\n```\n## User Profile\n## User preferences\n## General Tips\n## What's in Memory\n```\n";
+    const { normalized, violation } = evaluateSummary(fencedOnly, BUDGET);
+    expect(violation).toBeNull();
+    expect(normalized).toContain("\n## User Profile\n");
+    // The appended sections are real headings, not the fenced sample.
+    expect(normalized.split("\n").filter((line) => line === "## User Profile")).toHaveLength(2);
+  });
 
 describe("rule provider with a legacy store", () => {
 
@@ -193,15 +221,16 @@ describe("routing index refresh", () => {
 
   test("a collapsed engine index is refreshed when the group set shrinks", async () => {
     const { refreshSummaryIndex } = await import("../src/core/consolidate.js");
-    // 20 groups collapse to 12 router lines + the older-topics tail.
-    const collapsed = refreshSummaryIndex(SUMMARY_HEAD, memoryOf(20), BUDGET);
+    // A small budget forces the collapse (the budget, not a fixed line count,
+    // is the bound).
+    const collapsed = refreshSummaryIndex(SUMMARY_HEAD, memoryOf(20), 128);
     expect(collapsed).toContain("older topics: see MEMORY.md");
     // Purge drops 15 groups: the stale collapsed index must be rebuilt, not
     // frozen (the collapsed tail line used to make it look foreign).
-    const shrunk = refreshSummaryIndex(collapsed, memoryOf(5), BUDGET);
+    const shrunk = refreshSummaryIndex(collapsed, memoryOf(2), 128);
     expect(shrunk).not.toContain("older topics: see MEMORY.md");
-    expect(shrunk).toContain("- g5: see MEMORY.md");
-    expect(shrunk).not.toContain("- g6: see MEMORY.md");
+    expect(shrunk).toContain("- g2: see MEMORY.md");
+    expect(shrunk).not.toContain("- g3: see MEMORY.md");
   });
 
   test("a model-written topic index is preserved", async () => {

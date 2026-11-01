@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { artifactFilenameForId } from "./artifacts.js";
-import { preferNonGrowingSummary } from "./budget.js";
+import { DEFAULT_MAX_INJECT_TOKENS, evaluateSummary, preferNonGrowingSummary } from "./budget.js";
 import { applyGeneration, discardGeneration, generationMarkerFromMeta, markGenerationCommitted, prepareGeneration, recoverPendingGenerations, } from "./generation.js";
 import { renderRawMemories, removeBlocksCitingOnly, RuleConsolidateProvider, withWorkspaceWriteLease, } from "./consolidate.js";
 import { atomicWrite } from "./transaction.js";
@@ -154,10 +154,14 @@ injectBudgetTokens) {
             });
             const rebuiltMemory = rebuilt.edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? keptMemory;
             const rebuiltSummary = rebuilt.edits.find((edit) => edit.rel === "memory_summary.md")?.content ?? currentSummary;
-            // A purge is a deletion: it must never grow the injected summary (and it
-            // must never fail because of the budget). Keep the previous file when the
-            // rule rebuild would be bigger; the next consolidation re-derives it.
-            const nextSummary = preferNonGrowingSummary(currentSummary, rebuiltSummary);
+            // A purge is a deletion: it must never grow the injected summary, never
+            // introduce a contract violation and never fail because of the budget.
+            // Keep the previous file when the rule rebuild is bigger or still
+            // invalid; the next consolidation re-derives it.
+            const evaluated = evaluateSummary(rebuiltSummary, injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS);
+            const nextSummary = evaluated.violation
+                ? currentSummary
+                : preferNonGrowingSummary(currentSummary, evaluated.normalized);
             afterWorkspace["MEMORY.md"] = { present: true, content: rebuiltMemory };
             afterWorkspace["memory_summary.md"] = { present: true, content: nextSummary };
             // Skills are model-written; only remove the ones that reference the

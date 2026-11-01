@@ -35,11 +35,9 @@ import { clipUtf8, utf8ByteLength } from "./utf8.js";
 import {
   DEFAULT_MAX_INJECT_TOKENS,
   estimateTokens,
-  isExactSummaryHeader,
-  memorySummaryViolation,
+  evaluateSummary,
   normalizeSummaryStructure,
   summaryBodyBudget,
-  summaryIndexMaxLines,
 } from "./budget.js";
 
 export interface PipelineConfig {
@@ -999,34 +997,41 @@ export function removeBlocksCitingOnly(memory: string, deleted: Set<string>, rep
   return out.join("\n");
 }
 
-/** One routing line. Redaction lives here (not in the callers) and the copied
- *  group name is clipped: a single 6k-character header used to produce a
- *  3k-token line that pushed the engine's own summary over the budget. */
-function renderIndexLine(group: string, nameLimit = 72): string {
+/** One routing line. Redaction lives here (not in the callers). The anchor is
+ *  the EXACT Task Group name so a future grep can hit it; a name too long to
+ *  fit is clipped for display only and then carries no anchor at all — a
+ *  truncated anchor would be an unsearchable fake key. */
+function renderIndexLine(group: string, maxTokens: number): string | null {
   const clean = redactSecrets(group).text.trim();
-  const name = clean.length > nameLimit ? `${clean.slice(0, nameLimit)}…` : clean;
-  return `- ${name}: see MEMORY.md "# Task Group: ${name}"`;
+  const anchored = `- ${clean}: see MEMORY.md "# Task Group: ${clean}"`;
+  if (estimateTokens(anchored) <= maxTokens) {
+    return anchored;
+  }
+  const clipped = `- ${clean.slice(0, 72)}…: see MEMORY.md`;
+  return estimateTokens(clipped) <= maxTokens ? clipped : null;
 }
 
-function renderIndexLines(
-  groups: string[],
-  maxLines: number,
-  maxTokens: number = Number.POSITIVE_INFINITY,
-): string[] {
+/** Render the routing section under a token budget. Codex V1 explicitly does
+ *  not target a fixed count (consolidation.md:192-193), so the budget is the
+ *  only bound: lines are added while they fit, the rest collapses into one
+ *  tail line. */
+function renderIndexLines(groups: string[], maxTokens: number = Number.POSITIVE_INFINITY): string[] {
   if (!groups.length) {
     return ["- (no memory yet; run memcurio remember or let sessions consolidate)"];
   }
   const lines: string[] = [];
   let used = 0;
-  for (const group of groups.slice(0, maxLines)) {
-    const line = renderIndexLine(group);
-    const cost = estimateTokens(line);
-    // Always keep the first line: an empty index is worse than one over-budget
-    // line, and the writer-side gate still sees the total.
-    if (lines.length > 0 && used + cost > maxTokens) {
+  for (const group of groups) {
+    // The tail line needs room too; reserve its cost up front.
+    const reserved = estimateTokens("- older topics: see MEMORY.md (9999 more Task Group(s))");
+    const line = renderIndexLine(group, maxTokens - used - reserved);
+    if (line === null && lines.length > 0) {
       break;
     }
-    used += cost;
+    if (line === null) {
+      break;
+    }
+    used += estimateTokens(line);
     lines.push(line);
   }
   const hidden = groups.length - lines.length;
@@ -1043,11 +1048,7 @@ function renderMinimalSummary(memory: string, maxInjectTokens: number = DEFAULT_
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)]
     .map((m) => (m[1] ?? "").trim())
     .filter(Boolean);
-  const indexLines = renderIndexLines(
-    groups,
-    summaryIndexMaxLines(maxInjectTokens),
-    Math.max(24, summaryBodyBudget(maxInjectTokens) - 60),
-  );
+  const indexLines = renderIndexLines(groups, Math.max(24, summaryBodyBudget(maxInjectTokens) - 60));
   return [
     "v1",
     "",
@@ -1078,7 +1079,6 @@ export function refreshSummaryIndex(
   maxInjectTokens: number = DEFAULT_MAX_INJECT_TOKENS,
 ): string {
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
-  const maxLines = summaryIndexMaxLines(maxInjectTokens);
   const marker = "## What's in Memory";
   const idx = summary.indexOf(marker);
   if (idx < 0) {
@@ -1092,14 +1092,13 @@ export function refreshSummaryIndex(
     .map((line) => line.trim())
     .filter((line) => line.startsWith("- "));
   const headBudget = summaryBodyBudget(maxInjectTokens) - estimateTokens(head) - 20;
-  const expected = renderIndexLines(groups, maxLines, Math.max(24, headBudget));
+  const expected = renderIndexLines(groups, Math.max(24, headBudget));
   // The engine's own lines are the group router plus the collapsed-tail line.
   // Matching whole lines against the expected rendering is what keeps the
   // section from freezing: the old "every line cites a Task Group" test treated
   // the collapsed `older topics` line as foreign and returned the stale index
   // forever once a store crossed the line bound.
-  const engineLine = (line: string): boolean =>
-    line.includes('see MEMORY.md "# Task Group: ') || line.startsWith("- older topics: see MEMORY.md");
+  const engineLine = (line: string): boolean => line.startsWith("- ") && line.includes("see MEMORY.md");
   if (existing.length > 0 && !existing.every(engineLine)) {
     // A model-written topic index is never clobbered by the rule fallback.
     return summary;
@@ -1501,19 +1500,23 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
         }
         // Codex V2 gate at the earliest possible point (workspace.rs:118-129):
         // the model must learn the violation from the tool result, not from a
-        // failed run it never sees.
+        // failed run it never sees. Evaluated, not literal-compared: the
+        // structural repair is deterministic, so the gate stages the repaired
+        // text instead of making the model hand-fix it.
+        let staged = content;
         if (rel === "memory_summary.md") {
-          const violation = memorySummaryViolation(content, input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS);
+          const { normalized, violation } = evaluateSummary(content, input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS);
           if (violation) {
             rejected.push({ rel, reason: violation.reason });
             return { content: `rejected: ${violation.reason}`, isError: true };
           }
+          staged = normalized;
         }
         const existing = edits.findIndex((e) => e.rel === rel);
         if (existing >= 0) {
-          edits[existing] = { rel, content };
+          edits[existing] = { rel, content: staged };
         } else {
-          edits.push({ rel, content });
+          edits.push({ rel, content: staged });
         }
         return { content: "ok: write staged (applied after the run)", isError: false };
       }
@@ -1602,8 +1605,8 @@ function buildConsolidationSystemPrompt(
     "most relevant entries there instead of re-reading the whole diff.",
   );
   const currentSummary = input.workspace["memory_summary.md"] ?? "";
-  const currentViolation = memorySummaryViolation(
-    normalizeSummaryStructure(currentSummary),
+  const { violation: currentViolation } = evaluateSummary(
+    currentSummary,
     input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS,
   );
   if (currentViolation) {
@@ -1627,7 +1630,6 @@ function buildConsolidationSystemPrompt(
   }
   const promptBudget = input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
   const summaryCap = summaryBodyBudget(promptBudget);
-  const indexLineCap = summaryIndexMaxLines(promptBudget);
   const prompt = [
     "## Memory Writing Agent: Phase 2 (Consolidation)",
     "",
@@ -1659,7 +1661,7 @@ function buildConsolidationSystemPrompt(
     `  First line exactly 'v1'; HARD budget ${String(summaryCap)} tokens (the window middle-truncates beyond it).`,
     "  Sections: '## User Profile' (stable traits), '## User preferences' (actionable defaults,",
     "  hard rules first), '## General Tips' (environment facts), \"## What's in Memory\"",
-    `  (<=${String(indexLineCap)} routing lines: '- <topic>: <keywords> - <when to search here>').`,
+    "  (routing lines: '- <topic>: <keywords> - <when to search here>'; only as many as fit the budget).",
     "  NEVER write here: progress/status ('in progress', 'pending', 'not pushed', 'awaiting",
     "  decision', 'blocked'), dates, commit ids, version/tag state, test-count deltas, per-run",
     "  tallies. A future session that reads a frozen status acts on a stale fact.",
@@ -1803,9 +1805,6 @@ function validateEdits(
     const flags = sanitizeForInjection(content);
     if (!flags.safe) {
       throw new Error(`consolidation edit rejected: ${rel} contains an injection pattern (${flags.flags[0] ?? ""})`);
-    }
-    if (rel === "memory_summary.md" && content.trim() && !isExactSummaryHeader(content)) {
-      throw new Error("consolidation edit rejected: memory_summary.md must start with exactly 'v1'");
     }
     if (rel === "MEMORY.md" && opts.requireProvenance) {
       validateMemoryProvenance(content, opts.root, opts.deletedSummaries);
@@ -2124,9 +2123,12 @@ export async function runConsolidation(
     // A summary the read path itself refuses (oversized file) is already
     // unusable; treating the read failure as "violation" would just replace one
     // crash with another, so it does not force a run here.
-    let existingViolation: ReturnType<typeof memorySummaryViolation> = null;
+    // Only a writer that can re-ask a model may repair a violation it did not
+    // cause; the deterministic writer would just re-run the same failure.
+    const canRewriteSummary = provider.name !== "rule";
+    let existingViolation: ReturnType<typeof evaluateSummary>["violation"] = null;
     try {
-      existingViolation = memorySummaryViolation(readWorkspaceText(root, "memory_summary.md"), injectBudget);
+      existingViolation = evaluateSummary(readWorkspaceText(root, "memory_summary.md"), injectBudget).violation;
     } catch {
       existingViolation = null;
     }
@@ -2134,7 +2136,7 @@ export async function runConsolidation(
       freshPlan.diff.length === 0 &&
       freshPlan.notes.length === 0 &&
       freshPlan.pruned.length === 0 &&
-      existingViolation === null
+      (existingViolation === null || !canRewriteSummary)
     ) {
       return { plan: freshPlan, result: null, applied: false, message: "no changes: nothing to consolidate" };
     }
@@ -2250,14 +2252,12 @@ export async function runConsolidation(
     if (effectiveSummary !== effectiveRaw) {
       afterWorkspace["memory_summary.md"] = { present: true, content: effectiveSummary };
     }
-    const effectiveViolation = memorySummaryViolation(effectiveSummary, injectBudget);
-    // The deterministic writer cannot compress a legacy file: failing it would
-    // freeze every store without a model channel (codex's rule path has no
-    // budget gate either). Only the LLM writer — which can re-ask for a shorter
-    // summary in the same run — is held to the budget. Structure is enforced
-    // for everyone because the repair above is lossless.
-    const ruleOverBudget = effectiveViolation?.code === "budget" && provider.name === "rule";
-    if (effectiveViolation && !ruleOverBudget) {
+    const effectiveViolation = evaluateSummary(effectiveRaw, injectBudget).violation;
+    // The deterministic writer cannot repair what needs a model (compress an
+    // oversized body, remove rollout paths): failing it would freeze every
+    // store without a model channel. Capability, not violation code, decides.
+    const unresolvedByRule = effectiveViolation !== null && !canRewriteSummary;
+    if (effectiveViolation && !unresolvedByRule) {
       throw new ConsolidationSummaryError(effectiveViolation.reason);
     }
     generation = prepareGeneration(
@@ -2313,7 +2313,7 @@ export async function runConsolidation(
         idx.audit(
           "consolidate.done",
           "-",
-          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}, summary_tokens=${String(summaryTokens)}/${String(summaryBodyBudget(injectBudget))}${summaryInitialized ? ", init=memory_summary.md" : ""}${summaryRepaired ? ", summary_repaired" : ""}${ruleOverBudget ? ", summary_over_budget(rule)" : ""}`,
+          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}, summary_tokens=${String(summaryTokens)}/${String(summaryBodyBudget(injectBudget))}${summaryInitialized ? ", init=memory_summary.md" : ""}${summaryRepaired ? ", summary_repaired" : ""}${unresolvedByRule ? `, summary_unresolved(${effectiveViolation?.code ?? "shape"})` : ""}`,
         );
         for (const r of result.rejected) {
           idx.audit("consolidate.rejected", r.rel, r.reason);

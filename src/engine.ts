@@ -1537,6 +1537,10 @@ export class MemcurioAdapter {
         idx3.metaDelete(AUTO_CONSOLIDATE_ATTEMPTS_KEY);
         idx3.metaDelete(AUTO_CONSOLIDATE_RETRY_AT_KEY);
         idx3.metaDelete(AUTO_CONSOLIDATE_KIND_KEY);
+        // The pause flag must not outlive the failure: a successful run resumes
+        // the automatic trigger and re-arms the one-shot audit for the next
+        // pause (otherwise the store would report paused forever).
+        idx3.metaDelete(AUTO_CONSOLIDATE_EXHAUSTED_KEY);
         // A note the run did not consume keeps its urgency but only at an
         // hourly cadence; once consumed the gate is cleared.
         if (idx3.noteList().some(actionableNote)) {
