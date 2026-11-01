@@ -38,6 +38,7 @@ export const NON_WRITE_OTHER_ACTIONS = new Set([
     "consolidate.auto_unavailable",
     "consolidate.auto_contended",
     "consolidate.auto_exhausted",
+    "consolidate.auto_reprobe",
 ]);
 /** True when one audit action label names a durable memory write. */
 export function isWritePathAction(action) {

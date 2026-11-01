@@ -135,6 +135,7 @@ export const NON_WRITE_OTHER_ACTIONS: ReadonlySet<string> = new Set([
   "consolidate.auto_unavailable",
   "consolidate.auto_contended",
   "consolidate.auto_exhausted",
+  "consolidate.auto_reprobe",
 ]);
 
 /** True for an action that actually changed stored memory (defensive client

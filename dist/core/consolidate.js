@@ -559,9 +559,9 @@ export class RuleConsolidateProvider {
                 report.push(`note ignored (needs an LLM provider): ${note.filename}`);
             }
         }
-        // memory_summary.md: rebuild when missing or schema-incompatible, but only
-        // when there is actual work (notes other than update, new raw memories, or
-        // an existing handbook) — a pristine store stays untouched.
+        // memory_summary.md: rebuild only when it is missing, otherwise refresh its
+        // routing index; structural repair is the runner's job
+        // (normalizeSummaryStructure) so a legacy file is never wiped.
         const hasRealWork = input.notes.some((n) => n.kind === "remember") || rawDiff !== undefined || memory.trim() !== "";
         const ruleBudget = input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
         // Structural repair happens in runConsolidation for every provider, so the
@@ -795,7 +795,10 @@ export function removeBlocksCitingOnly(memory, deleted, report) {
  *  fit is clipped for display only and then carries no anchor at all — a
  *  truncated anchor would be an unsearchable fake key. */
 function renderIndexLine(group, maxTokens) {
-    const clean = redactSecrets(group).text.trim();
+    // A Task Group name may contain a provenance path (a user-authored header).
+    // Repeating it would make the engine's own summary violate the contract, so
+    // the path token is neutralised before rendering.
+    const clean = redactSecrets(group).text.replace(/rollout_summaries[\\/]/g, "rollout summaries ").trim();
     const anchored = `- ${clean}: see MEMORY.md "# Task Group: ${clean}"`;
     if (estimateTokens(anchored) <= maxTokens) {
         return anchored;
@@ -862,7 +865,7 @@ function renderMinimalSummary(memory, maxInjectTokens = DEFAULT_MAX_INJECT_TOKEN
 /** Keep the routing section in sync with MEMORY.md WITHOUT clobbering a model
  *  written one. Rebuild only when the section is missing, carries the engine's
  *  own `- <group>: see MEMORY.md` lines and no longer covers the groups, or
- *  exceeds the budget-derived line bound; a model/topic index is left alone. */
+ *  exceeds the budget-derived rendering; a model/topic index is left alone. */
 export function refreshSummaryIndex(summary, memory, maxInjectTokens = DEFAULT_MAX_INJECT_TOKENS) {
     const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)].map((m) => m[1] ?? "").filter(Boolean);
     const marker = "## What's in Memory";
@@ -884,7 +887,7 @@ export function refreshSummaryIndex(summary, memory, maxInjectTokens = DEFAULT_M
     // section from freezing: the old "every line cites a Task Group" test treated
     // the collapsed `older topics` line as foreign and returned the stale index
     // forever once a store crossed the line bound.
-    const engineLine = (line) => line.startsWith("- ") && line.includes("see MEMORY.md");
+    const engineLine = (line) => line.startsWith("- ") && (line.includes("see MEMORY.md") || line.startsWith("- (no memory yet"));
     if (existing.length > 0 && !existing.every(engineLine)) {
         // A model-written topic index is never clobbered by the rule fallback.
         return summary;
@@ -1363,8 +1366,8 @@ function buildConsolidationSystemPrompt(input, prunedResources = [], promptBudge
         "- Evidence-based only; never invent facts or claim verification that did not happen.",
         "- Avoid copying large outputs; prefer compact summaries + exact error snippets + pointers.",
         "- No-op is allowed and preferred when there is no meaningful, reusable learning worth saving.",
-        "- INIT mode: when the memory folder has no schema-valid 'memory_summary.md' yet, still create the",
-        "  minimal required files ('MEMORY.md' and 'memory_summary.md') instead of making no changes.",
+        "- INIT mode: when 'memory_summary.md' is missing or empty, still create it (a minimal valid one)",
+        "  instead of making no changes; a legacy file is repaired in place, never regenerated wholesale.",
         "",
         "MEMORY FOLDER LAYOUT (progressive disclosure, most general first)",
         "- MEMORY.md: durable handbook; '# Task Group: <scope>' blocks with 'scope:' and 'applies_to:'",
@@ -1801,16 +1804,33 @@ export async function runConsolidation(root, provider, opts) {
         // cause; the deterministic writer would just re-run the same failure.
         const canRewriteSummary = provider.name !== "rule";
         let existingViolation = null;
+        let existingSummaryText = "";
         try {
-            existingViolation = evaluateSummary(readWorkspaceText(root, "memory_summary.md"), injectBudget).violation;
+            existingSummaryText = readWorkspaceText(root, "memory_summary.md");
+            existingViolation = evaluateSummary(existingSummaryText, injectBudget).violation;
         }
         catch {
             existingViolation = null;
         }
+        // A store with a handbook but no summary has never been initialized (the
+        // guide and the window injection key off the file): that is work for any
+        // provider, not a no-op.
+        const needsInitialization = (() => {
+            if (existingSummaryText.trim()) {
+                return false;
+            }
+            try {
+                return readWorkspaceText(root, "MEMORY.md").trim() !== "";
+            }
+            catch {
+                return false;
+            }
+        })();
         if (freshPlan.diff.length === 0 &&
             freshPlan.notes.length === 0 &&
             freshPlan.pruned.length === 0 &&
-            (existingViolation === null || !canRewriteSummary)) {
+            (existingViolation === null || !canRewriteSummary) &&
+            !needsInitialization) {
             return { plan: freshPlan, result: null, applied: false, message: "no changes: nothing to consolidate" };
         }
         // Codex parity (sync_workspace_inputs): stage the plan's artifacts on disk
@@ -1864,8 +1884,8 @@ export async function runConsolidation(root, provider, opts) {
         const deletedSummaries = new Set(freshPlan.diff
             .filter((d) => d.rel.startsWith("rollout_summaries/") && !d.hunks.some((h) => h.kind === "add"))
             .map((d) => d.rel.replace(/^rollout_summaries\//, "")));
-        // Codex INIT parity: a store that has never carried a schema-valid summary
-        // must leave this run with one. Both the read-path guide and the window
+        // Codex INIT parity: a store with no summary at all must leave this run
+        // with one. Both the read-path guide and the window
         // injection key off memory_summary.md, so a provider that consolidated
         // MEMORY.md but skipped the summary would strand every later session
         // without memory instructions. The rule provider regenerates the summary
@@ -1881,7 +1901,6 @@ export async function runConsolidation(root, provider, opts) {
         // append-only repair must not be conflated with "invalid, regenerate".
         const summaryAfter = normalizeSummaryStructure(rawSummaryAfter);
         let summaryInitialized = false;
-        let summaryRepaired = false;
         if (!summaryAfter.trim()) {
             const memoryAfter = providerEdits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
             // Drop any summary edit that would leave the file empty or schema-invalid
@@ -1895,15 +1914,6 @@ export async function runConsolidation(root, provider, opts) {
             }
             providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter, injectBudget) });
             summaryInitialized = true;
-        }
-        else if (summaryAfter !== rawSummaryAfter) {
-            for (let index = providerEdits.length - 1; index >= 0; index -= 1) {
-                if (providerEdits[index]?.rel === "memory_summary.md") {
-                    providerEdits.splice(index, 1);
-                }
-            }
-            providerEdits.push({ rel: "memory_summary.md", content: summaryAfter });
-            summaryRepaired = true;
         }
         const edits = validateEdits(providerEdits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
         const applied = edits.length > 0;
@@ -1919,6 +1929,7 @@ export async function runConsolidation(root, provider, opts) {
         // untouched) instead of being committed as if it were fine.
         const effectiveRaw = afterWorkspace["memory_summary.md"]?.content ?? "";
         const effectiveSummary = normalizeSummaryStructure(effectiveRaw);
+        const summaryRepaired = effectiveSummary !== effectiveRaw;
         const summaryTokens = estimateTokens(effectiveSummary.trim());
         if (effectiveSummary !== effectiveRaw) {
             afterWorkspace["memory_summary.md"] = { present: true, content: effectiveSummary };

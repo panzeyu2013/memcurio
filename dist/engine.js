@@ -70,6 +70,10 @@ const AUTO_CONSOLIDATE_EXHAUSTED_KEY = "consolidation_auto_exhausted";
  *  its stage-1 worker does stop at the exhausted budget. Without a stop here a
  *  single invalid artifact pins every turn to a failing Phase-2 run. */
 const AUTO_CONSOLIDATE_MAX_ATTEMPTS = 3;
+/** A pause allows one probe after this window: a manual repair or a new build
+ *  produces no note/stage row, so an unbounded pause would need hand-editing
+ *  the store meta (documented as the manual reset, not the only way out). */
+const AUTO_CONSOLIDATE_PAUSE_REPROBE_MS = 6 * 60 * 60 * 1000;
 const AUTO_CONSOLIDATE_RETRY_AT_KEY = "consolidation_auto_retry_at";
 const AUTO_CONSOLIDATE_KIND_KEY = "consolidation_auto_kind";
 const AUTO_CONSOLIDATE_NOTE_RETRY_AT_KEY = "consolidation_note_retry_at";
@@ -1248,8 +1252,13 @@ export class MemcurioAdapter {
                     .map((row) => parseConsolidationTimestamp(row.generatedAt)));
                 const freshInput = attempts > 0 && (!Number.isFinite(failedAtMs) || newestInputMs > failedAtMs);
                 if (freshInput) {
+                    // New input invalidates the failure record as a whole: keeping
+                    // retry_at would still block the very run the reset just allowed.
                     idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, "0");
                     idx.metaDelete(AUTO_CONSOLIDATE_EXHAUSTED_KEY);
+                    idx.metaDelete("consolidation_auto_failed");
+                    idx.metaDelete(AUTO_CONSOLIDATE_RETRY_AT_KEY);
+                    idx.metaDelete(AUTO_CONSOLIDATE_KIND_KEY);
                     attempts = 0;
                 }
                 // Codex parity: the success cooldown is wall-clock and is NOT bypassed
@@ -1292,12 +1301,24 @@ export class MemcurioAdapter {
                 if (cooldownMs === undefined && attempts >= AUTO_CONSOLIDATE_MAX_ATTEMPTS) {
                     // Repeated failures with no new input: pause the automatic trigger
                     // instead of re-running a deterministic failure on every turn/end.
-                    // Input newer than the last failure resets the budget above; the
-                    // manual reset is documented in docs/operations.md.
-                    exhausted = true;
-                    if (idx.metaGet(AUTO_CONSOLIDATE_EXHAUSTED_KEY) !== "1") {
-                        idx.audit("consolidate.auto_exhausted", "-", `attempts=${String(attempts)}; waiting for new input`);
-                        idx.metaSet(AUTO_CONSOLIDATE_EXHAUSTED_KEY, "1");
+                    // A pause is bounded: after the reprobe window one attempt is allowed
+                    // again, because a manual repair (or a new build) does not produce a
+                    // note/stage row and would otherwise stay blocked until someone edits
+                    // the store meta by hand.
+                    if (Number.isFinite(failedAtMs) && now - failedAtMs >= AUTO_CONSOLIDATE_PAUSE_REPROBE_MS) {
+                        idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, "0");
+                        idx.metaDelete(AUTO_CONSOLIDATE_EXHAUSTED_KEY);
+                        idx.metaDelete("consolidation_auto_failed");
+                        idx.metaDelete(AUTO_CONSOLIDATE_RETRY_AT_KEY);
+                        attempts = 0;
+                        idx.audit("consolidate.auto_reprobe", "-", "pause window elapsed; retrying once");
+                    }
+                    else {
+                        exhausted = true;
+                        if (idx.metaGet(AUTO_CONSOLIDATE_EXHAUSTED_KEY) !== "1") {
+                            idx.audit("consolidate.auto_exhausted", "-", `attempts=${String(attempts)}; waiting for new input`);
+                            idx.metaSet(AUTO_CONSOLIDATE_EXHAUSTED_KEY, "1");
+                        }
                     }
                 }
                 if (cooldownMs === undefined && !exhausted) {
@@ -1351,10 +1372,22 @@ export class MemcurioAdapter {
                 // A store whose injected summary violates the contract is work by
                 // itself, but only when a model channel can actually rewrite it. The
                 // deterministic writer cannot compress a legacy file, so counting it as
-                // work there would spin a failing run on every turn/end.
-                if (!work && usableChannel !== undefined) {
-                    work =
-                        memorySummaryViolation(readWorkspaceText(root, "memory_summary.md"), this.#injectionBudget()) !== null;
+                // work there would spin a failing run on every turn/end. A handbook
+                // with no summary at all is work for any provider: INIT is engine-side.
+                if (!work) {
+                    try {
+                        const summary = readWorkspaceText(root, "memory_summary.md");
+                        if (!summary.trim()) {
+                            work = readWorkspaceText(root, "MEMORY.md").trim() !== "";
+                        }
+                        else if (usableChannel !== undefined) {
+                            work = memorySummaryViolation(summary, this.#injectionBudget()) !== null;
+                        }
+                    }
+                    catch {
+                        // An unreadable (oversized) summary is already unusable by every
+                        // reader; it must not turn the probe into a new failure source.
+                    }
                 }
             }
             finally {

@@ -236,7 +236,7 @@ export declare function removeBlocksCitingOnly(memory: string, deleted: Set<stri
 /** Keep the routing section in sync with MEMORY.md WITHOUT clobbering a model
  *  written one. Rebuild only when the section is missing, carries the engine's
  *  own `- <group>: see MEMORY.md` lines and no longer covers the groups, or
- *  exceeds the budget-derived line bound; a model/topic index is left alone. */
+ *  exceeds the budget-derived rendering; a model/topic index is left alone. */
 export declare function refreshSummaryIndex(summary: string, memory: string, maxInjectTokens?: number): string;
 /** A bounded tool loop that lets the LLM read the workspace and write memory
  *  docs directly (codex Phase-2 style), with engine-side validation on every

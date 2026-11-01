@@ -53,5 +53,5 @@ export declare function memorySummaryViolation(content: string, maxInjectTokens:
 /** A deletion must never make the injected summary bigger: an operation that
  *  removes data cannot be allowed to push a store over its write budget. The
  *  previous summary is kept instead; the next consolidation re-derives the
- *  routing index (the no-op gate forces that repair). */
+ *  routing index on its next run. */
 export declare function preferNonGrowingSummary(previous: string, next: string): string;

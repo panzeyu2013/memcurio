@@ -130,8 +130,10 @@ export async function purgeRollout(
   root: string,
   rolloutKey: string,
   exportPaths: string[] = [],
-  /** Live injection budget, so the index line bound and the non-growth check
-   *  use the same number the reader will use (defaults to the config default). */
+  /** Live injection budget (the reader's number), so the non-growth check and
+   *  the index rendering agree with what will actually be injected. Optional:
+   *  this entry has no production caller yet, so it defaults to the config
+   *  default. */
   injectBudgetTokens?: number,
 ): Promise<PurgeResult | null> {
   return withWorkspaceWriteLease(root, async (idx, renew) => {

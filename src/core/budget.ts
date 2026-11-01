@@ -224,7 +224,7 @@ function parseSummary(content: string): { normalized: string; structural: Set<st
   }
   text = text.replace(/\r\n?/g, "\n");
   const lines = text.split("\n");
-  if (/^v1(\.\d+)?\s*$/.test(lines[0] ?? "")) {
+  if (/^\s*v1(\.\d+)?\s*$/.test(lines[0] ?? "")) {
     lines[0] = "v1";
   } else if ((lines[0] ?? "").trim() !== "v1") {
     // No version line at all: prepend one instead of rejecting the file.
@@ -235,7 +235,7 @@ function parseSummary(content: string): { normalized: string; structural: Set<st
   let fenced = false;
   for (const line of normalized.split("\n")) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("```")) {
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
       fenced = !fenced;
       continue;
     }
@@ -246,7 +246,9 @@ function parseSummary(content: string): { normalized: string; structural: Set<st
   const missing = SUMMARY_HEADINGS.filter((heading) => !structural.has(heading));
   if (missing.length > 0) {
     // Append-only: missing sections arrive empty and nothing is rewritten.
-    normalized = `${normalized.trimEnd()}\n\n${missing.map((heading) => `${heading}\n`).join("\n")}`;
+    // Compact form (no blank line between the appended headings) keeps the
+    // repair from pushing a summary that was exactly at the cap over it.
+    normalized = `${normalized.trimEnd()}\n\n${missing.join("\n")}\n`;
     for (const heading of missing) {
       structural.add(heading);
     }
@@ -273,8 +275,9 @@ export function evaluateSummary(content: string, maxInjectTokens: number): Summa
   }
   const { normalized, structural } = parseSummary(content);
   // Fenced samples are documentation, not provenance: only an unfenced line can
-  // carry a real rollout pointer.
-  if ([...structural].some((line) => /rollout_summaries[\\/]/.test(line))) {
+  // carry a real rollout pointer, and prose may legitimately name the folder —
+  // the violation is a concrete <file>.md reference, not the word.
+  if ([...structural].some((line) => /rollout_summaries[\\/][^\s"'`)]+\.md/.test(line))) {
     return {
       normalized,
       violation: { code: "rollout", reason: "memory_summary.md must not carry rollout paths (provenance belongs in MEMORY.md)" },
@@ -299,7 +302,7 @@ export function memorySummaryViolation(content: string, maxInjectTokens: number)
 /** A deletion must never make the injected summary bigger: an operation that
  *  removes data cannot be allowed to push a store over its write budget. The
  *  previous summary is kept instead; the next consolidation re-derives the
- *  routing index (the no-op gate forces that repair). */
+ *  routing index on its next run. */
 export function preferNonGrowingSummary(previous: string, next: string): string {
   // An empty previous file is not a size to protect: keeping it would leave a
   // 0-byte summary that the no-op path then never repairs.

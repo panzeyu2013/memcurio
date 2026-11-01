@@ -389,21 +389,23 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // INIT 兜底：runConsolidation 在 provider 返回后计算「本次运行后」的 memory_summary.md——
   // 首行不是 v1（缺失/空/被写成空串/schema 不符）时，丢弃 provider 的摘要 edit 并补一条最小 v1
   // 摘要（renderMinimalSummary；与 provider edits 一起过 validateEdits 的密钥/注入/大小/v1 头校验），
-  // 审计行 consolidate.done 记 init=memory_summary.md 与 summary_tokens=<used>/<budget>，run message 带 "(memory_summary.md initialized)"；
+  // 审计行 consolidate.done 记 init=memory_summary.md、summary_tokens=<used>/<budget> 与 summary_unresolved(<code>)；
   // 使「首条记忆」的引导链（摘要 → 指南 → 注入）不依赖模型的自觉（rule 路径本就自行 regen）。
-  // 系统提示 = 精简 consolidation.md（给出 diff、workspace 文件路径、MEMORY.md/memory_summary.md 格式要求、no-op 规则、INIT 模式、红action），
-  // 含降噪条款：删除 stale/重复/低信号内容、不设固定数量目标、最有用的记忆排前、摘要索引清理失效主题；
-  // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅允许 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、secret 扫描（命中→reject）、注入扫描（命中→reject）；
-  // 只有 finish 才 completed=true；provider 失败/循环耗尽即零提交；
-  // memory_summary.md 契约（codex V2 的 gate，本地按 token 而非字节）：首行必须整行等于 "v1"、
-  // 四个标题存在、不得含 rollout 路径、estimateTokens ≤ summaryBodyBudget(maxInjectTokens)（默认 2500-42=2458）。
-  // 三道闸：write_file 阶段直接拒绝（工具结果带超限 token 数，模型可在本轮收敛）→ 提交前对「最终工作区」
-  // 再校验一次（ConsolidationSummaryError，基线不推进、下一轮重试）→ no-op 判定前也校验（无 diff 但摘要不合规
-  // 且存在 LLM 通道时不短路，强制进入 agent 修复；无通道则不进 work，避免每轮空转）。
-  // 分级：结构（首行/四段/无 rollout 路径）对所有写者强制，但先经 normalizeSummaryStructure 无损修复
-  // （去 BOM、CRLF→LF、v1.x→v1、缺段追加空段，不删改任何正文）；预算只对非 rule provider 硬拒——
-  // 确定性写者压不动存量摘要，判它失败会让无模型通道的安装永久停写。rule 超预算只写 audit
-  // （consolidate.done 带 summary_over_budget(rule)），注入侧照旧中间截断。
+  // 系统提示 = 精简 consolidation.md（diff、workspace 路径、MEMORY.md/memory_summary.md 格式、no-op、INIT、红action），
+  // 含降噪条款与两条判据（过程不得吃预算；只解释发生了什么→归 rollout summary）；
+  // 循环上限 cfg.maxAgentSteps（默认 25）；写入目标仅 MEMORY.md、memory_summary.md、skills/<name>/SKILL.md，content ≤ 256KB、
+  // secret/注入扫描对模型写入命中即 reject；引擎的结构修复不经 validateEdits，由提交闸直接落盘。
+  // 请求上界：每步前 requestBytes(system,messages) 超过 MAX_AGENT_HISTORY_BYTES 时先 compactTranscript 丢最旧工具交换，
+  // 仍超才抛 INPUT_BUDGET_EXCEEDED（旧行为直接抛，2.5MB 级工作区会永久失败）。
+  // memory_summary.md 契约（codex V2 的 gate，本地按 token 而非字节）：evaluateSummary 是唯一判据——
+  // 先无损结构修复（去 BOM、CRLF→LF、首行去空白后 v1.x→v1、按 fenced 感知补缺失段，不删改正文），
+  // 再判 rollout 指针（只认 rollout_summaries/<file>.md；散文提及放行）与预算 estimateTokens ≤ summaryBodyBudget(max)（默认 2500-42=2458）。
+  // 写者能力位：LLM provider 必须留下一份合规摘要，否则 ConsolidationSummaryError（基线不推进、下一轮重试）；
+  // rule provider 修不了预算/指针，只记 audit 不失败（否则无模型通道的存量库永久停写）。
+  // INIT 只对「缺失/空」触发；结构问题由无损修复解决，不再整篇重建（避免丢正文）。
+  // no-op 判定先评估：违规且存在 LLM 通道时强制进入修复轮；无通道不进入（避免空转）。
+  // 路由索引按 token 预算渲染，锚点必须是组名原文（过长则舍弃锚点）；模型写的主题索引原样保留。
+  // 仅契约、无机械闸的项：禁状态/日期/版本/计数、主题式标签、行数上限——由 prompt 约束，文档不得声称被强制。
 export interface PipelineConfig {
   maxUnusedDays: number;         // 默认 30（stage1 选择窗口，对齐 codex max_unused_days）
   maxInputs: number;             // 默认 256（单批新进 stage1 上限；codex 的 max_raw_memories_for_consolidation 限整批重选窗口，memcurio 增量为整批保留已选行）
