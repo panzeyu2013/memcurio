@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { artifactFilenameForId } from "./artifacts.js";
+import { preferNonGrowingSummary } from "./budget.js";
 import { applyGeneration, discardGeneration, generationMarkerFromMeta, markGenerationCommitted, prepareGeneration, recoverPendingGenerations, } from "./generation.js";
 import { renderRawMemories, removeBlocksCitingOnly, RuleConsolidateProvider, withWorkspaceWriteLease, } from "./consolidate.js";
 import { atomicWrite } from "./transaction.js";
@@ -149,8 +150,12 @@ export async function purgeRollout(root, rolloutKey, exportPaths = []) {
             });
             const rebuiltMemory = rebuilt.edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? keptMemory;
             const rebuiltSummary = rebuilt.edits.find((edit) => edit.rel === "memory_summary.md")?.content ?? currentSummary;
+            // A purge is a deletion: it must never grow the injected summary (and it
+            // must never fail because of the budget). Keep the previous file when the
+            // rule rebuild would be bigger; the next consolidation re-derives it.
+            const nextSummary = preferNonGrowingSummary(currentSummary, rebuiltSummary);
             afterWorkspace["MEMORY.md"] = { present: true, content: rebuiltMemory };
-            afterWorkspace["memory_summary.md"] = { present: true, content: rebuiltSummary };
+            afterWorkspace["memory_summary.md"] = { present: true, content: nextSummary };
             // Skills are model-written; only remove the ones that reference the
             // purged rollout (by key, artifact id/filename, or legacy slug filename)
             // so unrelated reusable procedures survive a single-rollout purge.

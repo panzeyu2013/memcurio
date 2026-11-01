@@ -82,6 +82,18 @@ describe("memory_summary.md write contract", () => {
   });
 });
 
+describe("purge never grows the summary", () => {
+  test("a rebuild that would be bigger keeps the previous file", async () => {
+    const { preferNonGrowingSummary } = await import("../src/core/budget.js");
+    const small = "v1\n\n## User Profile\n\n- p\n\n## User preferences\n\n## General Tips\n\n## What's in Memory\n";
+    expect(preferNonGrowingSummary(small, small)).toBe(small);
+    const bigger = `${small}\n${"y".repeat(4000)}\n`;
+    expect(preferNonGrowingSummary(small, bigger)).toBe(small);
+    // A smaller rebuild always wins: the index must be allowed to shrink.
+    expect(preferNonGrowingSummary(bigger, small)).toBe(small);
+  });
+});
+
 describe("injection budget boundary", () => {
   test("a body at the budget never loses content; one token more is truncated", () => {
     const budget = 2458; // 2500 - 42 framing at the current nonce width

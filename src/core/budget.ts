@@ -249,3 +249,12 @@ export function summaryIndexMaxLines(maxInjectTokens: number): number {
   return Math.max(3, Math.min(12, Math.floor(body / 200)));
 }
 
+/** A deletion must never make the injected summary bigger: an operation that
+ *  removes data cannot be allowed to push a store over its write budget. The
+ *  previous summary is kept instead; the next consolidation re-derives the
+ *  routing index (the no-op gate forces that repair). */
+export function preferNonGrowingSummary(previous: string, next: string): string {
+  return estimateTokens(next.trim()) > estimateTokens(previous.trim()) ? previous : next;
+}
+
+

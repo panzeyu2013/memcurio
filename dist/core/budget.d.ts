@@ -45,3 +45,8 @@ export declare function memorySummaryViolation(content: string, maxInjectTokens:
  *  fixed 10 would drop groups once a store carries more (fleet max is 24). The
  *  bound therefore follows the budget: ~200 tokens per routing line, 3..12. */
 export declare function summaryIndexMaxLines(maxInjectTokens: number): number;
+/** A deletion must never make the injected summary bigger: an operation that
+ *  removes data cannot be allowed to push a store over its write budget. The
+ *  previous summary is kept instead; the next consolidation re-derives the
+ *  routing index (the no-op gate forces that repair). */
+export declare function preferNonGrowingSummary(previous: string, next: string): string;
