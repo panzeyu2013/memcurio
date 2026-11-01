@@ -717,6 +717,46 @@ describe("runConsolidation", () => {
     expect(calls).toBeLessThan(12);
   });
 
+
+  test("an over-ceiling transcript is compacted instead of failing the run", async () => {
+    const big = "x".repeat(40_000);
+    let calls = 0;
+    let sawOmitted = false;
+    const provider = new LlmLoopConsolidateProvider(
+      12,
+      {
+        name: "reader",
+        async agent(_system, messages) {
+          calls += 1;
+          if (messages.some((message) => message.role === "user" && message.text.includes("older tool output omitted"))) {
+            sawOmitted = true;
+          }
+          const last = messages[messages.length - 1];
+          if (last?.role === "tool" && calls > 6) {
+            return {
+              text: "",
+              toolCalls: [{ id: "f", name: "finish", arguments: JSON.stringify({ report: "done" }) }],
+              finish: "tool-calls" as const,
+            };
+          }
+          return {
+            text: "",
+            toolCalls: [
+              { id: `r${String(calls)}`, name: "read_file", arguments: JSON.stringify({ rel: "big.md", offset: 0, limit: 200_000 }) },
+            ],
+            finish: "tool-calls" as const,
+          };
+        },
+      },
+      60_000,
+      512 * 1024,
+      200_000,
+    );
+    const result = await provider.consolidate({ workspace: { "big.md": big }, diff: [], notes: [], memoryRoot: dir });
+    expect(result.completed).toBe(true);
+    expect(sawOmitted).toBe(true);
+  });
+
   test("the provider receives the rendered virtual diff file, not inline diff text", async () => {
     await addAdHocNote(dir, "seed the diff file", "remember");
     let seen: ConsolidateInput | undefined;

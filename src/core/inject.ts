@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { loadConfig } from "./config.js";
 import {
+  DEFAULT_MAX_INJECT_TOKENS,
   SUMMARY_INJECTION_LABEL,
   SUMMARY_INJECTION_WARNING,
   SUMMARY_NONCE_HEX_CHARS,
@@ -114,9 +115,9 @@ export function renderStaticContext(root: string, budgetTokens?: number): string
 
 function defaultInjectBudget(root: string): number {
   try {
-    return loadConfig(root).budget.maxInjectTokens ?? 2500;
+    return loadConfig(root).budget.maxInjectTokens ?? DEFAULT_MAX_INJECT_TOKENS;
   } catch {
-    return 2500;
+    return DEFAULT_MAX_INJECT_TOKENS;
   }
 }
 

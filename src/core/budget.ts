@@ -221,12 +221,25 @@ export function memorySummaryViolation(content: string, maxInjectTokens: number)
   if (!isExactSummaryHeader(content)) {
     return { code: "shape", reason: "memory_summary.md first line must be exactly 'v1'" };
   }
-  const lines = content.split("\n").map((line) => line.trim());
-  const missing = SUMMARY_HEADINGS.filter((heading) => !lines.includes(heading));
+  // Headings inside a fenced block are examples, not structure: a contract
+  // pasted into a code sample must not satisfy the gate.
+  const structural: string[] = [];
+  let fenced = false;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced) {
+      structural.push(trimmed);
+    }
+  }
+  const missing = SUMMARY_HEADINGS.filter((heading) => !structural.includes(heading));
   if (missing.length > 0) {
     return { code: "shape", reason: `memory_summary.md is missing required heading(s): ${missing.join(", ")}` };
   }
-  if (content.includes("rollout_summaries/")) {
+  if (/rollout_summaries[\\/]/.test(content)) {
     return { code: "shape", reason: "memory_summary.md must not carry rollout paths (provenance belongs in MEMORY.md)" };
   }
   const body = summaryBodyBudget(maxInjectTokens);

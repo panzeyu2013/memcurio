@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { configPath } from "./paths.js";
+import { DEFAULT_MAX_INJECT_TOKENS } from "./budget.js";
 import { DEFAULT_PIPELINE_CONFIG } from "./consolidate.js";
 import type { PipelineConfig } from "./consolidate.js";
 
@@ -10,7 +11,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  budget: { maxInjectTokens: 2500 },
+  budget: { maxInjectTokens: DEFAULT_MAX_INJECT_TOKENS },
   pipeline: structuredClone(DEFAULT_PIPELINE_CONFIG),
 };
 

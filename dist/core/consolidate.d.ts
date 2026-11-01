@@ -247,8 +247,14 @@ export declare class LlmLoopConsolidateProvider implements ConsolidateProvider {
     private readonly channel?;
     private readonly runBudgetMs;
     private readonly promptBudgetBytes;
+    /** Request ceiling for one call (system + transcript); compaction runs
+     *  before this is enforced. Exposed for tests to exercise the bound. */
+    private readonly historyCeiling;
     readonly name = "llm-loop";
-    constructor(steps?: number, channel?: LlmChannel | undefined, runBudgetMs?: number, promptBudgetBytes?: number);
+    constructor(steps?: number, channel?: LlmChannel | undefined, runBudgetMs?: number, promptBudgetBytes?: number, 
+    /** Request ceiling for one call (system + transcript); compaction runs
+     *  before this is enforced. Exposed for tests to exercise the bound. */
+    historyCeiling?: number);
     consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
 }
 export interface ConsolidationRunResult {

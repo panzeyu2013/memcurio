@@ -1,8 +1,9 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { configPath } from "./paths.js";
+import { DEFAULT_MAX_INJECT_TOKENS } from "./budget.js";
 import { DEFAULT_PIPELINE_CONFIG } from "./consolidate.js";
 export const DEFAULT_CONFIG = {
-    budget: { maxInjectTokens: 2500 },
+    budget: { maxInjectTokens: DEFAULT_MAX_INJECT_TOKENS },
     pipeline: structuredClone(DEFAULT_PIPELINE_CONFIG),
 };
 function validInteger(v, def, min, max = Number.MAX_SAFE_INTEGER) {

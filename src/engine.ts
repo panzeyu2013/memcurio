@@ -1,4 +1,4 @@
-import { fitContext, memorySummaryViolation } from "./core/budget.js";
+import { DEFAULT_MAX_INJECT_TOKENS, fitContext, memorySummaryViolation } from "./core/budget.js";
 import { ConsolidationSummaryError } from "./core/consolidate.js";
 import { resolve } from "node:path";
 import { loadConfig } from "./core/config.js";
@@ -86,7 +86,7 @@ const MAX_MESSAGE_TEXT_CHARS = 4_000;
 const MAX_TRACKED_TOOLS = 256;
 const MAX_TRACKED_FILES = 256;
 const MAX_SUMMARY_CHARS = 4000;
-const DEFAULT_INJECT_BUDGET = 2500;
+const DEFAULT_INJECT_BUDGET = DEFAULT_MAX_INJECT_TOKENS;
 /** Dynamic-hit bounds for one injection: roughly one hit per this many tokens
  *  (path plus capped text), clamped so a tiny budget still injects context and
  *  a large one cannot flood the window. Derived — not a second independent

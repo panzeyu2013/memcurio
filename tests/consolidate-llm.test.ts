@@ -265,7 +265,7 @@ describe("LlmLoopConsolidateProvider", () => {
     expect(secondTurn).toContain("…[truncated: 49900 more bytes; call read_file with offset=100]");
   });
 
-  test("the request history ceiling stops an accumulating transcript", async () => {
+  test("an accumulating transcript is compacted under the ceiling instead of failing", async () => {
     let calls = 0;
     const provider = new LlmLoopConsolidateProvider(
       10,
@@ -273,8 +273,10 @@ describe("LlmLoopConsolidateProvider", () => {
         name: "blowup",
         async agent() {
           calls += 1;
-          // Tool-call arguments are replayed in every later request: enough of
-          // them must trip the request ceiling (round-2 mutation survivor x_i).
+          // Tool-call arguments are replayed in every later request: the old
+          // loop threw INPUT_BUDGET_EXCEEDED here and pinned the store on the
+          // same diff forever. The oldest exchanges must now be dropped instead
+          // (the newest one alone stays under the ceiling).
           return {
             text: "",
             toolCalls: [
@@ -286,10 +288,11 @@ describe("LlmLoopConsolidateProvider", () => {
       },
       60_000,
     );
-    await expect(
-      provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir }),
-    ).rejects.toMatchObject({ code: "INPUT_BUDGET_EXCEEDED" });
-    expect(calls).toBeLessThan(10);
+    const result = await provider.consolidate({ workspace: {}, diff: [], notes: [], memoryRoot: dir });
+    // Never a request-budget throw: the loop runs to its step bound and reports
+    // an incomplete run (the caller retries with a fresh transcript).
+    expect(result.completed).toBe(false);
+    expect(calls).toBe(10);
   });
 
   test("the read_file tool schema exposes the runtime paging parameters", async () => {

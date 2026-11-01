@@ -1189,6 +1189,33 @@ const CONSOLIDATE_TOOLS: readonly ToolSpec[] = [
   },
 ];
 
+/** Drop the oldest tool exchanges until the request fits the history ceiling.
+ *  The read budget already bounds how much a run may pull in, but a store with
+ *  a very large workspace can still accumulate a transcript over the ceiling
+ *  before the model finishes; failing there pins every later run on the same
+ *  diff. Removing the OLDEST evidence keeps the recent reads (the ones the
+ *  model is reasoning about) and the system prompt intact. */
+function compactTranscript(
+  system: string,
+  messages: AgentTurnMessage[],
+  ceiling: number = MAX_AGENT_HISTORY_BYTES,
+): AgentTurnMessage[] {
+  let out = messages;
+  while (requestBytes(system, out) > ceiling) {
+    const cut = out.findIndex((message, index) => index > 0 && message.role === "assistant" && message.toolCalls.length > 0);
+    if (cut < 0) {
+      break;
+    }
+    let end = cut + 1;
+    while (end < out.length && out[end]?.role === "tool") {
+      end += 1;
+    }
+    const omitted = `[older tool output omitted: ${String(end - cut)} message(s)]`;
+    out = [...out.slice(0, cut), { role: "user", text: omitted }, ...out.slice(end)];
+  }
+  return out;
+}
+
 const AGENT_BEGIN = "Begin. Inspect the workspace and the diff with the provided tools, then write the memory files. Call finish exactly once when done.";
 const AGENT_NUDGE = "Use the provided tools (list_files, read_file, write_file, finish). Do not answer with prose only; call finish when the work is done.";
 
@@ -1202,6 +1229,9 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     private readonly channel?: LlmChannel,
     private readonly runBudgetMs: number = DEFAULT_PIPELINE_CONFIG.consolidateRunBudgetMs,
     private readonly promptBudgetBytes: number = DEFAULT_PIPELINE_CONFIG.consolidatePromptBudgetBytes,
+    /** Request ceiling for one call (system + transcript); compaction runs
+     *  before this is enforced. Exposed for tests to exercise the bound. */
+    private readonly historyCeiling: number = MAX_AGENT_HISTORY_BYTES,
   ) {}
 
   async consolidate(input: ConsolidateInput): Promise<ConsolidateResult> {
@@ -1217,7 +1247,7 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
     const safeInput = sanitizeConsolidateInput(input);
     const pendingNoteNames = new Set(safeInput.notes.map((note) => note.filename));
     const system = buildConsolidationSystemPrompt(safeInput, safeInput.prunedResources ?? [], this.promptBudgetBytes);
-    const messages: AgentTurnMessage[] = [{ role: "user", text: AGENT_BEGIN }];
+    let messages: AgentTurnMessage[] = [{ role: "user", text: AGENT_BEGIN }];
     let readBytes = 0;
     let readDiffFile = false;
     let report = "";
@@ -1248,10 +1278,14 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {
       if (Date.now() - startedAt >= this.runBudgetMs) {
         budgetExceeded = true;
       }
-      const historyBytes = requestBytes(system, messages);
-      if (historyBytes > MAX_AGENT_HISTORY_BYTES) {
+      let historyBytes = requestBytes(system, messages);
+      if (historyBytes > this.historyCeiling) {
+        messages = compactTranscript(system, messages, this.historyCeiling);
+        historyBytes = requestBytes(system, messages);
+      }
+      if (historyBytes > this.historyCeiling) {
         throw new WorkerProviderError(
-          `consolidation request exceeds the ${String(MAX_AGENT_HISTORY_BYTES)} byte history ceiling (${String(historyBytes)} bytes)`,
+          `consolidation request exceeds the ${String(this.historyCeiling)} byte history ceiling (${String(historyBytes)} bytes)`,
           { code: "INPUT_BUDGET_EXCEEDED" },
         );
       }
@@ -1567,6 +1601,21 @@ function buildConsolidationSystemPrompt(
     "content still exists in raw_memories.md / rollout_summaries/ on disk: read the",
     "most relevant entries there instead of re-reading the whole diff.",
   );
+  const currentSummary = input.workspace["memory_summary.md"] ?? "";
+  const currentViolation = memorySummaryViolation(
+    normalizeSummaryStructure(currentSummary),
+    input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS,
+  );
+  if (currentViolation) {
+    sections.push(
+      "",
+      "=== SUMMARY CONTRACT VIOLATION (must be fixed in this run) ===",
+      `The current memory_summary.md is invalid: ${currentViolation.reason}.`,
+      "Rewrite memory_summary.md so the run leaves a valid file: exact 'v1' first line, the four",
+      "sections, no rollout paths, and inside the budget stated above. Keep every durable rule",
+      "and preference; drop routing detail and stale status first.",
+    );
+  }
   if (prunedResources.length) {
     sections.push(
       "",
@@ -2072,8 +2121,15 @@ export async function runConsolidation(
     // artifact set is already valid. An invalid summary with no other work must
     // still reach the agent, otherwise a legacy oversized file stays frozen
     // forever (and is middle-truncated on every injection).
-    const existingSummary = readWorkspaceText(root, "memory_summary.md");
-    const existingViolation = memorySummaryViolation(existingSummary, injectBudget);
+    // A summary the read path itself refuses (oversized file) is already
+    // unusable; treating the read failure as "violation" would just replace one
+    // crash with another, so it does not force a run here.
+    let existingViolation: ReturnType<typeof memorySummaryViolation> = null;
+    try {
+      existingViolation = memorySummaryViolation(readWorkspaceText(root, "memory_summary.md"), injectBudget);
+    } catch {
+      existingViolation = null;
+    }
     if (
       freshPlan.diff.length === 0 &&
       freshPlan.notes.length === 0 &&
@@ -2190,6 +2246,7 @@ export async function runConsolidation(
     // untouched) instead of being committed as if it were fine.
     const effectiveRaw = afterWorkspace["memory_summary.md"]?.content ?? "";
     const effectiveSummary = normalizeSummaryStructure(effectiveRaw);
+    const summaryTokens = estimateTokens(effectiveSummary.trim());
     if (effectiveSummary !== effectiveRaw) {
       afterWorkspace["memory_summary.md"] = { present: true, content: effectiveSummary };
     }
@@ -2253,7 +2310,6 @@ export async function runConsolidation(
         // Codex-style extension-resource retention.
         const resourcesPruned = pruneExtensionResources(root, opts.config?.resourceRetentionDays ?? DEFAULT_PIPELINE_CONFIG.resourceRetentionDays).length;
         idx.metaSet("consolidation_generation", generation?.id ?? "");
-        const summaryTokens = estimateTokens(effectiveSummary.trim());
         idx.audit(
           "consolidate.done",
           "-",

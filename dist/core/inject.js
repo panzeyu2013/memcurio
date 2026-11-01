@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "./config.js";
-import { SUMMARY_INJECTION_LABEL, SUMMARY_INJECTION_WARNING, SUMMARY_NONCE_HEX_CHARS, summaryInjectionFramingTokens, truncateMiddle, } from "./budget.js";
+import { DEFAULT_MAX_INJECT_TOKENS, SUMMARY_INJECTION_LABEL, SUMMARY_INJECTION_WARNING, SUMMARY_NONCE_HEX_CHARS, summaryInjectionFramingTokens, truncateMiddle, } from "./budget.js";
 import { readWorkspaceText } from "./workspace.js";
 import { Index } from "./db.js";
 import { indexDb } from "./paths.js";
@@ -102,10 +102,10 @@ export function renderStaticContext(root, budgetTokens) {
 }
 function defaultInjectBudget(root) {
     try {
-        return loadConfig(root).budget.maxInjectTokens ?? 2500;
+        return loadConfig(root).budget.maxInjectTokens ?? DEFAULT_MAX_INJECT_TOKENS;
     }
     catch {
-        return 2500;
+        return DEFAULT_MAX_INJECT_TOKENS;
     }
 }
 function auditNote(root, action, detail) {
