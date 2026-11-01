@@ -375,6 +375,78 @@ describe("automatic consolidation failure handling", () => {
     }
   });
 
+  test("the pause engages exactly at the third failure, not earlier", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        return { text: "no tool call", toolCalls: [], finish: "stop" as const };
+      },
+    };
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: manual\nscope: cwd=/tmp\n\n## Task 1: edit\n\n- fact\n");
+    const past = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const seed = async (attempts: number): Promise<void> => {
+      const idx = await Index.create(indexDb(dir));
+      try {
+        idx.metaSet("consolidation_auto_attempts", String(attempts));
+        idx.metaSet("consolidation_auto_failed", past);
+        idx.metaSet("consolidation_auto_retry_at", new Date(Date.now() - 60_000).toISOString());
+        idx.metaDelete("consolidation_auto_exhausted");
+      } finally {
+        idx.close();
+      }
+    };
+    for (const attempts of [0, 1, 2]) {
+      await seed(attempts);
+      const before = calls;
+      await new MemcurioAdapter({ durableQueue: true, channel }).maybeConsolidate();
+      expect(calls).toBeGreaterThan(before);
+    }
+    await seed(3);
+    const beforePaused = calls;
+    await new MemcurioAdapter({ durableQueue: true, channel }).maybeConsolidate();
+    expect(calls).toBe(beforePaused);
+    const after = await Index.create(indexDb(dir));
+    try {
+      const actions = after.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.auto_exhausted");
+    } finally {
+      after.close();
+    }
+  });
+
+  test("a note newer than the failure resets the budget and runs", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        return { text: "no tool call", toolCalls: [], finish: "stop" as const };
+      },
+    };
+    await addAdHocNote(dir, "fresh after failure", "remember");
+    const past = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.metaSet("consolidation_auto_attempts", "3");
+      idx.metaSet("consolidation_auto_failed", past);
+      idx.metaSet("consolidation_auto_retry_at", new Date(Date.now() - 60_000).toISOString());
+      idx.metaSet("consolidation_auto_exhausted", "1");
+    } finally {
+      idx.close();
+    }
+    await new MemcurioAdapter({ durableQueue: true, channel }).maybeConsolidate();
+    expect(calls).toBeGreaterThan(0);
+    const after = await Index.create(indexDb(dir));
+    try {
+      expect(after.metaGet("consolidation_auto_exhausted")).toBeUndefined();
+      expect(after.metaGet("consolidation_auto_attempts")).toBe("1");
+    } finally {
+      after.close();
+    }
+  });
+
   test("a host abort never arms the failure backoff", async () => {
     const channel: LlmChannel = {
       name: "dsh",

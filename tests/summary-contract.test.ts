@@ -155,7 +155,26 @@ describe("rule provider with a legacy store", () => {
     await addAdHocNote(dir, "remember v11", "remember");
     const result = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true, injectBudgetTokens: BUDGET });
     expect(result.applied).toBe(true);
-    expect(readWorkspaceText(dir, "memory_summary.md").startsWith("v1\n")).toBe(true);
+    const summary = readWorkspaceText(dir, "memory_summary.md");
+    expect(summary.startsWith("v1\n")).toBe(true);
+    // Repair, not regeneration: the body must survive the header fix.
+    expect(summary).toContain("- p");
+  });
+
+  test("a summary whose sections only exist inside a fence is repaired by the rule writer", async () => {
+    writeWorkspaceText(
+      dir,
+      "memory_summary.md",
+      "v1\n\n```\n## User Profile\n## User preferences\n## General Tips\n## What's in Memory\n```\n",
+    );
+    writeWorkspaceText(dir, "raw_memories.md", "# Raw Memories\n\nNo raw memories yet.\n");
+    saveBaseline(dir);
+    await addAdHocNote(dir, "remember fenced", "remember");
+    const result = await runConsolidation(dir, new RuleConsolidateProvider(), { execute: true, injectBudgetTokens: BUDGET });
+    expect(result.applied).toBe(true);
+    const summary = readWorkspaceText(dir, "memory_summary.md");
+    const outside = summary.split("\n").filter((line) => line === "## General Tips").length;
+    expect(outside).toBeGreaterThanOrEqual(2);
   });
 
   test("an over-budget legacy file does not fail the rule writer (it cannot compress)", async () => {
@@ -254,6 +273,34 @@ describe("contract edge cases", () => {
     const sample = "v1\n\n~~~\n## User Profile\n## User preferences\n## General Tips\n## What's in Memory\n~~~\n";
     const { normalized } = evaluateSummary(sample, BUDGET);
     expect(normalized.split("\n").filter((line) => line === "## General Tips")).toHaveLength(2);
+  });
+});
+
+
+describe("contract primitives", () => {
+  test("the body budget is exactly the injection budget minus the framing", async () => {
+    const { summaryBodyBudget, summaryInjectionFramingTokens } = await import("../src/core/budget.js");
+    expect(summaryInjectionFramingTokens()).toBe(42);
+    expect(summaryBodyBudget(2500)).toBe(2500 - 42);
+    expect(summaryBodyBudget(2500)).toBe(2458);
+  });
+
+  test("a body exactly at the budget passes; one token more is a budget violation", async () => {
+    const { evaluateSummary } = await import("../src/core/budget.js");
+    const head = "v1\n\n## User Profile\n\n## User preferences\n\n## General Tips\n\n## What's in Memory\n\n";
+    const headTokens = (await import("../src/core/budget.js")).estimateTokens(head);
+    const atLimit = head + "a".repeat(4 * (2458 - headTokens));
+    expect(evaluateSummary(atLimit, 2500).violation).toBeNull();
+    const over = head + "a".repeat(4 * (2458 - headTokens) + 4);
+    expect(evaluateSummary(over, 2500).violation?.code).toBe("budget");
+  });
+
+  test("a missing heading is repaired rather than reported", async () => {
+    const { evaluateSummary } = await import("../src/core/budget.js");
+    const withoutGeneral = "v1\n\n## User Profile\n\n## User preferences\n\n## What's in Memory\n";
+    const { normalized, violation } = evaluateSummary(withoutGeneral, 2500);
+    expect(violation).toBeNull();
+    expect(normalized).toContain("## General Tips");
   });
 });
 
