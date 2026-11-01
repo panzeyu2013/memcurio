@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { artifactFilenameForId, artifactIdForRolloutKey } from "../src/core/artifacts.js";
+import { estimateTokens } from "../src/core/budget.js";
 import { RuleConsolidateProvider, runConsolidation } from "../src/core/consolidate.js";
 import { Index } from "../src/core/db.js";
 import { stageSession } from "../src/core/extract.js";
@@ -49,6 +50,32 @@ class Provider implements ExtractProvider {
 }
 
 describe("hard purge", () => {
+
+  test("a purge never grows memory_summary.md (the rule rebuild is guarded)", async () => {
+    root = mkdtempSync(join(tmpdir(), "purge-grow-"));
+    ensureLayout(root);
+    await stageSession(root, snapshot, new Provider());
+    await runConsolidation(root, new RuleConsolidateProvider(), { execute: true });
+
+    // 20 Task Groups: the engine rebuild would add twelve router lines plus the
+    // collapsed tail, while the current index is a single short line.
+    const groups = Array.from(
+      { length: 20 },
+      (_, i) => `# Task Group: g${String(i + 1)}\nscope: cwd=/tmp\n\n## Task 1: t\n\n- f\n`,
+    ).join("\n");
+    writeWorkspaceText(root, "MEMORY.md", groups);
+    writeWorkspaceText(
+      root,
+      "memory_summary.md",
+      'v1\n\n## User Profile\n\n- p\n\n## User preferences\n\n## General Tips\n\n## What\'s in Memory\n\n- g1: see MEMORY.md "# Task Group: g1"\n',
+    );
+
+    const before = estimateTokens(readWorkspaceText(root, "memory_summary.md").trim());
+    await purgeRollout(root, "codex|s-purge");
+    const after = estimateTokens(readWorkspaceText(root, "memory_summary.md").trim());
+    expect(after).toBeLessThanOrEqual(before);
+  });
+
   test("removes local stage, artifact, queue/session data, markdown support, and named export records", async () => {
     root = mkdtempSync(join(tmpdir(), "purge-"));
     ensureLayout(root);
