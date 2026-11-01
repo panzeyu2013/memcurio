@@ -83,7 +83,10 @@ export function scrubExportFile(path, rolloutKey) {
  * artifact, extraction queue/session rows, audit references, and the managed
  * Markdown projections. The generation protocol makes the file/SQLite change
  * recoverable if the process is killed between writes. */
-export async function purgeRollout(root, rolloutKey, exportPaths = []) {
+export async function purgeRollout(root, rolloutKey, exportPaths = [], 
+/** Live injection budget, so the index line bound and the non-growth check
+ *  use the same number the reader will use (defaults to the config default). */
+injectBudgetTokens) {
     return withWorkspaceWriteLease(root, async (idx, renew) => {
         let generationId;
         try {
@@ -147,6 +150,7 @@ export async function purgeRollout(root, rolloutKey, exportPaths = []) {
                     .filter((note) => note.applied)
                     .map((note) => ({ kind: note.kind, filename: note.filename, content: note.content })),
                 memoryRoot: root,
+                injectBudgetTokens,
             });
             const rebuiltMemory = rebuilt.edits.find((edit) => edit.rel === "MEMORY.md")?.content ?? keptMemory;
             const rebuiltSummary = rebuilt.edits.find((edit) => edit.rel === "memory_summary.md")?.content ?? currentSummary;

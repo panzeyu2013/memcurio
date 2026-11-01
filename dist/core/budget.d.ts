@@ -45,6 +45,12 @@ export declare function memorySummaryViolation(content: string, maxInjectTokens:
  *  fixed 10 would drop groups once a store carries more (fleet max is 24). The
  *  bound therefore follows the budget: ~200 tokens per routing line, 3..12. */
 export declare function summaryIndexMaxLines(maxInjectTokens: number): number;
+/** Deterministic, content-preserving repair of the summary framing.
+ *  Structure only: it never truncates prose or drops a section, so it is safe
+ *  to run on a legacy file written before the contract existed (codex V1 never
+ *  had one). Budget violations are NOT repaired here — only the writer that can
+ *  re-ask a model is allowed to compress. */
+export declare function normalizeSummaryStructure(content: string): string;
 /** A deletion must never make the injected summary bigger: an operation that
  *  removes data cannot be allowed to push a store over its write budget. The
  *  previous summary is kept instead; the next consolidation re-derives the

@@ -17,7 +17,10 @@ export declare function scrubExportFile(path: string, rolloutKey: string): numbe
  * artifact, extraction queue/session rows, audit references, and the managed
  * Markdown projections. The generation protocol makes the file/SQLite change
  * recoverable if the process is killed between writes. */
-export declare function purgeRollout(root: string, rolloutKey: string, exportPaths?: string[]): Promise<PurgeResult | null>;
+export declare function purgeRollout(root: string, rolloutKey: string, exportPaths?: string[], 
+/** Live injection budget, so the index line bound and the non-growth check
+ *  use the same number the reader will use (defaults to the config default). */
+injectBudgetTokens?: number): Promise<PurgeResult | null>;
 /** Keep the artifact filename helper close to purge callers without exposing
  * the database implementation details. */
 export { artifactFilenameForId };

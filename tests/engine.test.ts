@@ -315,6 +315,66 @@ describe("automatic consolidation failure handling", () => {
     }
   });
 
+  test("a pending note older than the failure does not reset the budget", async () => {
+    let calls = 0;
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => {
+        calls += 1;
+        return { text: "no tool call", toolCalls: [], finish: "stop" as const };
+      },
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    await addAdHocNote(dir, "sticky note", "remember");
+    const idx = await Index.create(indexDb(dir));
+    try {
+      // The note predates the failure: it is backlog, not new input.
+      idx.metaSet("consolidation_auto_attempts", "3");
+      idx.metaSet("consolidation_auto_failed", new Date(Date.now() + 60_000).toISOString());
+      idx.metaSet("consolidation_auto_retry_at", new Date(Date.now() - 1_000).toISOString());
+    } finally {
+      idx.close();
+    }
+    await adapter.maybeConsolidate();
+    expect(calls).toBe(0);
+    const after = await Index.create(indexDb(dir));
+    try {
+      expect(after.metaGet("consolidation_auto_attempts")).toBe("3");
+      const actions = after.rawAll<{ action: string }>("SELECT action FROM audit").map((row) => row.action);
+      expect(actions).toContain("consolidate.auto_exhausted");
+    } finally {
+      after.close();
+    }
+  });
+
+  test("the pause is audited once, not on every trigger", async () => {
+    const channel: LlmChannel = {
+      name: "dsh",
+      agent: async () => ({ text: "no tool call", toolCalls: [], finish: "stop" as const }),
+    };
+    const adapter = new MemcurioAdapter({ durableQueue: true, channel });
+    writeWorkspaceText(dir, "MEMORY.md", "# Task Group: manual\nscope: cwd=/tmp\n\n## Task 1: edit\n\n- fact\n");
+    const idx = await Index.create(indexDb(dir));
+    try {
+      idx.metaSet("consolidation_auto_attempts", "3");
+      idx.metaSet("consolidation_auto_failed", new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
+      idx.metaSet("consolidation_auto_retry_at", new Date(Date.now() - 60_000).toISOString());
+    } finally {
+      idx.close();
+    }
+    await adapter.maybeConsolidate();
+    await adapter.maybeConsolidate();
+    const after = await Index.create(indexDb(dir));
+    try {
+      const rows = after.rawAll<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM audit WHERE action = 'consolidate.auto_exhausted'",
+      );
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      after.close();
+    }
+  });
+
   test("a host abort never arms the failure backoff", async () => {
     const channel: LlmChannel = {
       name: "dsh",

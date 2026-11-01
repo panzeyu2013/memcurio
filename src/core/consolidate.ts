@@ -35,7 +35,9 @@ import { clipUtf8, utf8ByteLength } from "./utf8.js";
 import {
   DEFAULT_MAX_INJECT_TOKENS,
   estimateTokens,
+  isExactSummaryHeader,
   memorySummaryViolation,
+  normalizeSummaryStructure,
   summaryBodyBudget,
   summaryIndexMaxLines,
 } from "./budget.js";
@@ -764,10 +766,14 @@ export class RuleConsolidateProvider implements ConsolidateProvider {
     const hasRealWork =
       input.notes.some((n) => n.kind === "remember") || rawDiff !== undefined || memory.trim() !== "";
     const ruleBudget = input.injectBudgetTokens ?? DEFAULT_MAX_INJECT_TOKENS;
-    if (hasRealWork && !summary?.startsWith("v1")) {
+    // Structural repair happens in runConsolidation for every provider, so the
+    // rule path only distinguishes "no summary yet" (regenerate) from "there is
+    // content" (refresh the routing index). A legacy header (CRLF, "v1.1",
+    // missing sections) is repaired, never used as a reason to wipe the file.
+    if (hasRealWork && !summary?.trim()) {
       summary = renderMinimalSummary(memory, ruleBudget);
-      report.push("memory_summary.md regenerated (missing or schema-incompatible)");
-    } else if (hasRealWork && summary.startsWith("v1")) {
+      report.push("memory_summary.md regenerated (missing)");
+    } else if (hasRealWork) {
       summary = refreshSummaryIndex(summary, memory, ruleBudget);
       report.push("memory_summary.md index refreshed");
     }
@@ -993,13 +999,37 @@ export function removeBlocksCitingOnly(memory: string, deleted: Set<string>, rep
   return out.join("\n");
 }
 
-function renderIndexLines(groups: string[], maxLines: number): string[] {
+/** One routing line. Redaction lives here (not in the callers) and the copied
+ *  group name is clipped: a single 6k-character header used to produce a
+ *  3k-token line that pushed the engine's own summary over the budget. */
+function renderIndexLine(group: string, nameLimit = 72): string {
+  const clean = redactSecrets(group).text.trim();
+  const name = clean.length > nameLimit ? `${clean.slice(0, nameLimit)}…` : clean;
+  return `- ${name}: see MEMORY.md "# Task Group: ${name}"`;
+}
+
+function renderIndexLines(
+  groups: string[],
+  maxLines: number,
+  maxTokens: number = Number.POSITIVE_INFINITY,
+): string[] {
   if (!groups.length) {
     return ["- (no memory yet; run memcurio remember or let sessions consolidate)"];
   }
-  const shown = groups.slice(0, maxLines);
-  const lines = shown.map((g) => `- ${g}: see MEMORY.md "# Task Group: ${g}"`);
-  const hidden = groups.length - shown.length;
+  const lines: string[] = [];
+  let used = 0;
+  for (const group of groups.slice(0, maxLines)) {
+    const line = renderIndexLine(group);
+    const cost = estimateTokens(line);
+    // Always keep the first line: an empty index is worse than one over-budget
+    // line, and the writer-side gate still sees the total.
+    if (lines.length > 0 && used + cost > maxTokens) {
+      break;
+    }
+    used += cost;
+    lines.push(line);
+  }
+  const hidden = groups.length - lines.length;
   if (hidden > 0) {
     lines.push(`- older topics: see MEMORY.md (${String(hidden)} more Task Group(s))`);
   }
@@ -1011,9 +1041,13 @@ function renderMinimalSummary(memory: string, maxInjectTokens: number = DEFAULT_
   // them here so a secret that survived in a user-authored header can never
   // ride into memory_summary.md (the edit still passes validateEdits later).
   const groups = [...memory.matchAll(/^# Task Group: (.+)$/gm)]
-    .map((m) => redactSecrets(m[1] ?? "").text)
+    .map((m) => (m[1] ?? "").trim())
     .filter(Boolean);
-  const indexLines = renderIndexLines(groups, summaryIndexMaxLines(maxInjectTokens));
+  const indexLines = renderIndexLines(
+    groups,
+    summaryIndexMaxLines(maxInjectTokens),
+    Math.max(24, summaryBodyBudget(maxInjectTokens) - 60),
+  );
   return [
     "v1",
     "",
@@ -1057,14 +1091,23 @@ export function refreshSummaryIndex(
     .slice(1)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("- "));
-  const ours = existing.every((line) => line.includes('see MEMORY.md "# Task Group: '));
-  const covered = new Set(existing.map((line) => /^- (.+?): see MEMORY\.md/.exec(line)?.[1]).filter((name): name is string => Boolean(name)));
-  const inSync = groups.length === covered.size && groups.every((group) => covered.has(group));
-  if (existing.length > 0 && (!ours || (inSync && existing.length <= maxLines))) {
+  const headBudget = summaryBodyBudget(maxInjectTokens) - estimateTokens(head) - 20;
+  const expected = renderIndexLines(groups, maxLines, Math.max(24, headBudget));
+  // The engine's own lines are the group router plus the collapsed-tail line.
+  // Matching whole lines against the expected rendering is what keeps the
+  // section from freezing: the old "every line cites a Task Group" test treated
+  // the collapsed `older topics` line as foreign and returned the stale index
+  // forever once a store crossed the line bound.
+  const engineLine = (line: string): boolean =>
+    line.includes('see MEMORY.md "# Task Group: ') || line.startsWith("- older topics: see MEMORY.md");
+  if (existing.length > 0 && !existing.every(engineLine)) {
+    // A model-written topic index is never clobbered by the rule fallback.
     return summary;
   }
-  const indexLines = renderIndexLines(groups, maxLines);
-  return `${head}\n\n${marker}\n\n### ad hoc\n\n${indexLines.join("\n")}\n`;
+  if (existing.length === expected.length && existing.every((line, i) => line === expected[i])) {
+    return summary;
+  }
+  return `${head}\n\n${marker}\n\n### ad hoc\n\n${expected.join("\n")}\n`;
 }
 
 // ----------------------------------------------- LLM loop provider (agent)
@@ -1712,7 +1755,7 @@ function validateEdits(
     if (!flags.safe) {
       throw new Error(`consolidation edit rejected: ${rel} contains an injection pattern (${flags.flags[0] ?? ""})`);
     }
-    if (rel === "memory_summary.md" && content.trim() && !content.startsWith("v1")) {
+    if (rel === "memory_summary.md" && content.trim() && !isExactSummaryHeader(content)) {
       throw new Error("consolidation edit rejected: memory_summary.md must start with exactly 'v1'");
     }
     if (rel === "MEMORY.md" && opts.requireProvenance) {
@@ -2104,9 +2147,14 @@ export async function runConsolidation(
     // model-authored edit.
     const providerEdits: ConsolidateEdit[] = [...result.edits];
     const lastSummaryEdit = [...providerEdits].reverse().find((edit) => edit.rel === "memory_summary.md");
-    const summaryAfter = lastSummaryEdit?.content ?? input.workspace["memory_summary.md"] ?? "";
+    const rawSummaryAfter = lastSummaryEdit?.content ?? input.workspace["memory_summary.md"] ?? "";
+    // Deterministic structural repair BEFORE any decision: a legacy file may
+    // predate the four-section contract (codex V1 never validated it), and the
+    // append-only repair must not be conflated with "invalid, regenerate".
+    const summaryAfter = normalizeSummaryStructure(rawSummaryAfter);
     let summaryInitialized = false;
-    if (!summaryAfter.trim().startsWith("v1")) {
+    let summaryRepaired = false;
+    if (!summaryAfter.trim()) {
       const memoryAfter = providerEdits.find((edit) => edit.rel === "MEMORY.md")?.content ?? input.workspace["MEMORY.md"] ?? "";
       // Drop any summary edit that would leave the file empty or schema-invalid
       // (an empty write would otherwise satisfy a presence check while wiping
@@ -2119,6 +2167,14 @@ export async function runConsolidation(
       }
       providerEdits.push({ rel: "memory_summary.md", content: renderMinimalSummary(memoryAfter, injectBudget) });
       summaryInitialized = true;
+    } else if (summaryAfter !== rawSummaryAfter) {
+      for (let index = providerEdits.length - 1; index >= 0; index -= 1) {
+        if (providerEdits[index]?.rel === "memory_summary.md") {
+          providerEdits.splice(index, 1);
+        }
+      }
+      providerEdits.push({ rel: "memory_summary.md", content: summaryAfter });
+      summaryRepaired = true;
     }
     const edits = validateEdits(providerEdits, { requireProvenance: provider.name !== "rule", root, deletedSummaries });
     const applied = edits.length > 0;
@@ -2132,9 +2188,19 @@ export async function runConsolidation(
     // session reads, so the effective files are validated before a generation
     // exists. An untouched-but-invalid summary fails the run here (baseline
     // untouched) instead of being committed as if it were fine.
-    const effectiveSummary = afterWorkspace["memory_summary.md"]?.content ?? "";
+    const effectiveRaw = afterWorkspace["memory_summary.md"]?.content ?? "";
+    const effectiveSummary = normalizeSummaryStructure(effectiveRaw);
+    if (effectiveSummary !== effectiveRaw) {
+      afterWorkspace["memory_summary.md"] = { present: true, content: effectiveSummary };
+    }
     const effectiveViolation = memorySummaryViolation(effectiveSummary, injectBudget);
-    if (effectiveViolation) {
+    // The deterministic writer cannot compress a legacy file: failing it would
+    // freeze every store without a model channel (codex's rule path has no
+    // budget gate either). Only the LLM writer — which can re-ask for a shorter
+    // summary in the same run — is held to the budget. Structure is enforced
+    // for everyone because the repair above is lossless.
+    const ruleOverBudget = effectiveViolation?.code === "budget" && provider.name === "rule";
+    if (effectiveViolation && !ruleOverBudget) {
       throw new ConsolidationSummaryError(effectiveViolation.reason);
     }
     generation = prepareGeneration(
@@ -2191,7 +2257,7 @@ export async function runConsolidation(
         idx.audit(
           "consolidate.done",
           "-",
-          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}, summary_tokens=${String(summaryTokens)}/${String(summaryBodyBudget(injectBudget))}${summaryInitialized ? ", init=memory_summary.md" : ""}`,
+          `provider=${provider.name}, edits=${edits.length}, selected=${freshPlan.selected.length}, pruned=${freshPlan.pruned.length}, retention=${retentionPruned}, resources=${resourcesPruned}, rejected=${result.rejected.length}, summary_tokens=${String(summaryTokens)}/${String(summaryBodyBudget(injectBudget))}${summaryInitialized ? ", init=memory_summary.md" : ""}${summaryRepaired ? ", summary_repaired" : ""}${ruleOverBudget ? ", summary_over_budget(rule)" : ""}`,
         );
         for (const r of result.rejected) {
           idx.audit("consolidate.rejected", r.rel, r.reason);

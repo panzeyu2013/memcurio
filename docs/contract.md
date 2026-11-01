@@ -398,8 +398,12 @@ export class LlmLoopConsolidateProvider implements ConsolidateProvider {}
   // memory_summary.md 契约（codex V2 的 gate，本地按 token 而非字节）：首行必须整行等于 "v1"、
   // 四个标题存在、不得含 rollout 路径、estimateTokens ≤ summaryBodyBudget(maxInjectTokens)（默认 2500-42=2458）。
   // 三道闸：write_file 阶段直接拒绝（工具结果带超限 token 数，模型可在本轮收敛）→ 提交前对「最终工作区」
-  // （含未改写的存量文件）再校验一次（ConsolidationSummaryError，基线不推进、下一轮重试）→ no-op 判定前也校验
-  // （无 diff 但摘要不合规时不短路，强制进入 agent 修复）。
+  // 再校验一次（ConsolidationSummaryError，基线不推进、下一轮重试）→ no-op 判定前也校验（无 diff 但摘要不合规
+  // 且存在 LLM 通道时不短路，强制进入 agent 修复；无通道则不进 work，避免每轮空转）。
+  // 分级：结构（首行/四段/无 rollout 路径）对所有写者强制，但先经 normalizeSummaryStructure 无损修复
+  // （去 BOM、CRLF→LF、v1.x→v1、缺段追加空段，不删改任何正文）；预算只对非 rule provider 硬拒——
+  // 确定性写者压不动存量摘要，判它失败会让无模型通道的安装永久停写。rule 超预算只写 audit
+  // （consolidate.done 带 summary_over_budget(rule)），注入侧照旧中间截断。
 export interface PipelineConfig {
   maxUnusedDays: number;         // 默认 30（stage1 选择窗口，对齐 codex max_unused_days）
   maxInputs: number;             // 默认 256（单批新进 stage1 上限；codex 的 max_raw_memories_for_consolidation 限整批重选窗口，memcurio 增量为整批保留已选行）

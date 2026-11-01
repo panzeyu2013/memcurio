@@ -249,11 +249,47 @@ export function summaryIndexMaxLines(maxInjectTokens: number): number {
   return Math.max(3, Math.min(12, Math.floor(body / 200)));
 }
 
+/** Deterministic, content-preserving repair of the summary framing.
+ *  Structure only: it never truncates prose or drops a section, so it is safe
+ *  to run on a legacy file written before the contract existed (codex V1 never
+ *  had one). Budget violations are NOT repaired here — only the writer that can
+ *  re-ask a model is allowed to compress. */
+export function normalizeSummaryStructure(content: string): string {
+  if (!content.trim()) {
+    return content;
+  }
+  let text = content;
+  if (text.charCodeAt(0) === 0xfeff) {
+    text = text.slice(1);
+  }
+  text = text.replace(/\r\n?/g, "\n");
+  const lines = text.split("\n");
+  if (/^v1(\.\d+)?\s*$/.test(lines[0] ?? "")) {
+    lines[0] = "v1";
+  } else if ((lines[0] ?? "").trim() !== "v1") {
+    // No version line at all: prepend one instead of rejecting the file.
+    lines.unshift("v1", "");
+  }
+  text = lines.join("\n");
+  const present = new Set(lines.map((line) => line.trim()));
+  const missing = SUMMARY_HEADINGS.filter((heading) => !present.has(heading));
+  if (missing.length === 0) {
+    return text;
+  }
+  // Append-only: missing sections arrive empty and nothing is rewritten.
+  return `${text.trimEnd()}\n\n${missing.map((heading) => `${heading}\n`).join("\n")}`;
+}
+
 /** A deletion must never make the injected summary bigger: an operation that
  *  removes data cannot be allowed to push a store over its write budget. The
  *  previous summary is kept instead; the next consolidation re-derives the
  *  routing index (the no-op gate forces that repair). */
 export function preferNonGrowingSummary(previous: string, next: string): string {
+  // An empty previous file is not a size to protect: keeping it would leave a
+  // 0-byte summary that the no-op path then never repairs.
+  if (!previous.trim()) {
+    return next;
+  }
   return estimateTokens(next.trim()) > estimateTokens(previous.trim()) ? previous : next;
 }
 

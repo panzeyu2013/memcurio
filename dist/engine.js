@@ -1,4 +1,5 @@
-import { fitContext } from "./core/budget.js";
+import { fitContext, memorySummaryViolation } from "./core/budget.js";
+import { ConsolidationSummaryError } from "./core/consolidate.js";
 import { resolve } from "node:path";
 import { loadConfig } from "./core/config.js";
 import { pipelineConfig } from "./core/config.js";
@@ -9,7 +10,7 @@ import { renderHitBlock, renderStaticContext } from "./core/inject.js";
 import { memoryWorkspace, rootDir as coreRoot, ensureLayout, indexDb } from "./core/paths.js";
 import { searchMemory, registerMemoryUsage } from "./core/search.js";
 import { clearSessionLease, markActivityFailure, publishActivitySafely, readActivityState, readStoreOrigin, recordStoreOrigin, touchSessionLease, touchStoreOriginActivity, writeActivityToken } from "./core/store-meta.js";
-import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles } from "./core/workspace.js";
+import { deleteRolloutSummary, hasWorkspaceChanges, listWorkspaceFiles, readWorkspaceText } from "./core/workspace.js";
 import { WorkerAbortedError, WorkerProviderError, WorkerTimeoutError } from "./core/channel.js";
 /** The codex-style superset of read-only file tools (used as the engine
  * default when the host does not declare a toolPreset). */
@@ -61,6 +62,7 @@ const AUTO_CONSOLIDATE_INTERNAL_RETRY_MS = 6 * 60 * 60 * 1000;
 /** Consecutive automatic-failure bookkeeping (observability only: codex's
  *  phase-2 claim deliberately does not gate on a retry budget). */
 const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
+const AUTO_CONSOLIDATE_EXHAUSTED_KEY = "consolidation_auto_exhausted";
 /** Consecutive automatic failures before the trigger pauses itself. Codex's
  *  phase-2 job never gives up (retry_remaining is written but never read);
  *  its stage-1 worker does stop at the exhausted budget. Without a stop here a
@@ -1230,10 +1232,22 @@ export class MemcurioAdapter {
                 let attempts = Number.parseInt(idx.metaGet(AUTO_CONSOLIDATE_ATTEMPTS_KEY) ?? "0", 10);
                 if (!Number.isFinite(attempts) || attempts < 0)
                     attempts = 0;
-                const freshInput = idx.noteList().some(actionableNote) ||
-                    idx.stageList().some((row) => row.status === "pending" && !row.selectedForPhase2);
-                if (freshInput && attempts > 0) {
+                // "New input" must mean input that arrived AFTER the failure. A pending
+                // note or an unselected stage row is sticky (a failed run consumes
+                // neither), so testing mere existence reset the budget on every tick and
+                // the pause never engaged. Compare timestamps against the last failure.
+                const failedAtMs = parseConsolidationTimestamp(idx.metaGet("consolidation_auto_failed"));
+                const newestInputMs = Math.max(Number.NEGATIVE_INFINITY, ...idx
+                    .noteList()
+                    .filter(actionableNote)
+                    .map((note) => parseConsolidationTimestamp(note.createdAt)), ...idx
+                    .stageList()
+                    .filter((row) => row.status === "pending" && !row.selectedForPhase2)
+                    .map((row) => parseConsolidationTimestamp(row.generatedAt)));
+                const freshInput = attempts > 0 && (!Number.isFinite(failedAtMs) || newestInputMs > failedAtMs);
+                if (freshInput) {
                     idx.metaSet(AUTO_CONSOLIDATE_ATTEMPTS_KEY, "0");
+                    idx.metaDelete(AUTO_CONSOLIDATE_EXHAUSTED_KEY);
                     attempts = 0;
                 }
                 // Codex parity: the success cooldown is wall-clock and is NOT bypassed
@@ -1279,8 +1293,9 @@ export class MemcurioAdapter {
                     // A new note or stage row resets the budget above; the runbook
                     // (docs/operations.md) documents the manual reset.
                     exhausted = true;
-                    if (attempts === AUTO_CONSOLIDATE_MAX_ATTEMPTS) {
+                    if (idx.metaGet(AUTO_CONSOLIDATE_EXHAUSTED_KEY) !== "1") {
                         idx.audit("consolidate.auto_exhausted", "-", `attempts=${String(attempts)}; waiting for new input`);
+                        idx.metaSet(AUTO_CONSOLIDATE_EXHAUSTED_KEY, "1");
                     }
                 }
                 if (cooldownMs === undefined && !exhausted) {
@@ -1330,6 +1345,14 @@ export class MemcurioAdapter {
                 // handles the true no-op case.
                 if (!work) {
                     work = hasWorkspaceChanges(root);
+                }
+                // A store whose injected summary violates the contract is work by
+                // itself, but only when a model channel can actually rewrite it. The
+                // deterministic writer cannot compress a legacy file, so counting it as
+                // work there would spin a failing run on every turn/end.
+                if (!work && usableChannel !== undefined) {
+                    work =
+                        memorySummaryViolation(readWorkspaceText(root, "memory_summary.md"), this.#injectionBudget()) !== null;
                 }
             }
             finally {
@@ -1672,6 +1695,11 @@ export class MemcurioAdapter {
             // INPUT_BUDGET_EXCEEDED is our own invariant guard, not an upstream
             // failure: keep it visible under its own audit kind (review F-8).
             return err.code === "INPUT_BUDGET_EXCEEDED" ? "internal" : "provider";
+        }
+        if (err instanceof ConsolidationSummaryError) {
+            // Our own artifact contract, not a model/transport failure: a shorter
+            // retry than "unknown" would just re-run the same deterministic gate.
+            return "internal";
         }
         return "unknown";
     }
