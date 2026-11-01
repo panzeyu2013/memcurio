@@ -332,6 +332,7 @@ describe("queue services", () => {
       attempts: 0,
       nextRetryAt: undefined,
       lastErrorKind: undefined,
+      paused: false,
     });
     const idx = await Index.create(indexDb(root));
     try {
@@ -349,6 +350,7 @@ describe("queue services", () => {
       attempts: 2,
       nextRetryAt: "2026-08-10T04:00:00.000Z",
       lastErrorKind: "timeout",
+      paused: false,
     });
   });
 });

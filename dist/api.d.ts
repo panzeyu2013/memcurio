@@ -58,6 +58,7 @@ export declare function integrationStatus(root: string): Promise<{
         attempts: number;
         retryAt: string | null;
         lastErrorKind: string | null;
+        paused: boolean;
     };
     auditCount: number;
 }>;

@@ -126,6 +126,7 @@ export async function integrationStatus(root: string) {
         })(),
         retryAt: index.metaGet("consolidation_auto_retry_at") ?? null,
         lastErrorKind: index.metaGet("consolidation_auto_kind") ?? null,
+        paused: index.metaGet("consolidation_auto_exhausted") === "1",
       },
       auditCount: index.auditCount(),
     };

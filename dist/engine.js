@@ -59,8 +59,10 @@ const AUTO_CONSOLIDATE_RETRY_MS = 60 * 60 * 1000;
  *  deterministic: a pathological model would otherwise retry every hour
  *  forever. They back off for six hours instead. */
 const AUTO_CONSOLIDATE_INTERNAL_RETRY_MS = 6 * 60 * 60 * 1000;
-/** Consecutive automatic-failure bookkeeping (observability only: codex's
- *  phase-2 claim deliberately does not gate on a retry budget). */
+/** Consecutive automatic-failure bookkeeping. Codex's phase-2 job never gates
+ *  on a retry budget (retry_remaining is written but unread), but its stage-1
+ *  worker stops at the exhausted budget; the automatic trigger follows that
+ *  shape so one deterministic failure cannot pin every turn/end to a run. */
 const AUTO_CONSOLIDATE_ATTEMPTS_KEY = "consolidation_auto_attempts";
 const AUTO_CONSOLIDATE_EXHAUSTED_KEY = "consolidation_auto_exhausted";
 /** Consecutive automatic failures before the trigger pauses itself. Codex's
@@ -1290,8 +1292,8 @@ export class MemcurioAdapter {
                 if (cooldownMs === undefined && attempts >= AUTO_CONSOLIDATE_MAX_ATTEMPTS) {
                     // Repeated failures with no new input: pause the automatic trigger
                     // instead of re-running a deterministic failure on every turn/end.
-                    // A new note or stage row resets the budget above; the runbook
-                    // (docs/operations.md) documents the manual reset.
+                    // Input newer than the last failure resets the budget above; the
+                    // manual reset is documented in docs/operations.md.
                     exhausted = true;
                     if (idx.metaGet(AUTO_CONSOLIDATE_EXHAUSTED_KEY) !== "1") {
                         idx.audit("consolidate.auto_exhausted", "-", `attempts=${String(attempts)}; waiting for new input`);

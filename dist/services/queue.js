@@ -44,6 +44,7 @@ export async function consolidation(root) {
             attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 0,
             nextRetryAt: index.metaGet("consolidation_auto_retry_at"),
             lastErrorKind: index.metaGet("consolidation_auto_kind"),
+            paused: index.metaGet("consolidation_auto_exhausted") === "1",
         };
     }
     finally {
