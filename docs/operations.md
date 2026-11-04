@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.11/memcurio-dsh-plugin-0.0.11.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.12/memcurio-dsh-plugin-0.0.12.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.11.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.11.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.12.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.12.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -89,6 +89,12 @@ Workspaces 面板会写同一份配置；手改时 key 必须是 canonical 路�
 - **no-cwd 默认关闭。** 0.0.8 会给没有 header.cwd 的会话共享记忆；0.0.9 默认关闭。要保留旧行为，在 profile patch 的 memcurio 配置里加 workspaceOverrides: { "no-cwd": { enabled: true } }。
 - **软链工作区改用 canonical store 键。** 没有 live provenance 见证的旧 store 不会自动接管：记忆文件仍在旧目录，但该会话会改用新 canonical store。查看 <store>/state/origin.json 的 source（live/backfill，缺字段为旧格式）；需要保留旧数据时，人工确认目标后把旧 store 内容迁到 canonical store，或直接以该 canonical 路径打开会话。
 - **显式关闭会留下 durable fence。** 首次显式关闭后，删掉 override 仍保持关闭；必须再次显式 enabled: true 才能重开（防止路径删除/软链改名回落到默认开启）。
+
+### 0.0.11 → 0.0.12 升级注意
+
+- **宿主线移到 DSH `0.2.2-alpha.3`。** Cordis 生态成组移动（`cordis 4.0.6-alpha.2` / `cordis-plugin-loader 1.0.7-alpha.2` / `schemastery 3.18.6-alpha.2`），插件的 24 个 `dsh-*` 开发依赖与运行时 `schemastery` 同步；`cordis` peer 增加 `^4.0.6-alpha.2` 分支（严格 semver 不把预发布算进 `^4.0.4`）。兼容矩阵样本为 `0.2.0-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.5` / `0.2.2-alpha.3`。
+- **跨字段路由校验加固。** `provider`/`model` 成对规则改按「半边是否存在」判定（未求值的 `!!js` 表达式算存在），owner 用 identity 认领；0.0.11 在 alpha.3 宿主上会把单边路由写进运行态。升级后首次启动若报 `must be set together`，按错误提示修 profile patch 里该条目的 config 再 reload。
+- **被拒的写仍被 Loader 记为成功。** 上游 `_commitVolatile` 吞错并保留被拒的原始值：运行态不变，但下次重启会在 `apply` 报错。写入路径以 `dsh-config-editor` 的预检为闸；遇到该报错时补全或清空这一对即可恢复。
 
 ### 0.0.10 → 0.0.11 升级注意
 

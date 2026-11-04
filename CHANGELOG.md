@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-04
+
 ### Changed
 
 - **The development host line is DSH `0.2.2-alpha.3`.** All 24 pinned `@deepseek-ai/dsh-*` devDependencies move to that release and the Cordis ecosystem moves with them (`cordis ~4.0.6-alpha.2`, `cordis-plugin-loader ~1.0.7-alpha.2`, `schemastery ~3.18.6-alpha.2`). The loader pin is part of the change, not a detail: a tree left on `1.0.7-alpha.1` fails inside the test host with `this.entry` on a null receiver, which reads like a plugin bug instead of the dependency mismatch it is. `@biomejs/biome` is pinned to `2.5.12` because `2.5.15` and later reject the commented `biome.json` (2.5.12–2.5.14 parse it).
@@ -18,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The pair rule judges presence, not string-ness.** The guard runs before the loader interpolates `!!js` expressions, so a candidate that kept an expression `provider` and cleared `model` looked half-absent to a string-only rule and was accepted (the legitimate "expression provider plus plain model" was refused for the same reason). A half now counts as set unless it is `undefined`, `null` or an absent key, and a non-string half is left to the schema; `tests/loader-config.test.ts` covers both directions.
 - **A config object cannot impersonate the owner.** Ownership used to be duck-typed (`uid: number` plus `ctx: object`), so a profile carrying those keys skipped the rule entirely on the older dispatch shape. It is now identity-only, with a regression case for the impersonating candidate.
 - **An unknown dispatch shape fails loudly.** A dispatch without a continuation used to veto the resolution silently; the guard now throws, and `scripts/probe-guard-contract.mjs` pins the contract on every matrix host.
+- **A refused write names its recovery path.** The Loader reports a refused volatile write as success and keeps the rejected value in the profile entry, so the failure surfaced at the next activation as a bare pair-rule error; it now says where the value lives and how to clear it.
+- **The compatibility probe refuses to validate an artifact it did not pack.** A warm bun cache can serve an older tarball for the same name@version (it did during this work), so the probe now compares the installed module against the tree on disk before the host assertions.
 - **The guard is covered through the real seam.** `tests/loader-config.test.ts` drove a hand-built `waterfall(thisArg, "internal/config", …)` call that only the older convention reaches — on the line it was written for it stayed green while the production path was dead. It now drives `fiber.resolveConfig()` (the edit-time gate) and a Loader update, asserting that a refused candidate never reaches the running config, and reads the running config through `effectiveConfig` so the `Fiber.config` semantics flip is covered too.
 
 ## [0.0.11] - 2026-11-01
