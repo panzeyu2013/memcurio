@@ -272,19 +272,57 @@ describe("resolved settings behaviour", () => {
     const root = temporaryRoot();
     const { ctx, fibers } = await harness();
     const fiber = await ctx.plugin(plugin, { root, scope: "global" });
-    const half = { provider: "only" };
-    const next = (): unknown => half;
-    // Another owner resolves through the same waterfall untouched (the guard
-    // compares the dispatch owner with this plugin's own fiber).
-    expect(await fiber.ctx.waterfall(ctx.fiber, "internal/config", half, next)).toMatchObject(half);
-    // This entry's own resolution is refused before the Loader commits it,
-    // and a reference-shaped candidate is unwrapped before the rule runs.
-    expect(() => fiber.ctx.waterfall(fiber, "internal/config", half, next)).toThrow(/together/);
-    const refHalf = { provider: { get: () => "only" } };
-    expect(() => fiber.ctx.waterfall(fiber, "internal/config", refHalf, next)).toThrow(/together/);
+    // `fiber.resolveConfig` is the seam a Settings write uses: the config
+    // editor resolves the candidate on the entry fiber before it persists
+    // anything. Driving it (instead of a hand-built waterfall call) keeps this
+    // test honest across host lines whose dispatch shape differs.
+    expect(() => fiber.resolveConfig({ root, scope: "global", provider: "only" })).toThrow(/together/);
+    expect(() => fiber.resolveConfig({ root, scope: "global", model: "only" })).toThrow(/together/);
+    // A reference-shaped candidate is unwrapped before the rule runs.
+    const refHalf = { root, scope: "global", provider: { get: () => "only" } };
+    expect(() => fiber.resolveConfig(refHalf)).toThrow(/together/);
+    // Both the complete pair and the "neither half" default resolve.
+    expect(() => fiber.resolveConfig({ root, scope: "global", provider: "p", model: "m" })).not.toThrow();
+    expect(() => fiber.resolveConfig({ root, scope: "global" })).not.toThrow();
+    // Another plugin may declare its own `provider` without a `model`; the
+    // guard compares the dispatch owner with THIS entry's fiber and leaves it
+    // alone (a wrong owner test would refuse every other plugin's config).
+    const other = await ctx.plugin(
+      { name: "other-provider-owner", apply: () => {} },
+      { provider: "unrelated" } as never,
+    );
+    expect(other).toBeDefined();
+    await other.dispose();
     await fiber.dispose();
-    // Disposal removes the listener: the same dispatch resolves again.
-    expect(await fiber.ctx.waterfall(fiber, "internal/config", half, next)).toMatchObject(half);
+    // Disposal removes the listener: the same candidate no longer trips it.
+    expect(() => fiber.resolveConfig({ root, scope: "global", provider: "only" })).not.toThrow();
+    await disposeFibers(fibers);
+  });
+
+  test("serves both published config-dispatch shapes", async () => {
+    const root = temporaryRoot();
+    const { ctx, fibers } = await harness();
+    const fiber = await ctx.plugin(plugin, { root, scope: "global" });
+    const half = { root, scope: "global", provider: "only" };
+    const next = (): unknown => half;
+    // The suite runs on the newest host line, but the peer range also covers
+    // hosts whose `internal/config` still dispatches the older layout
+    // (`thisArg` = owner fiber, args = raw + next) while the newer line sends
+    // `thisArg` = context, args = owner fiber + next. Both layouts are
+    // reachable through `waterfall` on either line, so pin both; one structural
+    // type drives them because the two declarations type the list differently.
+    const dispatch = (target: typeof fiber.ctx, ...args: unknown[]): unknown =>
+      (target.waterfall as unknown as (...inner: unknown[]) => unknown)(...args);
+    expect(() => dispatch(fiber.ctx, fiber, "internal/config", half, next)).toThrow(/together/);
+    expect(() => dispatch(fiber.ctx, fiber.ctx, "internal/config", fiber, next)).toThrow(/together/);
+    // An unrelated owner is left alone in both layouts.
+    const other = await ctx.plugin(
+      { name: "other-dispatch-owner", apply: () => {} },
+      { provider: "unrelated" } as never,
+    );
+    expect(() => dispatch(other.ctx, other, "internal/config", half, next)).not.toThrow();
+    await other.dispose();
+    await fiber.dispose();
     await disposeFibers(fibers);
   });
 

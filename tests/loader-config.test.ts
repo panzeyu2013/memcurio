@@ -36,6 +36,19 @@ interface VolatileConfig {
   readonly registerTools: { get(): unknown };
 }
 
+/** The config object the running instance reads. cordis 4.0.6-alpha.1 publishes
+ *  it as `config` (with `effectiveConfig` as a getter); from 4.0.6-alpha.2
+ *  `config` is the raw input and `effectiveConfig` is what activation got. */
+function runningConfig(fiber: { effectiveConfig?: unknown; config?: unknown } | undefined): unknown {
+  return fiber?.effectiveConfig ?? fiber?.config;
+}
+
+/** Read one field through a volatile reference (plain values pass through). */
+function live(value: unknown): unknown {
+  const ref = value as { get?: () => unknown } | null | undefined;
+  return typeof ref?.get === "function" ? ref.get() : value;
+}
+
 describe("loader volatile config commit (0.1.7)", () => {
   test("a volatile-only update commits into the running refs without a remount", async () => {
     const root = temporaryRoot();
@@ -52,7 +65,7 @@ describe("loader volatile config commit (0.1.7)", () => {
       if (loader === undefined) throw new Error("loader failed to mount");
       const id = await loader.create({ name: "./src/plugin/index.ts", config: { root, scope: "workspace" } });
       const entry = loader.resolve(id);
-      const resolved = entry.fiber?.config as VolatileConfig | undefined;
+      const resolved = runningConfig(entry.fiber) as VolatileConfig | undefined;
       // The real Loader hands the plugin a resolved config of Volatile refs
       // with the schema defaults already applied.
       expect(typeof resolved?.scope?.get).toBe("function");
@@ -64,7 +77,7 @@ describe("loader volatile config commit (0.1.7)", () => {
       // A volatile-only raw change commits in place: the SAME resolved object
       // stays on the fiber and only the references are updated.
       await entry.update({ config: { root, scope: "global", injectContext: false } });
-      expect(entry.fiber?.config).toBe(resolved);
+      expect(runningConfig(entry.fiber)).toBe(resolved);
       expect(resolved?.scope.get()).toBe("global");
       expect(resolved?.injectContext.get()).toBe(false);
       // No remount: the tools registered by the first apply are still there.
@@ -77,12 +90,55 @@ describe("loader volatile config commit (0.1.7)", () => {
       } catch {
         // Rejection is the loud arm; the reference check below is the contract.
       }
-      expect(entry.fiber?.config).toBe(resolved);
+      expect(runningConfig(entry.fiber)).toBe(resolved);
       expect(resolved?.scope.get()).toBe("global");
       expect(resolved?.injectContext.get()).toBe(false);
       // The candidate did reach the entry (the guard refused it) rather than
       // the update being a silent no-op.
       expect((entry.options.config as { provider?: unknown }).provider).toBe("only-provider");
+    } finally {
+      await boot.dispose();
+      for (const service of services.reverse()) await service.dispose();
+    }
+  });
+
+  test("a lone route half is refused at the settings-write seam", async () => {
+    const root = temporaryRoot();
+    const host: TestHost = await createTestHost();
+    const ctx = host.ctx;
+    const services = host.fibers;
+    let loader: Loader | undefined;
+    const boot = await ctx.plugin(function boot(scope: Context): void {
+      loader = new Loader(scope, { baseUrl: pathToFileURL(`${join(import.meta.dir, "..")}/`).href });
+    });
+    try {
+      if (loader === undefined) throw new Error("loader failed to mount");
+      const id = await loader.create({ name: "./src/plugin/index.ts", config: { root, scope: "workspace" } });
+      const entry = loader.resolve(id);
+
+      // `dsh-config-editor` resolves a candidate on the entry fiber BEFORE it
+      // writes the profile patch, so this call is the gate that keeps a lone
+      // half out of the document. It must refuse on every host line: the
+      // dispatch shape of `internal/config` differs across cordis releases.
+      expect(() => entry.fiber?.resolveConfig({ root, scope: "global", provider: "only-provider" })).toThrow(/together/);
+      expect(() => entry.fiber?.resolveConfig({ root, scope: "global", model: "only-model" })).toThrow(/together/);
+
+      // The update path must leave the running config untouched (the Loader may
+      // reject the candidate or swallow the guard error; both are acceptable).
+      try {
+        await entry.update({ config: { root, scope: "global", provider: "only-provider" } });
+      } catch {
+        // Rejection is the loud arm; the running config below is the contract.
+      }
+      const refused = runningConfig(entry.fiber) as { scope: { get(): unknown }; provider?: unknown };
+      expect(refused.scope.get()).toBe("workspace");
+      expect(live(refused.provider)).toBeUndefined();
+
+      // A complete pair still applies, through the same accessor.
+      await entry.update({ config: { root, scope: "global", provider: "pair-provider", model: "pair-model" } });
+      const applied = runningConfig(entry.fiber) as { scope: { get(): unknown }; provider?: unknown };
+      expect(applied.scope.get()).toBe("global");
+      expect(live(applied.provider)).toBe("pair-provider");
     } finally {
       await boot.dispose();
       for (const service of services.reverse()) await service.dispose();

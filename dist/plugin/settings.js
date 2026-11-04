@@ -114,24 +114,56 @@ function rawRoutePair(raw) {
 function rawHalf(value) {
     return isVolatileLike(value) ? value.get() : value;
 }
+/** A cordis fiber as either dispatch shape delivers it. */
+function isFiberLike(value) {
+    return (typeof value === "object"
+        && value !== null
+        && typeof value.uid === "number"
+        && typeof value.ctx === "object");
+}
+/** The dispatch continuation: the last function argument of every published
+ *  shape, whatever the surrounding arity. */
+function continuation(args) {
+    for (let index = args.length - 1; index >= 0; index -= 1) {
+        const candidate = args[index];
+        if (typeof candidate === "function")
+            return candidate;
+    }
+    return undefined;
+}
 /** Resolution guard: every LATER config resolution (a Settings page write, a
  *  profile reload) runs the cross-field route rule BEFORE the Loader commits
  *  the value, so a lone half is refused instead of persisted. The initial
  *  activation is covered by `assertRoutePair` in apply.
  *
- *  Note that `Fiber.update` assigns `fiber._config` before it validates, so a
- *  rejected candidate can linger there until the next successful update or a
- *  restart; the volatile commit path likewise keeps the raw candidate in
- *  `entry.options.config` until the next update replaces it (a reload in that
- *  window fails loudly on this same rule, which is intended). The Settings
- *  write path never reaches that state because the config editor runs this
- *  same waterfall before it persists anything. */
+ *  This hook IS the host's pre-write verdict: `dsh-config-editor` calls
+ *  `fiber.resolveConfig(candidate)` before it writes the profile patch. Both
+ *  published dispatch shapes hand the candidate to `next()`, and differ only in
+ *  where the owner travels:
+ *
+ *    cordis 4.0.6-alpha.1  `waterfall(owner, 'internal/config', raw, () => raw)`
+ *                          -> listener `(raw, next)` with `this` = the owner fiber
+ *    cordis 4.0.6-alpha.2  `waterfall('internal/config', owner, () => raw)`
+ *                          -> listener `(owner, next)` with `this` = the context
+ *
+ *  So the owner is the first argument when it is a fiber and `this` otherwise;
+ *  never assume a fixed arity. A refused candidate leaves the running config
+ *  untouched: the Loader keeps it in `entry.options.config` until the next
+ *  update on hosts whose `Fiber.update` assigns raw input first, and a
+ *  candidate resolution publishes nothing on the newer line. */
 export function guardConfigResolution(ctx) {
-    ctx.on("internal/config", function (raw, next) {
+    // The listener signature is line-dependent (see above), so the registration
+    // is typed structurally instead of against a per-line `Events` member.
+    const listen = ctx.on;
+    listen.call(ctx, "internal/config", function (...args) {
+        const next = continuation(args);
+        if (next === undefined)
+            return undefined;
         const resolved = next();
-        if (this !== ctx.fiber)
+        const owner = isFiberLike(args[0]) ? args[0] : this;
+        if (owner !== ctx.fiber)
             return resolved;
-        assertRoutePair(rawRoutePair(raw));
+        assertRoutePair(rawRoutePair(resolved));
         return resolved;
     });
 }
