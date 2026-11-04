@@ -111,19 +111,24 @@ export declare function pinnedRoute(settings: MemcurioSettings): {
  *
  *  This hook IS the host's pre-write verdict: `dsh-config-editor` calls
  *  `fiber.resolveConfig(candidate)` before it writes the profile patch. Both
- *  published dispatch shapes hand the candidate to `next()`, and differ only in
+ *  published dispatch shapes hand the candidate to `next()` and differ only in
  *  where the owner travels:
  *
  *    cordis 4.0.6-alpha.1  `waterfall(owner, 'internal/config', raw, () => raw)`
  *                          -> listener `(raw, next)` with `this` = the owner fiber
  *    cordis 4.0.6-alpha.2  `waterfall('internal/config', owner, () => raw)`
- *                          -> listener `(owner, next)` with `this` = the context
+ *                          -> listener `(owner, next)` with no receiver: the
+ *                             runtime passes no thisArg, so `this` is null
  *
- *  So the owner is the first argument when it is a fiber and `this` otherwise;
- *  never assume a fixed arity. A refused candidate leaves the running config
- *  untouched: the Loader keeps it in `entry.options.config` until the next
- *  update on hosts whose `Fiber.update` assigns raw input first, and a
- *  candidate resolution publishes nothing on the newer line. */
+ *  So ownership is decided by identity — the argument list contains this fiber,
+ *  or `this` is this fiber — never by shape: a config object carrying
+ *  `uid`/`ctx` must not impersonate the owner. A refused candidate leaves the
+ *  running config untouched, although the Loader on the older line keeps the
+ *  rejected raw in `entry.options.config` until the next update.
+ *
+ *  Boundary: the schema, and any `.transform()` it grows, runs outside this
+ *  waterfall, so the guard judges the RAW candidate. A transform that changed a
+ *  half's presence would have to be mirrored here. */
 export declare function guardConfigResolution(ctx: Context): void;
 export interface InstallSettingsOptions {
     /** Called after a settings commit changed the namespace, with the freshly

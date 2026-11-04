@@ -12,10 +12,14 @@
  * intentionally black-box; nothing here imports this repository's sources.
  *
  * Usage:
- *   bun scripts/probe-compat.ts --version 0.2.2-alpha.2
+ *   bun scripts/probe-compat.ts --version 0.2.2-alpha.3
  *   bun scripts/probe-compat.ts --all --clean
  *   bun scripts/probe-compat.ts --version 0.2.1-rc.2 --work /tmp/probe --port 32191
- *   bun scripts/probe-compat.ts --version 0.2.2-alpha.2 --cache .dsh-tmp/warm-bun-cache
+ *   bun scripts/probe-compat.ts --version 0.2.2-alpha.3 --cache .dsh-tmp/warm-bun-cache
+ *
+ * A warm --cache can hand back the tarball it packed under the same name@version
+ * in an earlier run, so rebuilding this package and re-probing the same host
+ * needs a fresh cache directory; CI starts cold and is unaffected.
  *
  * --work must live under .dsh-tmp or the OS temporary directory: the probe
  * deletes and recreates it, so an unbounded path could erase unrelated files.
@@ -71,7 +75,7 @@ function parseArgs(argv: readonly string[]): Options {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("--port must be a TCP port");
   if (all && version !== "") throw new Error("--all and --version are mutually exclusive");
   if (!all && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error("--version <dsh-version> is required (for example 0.2.2-alpha.2), or use --all");
+    throw new Error("--version <dsh-version> is required (for example 0.2.2-alpha.3), or use --all");
   }
   const base = work === "" ? join(repoRoot, ".dsh-tmp", "probe-compat") : resolve(work);
   return {
@@ -339,6 +343,19 @@ async function probeVersion(options: Options): Promise<void> {
   if (options.version.startsWith("0.2.2")) {
     assert(composed.includes("id: tool-executor-native"), "0.2.2 host composition has no native tool executor");
   }
+
+  // The routes below prove the product boots; they cannot see the settings
+  // pre-write gate, which is where the cross-field route rule lives. Drive it
+  // against the installed tarball and this host's cordis, so a dispatch-shape
+  // regression fails the matrix instead of hiding behind 200s.
+  step("assert the config-resolution contract on this host");
+  const contractScript = join(profileDir, "guard-contract.mjs");
+  await Bun.write(contractScript, readFileSync(join(repoRoot, "scripts", "probe-guard-contract.mjs"), "utf8"));
+  const contract = run(node, [contractScript], { cwd: profileDir, env });
+  assert(
+    contract.includes('"ok":true'),
+    `config-resolution contract failed on ${options.version}:\n${tail(contract, 8)}`,
+  );
 
   const port = await freePort(options.port, options.portExplicit);
   step(`boot the web host on 127.0.0.1:${port}`);

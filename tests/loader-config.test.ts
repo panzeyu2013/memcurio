@@ -122,6 +122,20 @@ describe("loader volatile config commit (0.1.7)", () => {
       // dispatch shape of `internal/config` differs across cordis releases.
       expect(() => entry.fiber?.resolveConfig({ root, scope: "global", provider: "only-provider" })).toThrow(/together/);
       expect(() => entry.fiber?.resolveConfig({ root, scope: "global", model: "only-model" })).toThrow(/together/);
+      // An unevaluated `!!js` expression is a present half: the loader
+      // interpolates it after this waterfall, so judging only strings would
+      // let "expression provider + cleared model" through and refuse the
+      // legitimate "expression provider + plain model".
+      expect(() =>
+        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: null }),
+      ).toThrow(/together/);
+      expect(() =>
+        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: "m" }),
+      ).not.toThrow(/together/);
+      // A config object cannot impersonate the owner: ownership is identity.
+      expect(() =>
+        entry.fiber?.resolveConfig({ root, scope: "global", provider: "only-provider", uid: 1, ctx: null }),
+      ).toThrow(/together/);
 
       // The update path must leave the running config untouched (the Loader may
       // reject the candidate or swallow the guard error; both are acceptable).
@@ -130,9 +144,16 @@ describe("loader volatile config commit (0.1.7)", () => {
       } catch {
         // Rejection is the loud arm; the running config below is the contract.
       }
-      const refused = runningConfig(entry.fiber) as { scope: { get(): unknown }; provider?: unknown };
+      const refused = runningConfig(entry.fiber) as {
+        scope: { get(): unknown };
+        provider?: unknown;
+        model?: unknown;
+      };
       expect(refused.scope.get()).toBe("workspace");
+      // Both halves stay absent: asserting only the scope would let a leaked
+      // provider hide behind the unchanged default.
       expect(live(refused.provider)).toBeUndefined();
+      expect(live(refused.model)).toBeUndefined();
 
       // A complete pair still applies, through the same accessor.
       await entry.update({ config: { root, scope: "global", provider: "pair-provider", model: "pair-model" } });

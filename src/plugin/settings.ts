@@ -191,45 +191,42 @@ export function pinnedRoute(settings: MemcurioSettings): { provider: string; mod
   return provider && model ? { provider, model } : undefined;
 }
 
-/** Provider/model halves of one raw activation config (the resolution guard
- *  sees the candidate before it is committed, so it cannot read the live
- *  volatile references). */
-function rawRoutePair(raw: unknown): Pick<MemcurioSettings, "provider" | "model"> {
-  if (typeof raw !== "object" || raw === null) return {};
-  const record = raw as Record<string, unknown>;
-  const provider = rawHalf(record.provider);
-  const model = rawHalf(record.model);
-  return {
-    ...(typeof provider === "string" ? { provider } : {}),
-    ...(typeof model === "string" ? { model } : {}),
-  };
+/** Whether one raw route half carries a value. An absent key, `undefined` and
+ *  `null` mean unset; a volatile reference is unwrapped first; a non-string (an
+ *  unevaluated `!!js` expression, for instance) counts as set, because only the
+ *  schema can judge it — dropping it would let a pair slip through here and
+ *  fail at the next activation instead. */
+function rawHalfState(value: unknown): "absent" | "empty" | "present" {
+  const unwrapped = isVolatileLike(value) ? value.get() : value;
+  if (unwrapped === undefined || unwrapped === null) return "absent";
+  if (typeof unwrapped === "string") return unwrapped.trim() === "" ? "empty" : "present";
+  return "present";
 }
 
-/** One raw candidate half as a plain value. Upstream resolution paths pass
- *  plain values, but a volatile reference is unwrapped too so a ref-shaped
- *  candidate cannot slip past the pair rule. */
-function rawHalf(value: unknown): unknown {
-  return isVolatileLike(value) ? value.get() : value;
-}
-
-/** A cordis fiber as either dispatch shape delivers it. */
-function isFiberLike(value: unknown): value is object {
-  return (
-    typeof value === "object"
-    && value !== null
-    && typeof (value as { uid?: unknown }).uid === "number"
-    && typeof (value as { ctx?: unknown }).ctx === "object"
-  );
-}
-
-/** The dispatch continuation: the last function argument of every published
- *  shape, whatever the surrounding arity. */
-function continuation(args: readonly unknown[]): (() => unknown) | undefined {
-  for (let index = args.length - 1; index >= 0; index -= 1) {
-    const candidate = args[index];
-    if (typeof candidate === "function") return candidate as () => unknown;
+/** The cross-field rule over one raw candidate. `assertRoutePair` owns the
+ *  resolved-value form; this form runs before the schema, so it cannot assume
+ *  strings and judges presence instead. */
+function assertRawRoutePair(raw: unknown): void {
+  const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const provider = rawHalfState(record.provider);
+  const model = rawHalfState(record.model);
+  if ((provider === "absent") !== (model === "absent")) {
+    throw new Error("memcurio: provider and model must be set together");
   }
-  return undefined;
+  if (provider === "empty") {
+    throw new Error("memcurio: provider must be non-empty when set");
+  }
+  if (model === "empty") {
+    throw new Error("memcurio: model must be non-empty when set");
+  }
+}
+
+/** The dispatch continuation. cordis appends it as the last argument in every
+ *  published shape; anything else is a shape we do not know and must not
+ *  silently accept. */
+function continuation(args: readonly unknown[]): (() => unknown) | undefined {
+  const last = args[args.length - 1];
+  return typeof last === "function" ? (last as () => unknown) : undefined;
 }
 
 /** Resolution guard: every LATER config resolution (a Settings page write, a
@@ -239,19 +236,24 @@ function continuation(args: readonly unknown[]): (() => unknown) | undefined {
  *
  *  This hook IS the host's pre-write verdict: `dsh-config-editor` calls
  *  `fiber.resolveConfig(candidate)` before it writes the profile patch. Both
- *  published dispatch shapes hand the candidate to `next()`, and differ only in
+ *  published dispatch shapes hand the candidate to `next()` and differ only in
  *  where the owner travels:
  *
  *    cordis 4.0.6-alpha.1  `waterfall(owner, 'internal/config', raw, () => raw)`
  *                          -> listener `(raw, next)` with `this` = the owner fiber
  *    cordis 4.0.6-alpha.2  `waterfall('internal/config', owner, () => raw)`
- *                          -> listener `(owner, next)` with `this` = the context
+ *                          -> listener `(owner, next)` with no receiver: the
+ *                             runtime passes no thisArg, so `this` is null
  *
- *  So the owner is the first argument when it is a fiber and `this` otherwise;
- *  never assume a fixed arity. A refused candidate leaves the running config
- *  untouched: the Loader keeps it in `entry.options.config` until the next
- *  update on hosts whose `Fiber.update` assigns raw input first, and a
- *  candidate resolution publishes nothing on the newer line. */
+ *  So ownership is decided by identity — the argument list contains this fiber,
+ *  or `this` is this fiber — never by shape: a config object carrying
+ *  `uid`/`ctx` must not impersonate the owner. A refused candidate leaves the
+ *  running config untouched, although the Loader on the older line keeps the
+ *  rejected raw in `entry.options.config` until the next update.
+ *
+ *  Boundary: the schema, and any `.transform()` it grows, runs outside this
+ *  waterfall, so the guard judges the RAW candidate. A transform that changed a
+ *  half's presence would have to be mirrored here. */
 export function guardConfigResolution(ctx: Context): void {
   // The listener signature is line-dependent (see above), so the registration
   // is typed structurally instead of against a per-line `Events` member.
@@ -261,11 +263,13 @@ export function guardConfigResolution(ctx: Context): void {
   ) => unknown;
   listen.call(ctx, "internal/config", function (this: unknown, ...args: unknown[]) {
     const next = continuation(args);
-    if (next === undefined) return undefined;
+    if (next === undefined) {
+      throw new Error("memcurio: internal/config arrived without a continuation");
+    }
     const resolved = next();
-    const owner = isFiberLike(args[0]) ? args[0] : this;
-    if (owner !== ctx.fiber) return resolved;
-    assertRoutePair(rawRoutePair(resolved));
+    const owner = ctx.fiber;
+    if (!args.includes(owner) && this !== owner) return resolved;
+    assertRawRoutePair(resolved);
     return resolved;
   });
 }

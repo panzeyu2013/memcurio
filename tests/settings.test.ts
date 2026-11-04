@@ -314,7 +314,12 @@ describe("resolved settings behaviour", () => {
     const dispatch = (target: typeof fiber.ctx, ...args: unknown[]): unknown =>
       (target.waterfall as unknown as (...inner: unknown[]) => unknown)(...args);
     expect(() => dispatch(fiber.ctx, fiber, "internal/config", half, next)).toThrow(/together/);
-    expect(() => dispatch(fiber.ctx, fiber.ctx, "internal/config", fiber, next)).toThrow(/together/);
+    // The newer line passes no thisArg at all, so its receiver is null.
+    expect(() => dispatch(fiber.ctx, null, "internal/config", fiber, next)).toThrow(/together/);
+    // A dispatch without a continuation is a shape we do not know. cordis's own
+    // waterfall refuses it before the listener runs; the guard throws too, so no
+    // shape can ever veto a resolution silently.
+    expect(() => dispatch(fiber.ctx, fiber, "internal/config", half)).toThrow();
     // An unrelated owner is left alone in both layouts.
     const other = await ctx.plugin(
       { name: "other-dispatch-owner", apply: () => {} },

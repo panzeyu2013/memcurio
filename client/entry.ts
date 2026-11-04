@@ -188,8 +188,10 @@ export function apply(ctx: Context): void {
 
   // The settings shell renders this seat whenever its panel is open (and the
   // nav rows exist at the same commit). The probe renders nothing: it tags the
-  // memcurio nav row so our stylesheet can paint the book mark there — the
-  // shell owns row icons and the section contract carries no icon field.
+  // memcurio nav row so our stylesheet can paint the book mark there. The
+  // shell owns row icons; DSH 0.2.2-alpha.3 declares `settings.section.icon`
+  // (the shell renders it with its own fallback) but nothing registers an
+  // occupant, so moving the mark into that slot is a separate UI change.
   ctx.slots.inject("settings.action", () =>
     ctx.slots.register(
       {
