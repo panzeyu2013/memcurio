@@ -60,8 +60,10 @@ describe("DSH plugin contract", () => {
     };
     expect(manifest.dsh?.bundle?.patch).toBe("./cordis.patch.yml");
     // Peer contracts must track the DSH release this package is validated
-    // against (bumped together with the root devDependencies).
-    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.4");
+    // against (bumped together with the root devDependencies). The 0.2.2 line
+    // ships a prerelease cordis, which strict semver excludes from ^4.0.4, so
+    // the line is named explicitly.
+    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.4 || ^4.0.6-alpha.2");
     for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools", "dsh-settings"]) {
       expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.2.0-rc.1");
     }
