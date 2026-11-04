@@ -223,7 +223,16 @@ function resolveConfig(config = {}) {
         throw new TypeError("memcurio: root must be a non-empty string");
     }
     const settings = settingsView(config);
-    assertRoutePair(settings);
+    try {
+        assertRoutePair(settings);
+    }
+    catch (error) {
+        // A refused volatile write is reported as success by the Loader and keeps
+        // the rejected value in the profile patch, so the next activation is where
+        // it surfaces. Name that path here instead of leaving a bare rule error.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} (a refused write can stay in the profile entry until the next update; fix the entry and reload)`);
+    }
     return settings;
 }
 function textFromContent(content) {
