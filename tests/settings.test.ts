@@ -316,10 +316,16 @@ describe("resolved settings behaviour", () => {
     expect(() => dispatch(fiber.ctx, fiber, "internal/config", half, next)).toThrow(/together/);
     // The newer line passes no thisArg at all, so its receiver is null.
     expect(() => dispatch(fiber.ctx, null, "internal/config", fiber, next)).toThrow(/together/);
-    // A dispatch without a continuation is a shape we do not know. cordis's own
-    // waterfall refuses it before the listener runs; the guard throws too, so no
-    // shape can ever veto a resolution silently.
+    // A dispatch without a continuation is a shape we do not know: cordis's own
+    // listener calls next() before ours runs and throws there, so this asserts
+    // the runtime refuses the shape — the guard's own throw is defensive and
+    // unreachable on the published lines.
     expect(() => dispatch(fiber.ctx, fiber, "internal/config", half)).toThrow();
+    // The candidate travels in the first argument only in the old layout, so
+    // that is the one place a config carrying `uid`/`ctx` could impersonate the
+    // owner. Identity ownership must still claim it (a shape-based rule would
+    // skip the entry entirely).
+    expect(() => dispatch(fiber.ctx, fiber, "internal/config", { ...half, uid: 1, ctx: {} }, next)).toThrow(/together/);
     // An unrelated owner is left alone in both layouts.
     const other = await ctx.plugin(
       { name: "other-dispatch-owner", apply: () => {} },

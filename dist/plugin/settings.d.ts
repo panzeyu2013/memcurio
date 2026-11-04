@@ -123,8 +123,8 @@ export declare function pinnedRoute(settings: MemcurioSettings): {
  *  So ownership is decided by identity — the argument list contains this fiber,
  *  or `this` is this fiber — never by shape: a config object carrying
  *  `uid`/`ctx` must not impersonate the owner. A refused candidate leaves the
- *  running config untouched, although the Loader on the older line keeps the
- *  rejected raw in `entry.options.config` until the next update.
+ *  running config untouched, although the Loader keeps the rejected raw in
+ *  `entry.options.config` (measured on both lines) until the next update.
  *
  *  Boundary: the schema, and any `.transform()` it grows, runs outside this
  *  waterfall, so the guard judges the RAW candidate. A transform that changed a

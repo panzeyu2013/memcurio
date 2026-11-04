@@ -122,20 +122,7 @@ describe("loader volatile config commit (0.1.7)", () => {
       // dispatch shape of `internal/config` differs across cordis releases.
       expect(() => entry.fiber?.resolveConfig({ root, scope: "global", provider: "only-provider" })).toThrow(/together/);
       expect(() => entry.fiber?.resolveConfig({ root, scope: "global", model: "only-model" })).toThrow(/together/);
-      // An unevaluated `!!js` expression is a present half: the loader
-      // interpolates it after this waterfall, so judging only strings would
-      // let "expression provider + cleared model" through and refuse the
-      // legitimate "expression provider + plain model".
-      expect(() =>
-        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: null }),
-      ).toThrow(/together/);
-      expect(() =>
-        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: "m" }),
-      ).not.toThrow(/together/);
-      // A config object cannot impersonate the owner: ownership is identity.
-      expect(() =>
-        entry.fiber?.resolveConfig({ root, scope: "global", provider: "only-provider", uid: 1, ctx: null }),
-      ).toThrow(/together/);
+
 
       // The update path must leave the running config untouched (the Loader may
       // reject the candidate or swallow the guard error; both are acceptable).
@@ -160,6 +147,36 @@ describe("loader volatile config commit (0.1.7)", () => {
       const applied = runningConfig(entry.fiber) as { scope: { get(): unknown }; provider?: unknown };
       expect(applied.scope.get()).toBe("global");
       expect(live(applied.provider)).toBe("pair-provider");
+    } finally {
+      await boot.dispose();
+      for (const service of services.reverse()) await service.dispose();
+    }
+  });
+
+  test("an unevaluated expression counts as a present route half", async () => {
+    const root = temporaryRoot();
+    const host: TestHost = await createTestHost();
+    const ctx = host.ctx;
+    const services = host.fibers;
+    let loader: Loader | undefined;
+    const boot = await ctx.plugin(function boot(scope: Context): void {
+      loader = new Loader(scope, { baseUrl: pathToFileURL(`${join(import.meta.dir, "..")}/`).href });
+    });
+    try {
+      if (loader === undefined) throw new Error("loader failed to mount");
+      const id = await loader.create({ name: "./src/plugin/index.ts", config: { root, scope: "workspace" } });
+      const entry = loader.resolve(id);
+      // The loader interpolates `!!js` after this waterfall, so a string-only
+      // rule judges the pair on an unevaluated object. An expression half is a
+      // present half: "expression provider + cleared model" must be refused…
+      expect(() =>
+        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: null }),
+      ).toThrow(/together/);
+      // …and the legitimate "expression provider + plain model" must not be
+      // refused by this rule (the schema judges the expression later).
+      expect(() =>
+        entry.fiber?.resolveConfig({ root, scope: "global", provider: { __jsExpr: '"p"' }, model: "m" }),
+      ).not.toThrow(/together/);
     } finally {
       await boot.dispose();
       for (const service of services.reverse()) await service.dispose();

@@ -248,8 +248,8 @@ function continuation(args: readonly unknown[]): (() => unknown) | undefined {
  *  So ownership is decided by identity — the argument list contains this fiber,
  *  or `this` is this fiber — never by shape: a config object carrying
  *  `uid`/`ctx` must not impersonate the owner. A refused candidate leaves the
- *  running config untouched, although the Loader on the older line keeps the
- *  rejected raw in `entry.options.config` until the next update.
+ *  running config untouched, although the Loader keeps the rejected raw in
+ *  `entry.options.config` (measured on both lines) until the next update.
  *
  *  Boundary: the schema, and any `.transform()` it grows, runs outside this
  *  waterfall, so the guard judges the RAW candidate. A transform that changed a
@@ -264,6 +264,9 @@ export function guardConfigResolution(ctx: Context): void {
   listen.call(ctx, "internal/config", function (this: unknown, ...args: unknown[]) {
     const next = continuation(args);
     if (next === undefined) {
+      // Defensive: cordis's own listener calls next() first and throws on a
+      // shape without one, so this is unreachable on the published lines. It
+      // exists so an unknown shape can never veto a resolution silently.
       throw new Error("memcurio: internal/config arrived without a continuation");
     }
     const resolved = next();
