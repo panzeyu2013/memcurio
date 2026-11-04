@@ -94,7 +94,7 @@ jobs:
       fail-fast: false
       matrix:
         dsh:
-          # Keep in sync with SUPPORTED_HOSTS in scripts/probe-compat.ts.
+          # Keep in sync with SUPPORTED_HOSTS in scripts/compat-hosts.ts.
           - 0.2.0-rc.1
           - 0.2.1-rc.2
           - 0.2.1-rc.5
