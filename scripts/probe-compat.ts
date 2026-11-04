@@ -28,6 +28,7 @@
  * needs >= 24.9), pnpm (the profile installer and `dsh plugin add`), curl.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -324,6 +325,19 @@ async function probeVersion(options: Options): Promise<void> {
   // filesystems, while bun's flat tree is both fast and node-resolvable. This
   // does not weaken the boot/route claim: the plugin is still installed and
   // validated by the real pnpm gate above.
+  // A warm bun cache can hand back an older tarball for the same name@version,
+  // which would make every assertion below describe an artifact this run never
+  // packed. Pin the installed copy to the tree on disk.
+  step("verify the installed artifact matches the packed tree");
+  const installedSettings = join(profileDir, "node_modules", "@memcurio", "dsh-plugin", "dist", "plugin", "settings.js");
+  assert(existsSync(installedSettings), `installed package has no settings module at ${installedSettings}`);
+  const payloadDigest = (path: string): string =>
+    createHash("sha256").update(readFileSync(path)).digest("hex");
+  assert(
+    payloadDigest(installedSettings) === payloadDigest(join(repoRoot, "dist", "plugin", "settings.js")),
+    "installed plugin does not match the packed tree (stale bun cache: pass a fresh --cache directory)",
+  );
+
   step("install the host bundles");
   install(
     bun,
