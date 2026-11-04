@@ -326,7 +326,7 @@ test("registers the read-path guide as a system prompt section, path-free", asyn
     const first = await ctx.waterfall(carrier, "agent/pre-step", payload, defaultNext);
     if (first.kind !== "enter") throw new Error("expected enter");
     expect(first.messages).toHaveLength(2); // real message + memory context
-    const injected = first.messages[1];
+    const injected = first.messages[1] as { content: { type?: string; text?: string }[] } | undefined;
     const injectedText = injected?.content.map((block) => (block.type === "text" ? block.text : "")).join("");
     expect(injectedText).toContain("<<<MEMORY_SUMMARY");
     // The guide is a system-prompt section now: never in an injected message.

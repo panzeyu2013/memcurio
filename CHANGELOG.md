@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The development host line is DSH `0.2.2-alpha.3`.** All 24 pinned `@deepseek-ai/dsh-*` devDependencies move to that release and the Cordis ecosystem moves with them (`cordis ~4.0.6-alpha.2`, `cordis-plugin-loader ~1.0.7-alpha.2`, `schemastery ~3.18.6-alpha.2`). The loader pin is part of the change, not a detail: a tree left on `1.0.7-alpha.1` fails inside the test host with `this.entry` on a null receiver, which reads like a plugin bug instead of the dependency mismatch it is. `@biomejs/biome` is pinned to `2.5.12` because 2.6 rejects the commented `biome.json`.
+- **The compatibility matrix samples the current lines**: `0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3` (`0.2.1-rc.5` is the current `latest`; its code is identical to `rc.4`, which the matrix sampled before).
+
+### Fixed
+
+- **The cross-field route rule survives the Cordis config-dispatch change.** DSH `0.2.2-alpha.3` ships Cordis `4.0.6-alpha.2`, whose `internal/config` waterfall calls listeners as `(ownerFiber, next)` with `this` bound to the dispatching context, replacing the `(raw, next)`-with-`this`-as-owner shape. The previous listener read the candidate from the first argument and the owner from `this`, so on that line the rule never ran: the settings editor's pre-write `fiber.resolveConfig()` accepted a lone `provider` (or `model`) half, a volatile update committed it to the running config, and the refusal the plugin documents happened nowhere. The listener now takes the candidate from the continuation and the owner from whichever argument carries it, so both published shapes refuse the half; a mutant that drops the owner test is still caught.
+- **The guard is covered through the real seam.** `tests/loader-config.test.ts` drove a hand-built `waterfall(thisArg, "internal/config", …)` call that only the older convention reaches — it stayed green while the production path was dead. It now drives `fiber.resolveConfig()` (the edit-time gate) and a Loader update, asserting that a refused candidate never reaches the running config, and reads the running config through `effectiveConfig` so the `Fiber.config` semantics flip is covered too.
+
 ## [0.0.11] - 2026-11-01
 
 ### Changed
