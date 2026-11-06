@@ -22,6 +22,7 @@ import {
 import { SettingsFormModel } from "../client/settings/draft.js";
 import { InjectionSwitchModel } from "../client/settings/instant.js";
 import { MemcurioSettingsSection } from "../client/settings/section.js";
+import type { WorkspaceFace, WorkspacePolicyModel } from "../client/settings/workspaces.js";
 import { mountStyles } from "../client/settings/styles.js";
 import { installDom, loadReact } from "./support/dom.js";
 import { FakeSettingsPort } from "./support/settings-port.js";
@@ -113,7 +114,7 @@ describe("shipped browser bundle", () => {
     expect(loaded[0]?.exports.inject).toEqual(["slots", "locale", "configForms", "uiSession"]);
   });
 
-  test("registers the settings section with three observable hook seats", async () => {
+  test("registers the settings section with four observable hook seats", async () => {
     const code = readFileSync(join(import.meta.dir, "..", "lib", "client.js"), "utf8");
     const bundle = loadBundleThroughLoader(code)[0];
     if (!bundle) throw new Error("bundle did not register");
@@ -188,11 +189,16 @@ describe("shipped browser bundle", () => {
       switchModel?: unknown;
       [key: string]: unknown;
     })();
-    expect(Object.keys(injected.hooks)).toEqual(["face", "form", "instant"]);
+    expect(Object.keys(injected.hooks).sort()).toEqual(["face", "form", "instant", "workspace"].sort());
     expect(Object.keys(injected)).not.toContain("face");
+    // Only the TOP-LEVEL hooks compartment is bound into use<Name> props: a
+    // hook source nested inside a plain prop reaches the component verbatim
+    // (that shape crashed the section into the slot boundary — blank panel).
+    expect(Object.keys(injected)).not.toContain("workspace");
     expect(standardHookPropName("face")).toBe("useFace");
     expect(standardHookPropName("form")).toBe("useForm");
     expect(standardHookPropName("instant")).toBe("useInstant");
+    expect(standardHookPropName("workspace")).toBe("useWorkspace");
     for (const seat of Object.values(injected.hooks)) {
       expect(typeof seat.getSnapshot).toBe("function");
       expect(typeof seat.subscribe).toBe("function");
@@ -200,6 +206,7 @@ describe("shipped browser bundle", () => {
     }
     expect(typeof injected.formModel).toBe("object");
     expect(typeof injected.switchModel).toBe("object");
+    expect(typeof injected.workspaceModel).toBe("object");
 
     const navProbe = registrations.find((entry) => entry.id === "memcurio-nav-mark");
     expect(navProbe?.name).toBe("settings.action");
@@ -254,10 +261,34 @@ interface Panel {
   repaint(): Promise<void>;
 }
 
-async function mountPanel(scope = new PanelScope()): Promise<Panel> {
+/** Minimal workspace seat stand-in for the panel-level regression test: the
+ *  component receives the useWorkspace HOOK and the model as separate props
+ *  (the renderer's hooks-compartment conversion), never a nested seat. */
+interface PanelWorkspaceSeat {
+  face: WorkspaceFace;
+  load: () => Promise<void>;
+}
+
+const EMPTY_WORKSPACE_FACE: WorkspaceFace = {
+  status: "ready",
+  busy: false,
+  rows: [],
+  defaultEnabled: true,
+  defaultBaseEnabled: true,
+  defaultOverridden: false,
+  scope: "workspace",
+};
+
+async function mountPanel(scope = new PanelScope(), workspace?: PanelWorkspaceSeat): Promise<Panel> {
   const controller = new MemcurioSettingsController(scope);
   const form = new SettingsFormModel(controller);
   const switchModel = new InjectionSwitchModel(controller, (before) => form.rebase(before));
+  const workspaceModel =
+    workspace === undefined ? undefined : ({ load: workspace.load } as unknown as WorkspacePolicyModel);
+  const useWorkspace =
+    workspace === undefined
+      ? undefined
+      : <T,>(selector: (snapshot: WorkspaceFace) => T): T => selector(workspace.face);
   const stopController = controller.start();
   const stopForm = form.start();
   const stopSwitch = switchModel.start();
@@ -289,6 +320,7 @@ async function mountPanel(scope = new PanelScope()): Promise<Panel> {
           useFace,
           useForm,
           useInstant,
+          ...(useWorkspace === undefined ? {} : { useWorkspace, workspaceModel }),
           formModel: form,
           switchModel,
         } as never),
@@ -407,9 +439,27 @@ describe("settings panel in jsdom (real react-dom)", () => {
     panel.unmount();
   });
 
-
-
-
+  test("renders the workspace seat from the hooks compartment, not a nested seat", async () => {
+    // Regression: the workspace control used to ride in the inject face as
+    // `workspace: { useWorkspace: <observable source> }`. The renderer only
+    // binds the TOP-LEVEL `hooks` compartment into `use<Name>` props, so that
+    // nested value reached the section verbatim, the component called a bare
+    // source object as a hook, and the whole settings section crashed into the
+    // slot error boundary (the blank settings page).
+    let loads = 0;
+    const panel = await mountPanel(new PanelScope(), {
+      face: EMPTY_WORKSPACE_FACE,
+      load: async () => {
+        loads += 1;
+      },
+    });
+    const text = panel.container.textContent ?? "";
+    expect(text).toContain(en.workspacesSection);
+    expect(text).toContain(en.workspacesHint);
+    expect(loads).toBe(1);
+    expect(panel.container.querySelector("[data-slot-error]")).toBeNull();
+    panel.unmount();
+  });
 
   test("resetting a field moves focus to the field's control", async () => {
     const scope = new PanelScope();

@@ -170,16 +170,23 @@ export function apply(ctx: Context): void {
         locale: SETTINGS_NS,
         // The reserved `hooks` compartment: the renderer memoizes this face
         // once per entry, so it must carry the observable seat, never a value
-        // snapshot. `t` arrives from the framework locale seat.
+        // snapshot, and ONLY top-level `hooks` keys become `use<Name>` props.
+        // `t` arrives from the framework locale seat.
         inject: () => ({
           hooks: {
             face: controller.faceHook(),
             form: formModel.faceHook(),
             instant: switchModel.faceHook(),
+            // The workspace seat belongs to this compartment: a hook source
+            // nested inside a plain prop is passed through verbatim, so the
+            // panel used to call a bare { getSnapshot, subscribe } where it
+            // expected a hook and the section crashed into the slot boundary
+            // (the blank settings page).
+            workspace: workspaceModel.faceHook(),
           },
           formModel,
           switchModel,
-          workspace: { useWorkspace: workspaceModel.faceHook(), model: workspaceModel },
+          workspaceModel,
         }),
       },
       MemcurioSettingsSection,

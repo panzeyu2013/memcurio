@@ -24,39 +24,40 @@ import { remarkSettingsNavRow } from "./nav-mark.js";
 import { WorkspaceSection } from "./workspace-section.js";
 import type { WorkspacePolicyModel } from "./workspaces.js";
 
-export interface WorkspaceSectionSeat {
-  useWorkspace: WorkspaceSeatHook;
-  model: WorkspacePolicyModel;
-}
-
 export interface MemcurioSectionProps {
   t: SectionT;
   useFace: FaceHook;
   useForm: FormSeatHook;
   useInstant: InstantSeatHook;
+  /** Workspace-policy seat: the registration's `hooks.workspace` source bound
+   *  by the renderer. Optional so a composition that omits the additive
+   *  workspace control still renders the rest of the page instead of failing
+   *  in the slot boundary. */
+  useWorkspace?: WorkspaceSeatHook;
   formModel: SettingsFormModel;
   switchModel: InjectionSwitchModel;
-  /** Optional so existing compositions/tests render the original page. */
-  workspace?: WorkspaceSectionSeat;
+  /** The workspace policy model the seat renders and writes through. */
+  workspaceModel?: WorkspacePolicyModel;
 }
 
 /** The panel: instant injection switch + staged configuration form. */
 function WorkspaceSlot(props: {
   t: SectionT;
-  seat: WorkspaceSectionSeat;
+  useWorkspace: WorkspaceSeatHook;
+  model: WorkspacePolicyModel;
   writable: boolean;
 }): ReactElement {
-  const face = props.seat.useWorkspace((snapshot) => snapshot);
+  const face = props.useWorkspace((snapshot) => snapshot);
   // Lazy: the settings page is the only consumer; the app shell must not call
   // the inventory route on every page load.
   useEffect(() => {
-    void props.seat.model.load();
-  }, [props.seat.model]);
-  return <WorkspaceSection t={props.t} face={face} model={props.seat.model} writable={props.writable} />;
+    void props.model.load();
+  }, [props.model]);
+  return <WorkspaceSection t={props.t} face={face} model={props.model} writable={props.writable} />;
 }
 
 export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactElement {
-  const { t, useFace, useForm, useInstant, formModel, switchModel, workspace } = props;
+  const { t, useFace, useForm, useInstant, useWorkspace, formModel, switchModel, workspaceModel } = props;
   const face = useFace((snapshot) => snapshot);
   const shell = useForm((snapshot) => snapshot);
   const instant = useInstant((snapshot) => snapshot);
@@ -321,8 +322,13 @@ export function MemcurioSettingsSection(props: MemcurioSectionProps): ReactEleme
         </div>
       </div>
 
-      {workspace !== undefined ? (
-        <WorkspaceSlot t={t} seat={workspace} writable={face.writable && !shell.saving} />
+      {useWorkspace !== undefined && workspaceModel !== undefined ? (
+        <WorkspaceSlot
+          t={t}
+          useWorkspace={useWorkspace}
+          model={workspaceModel}
+          writable={face.writable && !shell.saving}
+        />
       ) : null}
 
       <form
