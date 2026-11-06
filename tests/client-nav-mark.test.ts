@@ -64,6 +64,17 @@ describe("settings-nav mark", () => {
     expect(marksNothing());
   });
 
+  test("matches the 0.2.2-rc.1 row shape (glyph inside the icon wrapper)", () => {
+    // The 0.2.2 host wraps the nav glyph in the row's icon span instead of
+    // placing the svg directly under the button.
+    document.body.innerHTML =
+      '<div role="dialog" aria-modal="true"><nav><button type="button"><span class="navIcon"><svg></svg></span><span class="navLabel">记忆</span></button></nav></div>';
+    const dispose = markSettingsNavRow();
+    expect(document.querySelector('[role="dialog"] nav button')?.getAttribute(NAV_MARK_ATTRIBUTE)).toBe("true");
+    dispose();
+    expect(marksNothing());
+  });
+
   test("never marks an app-sidebar row that shares the label", () => {
     document.body.innerHTML = `<nav><button type="button"><svg></svg><span>Memory</span></button></nav>${SETTINGS_NAV}`;
     const sidebarRow = document.querySelector("body > nav button");

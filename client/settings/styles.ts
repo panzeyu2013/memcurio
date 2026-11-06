@@ -158,7 +158,9 @@ const CSS = `
   .memcurio-settings-skeleton-bar { animation: none; }
 }
 @supports ((mask-image: linear-gradient(#000, #000)) or (-webkit-mask-image: linear-gradient(#000, #000))) {
-  [data-memcurio-nav] > svg { display: none; }
+  /* The shell's fallback glyph: a direct child on the 0.2.1 line, inside the
+     row's icon wrapper on 0.2.2-rc.1. Hide it wherever it sits. */
+  [data-memcurio-nav] svg { display: none; }
   [data-memcurio-nav]::before { content: ""; flex: none; width: 16px; height: 16px; background-color: currentColor; -webkit-mask-image: ${NAV_MARK}; -webkit-mask-position: center; -webkit-mask-size: 16px 16px; -webkit-mask-repeat: no-repeat; mask-image: ${NAV_MARK}; mask-position: center; mask-size: 16px 16px; mask-repeat: no-repeat; mask-mode: alpha; }
 }
 `;

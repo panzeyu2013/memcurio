@@ -39,13 +39,20 @@ function navRows(): Element[] {
   return [...document.querySelectorAll(ROW_SELECTOR)];
 }
 
+/** The shell's nav glyph: the row's svg sits directly in the button on the
+ * 0.2.1 line and inside the icon wrapper span on 0.2.2-rc.1, so match the
+ * glyph anywhere inside the row. */
+function hasGlyph(button: Element): boolean {
+  return button.querySelector("svg") !== null;
+}
+
 /** Tag the memcurio nav row if exactly one candidate is on screen. Returns
  *  the unmark disposer (a no-op when the row is absent or already owned). */
 export function markSettingsNavRow(): () => void {
   if (typeof document === "undefined") return () => undefined;
   const candidates: Element[] = [];
   for (const button of navRows()) {
-    if (button.querySelector(":scope > svg") === null) continue;
+    if (!hasGlyph(button)) continue;
     const text = (button.textContent ?? "").trim();
     if (!MEMORY_MARK_LABELS.includes(text)) continue;
     candidates.push(button);
