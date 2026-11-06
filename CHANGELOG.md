@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-11-06
+
+### Changed
+
+- **The compatibility matrix samples DSH `0.2.2-rc.1`.** The release-candidate line deployments run joins `SUPPORTED_HOSTS`, the CI matrix and the release gate next to the peer floor and the `0.2.2-alpha.3` sample, so the packed plugin is install/compose/boot-probed on the line this release is deployed against.
+
+### Fixed
+
+- **The Memory settings page is no longer blank.** Since 0.0.9 the workspace control rode in the settings registration's inject face as a nested value: `workspace: { useWorkspace: <observable source> }`. The DSH slot renderer binds only the registration's TOP-LEVEL `hooks` compartment into `use<Name>` props, so the nested source reached the section verbatim; the component called a bare `{ getSnapshot, subscribe }` object as a hook (`TypeError: props.seat.useWorkspace is not a function`) and the slot error boundary replaced the whole memcurio section with an empty node — Settings → 记忆 showed a blank panel. The source now lives in `hooks.workspace` (bound to `useWorkspace`) and the workspace model rides as a plain prop; a panel-level regression test mounts the seat and asserts the workspace block renders, and a real-renderer contract test drives the shipped registration through the published `dsh-client-ui-renderer` slot machinery so a regression to the nested shape fails on the slot boundary.
+- **The settings-nav book mark matches the 0.2.2 host row shape.** The 0.2.2-rc.1 settings shell wraps a nav row's glyph in the row's icon span, so the old `:scope > svg` probe never tagged the Memcurio row and the stylesheet never hid the fallback gear glyph. The probe now accepts the glyph anywhere inside the row (still requiring our exact nav label), and the mask rule hides the shell glyph wherever it sits.
+
 ## [0.0.12] - 2026-11-04
 
 ### Changed

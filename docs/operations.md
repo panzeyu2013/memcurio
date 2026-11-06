@@ -18,15 +18,15 @@
 ```bash
 # 方式一：直接装 Release 资产（每个 tag 自动构建，附 .sha256）
 dsh plugin --profile <profile> add \
-  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.12/memcurio-dsh-plugin-0.0.12.tgz
+  https://github.com/panzeyu2013/memcurio/releases/download/v0.0.13/memcurio-dsh-plugin-0.0.13.tgz
 
 # 方式二：从源码本地打包
 git clone https://github.com/panzeyu2013/memcurio
 cd memcurio
 bun install --frozen-lockfile   # prepare 只校验提交制产物，不构建
 bun run build                   # tsc → dist/ + esbuild → lib/client.js（产物随仓库提交，CI 校验防漂移）
-bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.12.tgz
-dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.12.tgz
+bun pm pack                     # 生成 memcurio-dsh-plugin-0.0.13.tgz
+dsh plugin --profile <profile> add ./memcurio-dsh-plugin-0.0.13.tgz
 ```
 
 bundle 清单（`cordis.patch.yml`）会自动把插件插入 profile，**不要手工复制配置行**。默认配置即 `scope: workspace`（按绝对工作区路径隔离存储）、`injectContext: true`（pre-step 注入）、`registerTools: true`（注册七个原生记忆工具）；记忆 UI 的 host 桥与同源传输（事件打标、快照、`/memcurio` 路由）**恒开且不是配置项**（v1.7 产品决定：没有必须关闭的场景）。
@@ -89,6 +89,11 @@ Workspaces 面板会写同一份配置；手改时 key 必须是 canonical 路�
 - **no-cwd 默认关闭。** 0.0.8 会给没有 header.cwd 的会话共享记忆；0.0.9 默认关闭。要保留旧行为，在 profile patch 的 memcurio 配置里加 workspaceOverrides: { "no-cwd": { enabled: true } }。
 - **软链工作区改用 canonical store 键。** 没有 live provenance 见证的旧 store 不会自动接管：记忆文件仍在旧目录，但该会话会改用新 canonical store。查看 <store>/state/origin.json 的 source（live/backfill，缺字段为旧格式）；需要保留旧数据时，人工确认目标后把旧 store 内容迁到 canonical store，或直接以该 canonical 路径打开会话。
 - **显式关闭会留下 durable fence。** 首次显式关闭后，删掉 override 仍保持关闭；必须再次显式 enabled: true 才能重开（防止路径删除/软链改名回落到默认开启）。
+
+### 0.0.12 → 0.0.13 升级注意
+
+- **Settings → 记忆 页恢复可用。** 0.0.9–0.0.12 的工作区开关把 hook source 放进了注入面的普通嵌套字段，而 DSH renderer 只把注册项顶层 `hooks` 仓绑定成 `use<Name>` props；section 渲染时调用裸 source 抛错，被 slot 错误边界替换为空节点（整页空白）。0.0.13 把该 seat 移入顶层 `hooks`，并同时修好 0.2.2 设置导航行的图标行结构。升级后无需迁移配置，既有的 `workspaceOverrides` 保持原样。
+- **兼容矩阵新增 `0.2.2-rc.1` 样本**（CI 与 release gate 都跑），peer 范围不变。
 
 ### 0.0.11 → 0.0.12 升级注意
 
@@ -199,7 +204,7 @@ Settings integration is optional (the upstream 0.1.7 pattern): the plugin does n
 
 The legacy manual probe `scripts/probe-dsh-profile.sh` packs the committed tree (`bun pm pack --ignore-scripts`) and installs that tarball into an isolated DSH profile; it asserts that (a) the packaged entry imports from the profile, and (b) the composed tree (`dsh --profile … --dump-config`) carries the `memcurio` row with its inject list and config. The CI matrix below supersedes it for release decisions.
 
-`scripts/probe-compat.ts` is the version matrix used by CI and the release gate. For one host version it installs the CLI, materializes a `web` profile, packs this package, runs the real `dsh plugin add` gate against it, materializes the host bundles with bun (the gate itself forwards to pnpm; bun's flat tree is node-resolvable, but the matrix does not boot a pnpm-hoisted tree — recorded as a todo), composes the tree, boots the web host under Node and asserts the surface: root 200; `/memcurio/snapshot` 403 with a bogus token (and the plugin's `forbidden` body); HEAD 405 (route-specific method guard); a **valid token read from the boot payload** reaches the dispatcher and returns 404 `unknown-session`; the revisioned client bundle link in the boot payload fetches 200 and contains the client code; an unknown `/memcurio-*` path returns 404. `--all` runs the peer floor plus one sample per published line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3`) and `--clean` removes each successful work directory. `--work` is confined to `.dsh-tmp` or the OS temporary directory. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
+`scripts/probe-compat.ts` is the version matrix used by CI and the release gate. For one host version it installs the CLI, materializes a `web` profile, packs this package, runs the real `dsh plugin add` gate against it, materializes the host bundles with bun (the gate itself forwards to pnpm; bun's flat tree is node-resolvable, but the matrix does not boot a pnpm-hoisted tree — recorded as a todo), composes the tree, boots the web host under Node and asserts the surface: root 200; `/memcurio/snapshot` 403 with a bogus token (and the plugin's `forbidden` body); HEAD 405 (route-specific method guard); a **valid token read from the boot payload** reaches the dispatcher and returns 404 `unknown-session`; the revisioned client bundle link in the boot payload fetches 200 and contains the client code; an unknown `/memcurio-*` path returns 404. `--all` runs the peer floor, one sample per published line, and the 0.2.2 release-candidate line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3`, `0.2.2-rc.1`) and `--clean` removes each successful work directory. `--work` is confined to `.dsh-tmp` or the OS temporary directory. Booting the web app requires a real Node.js runtime: under bun even the plugin-free baseline fails to activate the web app's loader entries.
 
 ### Profile-plane facts
 
@@ -207,7 +212,7 @@ In a composed `web`-family profile the root plane provides the services this plu
 
 ### Validation boundary
 
-Local suites cover strict TypeScript compilation against the published DSH `0.2.2-alpha.3` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). The suite runs on a test host that mounts the tool registry and its native executor together, mirroring `dsh-base`; `tests/support/host.ts` is the single composition point. Tool calls execute through that executor (`executeOne()` wraps the batch API). A separate compatibility matrix installs the packed tarball into isolated profiles for the peer floor and one sample per published line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3`), composes the bundle, boots the web host and asserts the mounted surface (forbidden body, HEAD 405, valid-token snapshot dispatch, served client bundle, unknown route 404). Not covered as an automated suite: a full application turn against a live model. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
+Local suites cover strict TypeScript compilation against the published DSH `0.2.2-alpha.3` packages (plugin sources and tests), deterministic workspace isolation (including the no-cwd fallback), lifecycle and compaction regressions, event-lane/worker-lane queue behavior (model work never blocks pre-step or flush; retire drains pending extractions under a bounded budget while store-scoped Phase 2 keeps running, aborts in-flight extraction calls and disposes the adapter so retry timers cannot burn dead-letter attempts), automatic Phase-2 triggering, citation and native read-tool usage telemetry, seed replay (tool telemetry rebuild), and the public integration read/write surface (including the injection gate on memory reads). The usage-telemetry preset is pinned to the DSH built-in tool names (`read`/`grep`/`glob`/`bash`/`pwsh`). The suite runs on a test host that mounts the tool registry and its native executor together, mirroring `dsh-base`; `tests/support/host.ts` is the single composition point. Tool calls execute through that executor (`executeOne()` wraps the batch API). A separate compatibility matrix installs the packed tarball into isolated profiles for the peer floor, one sample per published line, and the 0.2.2 release-candidate line (`0.2.0-rc.1`, `0.2.1-rc.2`, `0.2.1-rc.5`, `0.2.2-alpha.3`, `0.2.2-rc.1`), composes the bundle, boots the web host and asserts the mounted surface (forbidden body, HEAD 405, valid-token snapshot dispatch, served client bundle, unknown route 404). Not covered as an automated suite: a full application turn against a live model. DSH is itself a developer preview, so peer versions and event schemas must be rechecked on every DSH upgrade.
 
 The `0.2.0-rc.1` alignment was verified statically against the published packages and the frontend bundle: every audited `lib/` file is byte-identical to `0.1.7-rc.2` except the `dsh-session` repair refactor and a `dsh-commands` event-map member reorder, the client bundles are byte-identical, the platform seed table is unchanged, and the runtime compatibility gate accepts the aligned `^0.2.0-rc.1` peers on 0.2.x while rejecting them on 0.1.x. The 0.2.0 line is booted by the compatibility matrix (`0.2.0-rc.1`).
 
