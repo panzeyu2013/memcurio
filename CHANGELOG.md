@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The node smoke script races two processes on one store.** `bun run smoke:node` now spawns two node children that hand off through ready/go files and write ad-hoc notes into the same store, asserting that both wrote every note with no failures. The release gate therefore exercises the production `node:sqlite` connection bootstrap/retry path across processes instead of only in one process.
+
 ### Fixed
 
 - **Schema setup retries the same busy window as the connection bootstrap.** `Index.create` runs the idempotent base schema + migrations as the first writes on a fresh connection, and another process's WAL recovery can still outlive the open: those statements now share the bounded busy retry, while an ordinary lock wait (which already spent the 20 s busy budget) still propagates. Read-only connections stay deliberately pragma-free: they never switch journal modes and WAL readers do not contend with the writer lock, so a busy budget there would only turn a fast failure into a long synchronous wait.

@@ -600,7 +600,7 @@ export class MemcurioAdapter {
 - services：services.test.ts、snapshot.test.ts、projector.test.ts、write-path.test.ts（host/client 过滤器一致性）。
 - client：client-settings.test.ts（controller）、client-settings-form.test.ts（staged form）、client-settings-panel.test.ts（真实 react-dom 面板 + 已构建 bundle）、client-nav-mark.test.ts、client-toast.test.ts、client-ui-core.test.ts（model/wire/transport）、client-ui-components.test.ts（组件渲染）、guide-row.test.ts。
 - 门禁/仓库（tests/gates）：bundle-drift.test.ts（已构建 bundle 漂移）、compat-matrix.test.ts（ci.yml 矩阵）、release-integrity.test.ts（pack allowlist 与 release 拒绝规则）。
-- Node 运行时：bun 测试永远走 bun:sqlite；`bun run smoke:node` 在 CI 的 node 22 与 node 24 上都执行真实的打开/建表/写入/读取，覆盖 node:sqlite 驱动。
+- Node 运行时：bun 测试永远走 bun:sqlite；`bun run smoke:node` 在 CI 的 node 22 与 node 24 上都执行真实的打开/建表/写入/读取，并跑两个 node 进程对同一 store 的打开/写入竞态（ready/go 握手），覆盖 node:sqlite 驱动的跨进程 bootstrap/retry。
 - support（测试专用，不被发布代码引用）：host.ts（生产同构 host + executeOne）、settings-fake.ts（Host 写入语义，由 settings-host-contract.test.ts 钉住）、settings-port.ts（统一 fake port）、consolidate-fixtures.ts（scripted native channel + 回合渲染）、temp.ts（临时根注册表）、dom.ts（jsdom + 全局恢复）、async.ts（waitFor/sleep）、clock.ts（daysAgo/withTimeZone）、adhoc-writer-process.ts（跨进程 ad-hoc writer 子进程，ready/go 握手）。
 
 新增测试：先选层并复用 support；禁止用固定 sleep 等待异步副作用（用 `waitFor` 轮询）；新增/重命名文件时同步更新本节。
