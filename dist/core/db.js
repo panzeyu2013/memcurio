@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "./artifacts.js";
-import { isSqliteBusyError, openDb } from "./sqlite.js";
+import { isSqliteBusyError, openDb, runWithSqliteBusyRetry } from "./sqlite.js";
 import { HOSTS } from "./events.js";
 import { redactSecrets } from "./sanitize.js";
 /** Flatten line/column control characters into a space. redactSecrets leaves
@@ -176,8 +176,15 @@ export class Index {
     static async create(path) {
         const driver = await openDb(path);
         try {
-            driver.exec(BASE);
-            migrate(driver);
+            // The base schema + migrations are the first writes on this connection and
+            // can land in the same WAL-recovery window the connection bootstrap
+            // retries, so they share the bounded retry. Both the DDL (IF NOT EXISTS)
+            // and the migration steps are idempotent, and an ordinary lock wait
+            // already spent the busy budget, so it still propagates.
+            runWithSqliteBusyRetry(() => {
+                driver.exec(BASE);
+                migrate(driver);
+            });
             return new Index(driver, path);
         }
         catch (err) {

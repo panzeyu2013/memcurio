@@ -88,16 +88,18 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function execWithBusyRetry(
-  exec: (sql: string) => void,
-  sql: string,
-  retryDelaysMs: readonly number[],
-  deadline: number,
-  now: () => number,
-): void {
+/** Retry a synchronous SQLite setup step on busy-class failures inside one
+ *  wall-clock budget. Exported for callers whose setup runs after the connection
+ *  exists: `Index.create`'s base schema + migrations are the first write on a
+ *  fresh connection and can still land in another process's WAL-recovery
+ *  window. */
+export function runWithSqliteBusyRetry(work: () => void, options: WriteConnectionPragmaOptions = {}): void {
+  const retryDelaysMs = options.retryDelaysMs ?? CONNECTION_BUSY_RETRY_DELAYS_MS;
+  const now = options.now ?? Date.now;
+  const deadline = now() + (options.busyBudgetMs ?? CONNECTION_BUSY_BUDGET_MS);
   for (let attempt = 0; ; attempt += 1) {
     try {
-      exec(sql);
+      work();
       return;
     } catch (error) {
       if (!isSqliteBusyError(error) || attempt >= retryDelaysMs.length) {
@@ -113,17 +115,20 @@ function execWithBusyRetry(
 }
 
 /** Install the writable-connection pragmas in order, retrying busy-class
- *  bootstrap failures inside one wall-clock budget. Exported (with test seams)
- *  so the ordering and retry invariants are testable without a live store. */
+ *  bootstrap failures inside one shared wall-clock budget. Exported (with test
+ *  seams) so the ordering and retry invariants are testable without a store. */
 export function applyWriteConnectionPragmas(
   exec: (sql: string) => void,
   options: WriteConnectionPragmaOptions = {},
 ): void {
-  const retryDelaysMs = options.retryDelaysMs ?? CONNECTION_BUSY_RETRY_DELAYS_MS;
   const now = options.now ?? Date.now;
   const deadline = now() + (options.busyBudgetMs ?? CONNECTION_BUSY_BUDGET_MS);
   for (const pragma of WRITE_CONNECTION_PRAGMAS) {
-    execWithBusyRetry(exec, pragma, retryDelaysMs, deadline, now);
+    const perStatement: WriteConnectionPragmaOptions = { now, busyBudgetMs: Math.max(0, deadline - now()) };
+    if (options.retryDelaysMs !== undefined) {
+      perStatement.retryDelaysMs = options.retryDelaysMs;
+    }
+    runWithSqliteBusyRetry(() => exec(pragma), perStatement);
   }
 }
 
@@ -153,6 +158,10 @@ class BunDriver implements DbDriver {
   constructor(db: BunDatabase, readonly = false) {
     this.db = db;
     if (readonly) {
+      // Read-only connections stay pragma-free on purpose: they never switch
+      // the journal mode, and WAL readers do not contend with the writer lock,
+      // so a busy budget here would only turn a fast failure into a long
+      // synchronous wait.
       return;
     }
     applyWriteConnectionPragmas((sql) => {
@@ -188,6 +197,10 @@ class NodeDriver implements DbDriver {
   constructor(db: NodeDatabase, readonly = false) {
     this.db = db;
     if (readonly) {
+      // Read-only connections stay pragma-free on purpose: they never switch
+      // the journal mode, and WAL readers do not contend with the writer lock,
+      // so a busy budget here would only turn a fast failure into a long
+      // synchronous wait.
       return;
     }
     applyWriteConnectionPragmas((sql) => {

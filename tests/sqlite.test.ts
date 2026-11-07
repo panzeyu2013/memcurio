@@ -11,7 +11,10 @@ import {
   checkpointWriteConnectionBestEffort,
   openDb,
   openDbSync,
+  runWithSqliteBusyRetry,
 } from "../src/core/sqlite.js";
+
+const busyRecovery = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY_RECOVERY" });
 
 describe("writable connection pragmas", () => {
   test("the busy handler is installed before the statement that can take the store lock", () => {
@@ -58,8 +61,6 @@ describe("writable connection pragmas", () => {
 });
 
 describe("writable connection bootstrap retries", () => {
-  const busyRecovery = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY_RECOVERY" });
-
   test("a recovery-class busy failure is retried instead of failing the open", () => {
     const executed: string[] = [];
     let recoveries = 2;
@@ -205,6 +206,68 @@ describe("writable connection bootstrap retries", () => {
       ),
     ).toThrow(/database is locked/);
     expect(journalAttempts).toBe(3);
+  });
+});
+
+describe("schema bootstrap retries", () => {
+  test("a recovery-class busy failure is retried", () => {
+    let attempts = 0;
+    runWithSqliteBusyRetry(
+      () => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw busyRecovery;
+        }
+      },
+      { retryDelaysMs: [0, 0, 0] },
+    );
+    expect(attempts).toBe(3);
+  });
+
+  test("a non-busy failure propagates immediately", () => {
+    let attempts = 0;
+    expect(() =>
+      runWithSqliteBusyRetry(
+        () => {
+          attempts += 1;
+          throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+        },
+        { retryDelaysMs: [0, 0, 0] },
+      ),
+    ).toThrow("disk I/O error");
+    expect(attempts).toBe(1);
+  });
+
+  test("an ordinary lock wait is not re-armed", () => {
+    let clock = 0;
+    let attempts = 0;
+    expect(() =>
+      runWithSqliteBusyRetry(
+        () => {
+          attempts += 1;
+          clock += WRITE_BUSY_TIMEOUT_MS;
+          throw busyRecovery;
+        },
+        { retryDelaysMs: [0, 0, 0], busyBudgetMs: 1_000, now: () => clock },
+      ),
+    ).toThrow(/database is locked/);
+    expect(attempts).toBe(1);
+  });
+
+  test("retries stop at the wall-clock budget", () => {
+    let clock = 0;
+    let attempts = 0;
+    expect(() =>
+      runWithSqliteBusyRetry(
+        () => {
+          attempts += 1;
+          clock += 600;
+          throw busyRecovery;
+        },
+        { retryDelaysMs: [0, 0, 0, 0], busyBudgetMs: 1_000, now: () => clock },
+      ),
+    ).toThrow(/database is locked/);
+    expect(attempts).toBe(2);
   });
 });
 

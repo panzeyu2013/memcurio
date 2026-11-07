@@ -27,9 +27,15 @@ export interface WriteConnectionPragmaOptions {
  *  `SQLITE_BUSY` code, node exposes extended `errcode` values (primary code in
  *  the low byte: SQLITE_BUSY_RECOVERY is 261, SQLITE_BUSY_SNAPSHOT 517). */
 export declare function isSqliteBusyError(error: unknown): boolean;
+/** Retry a synchronous SQLite setup step on busy-class failures inside one
+ *  wall-clock budget. Exported for callers whose setup runs after the connection
+ *  exists: `Index.create`'s base schema + migrations are the first write on a
+ *  fresh connection and can still land in another process's WAL-recovery
+ *  window. */
+export declare function runWithSqliteBusyRetry(work: () => void, options?: WriteConnectionPragmaOptions): void;
 /** Install the writable-connection pragmas in order, retrying busy-class
- *  bootstrap failures inside one wall-clock budget. Exported (with test seams)
- *  so the ordering and retry invariants are testable without a live store. */
+ *  bootstrap failures inside one shared wall-clock budget. Exported (with test
+ *  seams) so the ordering and retry invariants are testable without a store. */
 export declare function applyWriteConnectionPragmas(exec: (sql: string) => void, options?: WriteConnectionPragmaOptions): void;
 /** Merge the WAL back into the 0600 main file for permission hygiene under a
  *  short busy budget: this is best-effort maintenance, never a correctness
