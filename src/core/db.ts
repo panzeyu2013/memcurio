@@ -1,14 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { artifactFilenameForId, artifactIdForRolloutKey } from "./artifacts.js";
 import type { DbDriver, SqlRow } from "./sqlite.js";
-import { openDb } from "./sqlite.js";
+import { isSqliteBusyError, openDb } from "./sqlite.js";
 import { HOSTS } from "./events.js";
 import { redactSecrets } from "./sanitize.js";
-
-/** True when SQLite reports a contended write lock (busy_timeout elapsed). */
-function isBusy(err: unknown): boolean {
-  return err instanceof Error && /database is locked|database table is locked|busy/i.test(err.message);
-}
 
 /** Flatten line/column control characters into a space. redactSecrets leaves
  *  \n, \r and \t intact, so a hand-placed note filename or session id could
@@ -330,7 +325,7 @@ export class Index {
         this.driver.exec("BEGIN IMMEDIATE");
       } catch (err) {
         const wait = busyRetryWaitMs(attempt);
-        if (!isBusy(err) || wait === null) {
+        if (!isSqliteBusyError(err) || wait === null) {
           throw err;
         }
         sleep(wait);
@@ -347,7 +342,7 @@ export class Index {
         } catch {
           void 0;
         }
-        if (isBusy(err)) {
+        if (isSqliteBusyError(err)) {
           busy = true;
           busyErr = err;
         } else {
