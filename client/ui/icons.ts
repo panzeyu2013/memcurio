@@ -8,9 +8,8 @@
  * glyph is the platform's own `IconContextInjectionOutline16` path data,
  * inlined verbatim: injection events keep the platform vocabulary while the
  * bundle stays dependency-free. The book mark leads memcurio's own surfaces —
- * the six tool rows, the settings-nav mask, the write toasts and (v1.8) the
- * injected-memory row (`context-row.ts`); the platform glyph remains for the
- * injection toasts and the adapter's generic fallback row.
+ * the seven tool rows, the settings-nav mask and the write toasts; the platform
+ * glyph remains for the injection toasts and the host's context row.
  *
  * String builders exist for the imperative toast host (document-level, no
  * React root); the components are the slot-rendered form of the same marks.

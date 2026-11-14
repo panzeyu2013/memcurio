@@ -8,7 +8,7 @@ declare module "@deepseek-ai/dsh-llm" {
     /** DSH is a merge-extensible source vocabulary with no shared catch-all
      *  `plugin` kind (0.1.7): a producer declares its own durable source kind.
      *  `memcurio` marks this plugin's injected cross-session snapshot; the
-     *  browser row keys off it (client/ui/context-row.ts). */
+     *  host's context row labels itself from it. */
     interface MessageSourceMap {
         memcurio: {
             kind: "memcurio";

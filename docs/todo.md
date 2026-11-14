@@ -22,12 +22,12 @@
 - [ ] **暂停态数据浏览/显式删除**：当前关闭态只给设置页元数据；工作台若要查看/导出暂停 store，需要显式只读模式与独立删除确认。
 - [ ] **PTC 同一步缓存窗口**：restrict 在 view 层生效，但同一步内先缓存 schema、后切换的窗口尚未实机覆盖。
 - [ ] **DSH lifecycle 覆盖**：resume、compaction、多 workspace 并发、DSH rc 升级兼容性的 smoke（并入 R1 的 E2E 脚本）。
-- [ ] **宿主矩阵全量扫**：peer 区间接受 12 个 0.2.x 版本，兼容矩阵只覆盖 floor + 每条已发布线的一档（4/12）；rc.3、0.2.0-rc.2、0.2.1-alpha.* 未 boot。需要时扩矩阵或按线抽样说明。
+- [ ] **宿主矩阵全量扫**：当前 peer 区间接受 0.2.2-rc.3 及此后到 `<0.3.0-0` 的 0.2.x 版本，兼容矩阵只 boot 当前最新线（0.2.2-rc.3）；后续 0.2.x 版本与更早 rc/alpha 线未 boot。需要时扩矩阵或按线抽样说明。
 - [ ] **非 web profile**：兼容矩阵只 boot `web`；headless/sdk/minimal 组合（无 webserver/settings）未进矩阵，插件在这些组合的理论路径见 `cordis.patch.yml` 的 inject。
 - [ ] **矩阵 Node 覆盖**：兼容矩阵固定 Node 24（0.2.2 宿主下限）；rc 线与插件自身 `engines >=22.13` 只由 test job 的 import smoke 覆盖，未做 Node 22 boot。
 - [ ] **矩阵布局保真度**：兼容矩阵用 bun 物化宿主管线（插件门禁仍走 pnpm），与用户 profile 的 pnpm-hoisted 布局不同；boot/route 只依赖 node 解析，但布局差异未单独覆盖。
 - [ ] **记忆工作台（M0）**：按 [ui.md](ui.md) 的标题栏单按钮入口、三面一轴、注入模拟器、跨 store 只读切换、对话即写面、⭐ 两层分离；在已实测的 shipped 面（`client/ui` 的 store/transport/wire、`settings` 面板）上组装（预 S0 view-model 脚手架已删除）。
-- [ ] **真实 DSH Web 人工确认**：会话内 header 入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及 Settings 面（记忆 ON/OFF 首行只读/不可用态、布尔开关行与输入控件样式、`settings.action` 导航行书页标记——0.2.2-alpha.2 行为未实机复核，客户端包自 0.2.1-rc.2 起字节相同）；注入转录行与指南行的实际渲染（自定义 chat node kind，0.1.7 会过滤普通 `context` 节点，0.2.2-alpha.2 未实机复核，需实机确认行位置/折叠与助手 turn 分组；兼容探针只覆盖启动与 HTTP 路由，不覆盖浏览器渲染）。
+- [ ] **真实 DSH Web 人工确认**：会话内 header 入口、chamber 网关代理链路（index 缓存 / SSE 透传）复测，以及 Settings 面（记忆 ON/OFF 首行只读/不可用态、布尔开关行与输入控件样式、`settings.action` 导航行书页标记——rc.2 起客户端注入包随宿主版本整体更新（rc.2=rc.3），rc.3 未实机复核）；注入转录行与指南行的实际渲染（注入行自 DSH 0.2.2-rc.2 起由宿主渲染「上下文注入」行，插件只保留指南行的自定义 chat node kind；rc.3 未实机复核，需确认行位置/折叠与助手 turn 分组；兼容探针只覆盖启动与 HTTP 路由，不覆盖浏览器渲染）。
 - [ ] **`/memory` 客户端唤起、消息级跳转、审计收据客户端映射**：依赖上游能力/适配器。
 - [ ] **web profile 读命中遥测面**：在真实 web profile 会话确认命中只来自插件 `memory_read`/`memory_search`（`tool-fs`/`tool-fs-search` 在该 profile 被 disable）。
 - [ ] **桥/快照套件在 node 下整套跑**：驱动面（打开/建表/写入/读取）已由 `bun run smoke:node` 在 node 22/24 覆盖；剩余缺口是 planner/snapshot 套件仍以 bun 为唯一运行时。

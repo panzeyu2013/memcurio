@@ -108,11 +108,11 @@ jobs:
         run: node -e "import('./dist/plugin/index.js').then(m => { if (m.name !== 'memcurio') process.exit(1); console.log('plugin entry ok (node 24):', m.name); })"
 
       # The compatibility matrix is part of the release gate, not just CI: a
-      # probe that fails on the peer floor or a sampled line must stop the
-      # release before any GitHub-Release mutation. --clean keeps the runner's
-      # disk flat between the sequential probes; a failed probe keeps its
-      # work directory for diagnosis.
-      - name: Compatibility matrix (peer floor + sampled lines)
+      # probe that fails on the supported host line must stop the release
+      # before any GitHub-Release mutation. --clean keeps the runner's disk
+      # flat between sequential probes; a failed probe keeps its work
+      # directory for diagnosis.
+      - name: Compatibility matrix (latest supported host)
         run: |
           npm install --global pnpm@11.21.0
           mkdir -p "$RUNNER_TEMP/bun-cache"

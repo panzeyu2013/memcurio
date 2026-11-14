@@ -2,9 +2,9 @@
 
 The browser half ships from `client/entry.ts` as the `dsh.client` bundle
 (`lib/client.js`). It registers the `memcurio` Settings section, the memory
-visibility surfaces (injection/write toasts, the injected-memory transcript
-row, the read-path guide row, one transcript row per native memory tool) and
-the same-origin transport client that folds host deltas.
+visibility surfaces (injection/write toasts, the read-path guide row, one
+transcript row per native memory tool) and the same-origin transport client
+that folds host deltas.
 
 The behavior contracts live in [docs/ui.md](../docs/ui.md) (surfaces, transport
 rules, security) and [docs/contract.md](../docs/contract.md) (settings
@@ -42,8 +42,7 @@ runtime* constraints and the module map.
 | `ui/model.ts` | Observable memory UI store (injection preview, write receipts, unread, realtime mode) plus the pure derivations the surfaces read. |
 | `ui/transport.ts` | Same-origin snapshot + SSE client: one stream per page, snapshot-before-subscribe, `?after=` replay, polling fallback, session rebind. |
 | `ui/wire.ts` | Wire vocabulary mirrored from `src/services/projector.ts` / `src/services/snapshot.ts`, with boundary validators (`isUiDelta`, `isUiEventFrame`, `isUiSnapshotResponse`). |
-| `ui/context-row.ts` | The "记忆注入 / Memory injection" transcript row; a custom `memcurio-injection` chat node kind (0.1.7 filters ordinary `context` nodes out of the transcript) plus its keyed cell. |
-| `ui/chat-node-registration.ts` | The shared optional-`uiConversation` lane: node definition + keyed `conversation.chat.node` cell, used by the guide and injection rows. |
+| `ui/chat-node-registration.ts` | The shared optional-`uiConversation` lane: node definition + keyed `conversation.chat.node` cell, used by the guide row. |
 | `ui/guide-row.ts` | The "记忆指南 / Memory guide" row derived from the harness's own `system/message` events (the read-path guide lives in the system prompt). |
 | `ui/tool-rows.ts` | One keyed `tool.call.toolview` row per native memory tool. |
 | `ui/toast.ts` | Transient injection/write notifications. |

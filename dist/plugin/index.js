@@ -396,7 +396,7 @@ function memoryMessage(text) {
         // summary, not a session-transcript recall. A `form: "recall"` source
         // only renders a recall body when it also carries `references`
         // (label/retainedMessages/omittedMessages/truncated), which a summary
-        // cannot supply — the dedicated memcurio row renders on this source kind.
+        // cannot supply — the host context row labels itself from this source kind.
         source: { kind: MEMCURIO_MESSAGE_KIND },
     });
 }

@@ -60,12 +60,11 @@ describe("DSH plugin contract", () => {
     };
     expect(manifest.dsh?.bundle?.patch).toBe("./cordis.patch.yml");
     // Peer contracts must track the DSH release this package is validated
-    // against (bumped together with the root devDependencies). The 0.2.2 line
-    // ships a prerelease cordis, which strict semver excludes from ^4.0.4, so
-    // the line is named explicitly.
-    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("^4.0.4 || ^4.0.6-alpha.2");
+    // against (bumped together with the root devDependencies). The target host
+    // line is the 0.2.2 release candidate, whose Cordis peer is ~4.1.0.
+    expect(manifest.peerDependencies?.["@deepseek-ai/cordis"]).toBe("~4.1.0");
     for (const pkg of ["dsh-agent", "dsh-compaction", "dsh-llm", "dsh-session", "dsh-tools", "dsh-settings"]) {
-      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.2.0-rc.1");
+      expect(manifest.peerDependencies?.[`@deepseek-ai/${pkg}`]).toBe("^0.2.2-rc.3");
     }
   });
 
@@ -76,26 +75,30 @@ describe("DSH plugin contract", () => {
     // running dsh version (prereleases included); `dsh plugin add` rejects a
     // mismatch and the boot preflight disables the bundle. The gate is what
     // makes "peer range" an installability contract, not just a type hint.
-    for (const runtime of ["0.2.0-rc.1", "0.2.0-rc.2", "0.2.0", "0.2.1-rc.1", "0.2.1-rc.2", "0.2.1"]) {
+    for (const runtime of ["0.2.2-rc.3", "0.2.2", "0.2.3-rc.1", "0.2.3"]) {
       expect(evaluatePluginCompatibility(artifact, {}, runtime)).toBeUndefined();
     }
-    // The floor is deliberate and one-way: a 0.2.x build is not installable on
-    // 0.1.x (and vice versa), so the runtime upgrade and the plugin swap have to
-    // happen as one pair. cordis is not a dsh* peer and must not be judged.
+    // The floor is deliberate and one-way: this package targets the latest
+    // 0.2.2 release-candidate line, so older 0.2.x hosts are rejected and the
+    // runtime upgrade and the plugin swap have to happen as one pair. The caret
+    // upper bound also rejects the next 0.3 line; cordis is not judged.
+    for (const runtime of ["0.2.2-rc.2", "0.2.2-rc.1", "0.2.1", "0.3.0-rc.1", "0.3.0", "0.4.0-rc.1"]) {
+      expect(evaluatePluginCompatibility(artifact, {}, runtime)).toBeDefined();
+    }
     const issue = evaluatePluginCompatibility(artifact, {}, "0.1.7-rc.2");
-    // The 0.2.1 line renamed this diagnostic's `peers` field to `requirements`.
-    // The plugin supports both lines, so the assertion reads whichever shape the
-    // installed gate exposes; it still fails closed when neither names the peers.
+    // Newer gate lines name the diagnostic `requirements` instead of `peers`;
+    // read whichever shape the installed gate exposes. It still fails closed
+    // when neither field names the peers.
     const unmet =
       (issue as { requirements?: Record<string, string> } | undefined)?.requirements ??
       (issue as { peers?: Record<string, string> } | undefined)?.peers;
     expect(unmet).toEqual({
-      "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
-      "@deepseek-ai/dsh-compaction": "^0.2.0-rc.1",
-      "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
-      "@deepseek-ai/dsh-session": "^0.2.0-rc.1",
-      "@deepseek-ai/dsh-settings": "^0.2.0-rc.1",
-      "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+      "@deepseek-ai/dsh-agent": "^0.2.2-rc.3",
+      "@deepseek-ai/dsh-compaction": "^0.2.2-rc.3",
+      "@deepseek-ai/dsh-llm": "^0.2.2-rc.3",
+      "@deepseek-ai/dsh-session": "^0.2.2-rc.3",
+      "@deepseek-ai/dsh-settings": "^0.2.2-rc.3",
+      "@deepseek-ai/dsh-tools": "^0.2.2-rc.3",
     });
   });
   test("telemetry preset matches DSH's built-in read and shell tool names", () => {

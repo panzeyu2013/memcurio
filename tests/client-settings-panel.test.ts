@@ -237,9 +237,9 @@ describe("shipped browser bundle", () => {
     expect(toolRows.map((entry) => entry.key)).toEqual([...MEMORY_TOOL_NAMES]);
 
     const contextRows = registrations.filter((entry) => entry.name === "conversation.chat.node");
-    expect(contextRows.map((entry) => entry.key).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
+    expect(contextRows.map((entry) => entry.key).sort()).toEqual(["memcurio-guide-injected"]);
     expect(contextRows.every((entry) => entry.locale === "memcurio.ui")).toBe(true);
-    expect(definitions.map((definition) => definition.kind).sort()).toEqual(["memcurio-guide-injected", "memcurio-injection"]);
+    expect(definitions.map((definition) => definition.kind).sort()).toEqual(["memcurio-guide-injected"]);
 
     expect([...new Set(requiredSpecifiers)].sort()).toEqual(["react", "react/jsx-runtime"]);
 

@@ -7,8 +7,8 @@
  * merge point the owners use), mirroring the shipped shapes: header utilities
  * = ordered list, session scope; tool view = keyed dispatch by exact wire
  * tool name, session scope; chat node = keyed dispatch by node kind, session
- * scope (the memory UI registers its own `memcurio-injection` kind, see
- * ui/context-row.ts). The
+ * scope (the read-path guide registers its own `memcurio-guide-injected`
+ * kind, see ui/guide-row.ts). The
  * owner shares are the structural slices the rows read, never the official
  * openFile/loadImage/turn hooks.
  *
@@ -22,7 +22,6 @@
  */
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
 
-import type { ContextRowNodeLike } from "./context-row.js";
 import type { UiKey } from "./locales.js";
 
 /** Structural tool-call block (running and settled forms); no package import. */
@@ -51,6 +50,11 @@ export interface MemorySettingsFaceLike {
 /** Selector hook the renderer binds from a `hooks.settings` seat. */
 export type MemorySettingsHook = <T>(selector: (face: MemorySettingsFaceLike) => T) => T;
 
+/** Structural slice of the keyed chat-node owner props the guide row reads. */
+export interface GuideNodeRowLike {
+  readonly data?: { readonly chars?: unknown; readonly tools?: unknown; readonly text?: unknown } | undefined;
+}
+
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface SlotMap {
     /** Title-adjacent session actions in ascending order. */
@@ -72,14 +76,14 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       };
     };
     /** Keyed Chat transcript row, dispatched by the materialized node kind.
-     *  The memory UI registers its own custom kind; the owner carries the
-     *  full owner props at runtime, typed here to the slice the row reads
-     *  (see ui/context-row.ts). */
+     *  The read-path guide registers its own custom kind; the owner carries
+     *  the full owner props at runtime, typed here to the slice the row reads
+     *  (see ui/guide-row.ts). */
     "conversation.chat.node": {
       kind: "keyed";
       scope: "session";
       owner: {
-        node?: ContextRowNodeLike | undefined;
+        node?: GuideNodeRowLike | undefined;
       };
     };
   }

@@ -76,8 +76,6 @@ const CSS = `
 .memcurio-context-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; border-radius: 6px; }
 .memcurio-context-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; color: var(--dsw-alias-label-secondary); }
 .memcurio-context-title { flex: none; font-size: 13px; line-height: 24px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
-.memcurio-context-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--dsw-alias-label-caption); }
-.memcurio-context-source { min-width: 0; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 24px; color: var(--dsw-alias-label-tertiary); }
 .memcurio-context-chevron { display: inline-flex; flex: none; margin-left: 4px; color: var(--dsw-alias-label-tertiary); }
 .memcurio-context-chevron svg { transition: transform 120ms ease; }
 .memcurio-context-head[aria-expanded="true"] .memcurio-context-chevron svg { transform: rotate(180deg); }

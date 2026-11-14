@@ -5,17 +5,17 @@
  * mounted surface.
  *
  * Why a separate probe instead of the unit suite: the suite runs against the
- * development host (the newest line) and may use APIs that older hosts do not
- * publish. The contract this package actually claims is the peer range, so the
- * probe exercises the built tarball against the peer floor and one sample per
- * published line: install -> compose -> boot -> route/client. It is
+ * development host (the newest line) and may use APIs that the supported host
+ * does not publish. The contract this package actually claims is the peer
+ * range, so the probe exercises the built tarball against every host in
+ * SUPPORTED_HOSTS: install -> compose -> boot -> route/client. It is
  * intentionally black-box; nothing here imports this repository's sources.
  *
  * Usage:
- *   bun scripts/probe-compat.ts --version 0.2.2-alpha.3
+ *   bun scripts/probe-compat.ts --version 0.2.2-rc.3
  *   bun scripts/probe-compat.ts --all --clean
- *   bun scripts/probe-compat.ts --version 0.2.1-rc.2 --work /tmp/probe --port 32191
- *   bun scripts/probe-compat.ts --version 0.2.2-alpha.3 --cache .dsh-tmp/warm-bun-cache
+ *   bun scripts/probe-compat.ts --version 0.2.2-rc.3 --work /tmp/probe --port 32191
+ *   bun scripts/probe-compat.ts --version 0.2.2-rc.3 --cache .dsh-tmp/warm-bun-cache
  *
  * A warm --cache can hand back the tarball it packed under the same name@version
  * in an earlier run, so rebuilding this package and re-probing the same host
@@ -24,8 +24,8 @@
  * --work must live under .dsh-tmp or the OS temporary directory: the probe
  * deletes and recreates it, so an unbounded path could erase unrelated files.
  *
- * Requirements: bun (pack + CLI install), node >= 22 (boot; the alpha line
- * needs >= 24.9), pnpm (the profile installer and `dsh plugin add`), curl.
+ * Requirements: bun (pack + CLI install), node >= 24.9 (boot), pnpm (the
+ * profile installer and `dsh plugin add`), curl.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -76,7 +76,7 @@ function parseArgs(argv: readonly string[]): Options {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("--port must be a TCP port");
   if (all && version !== "") throw new Error("--all and --version are mutually exclusive");
   if (!all && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error("--version <dsh-version> is required (for example 0.2.2-alpha.3), or use --all");
+    throw new Error("--version <dsh-version> is required (for example 0.2.2-rc.3), or use --all");
   }
   const base = work === "" ? join(repoRoot, ".dsh-tmp", "probe-compat") : resolve(work);
   return {

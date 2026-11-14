@@ -4,9 +4,10 @@
  * Two surfaces ship from this entry:
  *
  * 1. the `memcurio` Settings section (configuration);
- * 2. the memory visibility UI (G5/G6): the "记忆注入 / Memory injection"
- *    transcript row for injected memory (ui/context-row.ts), a disclosure row
- *    for the system-prompt guide (ui/guide-row.ts), transient toasts for
+ * 2. the memory visibility UI (G5/G6): the host-rendered context-injection
+ *    row (since DSH 0.2.2-rc.2 the host shows every appended non-user
+ *    user/message; this bundle no longer registers a custom row), a
+ *    disclosure row for the system-prompt guide (ui/guide-row.ts), toasts for
  *    injections and memory writes, and custom transcript rows for the seven
  *    native memory tools. The session-header indicator is kept unregistered
  *    (v1.7 product instruction).
@@ -43,7 +44,6 @@ import { WorkspacePolicyModel, createWorkspaceInventoryClient } from "./settings
 import { NS as SETTINGS_NS, en, zh, type SettingsKey } from "./settings/locales.js";
 import { mountStyles } from "./settings/styles.js";
 import "./ui/contracts.js";
-import { registerInjectionRow, type InjectionRegistrationHost } from "./ui/context-row.js";
 import { registerGuideRow, type GuideRegistrationHost } from "./ui/guide-row.js";
 import { NS as UI_NS, en as uiEn, zh as uiZh, type UiKey } from "./ui/locales.js";
 import { actionCategory, createMemoryUiStore, shouldAnnounceInjection, type MemoryUiEvent } from "./ui/model.js";
@@ -196,7 +196,7 @@ export function apply(ctx: Context): void {
   // The settings shell renders this seat whenever its panel is open (and the
   // nav rows exist at the same commit). The probe renders nothing: it tags the
   // memcurio nav row so our stylesheet can paint the book mark there. The
-  // shell owns row icons; DSH 0.2.2-alpha.3 declares `settings.section.icon`
+  // shell owns row icons; DSH 0.2.2-rc.3 declares `settings.section.icon`
   // (the shell renders it with its own fallback) but nothing registers an
   // occupant, so moving the mark into that slot is a separate UI change.
   ctx.slots.inject("settings.action", () =>
@@ -292,11 +292,11 @@ export function apply(ctx: Context): void {
   // here is the six-line `conversation.session.header.utilities` entry that
   // this comment replaced.
 
-  // The injected memory row reads "记忆注入 / Memory injection" instead of the
-  // platform's generic "上下文注入 / Context injection". 0.1.7 filters ordinary
-  // `context` nodes out of the transcript, so this row ships as a custom chat
-  // node kind (the guide-row seam) — see client/ui/context-row.ts.
-  registerInjectionRow(ctx as unknown as InjectionRegistrationHost);
+  // The injected memory row is the HOST's context-injection row since DSH
+  // 0.2.2-rc.2: the host projects every appended non-user `user/message` as a
+  // visible `context` chat node, so a custom memcurio row would render a
+  // duplicate and is not registered. The durable source kind in the server
+  // half still supplies the row label.
 
   // The read-path guide lives in the SYSTEM PROMPT (v1.9), so the injected
   // message row never covered it and its injection was invisible. This lane

@@ -1,9 +1,9 @@
-# memcurio 设置契约（DSH 0.2.2-alpha.3）
+# memcurio 设置契约（DSH 0.2.2-rc.3）
 
 > 本文件是**设置面**的唯一真源：上游规范 → 本插件落点 → 本仓库自己的约定 → 验证矩阵 → 运维要点。
 > 安装/升级步骤见 [operations.md](operations.md)；面板的 UI 呈现（几何、文案、状态）见 [ui.md](ui.md)；模块导出签名见 [contract.md](contract.md)。
 
-## 1. 上游规范（DSH 0.2.2-alpha.3）
+## 1. 上游规范（DSH 0.2.2-rc.3）
 
 `0.2.2-alpha.2` 起 settings 的 fiber 访问器是 `fiber.effectiveConfig`；`0.2.2-alpha.3` 把 `Fiber.config` 的语义翻转为**原始输入**（`effectiveConfig` 才是激活对象），并把 `internal/config` 的派发形状改成 `(ownerFiber, next)` 且不绑 receiver。本插件在 `apply` 里读解析结果、不读 `Fiber.config`，表单投影的输入不变；跨字段路由校验按 identity 认领 owner、按「半边是否存在」判定候选，两代派发形状都成立（见 [settings.ts](../src/plugin/settings.ts) 的 `guardConfigResolution`）。
 
