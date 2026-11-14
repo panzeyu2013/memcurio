@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-14
+
 ### Changed
 
 - **The node smoke script races two processes on one store.** `bun run smoke:node` now spawns two node children that hand off through ready/go files and write ad-hoc notes into the same store, asserting that both wrote every note with no failures. The release gate therefore exercises the production `node:sqlite` connection bootstrap/retry path across processes instead of only in one process.
-- **The development host line is DSH `0.2.2-rc.3`.** All 24 pinned `@deepseek-ai/dsh-*` devDependencies move to that release and the Cordis ecosystem moves with them (`cordis ~4.1.0`, `cordis-plugin-loader ~1.1.0`, `schemastery ~3.19.0` as the runtime dependency); every symbol this plugin imports stays compatible with rc.2/rc.3. The lockfile is regenerated from scratch because an incremental `bun install` keeps the stale Cordis peer closure.
+- **The development host line is DSH `0.2.2-rc.3`.** All 25 pinned `@deepseek-ai/dsh-*` devDependencies move to that release and the Cordis ecosystem moves with them (`cordis ~4.1.0`, `cordis-plugin-loader ~1.1.0`, `schemastery ~3.19.0` as the runtime dependency); every symbol this plugin imports stays compatible with rc.2/rc.3. The lockfile is regenerated from scratch because an incremental `bun install` keeps the stale Cordis peer closure.
 - **The compatibility matrix samples only the latest supported host.** `SUPPORTED_HOSTS` and the CI matrix collapse to `0.2.2-rc.3` (the peer floor and the only matrix-sampled line), so the release gate boots that host alone.
 
 ### Removed
